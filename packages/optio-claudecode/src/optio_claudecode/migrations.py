@@ -20,24 +20,38 @@ workdir blob of every snapshot. This migration visits every
     `conversation` blob, through `task.session_crypto.encrypt` when set
     (plaintext otherwise, like the session blob).
   - Buffer found, no task definition: the bytes are dropped.
-  - One `update_one` sets the new `workdirBlobId`, the `conversationBlobId`
-    (when stored) and the marker. Then the old workdir blob is deleted.
+  - One compare-and-set `update_one` (the document must still name the old
+    blob and be unmarked) sets the new `workdirBlobId`, the
+    `conversationBlobId` (when stored), the marker and
+    `migratedFromWorkdirBlobId: <old>`. No match (another writer changed the
+    document): the new blobs are deleted and the old one kept.
+  - Then `_finish_rewrite`: pending-capture records naming the old blob are
+    repointed to the new one, so a capture cut off between its snapshot
+    insert and its pending-record delete still settles as committed; the old
+    blob is deleted (unless a snapshot of the process still names it); the
+    `migratedFromWorkdirBlobId` field is removed.
   - No buffer: the new blob is deleted and the document only marked; the old
     workdir blob stays.
-* A missing or unreadable workdir blob cannot be fixed by a retry. The
-  document is marked, its blob left as it is, and a warning logged, so one
-  broken snapshot does not fail every engine start.
+* A missing workdir blob, a corrupt one (`gridfs.errors.CorruptGridFile`: a
+  missing or short chunk) or one that is not an intact gzip tar of copyable
+  members (`tar_strip.ArchiveError`) cannot be fixed by a retry. The document
+  is marked, its blob left as it is, and a warning logged, so one broken
+  snapshot does not fail every engine start.
 
 Crash safety: new blobs first, then the document update, then the old blob's
 deletion. An interruption before the update leaves only orphan new blobs and
-an unmarked document, which the next start redoes. One after it leaves the
-old blob orphaned. The migration is recorded as applied only when the function
-returns, after every document is marked.
+an unmarked document, which the next start redoes. One after it (also an
+update that raised after being applied, or a failed delete) leaves the
+document carrying `migratedFromWorkdirBlobId`; every run starts by finishing
+those documents, so the old plaintext blob does not stay behind. The
+migration is recorded as applied only when the function returns, after every
+document is marked and finished.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import AsyncIterator
 
 import gridfs.errors
@@ -46,6 +60,7 @@ from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 
 from optio_core import DeferredMigrationContext, deferred_migrations
 
+from optio_claudecode.pending_captures import PENDING_CAPTURE_COLLECTION_SUFFIX
 from optio_claudecode.snapshots import SESSION_SNAPSHOT_COLLECTION_SUFFIX
 from optio_claudecode.tar_strip import ArchiveError, strip_member
 
@@ -53,131 +68,216 @@ from optio_claudecode.tar_strip import ArchiveError, strip_member
 _LOG = logging.getLogger(__name__)
 
 MIGRATED_MARKER = "conversationBufferMigrated"
+MIGRATED_FROM = "migratedFromWorkdirBlobId"
 # The workdir file older versions wrote the buffer to (session._CONV_BUFFER_FILE).
 _BUFFER_FILE = ".optio-conversation-buffer.json"
 _READ_CHUNK = 1 << 20
+_NAME = "claudecode_conversation_buffer_out_of_workdir"
+_UNMARKED = {MIGRATED_MARKER: {"$ne": True}}
+# A progress line every this many documents (and one at the end).
+_PROGRESS_EVERY = 25
 
 
-@deferred_migrations.register("claudecode_conversation_buffer_out_of_workdir")
+@deferred_migrations.register(_NAME)
 async def claudecode_conversation_buffer_out_of_workdir(
     ctx: DeferredMigrationContext,
 ) -> None:
-    coll = ctx.db[f"{ctx.prefix}{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"]
-    unmarked = {MIGRATED_MARKER: {"$ne": True}}
+    run = _Run(ctx)
+    await run.finish_interrupted_rewrites()
     # Ids first: a cursor held open across many blob rewrites could time out.
     ids = [
-        d["_id"] async for d in coll.find(
-            unmarked, projection={"_id": 1}, sort=[("capturedAt", 1)],
+        d["_id"] async for d in run.snapshots.find(
+            _UNMARKED, projection={"_id": 1}, sort=[("capturedAt", 1)],
         )
     ]
     if not ids:
         return
-    _LOG.info(
-        "claudecode_conversation_buffer_out_of_workdir: %d snapshot(s) to check",
-        len(ids),
-    )
-    bucket = AsyncIOMotorGridFSBucket(ctx.db)
-    owners: dict[str, str] = {}
-    moved = 0
+    _LOG.info("%s: %d snapshot(s) to check", _NAME, len(ids))
     for snapshot_id in ids:
-        doc = await coll.find_one({"_id": snapshot_id, **unmarked})
+        doc = await run.snapshots.find_one({"_id": snapshot_id, **_UNMARKED})
         if doc is None:
             continue
-        moved += await _migrate_snapshot(ctx, coll, bucket, doc, owners)
-    _LOG.info(
-        "claudecode_conversation_buffer_out_of_workdir: done; %d workdir blob(s) "
-        "held a conversation buffer", moved,
-    )
+        await run.migrate(doc)
+        if run.counts.visited % _PROGRESS_EVERY == 0:
+            # str() now: the counts object keeps changing after the call.
+            _LOG.info("%s: %s", _NAME, str(run.counts))
+    _LOG.info("%s: done; %s", _NAME, str(run.counts))
 
 
-async def _migrate_snapshot(ctx, coll, bucket, doc: dict, owners: dict[str, str]) -> int:
-    """Migrate one snapshot document. Returns 1 when its workdir blob held the
-    buffer (and was rewritten), else 0."""
-    mark_only = {"$set": {MIGRATED_MARKER: True}}
-    if doc.get("conversationBlobId") is not None:
-        await coll.update_one({"_id": doc["_id"]}, mark_only)
-        return 0
+@dataclass
+class _Counts:
+    visited: int = 0
+    stripped: int = 0         # buffer found, workdir blob rewritten
+    records_stored: int = 0   # ... and stored as the conversation blob
+    dropped: int = 0          # ... and dropped (no task definition)
+    marked_only: int = 0      # new-style snapshot, or no buffer
+    corrupt: int = 0          # missing, corrupt or unreadable workdir blob
+    changed: int = 0          # the document changed under us; left alone
 
-    process_id = doc["processId"]
-    old_id = doc.get("workdirBlobId")
-    metadata = {"processId": await _owner(ctx, process_id, owners), "prefix": ctx.prefix}
-    try:
-        if old_id is None:
-            raise gridfs.errors.NoFile("no workdirBlobId")
-        download = await bucket.open_download_stream(old_id)
-    except gridfs.errors.NoFile:
-        _LOG.warning(
-            "snapshot %s (process %s): workdir blob %s not found; marked without "
-            "a rewrite", doc["_id"], process_id, old_id,
-        )
-        await coll.update_one({"_id": doc["_id"]}, mark_only)
-        return 0
+    def __str__(self) -> str:
+        return ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in vars(self).items())
 
-    new_id = ObjectId()
-    try:
-        async with bucket.open_upload_stream_with_id(
-            new_id, "workdir", metadata={**metadata, "name": "workdir"},
-        ) as upload:
-            buffer = await strip_member(
-                _read_chunks(download), upload.write, name=_BUFFER_FILE,
+
+class _Run:
+    def __init__(self, ctx: DeferredMigrationContext) -> None:
+        self.ctx = ctx
+        self.snapshots = ctx.db[f"{ctx.prefix}{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"]
+        self.pending = ctx.db[f"{ctx.prefix}{PENDING_CAPTURE_COLLECTION_SUFFIX}"]
+        self.bucket = AsyncIOMotorGridFSBucket(ctx.db)
+        self.owners: dict[str, str] = {}
+        self.counts = _Counts()
+
+    async def finish_interrupted_rewrites(self) -> None:
+        """Finish documents a previous run updated but did not finish."""
+        docs = await self.snapshots.find(
+            {MIGRATED_FROM: {"$exists": True}},
+            projection={"processId": 1, "workdirBlobId": 1, MIGRATED_FROM: 1},
+        ).to_list(None)
+        for doc in docs:
+            _LOG.info(
+                "%s: finishing snapshot %s (old workdir blob %s)",
+                _NAME, doc["_id"], doc[MIGRATED_FROM],
             )
-    except ArchiveError as exc:
-        await _delete_blob(bucket, new_id)
-        _LOG.warning(
-            "snapshot %s (process %s): workdir blob %s is not a readable gzip tar "
-            "(%s); marked without a rewrite", doc["_id"], process_id, old_id, exc,
-        )
-        await coll.update_one({"_id": doc["_id"]}, mark_only)
-        return 0
-    except BaseException:
-        await _delete_blob(bucket, new_id)
-        raise
-    finally:
-        download.close()
-
-    if buffer is None:
-        await _delete_blob(bucket, new_id)
-        await coll.update_one({"_id": doc["_id"]}, mark_only)
-        return 0
-
-    update = {"workdirBlobId": new_id, MIGRATED_MARKER: True}
-    task = ctx.task_for(process_id)
-    try:
-        if task is not None:
-            crypto = task.session_crypto
-            payload = crypto.encrypt(buffer) if crypto and crypto.encrypt else buffer
-            update["conversationBlobId"] = await _store_blob(
-                bucket, payload, metadata={**metadata, "name": "conversation"},
+            await self._finish_rewrite(
+                doc["_id"], doc["processId"], doc[MIGRATED_FROM], doc["workdirBlobId"],
             )
-        # No task definition: no cipher to store the buffer under; it is
-        # dropped (design decision 4).
-    except BaseException:
-        # E.g. the cipher failed: the start fails and is retried; do not leave
-        # a workdir copy behind each time. (Not after the update below: a
-        # failed update_one may still have been applied.)
-        await _delete_blob(bucket, new_id)
-        raise
-    await coll.update_one({"_id": doc["_id"]}, {"$set": update})
-    await _delete_blob(bucket, old_id)
-    _LOG.info(
-        "snapshot %s (process %s): conversation buffer %s; workdir blob %s "
-        "replaced by %s", doc["_id"], process_id,
-        "moved to its conversation blob" if task is not None else "dropped (no task)",
-        old_id, new_id,
-    )
-    return 1
 
+    async def migrate(self, doc: dict) -> None:
+        self.counts.visited += 1
+        if doc.get("conversationBlobId") is not None:
+            await self._mark(doc)
+            self.counts.marked_only += 1
+            return
 
-async def _owner(ctx, process_id: str, owners: dict[str, str]) -> str:
-    """The blob metadata's processId, as `ProcessContext.store_blob` writes it:
-    the process document's `_id` as str, or the snapshot's processId when the
-    process document is gone."""
-    if process_id not in owners:
-        proc = await ctx.db[f"{ctx.prefix}_processes"].find_one(
-            {"processId": process_id}, projection={"_id": 1}, sort=[("_id", -1)],
+        process_id = doc["processId"]
+        old_id = doc.get("workdirBlobId")
+        metadata = {"processId": await self._owner(process_id), "prefix": self.ctx.prefix}
+        try:
+            if old_id is None:
+                raise gridfs.errors.NoFile("no workdirBlobId")
+            download = await self.bucket.open_download_stream(old_id)
+        except gridfs.errors.NoFile:
+            await self._mark_corrupt(doc, f"workdir blob {old_id} not found")
+            return
+
+        new_id = ObjectId()
+        try:
+            async with self.bucket.open_upload_stream_with_id(
+                new_id, "workdir", metadata={**metadata, "name": "workdir"},
+            ) as upload:
+                buffer = await strip_member(
+                    _read_chunks(download), upload.write, name=_BUFFER_FILE,
+                )
+        except (ArchiveError, gridfs.errors.CorruptGridFile) as exc:
+            await _delete_blob(self.bucket, new_id)
+            await self._mark_corrupt(doc, f"workdir blob {old_id}: {exc}")
+            return
+        except BaseException:
+            await _delete_blob(self.bucket, new_id)
+            raise
+        finally:
+            download.close()
+
+        if buffer is None:
+            await _delete_blob(self.bucket, new_id)
+            await self._mark(doc)
+            self.counts.marked_only += 1
+            return
+
+        task = self.ctx.task_for(process_id)
+        conversation_id = None
+        try:
+            if task is not None:
+                crypto = task.session_crypto
+                payload = crypto.encrypt(buffer) if crypto and crypto.encrypt else buffer
+                conversation_id = await _store_blob(
+                    self.bucket, payload, metadata={**metadata, "name": "conversation"},
+                )
+            # No task definition: no cipher to store the buffer under; it is
+            # dropped (design decision 4).
+        except BaseException:
+            # E.g. the cipher failed: the start fails and is retried; do not
+            # leave a workdir copy behind each time. (Not after the update
+            # below: a failed update_one may still have been applied.)
+            await _delete_blob(self.bucket, new_id)
+            raise
+
+        update = {"workdirBlobId": new_id, MIGRATED_MARKER: True, MIGRATED_FROM: old_id}
+        if conversation_id is not None:
+            update["conversationBlobId"] = conversation_id
+        result = await self.snapshots.update_one(
+            {"_id": doc["_id"], "workdirBlobId": old_id, **_UNMARKED}, {"$set": update},
         )
-        owners[process_id] = str(proc["_id"]) if proc is not None else process_id
-    return owners[process_id]
+        if result.matched_count == 0:
+            await _delete_blob(self.bucket, new_id)
+            if conversation_id is not None:
+                await _delete_blob(self.bucket, conversation_id)
+            _LOG.warning(
+                "%s: snapshot %s (process %s) changed while it was rewritten; "
+                "left alone", _NAME, doc["_id"], process_id,
+            )
+            self.counts.changed += 1
+            return
+        self.counts.stripped += 1
+        if conversation_id is not None:
+            self.counts.records_stored += 1
+        else:
+            self.counts.dropped += 1
+        await self._finish_rewrite(doc["_id"], process_id, old_id, new_id)
+        _LOG.debug(
+            "%s: snapshot %s (process %s): buffer %s; workdir blob %s replaced by %s",
+            _NAME, doc["_id"], process_id,
+            "stored" if conversation_id is not None else "dropped (no task)",
+            old_id, new_id,
+        )
+
+    async def _finish_rewrite(
+        self, doc_id: ObjectId, process_id: str, old_id: ObjectId, new_id: ObjectId,
+    ) -> None:
+        """After the document names the new workdir blob: repoint pending-capture
+        records, delete the old blob, drop the document's
+        `migratedFromWorkdirBlobId`. Idempotent; a failure leaves the field
+        set, and the next run's `finish_interrupted_rewrites` redoes it."""
+        await self.pending.update_many(
+            {"processId": process_id, "workdirBlobId": old_id},
+            {"$set": {"workdirBlobId": new_id}},
+        )
+        if await self.snapshots.count_documents(
+            {"processId": process_id, "workdirBlobId": old_id}, limit=1,
+        ):
+            _LOG.warning(
+                "%s: workdir blob %s is still named by a snapshot of process %s; "
+                "kept", _NAME, old_id, process_id,
+            )
+        else:
+            await _delete_blob(self.bucket, old_id)
+        await self.snapshots.update_one(
+            {"_id": doc_id, MIGRATED_FROM: old_id}, {"$unset": {MIGRATED_FROM: ""}},
+        )
+
+    async def _mark(self, doc: dict) -> None:
+        await self.snapshots.update_one(
+            {"_id": doc["_id"]}, {"$set": {MIGRATED_MARKER: True}},
+        )
+
+    async def _mark_corrupt(self, doc: dict, problem: str) -> None:
+        _LOG.warning(
+            "%s: snapshot %s (process %s): %s; marked without a rewrite, blob kept",
+            _NAME, doc["_id"], doc["processId"], problem,
+        )
+        await self._mark(doc)
+        self.counts.corrupt += 1
+
+    async def _owner(self, process_id: str) -> str:
+        """The blob metadata's processId, as `ProcessContext.store_blob` writes
+        it: the process document's `_id` as str, or the snapshot's processId
+        when the process document is gone."""
+        if process_id not in self.owners:
+            proc = await self.ctx.db[f"{self.ctx.prefix}_processes"].find_one(
+                {"processId": process_id}, projection={"_id": 1}, sort=[("_id", -1)],
+            )
+            self.owners[process_id] = str(proc["_id"]) if proc is not None else process_id
+        return self.owners[process_id]
 
 
 async def _read_chunks(download) -> AsyncIterator[bytes]:

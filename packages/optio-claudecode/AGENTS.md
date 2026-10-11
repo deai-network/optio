@@ -163,20 +163,33 @@ Deferred migration `claudecode_conversation_buffer_out_of_workdir`
 `optio_claudecode` is imported; runs at engine start after the initial sync,
 blocking; spec §6): captures before the fix left the replay buffer in the
 plaintext workdir blob as `.optio-conversation-buffer.json`. It visits every
-snapshot document without `conversationBufferMigrated: true`, oldest first. A
-document that has a `conversationBlobId` is only marked. Otherwise its workdir
-blob is streamed through `tar_strip.strip_member` (gzip tar in, gzip tar out,
-on a thread with bounded queues; headers kept; strips the top-level member,
-`./` or not) into a new `workdir` blob. Buffer found: with a task
-(`ctx.task_for`) the bytes become a `conversation` blob, through
-`task.session_crypto.encrypt` when set; without one they are dropped. One
-`update_one` sets the new `workdirBlobId`, the `conversationBlobId` and the
-marker, then the old blob is deleted. No buffer: the new blob is deleted and
-the document only marked. A missing or unreadable workdir blob is marked as it
-is, with a warning (no retry would fix it). New blobs' metadata is
-`{processId: <process doc _id as str, else the snapshot's processId>, prefix,
-name}`. An interruption before the update leaves orphan new blobs and an
-unmarked document, redone on the next start.
+snapshot document without `conversationBufferMigrated: true`, oldest first,
+logging counts every 25 documents and at the end. A document that has a
+`conversationBlobId` is only marked. Otherwise its workdir blob is streamed
+through `tar_strip.strip_member` into a new `workdir` blob without the
+top-level member (`./` or not). `strip_member` runs tarfile on a thread
+behind bounded queues, with its own gunzip and level-1 gzip, and keeps
+headers. It raises `ArchiveError` unless the input is intact: every gzip
+member complete with matching CRC and length, an all-zero end-of-archive
+block followed only by zeros (a bad or truncated header is not an end), and
+only copyable members (no unknown or sparse types, no data on non-regular
+ones). Buffer found: with a task (`ctx.task_for`) the bytes become a
+`conversation` blob, through `task.session_crypto.encrypt` when set; without
+one they are dropped. One compare-and-set `update_one` (the document must
+still name the old blob and be unmarked) sets the new `workdirBlobId`, the
+`conversationBlobId`, the marker and `migratedFromWorkdirBlobId: <old>`; no
+match deletes the new blobs and leaves the document alone. Then
+`{prefix}_claudecode_pending_captures` records of the process naming the old
+blob are repointed to the new one, the old blob is deleted, and
+`migratedFromWorkdirBlobId` is removed. Every run first finishes documents
+still carrying that field (a failed delete, an update that raised after being
+applied). No buffer: the new blob is deleted and the document only marked. A
+missing workdir blob, a corrupt one (`gridfs.errors.CorruptGridFile`) or an
+`ArchiveError` marks the document as it is, blob kept, with a warning (no
+retry would fix it). New blobs' metadata is `{processId: <process doc _id as
+str, else the snapshot's processId>, prefix, name}`. An interruption before
+the update leaves orphan new blobs and an unmarked document, redone on the
+next start.
 
 ## Resurrect
 

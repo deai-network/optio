@@ -8,6 +8,8 @@ docs/2026-10-11-conversation-buffer-encryption-design.md, section 6.
 from __future__ import annotations
 
 import io
+import logging
+import os
 import subprocess
 import sys
 import tarfile
@@ -25,12 +27,16 @@ from optio_core.models import SessionCrypto, TaskInstance
 import optio_claudecode.migrations as M
 from optio_claudecode.snapshots import insert_snapshot
 
+from .test_tar_strip import DAMAGED_ARCHIVES
+
 
 _PREFIX = "test"
 _NAME = ".optio-conversation-buffer.json"
 _BUFFER = b'[[1,{"type":"user","message":"hi"}],[2,{"type":"assistant"}]]'
 _MIGRATION = "claudecode_conversation_buffer_out_of_workdir"
 _SNAPSHOTS = f"{_PREFIX}_claudecode_session_snapshots"
+_PENDING = f"{_PREFIX}_claudecode_pending_captures"
+_LOGGER = "optio_claudecode.migrations"
 
 
 async def _noop(ctx):
@@ -49,10 +55,12 @@ def _ctx(mongo_db, tasks: dict[str, TaskInstance]) -> DeferredMigrationContext:
     return DeferredMigrationContext(db=mongo_db, prefix=_PREFIX, task_for=tasks.get)
 
 
-def _workdir_tar(*, buffer: bool) -> bytes:
+def _workdir_tar(*, buffer: bool, big: bytes | None = None) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
         entries = [("./keep.txt", b"work\n")]
+        if big is not None:
+            entries.append(("./big.bin", big))
         if buffer:
             entries.append((f"./{_NAME}", _BUFFER))
         entries.append(("./src/main.py", b"print('x')\n"))
@@ -102,9 +110,11 @@ async def _process(mongo_db, pid: str) -> ObjectId:
 
 async def _snapshot(
     mongo_db, pid: str, *, buffer: bool, owner: str,
-    conversation_blob_id: ObjectId | None = None,
+    conversation_blob_id: ObjectId | None = None, data: bytes | None = None,
 ) -> dict:
-    workdir_id = await _put_blob(mongo_db, "workdir", _workdir_tar(buffer=buffer), owner)
+    if data is None:
+        data = _workdir_tar(buffer=buffer)
+    workdir_id = await _put_blob(mongo_db, "workdir", data, owner)
     return await insert_snapshot(
         mongo_db, prefix=_PREFIX, process_id=pid, end_state="done",
         session_blob_id=ObjectId(), workdir_blob_id=workdir_id,
@@ -370,3 +380,226 @@ def test_registered_on_import():
         deferred_migrations._fns[_MIGRATION]
         is M.claudecode_conversation_buffer_out_of_workdir
     )
+
+
+async def _only_original_left(mongo_db, original_id) -> None:
+    files = await mongo_db["fs.files"].find({}).to_list(None)
+    assert [f["_id"] for f in files] == [original_id]
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": {"$ne": original_id}}) == 0
+
+
+def _warned(caplog, text: str) -> bool:
+    return any(
+        r.levelno == logging.WARNING and r.name == _LOGGER and text in r.getMessage()
+        for r in caplog.records
+    )
+
+
+async def test_corrupt_gridfs_chunk_marks_only(mongo_db, caplog):
+    oid = await _process(mongo_db, "p1")
+    data = _workdir_tar(buffer=True, big=os.urandom(900 * 1024))
+    snap = await _snapshot(mongo_db, "p1", buffer=True, owner=str(oid), data=data)
+    old_id = snap["workdirBlobId"]
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": old_id}) >= 3
+    await mongo_db["fs.chunks"].delete_one({"files_id": old_id, "n": 1})
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        await M.claudecode_conversation_buffer_out_of_workdir(
+            _ctx(mongo_db, {"p1": _task("p1", _cipher())}),
+        )
+
+    doc = await _reload(mongo_db, snap)
+    assert doc["conversationBufferMigrated"] is True
+    assert doc["workdirBlobId"] == old_id
+    assert "conversationBlobId" not in doc
+    await _only_original_left(mongo_db, old_id)
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": old_id}) >= 2
+    assert _warned(caplog, str(old_id))
+
+
+@pytest.mark.parametrize("make", list(DAMAGED_ARCHIVES.values()), ids=list(DAMAGED_ARCHIVES))
+async def test_damaged_archive_marks_only(mongo_db, caplog, make):
+    oid = await _process(mongo_db, "p1")
+    data = make()
+    snap = await _snapshot(mongo_db, "p1", buffer=True, owner=str(oid), data=data)
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        await M.claudecode_conversation_buffer_out_of_workdir(
+            _ctx(mongo_db, {"p1": _task("p1", _cipher())}),
+        )
+
+    doc = await _reload(mongo_db, snap)
+    assert doc["conversationBufferMigrated"] is True
+    assert doc["workdirBlobId"] == snap["workdirBlobId"]
+    assert "conversationBlobId" not in doc
+    assert await _read_blob(mongo_db, snap["workdirBlobId"]) == data
+    await _only_original_left(mongo_db, snap["workdirBlobId"])
+    assert _warned(caplog, "marked without a rewrite")
+
+
+async def test_mid_stream_archive_error_leaves_no_chunks(mongo_db, monkeypatch):
+    # Random content is stored uncompressed by deflate, so a flipped byte near
+    # the end is only caught by the CRC check, after most of the copy was
+    # written to GridFS.
+    oid = await _process(mongo_db, "p1")
+    data = bytearray(_workdir_tar(buffer=True, big=os.urandom(3 * 1024 * 1024)))
+    data[-4096] ^= 0xFF
+    snap = await _snapshot(mongo_db, "p1", buffer=True, owner=str(oid), data=bytes(data))
+    written: list[int] = []
+    real_strip = M.strip_member
+
+    async def counting_strip(src, sink, *, name):
+        async def counting_sink(b):
+            written.append(len(b))
+            await sink(b)
+        return await real_strip(src, counting_sink, name=name)
+
+    monkeypatch.setattr(M, "strip_member", counting_strip)
+
+    await M.claudecode_conversation_buffer_out_of_workdir(
+        _ctx(mongo_db, {"p1": _task("p1", _cipher())}),
+    )
+
+    assert sum(written) > 1024 * 1024  # several GridFS chunks were written
+    doc = await _reload(mongo_db, snap)
+    assert doc["conversationBufferMigrated"] is True
+    assert doc["workdirBlobId"] == snap["workdirBlobId"]
+    await _only_original_left(mongo_db, snap["workdirBlobId"])
+
+
+async def test_pending_capture_repointed(mongo_db):
+    oid = await _process(mongo_db, "p1")
+    snap = await _snapshot(mongo_db, "p1", buffer=True, owner=str(oid))
+    # A pre-fix capture cut off between its snapshot insert and its
+    # pending-record delete: the record names the snapshot's workdir blob.
+    await mongo_db[_PENDING].insert_one({
+        "processId": "p1", "sessionBlobId": snap["sessionBlobId"],
+        "workdirBlobId": snap["workdirBlobId"],
+    })
+    other_blob = ObjectId()
+    await mongo_db[_PENDING].insert_one({
+        "processId": "p2", "sessionBlobId": ObjectId(), "workdirBlobId": other_blob,
+    })
+
+    await M.claudecode_conversation_buffer_out_of_workdir(
+        _ctx(mongo_db, {"p1": _task("p1", _cipher())}),
+    )
+
+    doc = await _reload(mongo_db, snap)
+    assert doc["workdirBlobId"] != snap["workdirBlobId"]
+    record = await mongo_db[_PENDING].find_one({"processId": "p1"})
+    assert record["workdirBlobId"] == doc["workdirBlobId"]
+    assert (await mongo_db[_PENDING].find_one({"processId": "p2"}))["workdirBlobId"] == other_blob
+    assert "migratedFromWorkdirBlobId" not in doc
+
+
+async def test_old_blob_delete_failure_finished_next_run(mongo_db, monkeypatch):
+    oid = await _process(mongo_db, "p1")
+    snap = await _snapshot(mongo_db, "p1", buffer=True, owner=str(oid))
+    old_id = snap["workdirBlobId"]
+    real_delete = M._delete_blob
+    state = {"armed": True}
+
+    async def flaky_delete(bucket, file_id):
+        if state["armed"] and file_id == old_id:
+            state["armed"] = False
+            raise RuntimeError("mongo hiccup")
+        await real_delete(bucket, file_id)
+
+    monkeypatch.setattr(M, "_delete_blob", flaky_delete)
+    ctx = _ctx(mongo_db, {"p1": _task("p1", _cipher())})
+
+    with pytest.raises(RuntimeError, match="mongo hiccup"):
+        await M.claudecode_conversation_buffer_out_of_workdir(ctx)
+    doc = await _reload(mongo_db, snap)
+    assert doc["conversationBufferMigrated"] is True
+    assert doc["migratedFromWorkdirBlobId"] == old_id
+    assert await _file_doc(mongo_db, old_id) is not None
+
+    await M.claudecode_conversation_buffer_out_of_workdir(ctx)
+
+    doc = await _reload(mongo_db, snap)
+    assert "migratedFromWorkdirBlobId" not in doc
+    assert await _blob_gone(mongo_db, old_id)
+    assert await _read_blob(mongo_db, doc["conversationBlobId"]) == b"E" + _BUFFER
+
+
+async def test_crash_after_update_finished_next_run(mongo_db, monkeypatch):
+    oid = await _process(mongo_db, "p1")
+    snap = await _snapshot(mongo_db, "p1", buffer=True, owner=str(oid))
+    old_id = snap["workdirBlobId"]
+    original_update_one = AsyncIOMotorCollection.update_one
+    state = {"armed": True}
+
+    async def applied_then_raises(self, filter, update, *args, **kwargs):
+        result = await original_update_one(self, filter, update, *args, **kwargs)
+        if state["armed"] and "workdirBlobId" in update.get("$set", {}):
+            state["armed"] = False
+            raise RuntimeError("connection lost after the write")
+        return result
+
+    monkeypatch.setattr(AsyncIOMotorCollection, "update_one", applied_then_raises)
+    ctx = _ctx(mongo_db, {"p1": _task("p1", _cipher())})
+
+    with pytest.raises(RuntimeError, match="connection lost"):
+        await M.claudecode_conversation_buffer_out_of_workdir(ctx)
+    doc = await _reload(mongo_db, snap)
+    assert doc["conversationBufferMigrated"] is True
+    assert doc["migratedFromWorkdirBlobId"] == old_id
+    assert await _file_doc(mongo_db, old_id) is not None
+    first_conversation = doc["conversationBlobId"]
+
+    await M.claudecode_conversation_buffer_out_of_workdir(ctx)
+
+    doc = await _reload(mongo_db, snap)
+    assert "migratedFromWorkdirBlobId" not in doc
+    assert await _blob_gone(mongo_db, old_id)
+    assert doc["conversationBlobId"] == first_conversation  # skipped, not redone
+    assert await mongo_db["fs.files"].count_documents({"filename": "conversation"}) == 1
+
+
+async def test_changed_doc_left_alone(mongo_db, monkeypatch, caplog):
+    oid = await _process(mongo_db, "p1")
+    snap = await _snapshot(mongo_db, "p1", buffer=True, owner=str(oid))
+    elsewhere = ObjectId()
+    real_strip = M.strip_member
+
+    async def strip_then_another_writer(src, sink, *, name):
+        result = await real_strip(src, sink, name=name)
+        await mongo_db[_SNAPSHOTS].update_one(
+            {"_id": snap["_id"]}, {"$set": {"workdirBlobId": elsewhere}},
+        )
+        return result
+
+    monkeypatch.setattr(M, "strip_member", strip_then_another_writer)
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        await M.claudecode_conversation_buffer_out_of_workdir(
+            _ctx(mongo_db, {"p1": _task("p1", _cipher())}),
+        )
+
+    doc = await _reload(mongo_db, snap)
+    assert doc["workdirBlobId"] == elsewhere
+    assert "conversationBufferMigrated" not in doc
+    assert "conversationBlobId" not in doc
+    await _only_original_left(mongo_db, snap["workdirBlobId"])
+    assert _warned(caplog, "changed while it was rewritten")
+
+
+async def test_progress_logged_every_25_docs(mongo_db, caplog):
+    for _ in range(26):
+        await insert_snapshot(
+            mongo_db, prefix=_PREFIX, process_id="p1", end_state="done",
+            session_blob_id=ObjectId(), workdir_blob_id=ObjectId(),
+            deliverables_emitted=[], conversation_blob_id=ObjectId(),
+        )
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        await M.claudecode_conversation_buffer_out_of_workdir(_ctx(mongo_db, {}))
+
+    lines = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
+    assert any("visited 25," in line for line in lines)
+    done = [line for line in lines if "done;" in line]
+    assert len(done) == 1
+    assert "visited 26, stripped 0, records stored 0, dropped 0, marked only 26" in done[0]
+    assert "corrupt 0" in done[0]

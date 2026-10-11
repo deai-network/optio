@@ -17,6 +17,8 @@ One document per terminal run per process_id. Layout:
       conversationBufferMigrated: bool,  # optional; set by the deferred
                                      # migration in optio_claudecode.migrations
                                      # once the document is checked
+      migratedFromWorkdirBlobId: ObjectId,  # transient; that migration's
+                                     # replaced workdir blob, until deleted
     }
 
 No `sessionId`: claude resolves its own most-recent session via `--continue`,
