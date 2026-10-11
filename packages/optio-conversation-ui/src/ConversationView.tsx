@@ -15,7 +15,7 @@ import { ConversationWelcomeContext, type ConversationWelcome } from './welcome.
 import { resolveText, useLanguage } from './text.js';
 import { ConversationSetBusyContext } from './busy.js';
 import { AnswerBlock } from './AnswerBlock.js';
-import { CustomControls } from './CustomControls.js';
+import { ControlErrorSlot, CustomControls } from './CustomControls.js';
 import { AnswerFiles, FILE_LINK_CLASS } from './FileCards.js';
 import { SlotSpinner } from './spinners/SlotSpinner.js';
 import { CodeBlock } from './CodeBlock.js';
@@ -1229,6 +1229,18 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const [sending, setSending] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The input bar's error slot, offered to an engine view around this one
+  // (ControlErrorSlot: ClaudeCodeView shows its built-in controls' failures
+  // here). Filled while mounted, whatever controls are shown; the custom
+  // controls report their own failures through onError.
+  const controlErrorSlot = useContext(ControlErrorSlot);
+  useEffect(() => {
+    if (!controlErrorSlot) return undefined;
+    controlErrorSlot.current = setError;
+    return () => {
+      if (controlErrorSlot.current === setError) controlErrorSlot.current = null;
+    };
+  }, [controlErrorSlot]);
   // Ant Design X experiment (owner-approved 2026-10-12): the files to send are
   // X Attachments' upload list (antd UploadFile, the File in originFileObj);
   // `attachments` is what onSend / onSteer get, as before.
@@ -1299,7 +1311,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     const observer = new ResizeObserver(fit);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [props.controls]);
+  }, [props.controls, props.customControls]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);

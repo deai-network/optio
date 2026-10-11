@@ -1,6 +1,41 @@
+import { createContext } from 'react';
 import { OneOfSegmented, useOneOfField } from 'vultus-antd';
 import { CUSTOM_CONTROL_PREFIX, type CustomControl } from './chat.js';
 import { type LocalizedText, resolveText, useLanguage } from './text.js';
+
+// What a failed control pick shows (the one definition of each text). Only
+// a failure retrying may fix (no answer, an unexpected one) says retry.
+export const SWITCH_FAILED_RETRY = 'Switch failed — retry.';
+const SWITCH_BUSY = 'Switch failed: the agent is busy.';
+const SWITCH_CLOSED = 'Switch failed: the conversation has ended.';
+const SWITCH_UNAVAILABLE = 'Switch failed: this option is not available.';
+
+// The text for a failed pick, from the listener's /control answer (null: no
+// answer): claude's own message when it refused the switch, else the reason
+// in words.
+export function controlFailure(body: Record<string, unknown> | null): string {
+  if (typeof body?.error === 'string' && body.error) return `Switch failed: ${body.error}`;
+  switch (body?.reason) {
+    case 'busy':
+      return SWITCH_BUSY;
+    case 'closed':
+      return SWITCH_CLOSED;
+    // A control or value this session does not have: retrying cannot help.
+    case 'bad-id':
+    case 'bad-value':
+    case 'not-allowed':
+      return SWITCH_UNAVAILABLE;
+    default:
+      return SWITCH_FAILED_RETRY;
+  }
+}
+
+// The input bar's error slot (ConversationView hands it to CustomControls as
+// onError), for an engine view around ConversationView to show its built-in
+// controls' failures in too: it provides a ref, which ConversationView fills
+// while mounted.
+export type ControlErrorSink = { current: ((message: string | null) => void) | null };
+export const ControlErrorSlot = createContext<ControlErrorSink | null>(null);
 
 // A task-defined text (text.ts: the shared LocalizedText) in `language`, or
 // undefined without one.
@@ -43,8 +78,9 @@ function CustomOneOf({ control: c, language, disabled, onPick }: {
 // name). Option descriptions are the segments' tooltips. Texts follow the UI
 // language. Disabled while a turn runs or the conversation is closed. A pick
 // calls onChange, which resolves to null once applied, else to why not, shown
-// through onError (the input bar's error slot). Every control carries a
-// `custom-control-<id>` data-testid.
+// through onError (the input bar's error slot, also offered through
+// ControlErrorSlot). Every control carries a `custom-control-<id>`
+// data-testid.
 export function CustomControls({ controls, disabled, onChange, onError }: {
   controls: CustomControl[];
   disabled: boolean;
@@ -59,7 +95,7 @@ export function CustomControls({ controls, disabled, onChange, onError }: {
     try {
       failure = await onChange(id, value);
     } catch {
-      failure = 'Switch failed — retry.';
+      failure = SWITCH_FAILED_RETRY;
     }
     if (failure) onError(failure);
   };

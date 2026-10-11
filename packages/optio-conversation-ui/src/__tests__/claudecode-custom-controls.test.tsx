@@ -140,6 +140,56 @@ describe('ClaudeCodeView custom controls', () => {
     expect(selected('speed')).toBe('Extensive');
   });
 
+  it("a pick whose answer is lost after the engine applied it keeps the engine's value", async () => {
+    // The engine's update for the pick came before the failure: putting back
+    // the value shown at click time would overwrite the running one.
+    let fail!: () => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((_, reject) => {
+      fail = () => reject(new TypeError('network down'));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ClaudeCodeView {...makeProps({ customControls: [SPEED] })} />);
+    fireEvent.click(screen.getByText('Fast'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    fire({ type: 'x-optio-control-update', controls: CONTROLS, customControls: [{ ...SPEED, value: 'fast' }] });
+    await act(async () => fail());
+    await waitFor(() => expect(screen.getByTestId('conversation-error')).toBeTruthy());
+    expect(selected('speed')).toBe('Fast');
+  });
+
+  it('a refused pick keeps the values the engine re-sent meanwhile, not the one shown at click time', async () => {
+    // The listener re-sends the running values before it answers busy; here
+    // they match no option (the built-ins were changed meanwhile).
+    let answer!: (r: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { answer = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ClaudeCodeView {...makeProps({ customControls: [SPEED] })} />);
+    fireEvent.click(screen.getByText('Fast'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    fire({ type: 'x-optio-control-update', controls: CONTROLS, customControls: [{ ...SPEED, value: null }] });
+    await act(async () => answer(reply(409, { ok: false, reason: 'busy' })));
+    await waitFor(() => expect(screen.getByTestId('conversation-error').textContent).toContain('busy'));
+    expect(selected('speed')).toBeNull();
+  });
+
+  it('a failed pick with no update since goes back to the value the engine sent last', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply(409, { ok: false, reason: 'closed' })));
+    render(<ClaudeCodeView {...makeProps({ customControls: [SPEED] })} />);
+    fire({ type: 'x-optio-control-update', controls: CONTROLS, customControls: [{ ...SPEED, value: 'fast' }] });
+    fireEvent.click(screen.getByText('Extensive'));
+    await waitFor(() => expect(screen.getByTestId('conversation-error')).toBeTruthy());
+    expect(selected('speed')).toBe('Fast');
+  });
+
+  it.each(['bad-id', 'bad-value'])('a %s refusal says the option is not available, not retry', async (reason) => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply(400, { ok: false, reason })));
+    render(<ClaudeCodeView {...makeProps({ customControls: [SPEED] })} />);
+    fireEvent.click(screen.getByText('Fast'));
+    await waitFor(() => expect(screen.getByTestId('conversation-error').textContent)
+      .toBe('Switch failed: this option is not available.'));
+    expect(selected('speed')).toBe('Extensive');
+  });
+
   it('control updates fold customControls; an update without them keeps them', () => {
     render(<ClaudeCodeView {...makeProps({ customControls: [SPEED] })} />);
     fire({ type: 'x-optio-control-update', controls: CONTROLS, customControls: [{ ...SPEED, value: null }] });

@@ -143,13 +143,19 @@ describe('custom controls in the session toolbar', () => {
   });
 
   describe('compact toolbar', () => {
-    const widths = (scroll: number, client: number) => {
+    // `scroll`: the toolbar's content width with its captions shown (a
+    // number, or computed from the toolbar); compact, it always fits.
+    const widths = (scroll: number | ((toolbar: HTMLElement) => number), client: number) => {
       const own = (el: HTMLElement) => el.dataset.testid === 'session-toolbar';
       const scrollDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth');
       const clientDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
       Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
         configurable: true,
-        get() { return own(this) ? (this.classList.contains('optio-cc-compact') ? client - 1 : scroll) : 0; },
+        get() {
+          if (!own(this)) return 0;
+          if (this.classList.contains('optio-cc-compact')) return client - 1;
+          return typeof scroll === 'number' ? scroll : scroll(this);
+        },
       });
       Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
         configurable: true, get() { return own(this) ? client : 0; },
@@ -178,6 +184,18 @@ describe('custom controls in the session toolbar', () => {
         const caption = document.querySelector<HTMLElement>('.optio-cc-control-label')!;
         expect(getComputedStyle(caption).display).toBe('none');
         expect(within(screen.getByTestId('custom-control-speed')).getByLabelText('Model')).toBeTruthy();
+      } finally { restore(); }
+    });
+
+    it('measured again when the custom controls change', () => {
+      // Each caption takes 300px of the 600px toolbar.
+      const restore = widths((toolbar) => 300 * toolbar.querySelectorAll('.optio-cc-control-label').length, 600);
+      try {
+        const { rerender } = render(<ConversationView {...base()} />);
+        const toolbar = screen.getByTestId('session-toolbar');
+        expect(toolbar.classList.contains('optio-cc-compact')).toBe(false);
+        rerender(<ConversationView {...base({ customControls: [SPEED, TONE, { ...TONE, id: 'tone2' }] })} />);
+        expect(toolbar.classList.contains('optio-cc-compact')).toBe(true);
       } finally { restore(); }
     });
   });
