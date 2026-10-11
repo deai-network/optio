@@ -152,6 +152,7 @@ async def test_set_control_effort_switches_live_keeping_the_model():
     import asyncio
     from optio_claudecode.conversation import ClaudeCodeConversation
     from .test_conversation_driver import _FakeHandle
+    from .test_live_switch import _answer_readback
     handle = _FakeHandle()
     conv = ClaudeCodeConversation()
     conv.attach(handle)
@@ -165,6 +166,7 @@ async def test_set_control_effort_switches_live_keeping_the_model():
                               "settings": {"model": "sonnet", "effortLevel": "high"}}
     handle.stdout.feed({"type": "control_response", "response": {
         "subtype": "success", "request_id": req["request_id"]}})
+    await _answer_readback(handle)              # then claude is asked what it runs
     await asyncio.wait_for(switch, 60)
     assert (conv.model, conv.effort) == ("sonnet", "high")
     handle.stdout.eof()

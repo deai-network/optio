@@ -272,12 +272,23 @@ def run_stream_json_mode(argv: list[str]) -> int:
       FAKE_CLAUDE_APPLY_ERROR    — a message: answer apply_flag_settings
                                    with an error carrying it (nothing
                                    changes).
+      FAKE_CLAUDE_DROP_EFFORT    — comma-separated effort levels this claude
+                                   does not take: dropped silently from
+                                   --effort and from apply_flag_settings (as
+                                   the real CLI drops a level it does not
+                                   know), so get_settings reports another
+                                   effort than optio asked for.
 
     The reply template may also name ``{model}`` (the model the turn runs on,
     a full id) and ``{effort}`` (its effort level, ``default`` when none was
     set). Like the real CLI (2.1.296), every turn starts with a system/init
     naming the model it runs on, and apply_flag_settings switches model and
-    effort from the next turn on, without a restart.
+    effort from the next turn on, without a restart. The control request
+    get_settings answers as the real CLI does (task-1 spike, 2.1.296):
+    ``effective`` / ``sources`` hold the apply_flag_settings layer (launch
+    flags are not a settings source), ``applied`` the model the next turn
+    runs (a full id) and its effort (the account default, ``medium``, when
+    none is set).
     """
     def emit(obj):
         sys.stdout.write(json.dumps(obj) + "\n")
@@ -311,7 +322,12 @@ def run_stream_json_mode(argv: list[str]) -> int:
     if model_arg is None and "--continue" in argv:
         model_arg = _transcript_model()
     models, running_model = cli_models_for(model_arg)
+    dropped = {lvl for lvl in os.environ.get("FAKE_CLAUDE_DROP_EFFORT", "").split(",") if lvl}
     effort = argv[argv.index("--effort") + 1] if "--effort" in argv else "default"
+    if effort in dropped:
+        effort = "default"
+    # The apply_flag_settings layer, as get_settings reports it.
+    flag_layer: dict = {}
 
     def init_event():
         return {"type": "system", "subtype": "init", "session_id": session_id,
@@ -346,10 +362,27 @@ def run_stream_json_mode(argv: list[str]) -> int:
                     wanted = settings["model"] or "default"
                     running_model = next((m["resolvedModel"] for m in models
                                           if m["value"] == wanted), wanted)
-                if settings.get("effortLevel") in ("low", "medium", "high", "xhigh", "max"):
-                    effort = settings["effortLevel"]
+                    flag_layer["model"] = settings["model"]
+                level = settings.get("effortLevel")
+                if level in ("low", "medium", "high", "xhigh", "max") and level not in dropped:
+                    effort = level
+                    flag_layer["effortLevel"] = level
                 emit({"type": "control_response", "response": {
                     "subtype": "success", "request_id": msg.get("request_id"),
+                }})
+                continue
+            if sub == "get_settings":
+                emit({"type": "control_response", "response": {
+                    "subtype": "success", "request_id": msg.get("request_id"),
+                    "response": {
+                        "effective": dict(flag_layer),
+                        "sources": ([{"source": "flagSettings", "settings": dict(flag_layer)}]
+                                    if flag_layer else []),
+                        "applied": {"model": running_model,
+                                    "effort": "medium" if effort == "default" else effort,
+                                    "advisor": None, "ultracode": False,
+                                    "ultracodeRequested": False, "ultracodeAvailable": True},
+                    },
                 }})
                 continue
             if sub == "initialize" and (

@@ -47,7 +47,7 @@ from optio_agents.session_controls import control_allowed
 from optio_agents.steering import INTERRUPT_EVENT, Steering
 
 from optio_claudecode.controls import CUSTOM_CONTROL_PREFIX
-from optio_claudecode.conversation import ControlRejected
+from optio_claudecode.conversation import ControlRejected, SwitchBusy
 from optio_claudecode.steering import make_steering, undelivered_queued
 
 _LOG = logging.getLogger(__name__)
@@ -137,7 +137,8 @@ class ConversationListener:
         # these whatever the allowlist says (they are shown on their own).
         self._custom_controls = {c.id: c for c in custom_controls or ()}
         # Re-sends the running values to the widget (an x-optio-control-update)
-        # after a refused custom pick: the widget showed it optimistically.
+        # after a refused custom pick, or a built-in value the session does
+        # not offer: the widget showed it optimistically.
         self._refresh_controls = refresh_controls
         # thinking_verbosity "visible": claude runs with --thinking-display
         # summarized, and thinking text is reasoning, which the widget shows in
@@ -545,7 +546,9 @@ class ConversationListener:
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
         except ValueError:
-            # A value the control does not offer.
+            # A value the control does not offer. The widget showed it
+            # optimistically: the running values go back to it.
+            self._refresh()
             return web.json_response({"ok": False, "reason": "bad-value"}, status=400)
         except ControlRejected as e:
             # Claude itself refused the change.
@@ -560,7 +563,10 @@ class ConversationListener:
         change only after it, so the pick is refused instead); ``rejected``
         (with the reason) when claude refuses it or the session cannot apply
         the option's values. After ``busy`` / ``rejected`` the running values
-        are re-sent, replacing the widget's optimistic selection."""
+        are re-sent, replacing the widget's optimistic selection. ``busy`` is
+        checked again under the conversation's switch lock, right before
+        each request is written (``apply_settings``' ``busy``): the switch
+        may wait for another pick, or ask claude first, while a turn starts."""
         control = self._custom_controls.get(control_id)
         if control is None:
             return web.json_response({"ok": False, "reason": "bad-id"}, status=400)
@@ -577,10 +583,13 @@ class ConversationListener:
         try:
             await self._conversation.apply_settings(
                 model=settings.model, effort=settings.reasoning_effort,
-                permission_mode=settings.permission_mode,
+                permission_mode=settings.permission_mode, busy=self._turn_running,
             )
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
+        except SwitchBusy:
+            self._refresh()
+            return web.json_response({"ok": False, "reason": "busy"}, status=409)
         except (ControlRejected, ValueError) as e:
             self._refresh()
             return web.json_response({"ok": False, "reason": "rejected", "error": str(e)}, status=409)

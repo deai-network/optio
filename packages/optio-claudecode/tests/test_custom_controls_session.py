@@ -387,3 +387,71 @@ async def test_a_resume_keeps_the_custom_pick_and_its_selection(
     assert (_flag(resumed, "--model"), _flag(resumed, "--effort")) == ("sonnet", "medium")
     assert (_flag(resumed_again, "--model"), _flag(resumed_again, "--effort")) == ("opus", "xhigh")
     assert "--continue" in resumed and "--continue" in resumed_again
+
+
+async def _readback_warnings(optio, process_id: str, count: int, timeout: float = 60.0) -> list[str]:
+    """The process log's readback warnings, once there are ``count`` of them
+    (the log is written behind report_progress)."""
+    end = asyncio.get_running_loop().time() + timeout
+    while True:
+        proc = await optio.get_process(process_id)
+        found = [e["message"] for e in (proc or {}).get("log", [])
+                 if e.get("level") == "warning" and "reports it runs" in e.get("message", "")]
+        if len(found) >= count or asyncio.get_running_loop().time() > end:
+            return found
+        await asyncio.sleep(0.05)
+
+
+async def test_claude_running_another_effort_than_optio_set_is_reported(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+    tmp_path: pathlib.Path,
+):
+    """Final review Important 1: claude drops an effort level it does not
+    take without a word (this fake drops xhigh). Asked what it runs
+    (get_settings) once after launch and after every applied switch, the
+    session reports the difference as a warning in the process log; the
+    selection stays derived from what optio set."""
+    control_log = tmp_path / "control.jsonl"
+    mismatch = "Claude Code reports it runs effort=medium (optio set xhigh)"
+    optio = await _make_optio(mongo_db, "cccc-readback")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-cc-readback", name="Effort readback",
+            config=_ui_config(
+                shim_install_dir, claude_cache_dir, custom_controls=[SPEED],
+                env={"FAKE_CLAUDE_DROP_EFFORT": "xhigh",
+                     "FAKE_CLAUDE_CONTROL_LOG": str(control_log)},
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result("cc-cc-readback", session_id=None, timeout=60)
+        upstream = (await _wait_widget_upstream(optio, "cc-cc-readback"))["widgetUpstream"]
+        proc = await _wait_widget_data(optio, "cc-cc-readback")
+        assert proc["widgetData"]["customControls"][0]["value"] == "extensive"
+        # Launched with --effort xhigh, which this claude dropped.
+        assert await _readback_warnings(optio, "cc-cc-readback", 1) == [mismatch]
+        url, headers = upstream["url"], _basic(upstream["innerAuth"]["password"])
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{url}/events", headers=headers) as events:
+                assert await _pick(session, url, headers, "speed", "fast") == (200, {"ok": True})
+                await _read_until(events, _custom_update("speed", "fast"))
+                assert await _pick(session, url, headers, "speed", "extensive") == (200, {"ok": True})
+                # The selection follows what optio set, not the readback.
+                await _read_until(events, _custom_update("speed", "extensive"))
+        assert (conv.model, conv.effort) == ("opus", "xhigh")
+        # Fast (medium) runs as set; Extensive's xhigh is dropped again.
+        assert await _readback_warnings(optio, "cc-cc-readback", 2) == [mismatch, mismatch]
+        await conv.close()
+        await _wait_terminal(optio, "cc-cc-readback")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    subtypes = [r["subtype"] for r in _log_lines(control_log)]
+    assert [s for s in subtypes if s in ("apply_flag_settings", "get_settings")] == [
+        "get_settings",                                    # after launch
+        "apply_flag_settings", "get_settings",             # Fast
+        "apply_flag_settings", "get_settings",             # Extensive
+    ]

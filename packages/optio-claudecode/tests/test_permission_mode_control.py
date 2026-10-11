@@ -288,8 +288,9 @@ def _auth():
     return {"Authorization": "Basic " + base64.b64encode(b"optio:pw").decode()}
 
 
-async def _post_control(conv, body, allowed=None):
-    lst = ConversationListener(conv, password="pw", allowed_controls=allowed)
+async def _post_control(conv, body, allowed=None, refresh=None):
+    lst = ConversationListener(conv, password="pw", allowed_controls=allowed,
+                               refresh_controls=refresh)
     port = await lst.start("127.0.0.1")
     try:
         async with aiohttp.ClientSession() as s:
@@ -325,3 +326,18 @@ async def test_control_endpoint_reports_a_bad_value_and_a_refusal():
     status, body = await _post_control(_ControlConversation(ControlRejected("nope")),
                                        {"id": "permission_mode", "value": "plan"})
     assert status == 409 and body["reason"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_a_built_in_value_the_session_refuses_re_sends_the_running_values():
+    # The widget patched the control optimistically; a 400 alone would leave
+    # the refused value shown until the next turn re-emits the controls.
+    refreshed: list[int] = []
+    status, body = await _post_control(_ControlConversation(ValueError("x")),
+                                       {"id": "model", "value": "no-such-model"},
+                                       refresh=lambda: refreshed.append(1))
+    assert (status, body["reason"], refreshed) == (400, "bad-value", [1])
+    # An accepted value re-sends nothing from here.
+    status, _ = await _post_control(_ControlConversation(), {"id": "model", "value": "sonnet"},
+                                    refresh=lambda: refreshed.append(1))
+    assert (status, refreshed) == (200, [1])

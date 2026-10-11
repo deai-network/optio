@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import uuid as uuid_lib
+from collections.abc import Callable
 
 from optio_agents.conversation import (
     ConversationClosed,
@@ -29,10 +30,20 @@ from optio_claudecode.info import AGENT_INFO
 
 _LOG = logging.getLogger(__name__)
 
+# How long a settings readback (the control request get_settings) waits for
+# claude's answer: it answers at once, this only bounds a hung process.
+SETTINGS_READBACK_TIMEOUT_S = 10.0
+
 
 class ControlRejected(Exception):
     """Claude Code answered a session-control change with an error (e.g. a
     permission mode it will not switch to); the message is its reason."""
+
+
+class SwitchBusy(Exception):
+    """A switch found a turn running right before its request would have
+    been written (``apply_settings``' ``busy`` check). Nothing more reached
+    claude, which would apply a model change only after that turn."""
 
 
 def _user_message_line(text: str, message_uuid: str) -> bytes:
@@ -46,6 +57,12 @@ def _user_message_line(text: str, message_uuid: str) -> bytes:
         "message": {"role": "user", "content": [{"type": "text", "text": text}]},
         "uuid": message_uuid,
     }) + "\n").encode("utf-8")
+
+
+def _refuse_if_busy(busy: Callable[[], bool] | None) -> None:
+    """SwitchBusy when ``busy`` (apply_settings) says a turn is running."""
+    if busy is not None and busy():
+        raise SwitchBusy("a turn is running")
 
 
 class ClaudeCodeConversation:
@@ -102,6 +119,11 @@ class ClaudeCodeConversation:
         # and re-emits the controls snapshot (after a refusal too: the widget
         # patched its select optimistically). Its exceptions are logged.
         self.on_settings_change = None
+        # Called with a one-line text when claude reports running another
+        # model or effort than ``model`` / ``effort`` say (check_settings);
+        # set by the owning body, which reports it as session progress. Its
+        # exceptions are logged.
+        self.on_settings_mismatch = None
         self._settings_lock = asyncio.Lock()
         # Runtime model announced by the stream's system/init event (the REAL
         # running model, e.g. "claude-opus-4-8[1m]" — carries a [variant]
@@ -409,6 +431,8 @@ class ClaudeCodeConversation:
         model: str | None = None,
         effort: str | None = None,
         permission_mode: str | None = None,
+        *,
+        busy: Callable[[], bool] | None = None,
     ) -> None:
         """Switch the running claude without a restart. None leaves a
         setting as it is.
@@ -438,7 +462,15 @@ class ClaudeCodeConversation:
         On success ``model`` / ``effort`` hold the new values, and after a
         model change ``runtime_model`` is unknown again until the next turn's
         system/init names it. Claude answers a model change asked for while a
-        turn runs after that turn; it applies from the next turn."""
+        turn runs after that turn; it applies from the next turn. After an
+        applied model/effort change claude is asked what it now runs
+        (``check_settings``): a mismatch is logged and reported, the values
+        stay as recorded.
+
+        ``busy`` (a custom pick: the listener's "a turn is running") is
+        asked under the switch lock right before each request is written;
+        True raises ``SwitchBusy``, and nothing more reaches claude (a mode
+        already switched is switched back)."""
         if self.closed:
             raise ConversationClosed(self._close_reason or "conversation closed")
         if permission_mode is not None and permission_mode not in self.permission_modes_offered:
@@ -446,29 +478,35 @@ class ClaudeCodeConversation:
         # One switch at a time: each request carries both values, so one
         # computed while another is unanswered would undo it.
         async with self._settings_lock:
-            await self._apply_settings(model, effort, permission_mode)
+            await self._apply_settings(model, effort, permission_mode, busy)
 
-    async def _apply_settings(self, model, effort, permission_mode) -> None:
+    async def _apply_settings(self, model, effort, permission_mode, busy) -> None:
         settings = None
         if model is not None or effort is not None:
             settings = await self._flag_settings(model, effort)
         previous_mode = self.permission_mode
         if permission_mode is not None:
+            _refuse_if_busy(busy)
             await self._set_permission_mode(permission_mode)
         if settings is None:
             return
         try:
+            # Nothing awaits between this check and the write below (the
+            # write lock is free unless another write, e.g. a send whose turn
+            # the check already sees, holds it).
+            _refuse_if_busy(busy)
             await self._control_request(
                 {"subtype": "apply_flag_settings", "settings": settings},
             )
-        except ControlRejected:
+        except (ControlRejected, SwitchBusy) as e:
             if permission_mode is not None and previous_mode and previous_mode != permission_mode:
                 try:
                     await self._set_permission_mode(previous_mode)
                 except Exception:  # noqa: BLE001 — the stream reports the mode it runs
                     _LOG.warning("conversation: could not switch the permission mode back "
                                  "to %r", previous_mode, exc_info=True)
-            await self._settings_changed(applied=False)
+            if isinstance(e, ControlRejected):
+                await self._settings_changed(applied=False)
             raise
         if model is not None:
             if model != self.model:
@@ -479,6 +517,7 @@ class ClaudeCodeConversation:
             self.model = model
         self.effort = settings["effortLevel"]
         await self._settings_changed(applied=True)
+        await self._check_settings()
 
     async def _flag_settings(self, model, effort) -> dict:
         """The ``apply_flag_settings`` settings for a change to ``model``
@@ -517,6 +556,56 @@ class ClaudeCodeConversation:
         except Exception:  # noqa: BLE001 — the switch itself is done (or refused) already
             _LOG.exception("conversation: on_settings_change raised")
 
+    async def check_settings(self) -> str | None:
+        """Ask claude which model and effort it runs and compare them with
+        ``model`` / ``effort`` (the owning body, once after launch;
+        ``apply_settings`` after every applied switch). The control request
+        ``get_settings`` answers with ``applied.model`` (the full id) and
+        ``applied.effort``; it is claude's one live readout of the effort,
+        which it drops silently when it does not take it. A model is
+        compared as the model select compares the one system/init reports
+        (``models.model_differs``); an effort only when one is recorded. On a
+        mismatch a WARNING names both values and ``on_settings_mismatch``
+        gets the same text, which is returned; the recorded values (and so
+        the selection shown) stay. None when they agree, or claude cannot
+        tell (no answer in SETTINGS_READBACK_TIMEOUT_S, an error answer, no
+        applied values). Never raises."""
+        async with self._settings_lock:
+            return await self._check_settings()
+
+    async def _check_settings(self) -> str | None:
+        try:
+            response = await asyncio.wait_for(
+                self._control_request({"subtype": "get_settings"}, private=True),
+                SETTINGS_READBACK_TIMEOUT_S,
+            )
+        except Exception:  # noqa: BLE001 — no answer: nothing to compare
+            _LOG.info("conversation: claude did not report the settings it runs", exc_info=True)
+            return None
+        inner = response.get("response")
+        applied = inner.get("applied") if isinstance(inner, dict) else None
+        if not isinstance(applied, dict):
+            return None
+        wrong = []
+        running_model = applied.get("model")
+        if isinstance(running_model, str) and running_model and cc_models.model_differs(
+                self.models_offered or [], picked=self.model, running=running_model):
+            wrong.append(f"model={running_model} (optio set {self.model or cc_models.DEFAULT_MODEL})")
+        running_effort = applied.get("effort")
+        if (self.effort and isinstance(running_effort, str) and running_effort
+                and running_effort != self.effort):
+            wrong.append(f"effort={running_effort} (optio set {self.effort})")
+        if not wrong:
+            return None
+        text = f"{AGENT_INFO.name} reports it runs {', '.join(wrong)}"
+        _LOG.warning("conversation: %s", text)
+        if self.on_settings_mismatch is not None:
+            try:
+                self.on_settings_mismatch(text)
+            except Exception:  # noqa: BLE001 — the readback is advisory
+                _LOG.exception("conversation: on_settings_mismatch raised")
+        return text
+
     def _observe_permission_mode(self, obj: dict) -> None:
         mode = obj.get("permissionMode")
         if isinstance(mode, str) and mode:
@@ -536,17 +625,20 @@ class ClaudeCodeConversation:
         self.permission_mode = mode
         self.permission_mode_observed.set()
 
-    async def _control_request(self, request: dict) -> dict:
+    async def _control_request(self, request: dict, *, private: bool = False) -> dict:
         """Write one control_request and await claude's answer: its
         ``response`` dict. ControlRejected (claude's message) on an error
         answer; ConversationClosed when closed, or when the process ends
-        before answering."""
+        before answering. ``private``: the answer is not fanned out to
+        on_event subscribers (nor, so, buffered for replay)."""
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         self._next_request_id += 1
         rid = f"optio-{self._next_request_id}"
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         self._control_acks[rid] = fut
+        if private:
+            self._private_acks.add(rid)
         await self._write_json({
             "type": "control_request",
             "request_id": rid,

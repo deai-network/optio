@@ -20,6 +20,7 @@ import pytest
 from optio_agents import ControlSettings, CustomControl, CustomOption
 from optio_agents.conversation import ConversationClosed
 from optio_claudecode import controls as cc_controls
+from optio_claudecode import conversation as cc_conversation
 from optio_claudecode import models as cc_models
 from optio_claudecode.conversation import ClaudeCodeConversation, ControlRejected
 from optio_claudecode.conversation_listener import ConversationListener
@@ -27,7 +28,7 @@ from optio_claudecode.types import ClaudeCodeTaskConfig
 
 from .fake_claude import CLI_MODELS
 from .test_conversation_listener import FakeConversation, _auth
-from .test_live_switch import _answer, _conv, _done, _next_request
+from .test_live_switch import _answer, _answer_readback, _conv, _done, _next_request
 
 CATALOG = cc_models.parse_cli_models(CLI_MODELS)
 
@@ -242,8 +243,10 @@ class _Conversation(FakeConversation):
         super().__init__()
         self.applied: list[dict] = []
         self.fail: Exception | None = None
+        self.busy = None
 
-    async def apply_settings(self, model=None, effort=None, permission_mode=None):
+    async def apply_settings(self, model=None, effort=None, permission_mode=None, *, busy=None):
+        self.busy = busy
         if self.closed:
             raise ConversationClosed("closed")
         if self.fail is not None:
@@ -349,6 +352,27 @@ async def test_a_conversation_closing_during_the_switch_is_closed(custom):
     assert refreshed == []
 
 
+async def test_the_switch_asks_the_listeners_own_turn_check_again(custom):
+    # The listener's busy check is the one source of truth: the conversation
+    # asks it again under its switch lock, right before each write.
+    conv, url, _ = custom
+    assert (await _post(url, {"id": "custom:speed", "value": "fast"}))[0] == 200
+    assert conv.busy is not None and not conv.busy()
+    conv.pending = True                                   # a message awaits its result
+    assert conv.busy()
+    conv.pending = False
+    conv.fire({"type": "system", "subtype": "session_state_changed", "state": "running"})
+    assert conv.busy()
+
+
+async def test_a_switch_refused_as_busy_under_the_lock_is_409_busy(custom):
+    conv, url, refreshed = custom
+    conv.fail = cc_conversation.SwitchBusy("a turn is running")
+    assert await _post(url, {"id": "custom:speed", "value": "fast"}) == (
+        409, {"ok": False, "reason": "busy"})
+    assert conv.applied == [] and refreshed == [1]
+
+
 @pytest.mark.parametrize("error", [
     ControlRejected("apply_flag_settings: no can do"),                       # claude refused it
     ValueError("reasoning effort 'xhigh' is not offered for claude-opus-4-8"),  # the session cannot
@@ -378,8 +402,50 @@ async def test_a_model_the_task_names_is_switched_to_though_the_cli_list_lacks_i
     assert req["request"] == {"subtype": "apply_flag_settings",
                               "settings": {"model": "opus", "effortLevel": "xhigh"}}
     _answer(handle, req)
+    await _answer_readback(handle)
     await asyncio.wait_for(switch, 60)
     assert (conv.model, conv.effort) == ("opus", "xhigh")
     with pytest.raises(ValueError):                    # one it does not name still is not
         await conv.apply_settings(model="claude-fable-9")
     await _done(handle, reader)
+
+
+# --- a turn starting while the pick waits: refused before claude sees it ----------------
+
+
+async def test_a_turn_starting_while_the_pick_asks_for_the_model_list_refuses_it():
+    """Review Minor 1 (busy race): the pick passed the listener's busy check,
+    then the switch yields before writing (here: claude is asked for its
+    model list first) and a turn starts meanwhile. Claude would answer the
+    model change only after that turn while the widget shows the new option:
+    the switch is refused under its lock instead (409 busy, the running
+    values re-sent) and nothing reaches claude."""
+    conv, handle, reader = _conv(model="opus", effort="xhigh")
+    conv.models_offered = None
+    conv.task_models = cc_controls.task_models([SPEED])
+    refreshed: list[int] = []
+    lst = ConversationListener(
+        conv, password="pw", allowed_controls=[], custom_controls=[SPEED],
+        refresh_controls=lambda: refreshed.append(1),
+    )
+    port = await lst.start("127.0.0.1")
+    try:
+        pick = asyncio.create_task(_post(f"http://127.0.0.1:{port}", {"id": "custom:speed", "value": "fast"}))
+        init = await _next_request(handle)
+        assert init["request"] == {"subtype": "initialize"}
+        # A turn starts (claude's own running state), then the list comes in.
+        handle.stdout.feed({"type": "system", "subtype": "session_state_changed", "state": "running"})
+        handle.stdout.feed({"type": "control_response", "response": {
+            "subtype": "success", "request_id": init["request_id"],
+            "response": {"models": CLI_MODELS}}})
+        written = asyncio.create_task(handle.stdin.lines.get())
+        done, _ = await asyncio.wait({pick, written}, timeout=60, return_when=asyncio.FIRST_COMPLETED)
+        assert written not in done, f"reached claude: {written.result()}"
+        written.cancel()
+        assert pick in done
+        assert pick.result() == (409, {"ok": False, "reason": "busy"})
+        assert refreshed == [1]
+        assert (conv.model, conv.effort) == ("opus", "xhigh")
+    finally:
+        await lst.stop()
+        await _done(handle, reader)

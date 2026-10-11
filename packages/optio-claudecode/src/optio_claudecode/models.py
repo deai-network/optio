@@ -130,6 +130,20 @@ def shown_model(catalog: list[dict], *, picked: str | None, runtime: str | None)
     return value
 
 
+def model_differs(catalog: list[dict], *, picked: str | None, running: str) -> bool:
+    """Whether claude is known to run another model than ``picked`` (the
+    model as picked, None: ``default``); ``running`` is the full id it
+    reports (get_settings ``applied.model``). Compared as the model select
+    compares the model system/init reports (``shown_model``): only when the
+    catalog says what ``picked`` resolves to. False when it cannot tell (e.g.
+    a model the catalog does not list: claude reports an unknown model as
+    given, so the readback cannot catch one)."""
+    if running == picked:
+        return False
+    shown = shown_model(catalog, picked=picked, runtime=None)
+    return shown_model(catalog, picked=picked, runtime=running) != shown
+
+
 def catalog_with(catalog: list[dict], value: str) -> list[dict]:
     """The catalog, plus a bare ``{id, label}`` entry for ``value`` when it
     lists no such id (so the select can show it)."""

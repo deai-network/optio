@@ -365,7 +365,8 @@ when the hook returns, and when it raises `NothingToResurrect`.
   CLI's model list (`conversation.models_offered`, `models.offers`;
   the running model always passes; while the CLI cannot list its models,
   each switch asks it again and takes a model as given): `ValueError` (→ /control 400
-  `bad-value`), nothing sent. Claude's error answer raises `ControlRejected`
+  `bad-value`, and the listener's `refresh_controls` re-sends the running
+  values), nothing sent. Claude's error answer raises `ControlRejected`
   (→ 409 `rejected` with its message) and leaves the values as they were. On
   success `conversation.model` / `effort` hold the new values, the picks are
   saved and an `x-optio-control-update` re-emitted (the body's
@@ -373,7 +374,17 @@ when the hook returns, and when it raises `NothingToResurrect`.
   the unchanged values, replacing the widget's optimistic one). Claude
   answers a model change made while a turn runs after that turn; it applies
   from the next turn, whose `system/init` names the new model (until then
-  `runtime_model` is None). The permission_mode select always
+  `runtime_model` is None). After an applied model/effort change, and once
+  after launch (`session.py`, once claude has answered initialize),
+  `conversation.check_settings` asks claude what it runs (control request
+  `get_settings`: `applied.model`, a full id, and `applied.effort`, its one
+  live readout of the effort) and compares it with `conversation.model` /
+  `effort`: the model as the select compares a runtime model
+  (`models.model_differs`; not when the CLI's list does not resolve it), the
+  effort when one is recorded; no answer in `SETTINGS_READBACK_TIMEOUT_S` or
+  an error answer compares nothing. A mismatch is logged as a WARNING and
+  reported as a warning progress line (`conversation.on_settings_mismatch`);
+  the recorded values, and so the selection shown, stay. The permission_mode select always
   lists all six modes with a description each
   (`controls.permission_mode_options`); without `permission_gate` Manual and
   Plan (they ask the operator) are disabled with the reason, and Bypass is
@@ -446,7 +457,10 @@ when the hook returns, and when it raises `NothingToResurrect`.
   when it sets a mode); the hook saves the picks and re-emits. 400 `bad-id` /
   `bad-value` for a control / option the task does not define; 409 with
   nothing changed: `closed`, `busy` while a turn runs (the listener's
-  `_turn_running`: claude would apply a model change only after the turn),
+  `_turn_running`: claude would apply a model change only after the turn;
+  asked again under the conversation's switch lock right before each request
+  is written, `apply_settings(busy=...)` raising `SwitchBusy`, since the
+  switch may first wait for another pick or ask claude for its model list),
   `rejected` + `error` when claude refuses or the session cannot apply the
   option's values (`ValueError`). After `busy` / `rejected` the listener's
   `refresh_controls` re-emits the running values, replacing the widget's

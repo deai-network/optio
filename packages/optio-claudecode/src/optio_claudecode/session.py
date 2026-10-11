@@ -786,6 +786,10 @@ async def run_claudecode_session(
             _emit_controls()
 
         conversation.on_settings_change = _on_settings_change
+        # Claude reports running another model or effort than optio recorded
+        # (conversation.check_settings: after launch and after every switch).
+        conversation.on_settings_mismatch = (
+            lambda text: ctx.report_progress(None, text, level="warning"))
         await _on_agent_live(ctx, config)
 
         ctx.publish_result(conversation)
@@ -857,6 +861,7 @@ async def run_claudecode_session(
             # this point may have asked claude already).
             cli_models = cli_models or conversation.models_offered
             conversation.models_offered = cli_models
+            checked = False
             if restore_pending and cli_models is not None and _restore_picks(cli_models):
                 # The launched claude runs a restored pick its list no longer
                 # offers: switch it to the corrected one, live, before any
@@ -864,8 +869,13 @@ async def run_claudecode_session(
                 # lacks gives way to its preselected one (apply_settings).
                 try:
                     await conversation.apply_settings(model=current_model)
+                    checked = True      # the switch read back what claude runs
                 except Exception:  # noqa: BLE001 — the session goes on, on the launched model
                     _LOG.warning("could not switch to the corrected resume picks", exc_info=True)
+            if not checked:
+                # Once after launch: does claude run the model and effort it
+                # was launched with? (A mismatch is reported, see above.)
+                await conversation.check_settings()
 
             def build_controls():
                 # See controls.build_controls: the model select over the CLI's

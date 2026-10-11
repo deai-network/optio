@@ -1014,11 +1014,13 @@ async def test_without_the_cli_list_the_picker_offers_the_aliases_and_a_pick_ask
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
-    # Asked at launch, and again by the switch (which, still without a list,
-    # takes the model as given).
+    # Asked at launch (then what claude runs), and again by the switch
+    # (which, still without a list, takes the model as given, then reads
+    # back what claude runs).
     requests = _log_lines(control_log)
-    assert [r["subtype"] for r in requests] == ["initialize", "initialize", "apply_flag_settings"]
-    assert requests[2]["settings"] == {"model": "sonnet", "effortLevel": "high"}
+    assert [r["subtype"] for r in requests] == [
+        "initialize", "get_settings", "initialize", "apply_flag_settings", "get_settings"]
+    assert requests[3]["settings"] == {"model": "sonnet", "effortLevel": "high"}
 
 
 # --- the session's opening messages go before the viewer's ----------------
