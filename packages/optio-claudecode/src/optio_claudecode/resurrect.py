@@ -18,7 +18,11 @@ from optio_core.context import ProcessContext
 
 from optio_claudecode import host_actions
 from optio_claudecode import session as S
-from optio_claudecode.pending_captures import settle_pending_capture
+from optio_claudecode.pending_captures import (
+    load_pending_capture,
+    pending_conversation_blob_id,
+    settle_pending_capture,
+)
 from optio_claudecode.snapshots import _collection as _snapshots, load_latest_snapshot
 
 
@@ -43,6 +47,26 @@ async def find_unreferenced_session_blob(
         if f["_id"] not in referenced:
             return f["_id"]
     return None
+
+
+async def _adoptable_conversation_blob(
+    ctx: ProcessContext, record: dict | None, *, committed: bool,
+) -> ObjectId | None:
+    """The conversation blob the failed run's cut-off capture stored, named
+    by its pending ``record``: it holds the newest history, so the resurrected
+    snapshot references it rather than a copy of the older record. None when
+    that capture committed (its snapshot owns the blob), named none, or the
+    blob is gone or already referenced by a snapshot."""
+    blob_id = None if committed else pending_conversation_blob_id(record)
+    if blob_id is None:
+        return None
+    if await ctx._db["fs.files"].find_one({"_id": blob_id}, projection={"_id": 1}) is None:
+        return None
+    if await _snapshots(ctx._db, ctx._prefix).find_one(
+        {"processId": ctx.process_id, "conversationBlobId": blob_id}, projection={"_id": 1},
+    ) is not None:
+        return None
+    return blob_id
 
 
 async def _probe(host, condition: str, what: str) -> bool:
@@ -112,6 +136,9 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
         ctx.report_progress(None, "Resurrecting: stopping leftovers of the failed run…")
         await _stop_leftovers(host)
 
+        # Read before the settle deletes it: the record names the conversation
+        # blob to adopt.
+        record = await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
         committed = await settle_pending_capture(ctx)
         credentials = await _credentials_present(host)
         if committed and not credentials:
@@ -122,16 +149,29 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
             return
 
         exclude = S._excludes_with_rescue_marker(config)
+        # The conversation record (no live listener to export one): the
+        # cut-off capture's blob when it left one, else a copy of the latest
+        # snapshot's (S._carry_conversation_forward). The settle above keeps
+        # that blob, and _store_workdir_snapshot never discards the one it
+        # records.
+        adopted = await _adoptable_conversation_blob(ctx, record, committed=committed)
         if credentials:
+            conversation_blob_id = (
+                adopted if adopted is not None else await S._carry_conversation_forward(ctx)
+            )
             saved = await S._capture_snapshot(
                 ctx, host,
                 end_state="resurrected",
                 workdir_exclude=exclude,
                 session_blob_encrypt=config.session_blob_encrypt,
+                conversation_blob_id=conversation_blob_id,
             )
             if not saved:
                 # The capture's own guard refused after our check: nothing
-                # was stored, so the host is left as it is.
+                # was stored (the copy made here is dropped), so the host is
+                # left as it is.
+                if conversation_blob_id is not None and conversation_blob_id != adopted:
+                    await ctx.delete_blob(conversation_blob_id)
                 raise NothingToResurrect("credentials disappeared during the save")
         else:
             # The capture's session step ran (its rm -rf home/.claude may have
@@ -151,11 +191,15 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
                 raise NothingToResurrect("session state not found")
             # A leftover home/.claude must not enter the plaintext workdir blob.
             await host.run_command(f"rm -rf {shlex.quote(_home_claude(host))}", cwd="/")
+            conversation_blob_id = (
+                adopted if adopted is not None else await S._carry_conversation_forward(ctx)
+            )
             await S._store_workdir_snapshot(
                 ctx, host,
                 end_state="resurrected",
                 workdir_exclude=exclude,
                 session_blob_id=session_blob_id,
+                conversation_blob_id=conversation_blob_id,
             )
         await host.cleanup_taskdir(aggressive=False)
     finally:

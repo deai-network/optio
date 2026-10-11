@@ -300,7 +300,7 @@ async def run_claudecode_session(
             # as tampering/key-rotation and propagated — never silent
             # fresh-start (the decrypt call is intentionally outside any
             # except, so it surfaces straight to the caller).
-            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            await _restore_workdir_snapshot(ctx, host, snapshot["workdirBlobId"])
             # restore_workdir empties + repopulates the workdir, wiping the claude
             # runtime set up above (home/.local/share/claude/versions symlink +
             # bin/claude — they live IN the workdir now, unlike the old real-home
@@ -717,10 +717,14 @@ async def run_claudecode_session(
             listener_password = secrets.token_urlsafe(32)
             bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
             upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
-            # On resume, re-prime the replay buffer from the snapshot-persisted
-            # file so a viewer sees the prior conversation history, not just new
-            # messages (Claude's own transcript is continued separately).
-            initial_events = await _load_conversation_buffer(host) if resuming else None
+            # On resume, re-prime the replay buffer from the latest snapshot's
+            # conversation record (decrypted like the session blob) so a viewer
+            # sees the prior conversation history, not just new messages
+            # (Claude's own transcript is continued separately).
+            initial_events = (
+                await _load_conversation_buffer(ctx, decrypt=config.session_blob_decrypt)
+                if resuming else None
+            )
             # conversation_ui occupies the single permission-handler slot (see design §2).
             # File uploads flow through the generic optio-api /api/widget-upload
             # route → materializeUpload RPC → this per-task writer, which runs in
@@ -1334,9 +1338,9 @@ async def run_claudecode_session(
 
 # Workdir-relative file the conversation listener's replay buffer was persisted
 # to at teardown before it became the snapshot's own (encrypted) conversation
-# blob. No longer written; every workdir tar excludes it
-# (_effective_workdir_excludes), since a workdir restored from an older
-# snapshot may still hold it.
+# blob. No longer written or read; a workdir restored from an older snapshot
+# may still hold it, so the restore deletes it (_restore_workdir_snapshot) and
+# every workdir tar excludes it (_effective_workdir_excludes).
 _CONV_BUFFER_FILE = ".optio-conversation-buffer.json"
 
 
@@ -1351,28 +1355,77 @@ def _effective_workdir_excludes(workdir_exclude: list[str] | None) -> list[str]:
     return [*base, _CONV_BUFFER_FILE]
 
 
-async def _load_conversation_buffer(host: Host) -> "list[tuple[int, dict]] | None":
-    """Read the persisted conversation replay buffer from the restored workdir.
+async def _restore_workdir_snapshot(
+    ctx: ProcessContext, host: Host, workdir_blob_id: ObjectId,
+) -> None:
+    """Restore a snapshot's plaintext workdir blob, then delete the
+    conversation buffer file a snapshot taken before the fix may still carry
+    (the record is the snapshot's conversation blob now)."""
+    await host.restore_workdir(_stream_blob(ctx, workdir_blob_id))
+    await host.remove_file(f"{host.workdir.rstrip('/')}/{_CONV_BUFFER_FILE}")
 
-    Returns a list of ``(seq, event)`` or None when absent/unreadable (a fresh
-    start, or a malformed file — never fatal, the buffer just starts empty).
-    """
-    path = f"{host.workdir.rstrip('/')}/{_CONV_BUFFER_FILE}"
+
+async def _latest_conversation_bytes(ctx: ProcessContext) -> bytes | None:
+    """The stored bytes of the latest snapshot's conversation record, still
+    under the task's cipher (not decrypted here), or None: no snapshot, a
+    snapshot without a record, or a record that cannot be read (logged; never
+    raises)."""
     try:
-        raw = await host.fetch_bytes_from_host(path)
-    except FileNotFoundError:
-        return None
+        snapshot = await load_latest_snapshot(
+            ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+        )
+        blob_id = snapshot.get("conversationBlobId") if snapshot is not None else None
+        if blob_id is None:
+            return None
+        return await _read_blob_bytes(ctx, blob_id)
     except Exception:  # noqa: BLE001
-        _LOG.exception("conversation buffer read failed; starting empty")
+        _LOG.warning("conversation record could not be read", exc_info=True)
+        return None
+
+
+async def _carry_conversation_forward(ctx: ProcessContext) -> ObjectId | None:
+    """For a capture with no live listener to export from (crash rescue,
+    Resurrect): copy the latest snapshot's conversation record into a new
+    blob, the stored bytes as they are (no decrypt, no re-encrypt: the cipher
+    stays the task's). A new blob, since pruning deletes per snapshot.
+    Returns its id, or None when there is no record to carry."""
+    raw = await _latest_conversation_bytes(ctx)
+    if raw is None:
+        return None
+    return await _store_conversation_blob(ctx, raw, encrypt=None)
+
+
+async def _load_conversation_buffer(
+    ctx: ProcessContext, *, decrypt: "Callable[[bytes], bytes] | None",
+) -> "list[tuple[int, dict]] | None":
+    """Read the conversation replay buffer a resume primes the listener with:
+    the latest snapshot's conversation record, through ``decrypt`` (the
+    task's ``session_blob_decrypt``; None: stored plaintext).
+
+    Returns a list of ``(seq, event)``, or None when absent, undecryptable
+    or malformed (logged; never raises: the buffer just starts empty).
+    """
+    raw = await _latest_conversation_bytes(ctx)
+    if raw is None:
         return None
     try:
-        data = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        _LOG.warning("conversation buffer file is not valid JSON; starting empty")
+        plain = decrypt(raw) if decrypt is not None else raw
+    except Exception as exc:  # noqa: BLE001
+        # The type only: the message of a cipher error is not logged.
+        _LOG.warning(
+            "conversation record could not be decrypted (%s); starting empty",
+            type(exc).__name__,
+        )
+        return None
+    try:
+        data = json.loads(plain.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        _LOG.warning("conversation record is not valid JSON; starting empty")
         return None
     out: list[tuple[int, dict]] = []
     for entry in data if isinstance(data, list) else []:
-        if isinstance(entry, list) and len(entry) == 2 and isinstance(entry[1], dict):
+        if (isinstance(entry, list) and len(entry) == 2
+                and isinstance(entry[0], int) and isinstance(entry[1], dict)):
             # Defensive: drop any terminal close marker a pre-fix buffer may
             # carry, so it never replays the prior run's close on resume.
             if entry[1].get("type") == "x-optio-closed":
@@ -1722,14 +1775,20 @@ async def _rescue_orphan_if_present(
 
     # 3. Capture the now-static workdir — identical artifacts to a normal
     #    teardown capture. Exclude the marker so a restored workdir cannot
-    #    re-trigger rescue in a loop.
+    #    re-trigger rescue in a loop. No live listener here: the conversation
+    #    record of the last suspend is carried forward (a copy; dropped again
+    #    when the credentials guard refuses).
     exclude = _excludes_with_rescue_marker(config)
+    conversation_blob_id = await _carry_conversation_forward(ctx)
     saved = await _capture_snapshot(
         ctx, host,
         end_state="rescued",
         workdir_exclude=exclude,
         session_blob_encrypt=config.session_blob_encrypt,
+        conversation_blob_id=conversation_blob_id,
     )
+    if not saved and conversation_blob_id is not None:
+        await ctx.delete_blob(conversation_blob_id)
 
     # 4. Capture durable (or refused by the credentials guard) — clear the marker.
     await host.run_command(f"rm -f {shlex.quote(marker_path)}")
@@ -1864,14 +1923,23 @@ async def _capture_snapshot(
     workdir_exclude: list[str] | None,
     session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
     conversation: bytes | None = None,
+    conversation_blob_id: ObjectId | None = None,
 ) -> bool:
     """Capture a snapshot: session blob, conversation blob (when
     ``conversation``, the listener's exported replay buffer, is given), then
     workdir blob and record.
 
+    ``conversation_blob_id`` instead names a conversation blob already
+    stored, which the record only references: crash rescue and Resurrect
+    have no listener, so they carry the previous record forward (or adopt a
+    cut-off capture's). Not both.
+
     Returns True when a snapshot record was inserted, False when the
-    credentials guard refused (nothing stored). Raises on any other failure.
+    credentials guard refused (nothing stored by this call). Raises on any
+    other failure.
     """
+    if conversation is not None and conversation_blob_id is not None:
+        raise ValueError("conversation and conversation_blob_id are exclusive")
     # 0. Credentials-present guard. Refuse to snapshot an unconfigured
     # environment: without home/.claude/.credentials.json a restored snapshot
     # drops the agent to /login (looking like a zero-config seed session).
@@ -1907,7 +1975,6 @@ async def _capture_snapshot(
     )
 
     # 3b. the conversation replay buffer, encrypted like the session blob.
-    conversation_blob_id: ObjectId | None = None
     if conversation is not None:
         async with _traced("capture: store_conversation_blob"):
             conversation_blob_id = await _store_conversation_blob(

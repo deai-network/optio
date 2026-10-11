@@ -79,9 +79,18 @@ inserted a snapshot record and `False` when its credentials guard refused
 its `conversation: bytes | None` kwarg is given (`_store_conversation_blob`:
 GridFS name `conversation`, through `session_blob_encrypt` too; the
 conversation-mode teardown passes the listener's `export_buffer()` JSON,
-exported in memory before `stop()` and never written to the host), then
+exported in memory before `stop()` and never written to the host), or,
+with `conversation_blob_id: ObjectId | None` instead (not both), a
+conversation blob already stored, which the record only references, then
 `rm -rf home/.claude` and the regenerable mozilla dirs. A refused capture
-stores neither blob. Its second half is
+stores neither blob. Crash-orphan rescue and Resurrect have no listener to
+export from, so they carry the conversation record forward:
+`session._carry_conversation_forward(ctx) -> ObjectId | None` copies the
+latest snapshot's record into a new blob, the stored bytes as they are (no
+decrypt, no re-encrypt; `_latest_conversation_bytes(ctx) -> bytes | None`
+reads them, None without a record, never raising), since pruning deletes
+per snapshot. Rescue passes that copy as `conversation_blob_id` and deletes
+it when the credentials guard refuses. Its second half is
 `session._store_workdir_snapshot(ctx, host, *, end_state, workdir_exclude,
 session_blob_id, conversation_blob_id=None)`, callable on its own. Every
 claudecode workdir tar is made there, and it archives with
@@ -209,6 +218,17 @@ from the snapshot it stored. The hook is
      capture cut off before flagging it leaves it unflagged, and Resume needs
      the flag), then raise `NothingToResurrect("session state not found")`;
      the host is left untouched.
+   Both branches give the new snapshot a conversation record
+   (`conversation_blob_id`). The hook reads the pending record before step
+   3's settle deletes it: when that capture did not commit and named a
+   conversation blob that still exists and no snapshot references
+   (`resurrect._adoptable_conversation_blob`), the new snapshot references
+   that blob itself, since it holds the newest history; the hook's settle
+   keeps it and `_store_workdir_snapshot`'s stale-record discard skips the
+   blob it records (`keep=`). Otherwise `_carry_conversation_forward` copies
+   the latest snapshot's record (after a committed capture, the copy keeps
+   its snapshot's blob singly referenced). A copy is deleted again when the
+   capture's guard refuses; an adopted blob is left.
    Partial chunks that no pending record names (old code) are left alone.
 5. `cleanup_taskdir(aggressive=False)`, only after a snapshot was inserted;
    disconnect.
@@ -601,7 +621,14 @@ Replay-buffer semantics:
   cancelled (no "Task was destroyed but it is pending!").
 * Resume: `export_buffer()` persists the buffer with the snapshot, minus
   the terminal `x-optio-closed` (replayed, it would close the live resumed
-  session in the UI). When a resumed run re-primes the listener from it,
+  session in the UI). A resumed run reads it back with
+  `session._load_conversation_buffer(ctx, *, decrypt)` (`decrypt` is
+  `session_blob_decrypt`): the latest snapshot's conversation blob, only
+  `[seq: int, event: dict]` entries, `x-optio-closed` dropped; absent,
+  undecryptable or malformed gives an empty buffer, logged, never fatal.
+  The workdir restore (`_restore_workdir_snapshot`) deletes a top-level
+  `.optio-conversation-buffer.json` a pre-fix snapshot may carry, unread.
+  When a resumed run re-primes the listener from the buffer,
   the listener appends exactly one `{"type": "x-optio-resumed"}` after the
   restored history. It marks where the earlier run ended, since nothing
   else does: the widget stops the rows that run left running (a background

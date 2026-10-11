@@ -1,8 +1,10 @@
 """The conversation record: the listener's replay buffer is stored at capture
 as its own GridFS blob (``conversation``, through ``session_blob_encrypt``)
 referenced by the snapshot's ``conversationBlobId``, never as a workdir file
-(the workdir blob is plaintext). Spec:
-docs/2026-10-11-conversation-buffer-encryption-design.md, sections 1, 2, 4."""
+(the workdir blob is plaintext). A resume primes the listener from that
+record (decrypted with ``session_blob_decrypt``), and the crash-rescue and
+Resurrect captures carry it forward. Spec:
+docs/2026-10-11-conversation-buffer-encryption-design.md, sections 1-4."""
 
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 import optio_claudecode.session as S
 from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task
 from optio_claudecode import pending_captures as PC
+from optio_claudecode import resurrect as R
 from optio_claudecode.snapshots import (
     SNAPSHOT_RETENTION,
     insert_snapshot,
@@ -489,6 +492,328 @@ async def test_conversation_blob_short_write_raises(ctx_and_captures, monkeypatc
         await S._store_conversation_blob(ctx, b"abc", encrypt=None)
 
 
+# --- resume: the listener is primed from the record ---------------------------------
+
+
+def _decrypt(b: bytes) -> bytes:
+    assert b.startswith(b"E")
+    return b[1:]
+
+
+async def _snapshot_with_record(mongo_db, ctx, payload: bytes | None) -> ObjectId | None:
+    """A snapshot one second old (blobs stored after it are strictly newer)
+    whose conversation blob holds ``payload`` as stored; returns its id."""
+    from datetime import timedelta
+    conv_id = None
+    if payload is not None:
+        async with ctx.store_blob("conversation") as w:
+            await w.write(payload)
+        conv_id = w.file_id
+    doc = await insert_snapshot(
+        mongo_db, prefix="test", process_id=ctx.process_id, end_state="cancelled",
+        session_blob_id=ObjectId(), workdir_blob_id=ObjectId(), deliverables_emitted=[],
+        conversation_blob_id=conv_id,
+    )
+    await mongo_db["test_claudecode_session_snapshots"].update_one(
+        {"_id": doc["_id"]}, {"$set": {"capturedAt": doc["capturedAt"] - timedelta(seconds=1)}},
+    )
+    return conv_id
+
+
+_ENTRIES = [
+    [1, {"type": "user", "message": {"content": "hi"}}],
+    [2, {"type": "result", "result": "hello"}],
+    [3, {"type": "x-optio-closed"}],
+]
+
+
+@pytest.mark.asyncio
+async def test_resume_primes_from_encrypted_blob(mongo_db, ctx_and_captures):
+    ctx, _cap, _flag = ctx_and_captures
+    await _snapshot_with_record(mongo_db, ctx, _encrypt(json.dumps(_ENTRIES).encode()))
+
+    out = await S._load_conversation_buffer(ctx, decrypt=_decrypt)
+
+    # The close marker is dropped: replayed, it would close the resumed session.
+    assert out == [(1, _ENTRIES[0][1]), (2, _ENTRIES[1][1])]
+
+
+@pytest.mark.asyncio
+async def test_resume_primes_from_plaintext_blob_without_cipher(mongo_db, ctx_and_captures):
+    ctx, _cap, _flag = ctx_and_captures
+    await _snapshot_with_record(mongo_db, ctx, json.dumps(_ENTRIES[:2]).encode())
+
+    assert await S._load_conversation_buffer(ctx, decrypt=None) == [
+        (1, _ENTRIES[0][1]), (2, _ENTRIES[1][1]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_without_record_is_empty(mongo_db, ctx_and_captures):
+    ctx, _cap, _flag = ctx_and_captures
+    # No snapshot at all.
+    assert await S._load_conversation_buffer(ctx, decrypt=_decrypt) is None
+    # A snapshot without a conversation record (iframe mode, or pre-fix).
+    await _snapshot_with_record(mongo_db, ctx, None)
+    assert await S._load_conversation_buffer(ctx, decrypt=_decrypt) is None
+
+
+@pytest.mark.asyncio
+async def test_resume_with_undecryptable_or_corrupt_blob_is_empty(mongo_db, ctx_and_captures):
+    ctx, _cap, _flag = ctx_and_captures
+
+    def _raises(_b: bytes) -> bytes:
+        raise ValueError("bad key")
+
+    cases = [
+        (_encrypt(json.dumps(_ENTRIES).encode()), _raises),  # undecryptable
+        (_encrypt(b"not json"), _decrypt),                    # not JSON
+        (_encrypt(b"\xff\xfe\x00"), _decrypt),                # not UTF-8
+        (_encrypt(b'{"a": 1}'), _decrypt),                    # not a list
+        (_encrypt(b'[["x", {}], [1, "y"], [2]]'), _decrypt),  # no valid entry
+    ]
+    for payload, decrypt in cases:
+        await mongo_db["test_claudecode_session_snapshots"].delete_many({})
+        await _snapshot_with_record(mongo_db, ctx, payload)
+        assert await S._load_conversation_buffer(ctx, decrypt=decrypt) is None, payload
+
+    # A record naming a blob that is gone.
+    await mongo_db["test_claudecode_session_snapshots"].delete_many({})
+    conv_id = await _snapshot_with_record(mongo_db, ctx, b"E[]")
+    await ctx.delete_blob(conv_id)
+    assert await S._load_conversation_buffer(ctx, decrypt=_decrypt) is None
+
+
+@pytest.mark.asyncio
+async def test_latest_conversation_bytes_are_the_stored_bytes(mongo_db, ctx_and_captures):
+    ctx, _cap, _flag = ctx_and_captures
+    assert await S._latest_conversation_bytes(ctx) is None
+    await _snapshot_with_record(mongo_db, ctx, None)
+    assert await S._latest_conversation_bytes(ctx) is None
+    await mongo_db["test_claudecode_session_snapshots"].delete_many({})
+    await _snapshot_with_record(mongo_db, ctx, b"E" + _BUFFER)
+    # Still encrypted: no decrypt here.
+    assert await S._latest_conversation_bytes(ctx) == b"E" + _BUFFER
+
+
+@pytest.mark.asyncio
+async def test_restore_deletes_stale_buffer_file(mongo_db, tmp_path, ctx_and_captures):
+    """A workdir blob of a snapshot taken before the fix still holds the file;
+    the restore step deletes it (the record is the conversation blob now)."""
+    ctx, _cap, _flag = ctx_and_captures
+    host = _local_host(tmp_path, credentials=False)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in ((S._CONV_BUFFER_FILE, b"[[1, {}]]"), ("restored.txt", b"work\n")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    async with ctx.store_blob("workdir") as w:
+        await w.write(buf.getvalue())
+
+    await S._restore_workdir_snapshot(ctx, host, w.file_id)
+
+    assert os.path.exists(os.path.join(host.workdir, "restored.txt"))
+    assert not os.path.exists(os.path.join(host.workdir, S._CONV_BUFFER_FILE))
+
+
+# --- crash rescue and Resurrect carry the record forward ------------------------------
+
+
+_OLD_RECORD = b'E[[1,{"type":"user","message":"older"}]]'
+
+
+def _cc_config(**kw) -> ClaudeCodeTaskConfig:
+    return ClaudeCodeTaskConfig(
+        consumer_instructions="(conversation record test)", fs_isolation=False,
+        supports_resume=True, session_blob_encrypt=_encrypt, session_blob_decrypt=_decrypt,
+        **kw,
+    )
+
+
+def _no_tmux(monkeypatch) -> None:
+    """No tmux on the worker (conversation mode): no session tree to stop."""
+    async def _none(host):
+        return None
+    monkeypatch.setattr(S.host_actions, "find_tmux", _none)
+
+
+async def _rescue(ctx, host, monkeypatch) -> None:
+    """A Resume finding a leftover rescue marker: the crash-orphan rescue."""
+    _no_tmux(monkeypatch)
+    ctx.resume = True
+    with open(os.path.join(host.workdir, S._RESCUE_MARKER), "w") as f:
+        f.write("")
+    await S._rescue_orphan_if_present(ctx, host, _cc_config())
+
+
+@pytest.mark.asyncio
+async def test_rescue_capture_carries_record_forward(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    prev_conv = await _snapshot_with_record(mongo_db, ctx, _OLD_RECORD)
+    host = _local_host(tmp_path)
+
+    await _rescue(ctx, host, monkeypatch)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["endState"] == "rescued"
+    assert snap["conversationBlobId"] != prev_conv
+    # The stored bytes as they are: not decrypted, not encrypted again.
+    assert await _read_blob(mongo_db, snap["conversationBlobId"]) == _OLD_RECORD
+    # The previous snapshot keeps its own blob (pruning deletes per snapshot).
+    assert await _read_blob(mongo_db, prev_conv) == _OLD_RECORD
+
+
+@pytest.mark.asyncio
+async def test_rescue_capture_without_a_previous_record_has_none(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    await _snapshot_with_record(mongo_db, ctx, None)
+
+    await _rescue(ctx, _local_host(tmp_path), monkeypatch)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["endState"] == "rescued"
+    assert "conversationBlobId" not in snap
+    assert await _conversation_files(mongo_db) == []
+
+
+@pytest.mark.asyncio
+async def test_refused_rescue_capture_leaves_no_copy(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    """The credentials guard refuses the rescue capture: nothing is stored,
+    the carried-forward copy included."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    prev_conv = await _snapshot_with_record(mongo_db, ctx, _OLD_RECORD)
+
+    await _rescue(ctx, _local_host(tmp_path, credentials=False), monkeypatch)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["conversationBlobId"] == prev_conv
+    assert [f["_id"] for f in await _conversation_files(mongo_db)] == [prev_conv]
+
+
+async def _failed_run_workdir(ctx, host, path: str) -> None:
+    """What a failed run left on the host, by Resurrect branch: credentials
+    (crash while running), or none and a session blob its cut-off capture
+    stored (the session-blob fallback)."""
+    if path == "credentials":
+        _plant_credentials(host)
+    else:
+        async with ctx.store_blob("session") as w:
+            await w.write(b"session")
+
+
+async def _resurrect(ctx, host, monkeypatch) -> None:
+    monkeypatch.setattr(S, "_build_host", lambda config, process_id: host)
+    _no_tmux(monkeypatch)
+    await R.resurrect_claudecode_session(ctx, _cc_config())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["credentials", "fallback"])
+async def test_resurrect_carries_record_forward(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch, path):
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    prev_conv = await _snapshot_with_record(mongo_db, ctx, _OLD_RECORD)
+    host = _local_host(tmp_path, credentials=False)
+    await _failed_run_workdir(ctx, host, path)
+
+    await _resurrect(ctx, host, monkeypatch)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["endState"] == "resurrected"
+    assert snap["conversationBlobId"] != prev_conv
+    assert await _read_blob(mongo_db, snap["conversationBlobId"]) == _OLD_RECORD
+    assert await _read_blob(mongo_db, prev_conv) == _OLD_RECORD
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["credentials", "fallback"])
+async def test_resurrect_capture_excludes_stale_buffer_file(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch, path):
+    """The failed run's workdir was restored from a pre-fix snapshot and still
+    holds the file: the resurrected workdir blob leaves it out."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    host = _local_host(tmp_path, credentials=False)
+    with open(os.path.join(host.workdir, S._CONV_BUFFER_FILE), "w") as f:
+        f.write('[[1, {"type": "user", "secret": "s"}]]')
+    await _failed_run_workdir(ctx, host, path)
+
+    await _resurrect(ctx, host, monkeypatch)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["endState"] == "resurrected"
+    names = await _tar_names(mongo_db, snap["workdirBlobId"])
+    assert "keep.txt" in names
+    assert S._CONV_BUFFER_FILE not in names
+
+
+@pytest.mark.asyncio
+async def test_resurrect_adopts_the_cut_off_captures_conversation_blob(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    """The failed run's own capture was cut off while streaming the workdir:
+    its conversation blob holds the newest history, so the resurrected
+    snapshot references that blob (not a copy of the older record), and no
+    settle deletes it."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    host = _local_host(tmp_path)
+    pending_conv = await _cut_off_capture(ctx, host, monkeypatch)
+    prev_conv = await _snapshot_with_record(mongo_db, ctx, _OLD_RECORD)
+
+    await _resurrect(ctx, host, monkeypatch)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["endState"] == "resurrected"
+    assert snap["conversationBlobId"] == pending_conv
+    assert await _read_blob(mongo_db, pending_conv) == b"E" + _BUFFER
+    # No copy was made; the older record stays with its snapshot.
+    assert {f["_id"] for f in await _conversation_files(mongo_db)} == {pending_conv, prev_conv}
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+
+    # The next launch settles nothing away.
+    await PC.settle_pending_capture(ctx, discard_session_blob=True)
+    assert await _blob_exists(mongo_db, pending_conv)
+
+
+@pytest.mark.asyncio
+async def test_resurrect_after_a_committed_capture_copies_its_record(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    """The pending record is of a capture that committed (its snapshot owns
+    the conversation blob) and the workdir holds newer work: the new snapshot
+    gets a copy, never a second reference (pruning one would empty the other)."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    host = _local_host(tmp_path)
+    await S._capture_snapshot(
+        ctx, host, end_state="cancelled", workdir_exclude=None,
+        session_blob_encrypt=_encrypt, conversation=_BUFFER,
+    )
+    committed = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    await PC.record_pending_capture(
+        mongo_db, "test", process_id=ctx.process_id,
+        session_blob_id=committed["sessionBlobId"], workdir_blob_id=committed["workdirBlobId"],
+        conversation_blob_id=committed["conversationBlobId"],
+    )
+    await asyncio.sleep(0.002)  # distinct capturedAt (millisecond resolution)
+    _plant_credentials(host)
+
+    await _resurrect(ctx, host, monkeypatch)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["endState"] == "resurrected"
+    assert snap["conversationBlobId"] != committed["conversationBlobId"]
+    assert await _read_blob(mongo_db, snap["conversationBlobId"]) == b"E" + _BUFFER
+    assert await _blob_exists(mongo_db, committed["conversationBlobId"])
+
+
 # --- the task factory ----------------------------------------------------------
 
 
@@ -605,3 +930,86 @@ async def test_teardown_does_not_write_buffer_to_host(
     snap = await load_latest_snapshot(mongo_db, prefix="ccrec", process_id="cc-conv-record")
     assert await _read_blob(mongo_db, snap["conversationBlobId"]) == seen["conversation"]
     assert S._CONV_BUFFER_FILE not in await _tar_names(mongo_db, snap["workdirBlobId"])
+
+
+def _xor(b: bytes) -> bytes:
+    return bytes(x ^ 0x5A for x in b)
+
+
+async def _wait_for(pred, what: str, timeout: float = 60.0) -> None:
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        if pred():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{what} did not happen in {timeout}s")
+
+
+@pytest.mark.serial
+@pytest.mark.asyncio
+async def test_resume_primes_the_listener_from_the_encrypted_record(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+    monkeypatch,
+):
+    """A conversation is suspended (its record stored encrypted) and resumed:
+    the resumed run's listener starts with the suspended run's history,
+    read from the record through ``session_blob_decrypt``."""
+    from optio_core.lifecycle import Optio
+
+    primed: list = []
+    real_listener = S.ConversationListener
+
+    def _spy(*a, **kw):
+        primed.append(kw.get("initial_events"))
+        return real_listener(*a, **kw)
+    monkeypatch.setattr(S, "ConversationListener", _spy)
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="ccprime")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-prime", name="Conversation priming",
+            config=ClaudeCodeTaskConfig(
+                consumer_instructions="Converse with the test.",
+                mode="conversation",
+                conversation_ui=True,
+                permission_mode="bypassPermissions",
+                fs_isolation=False,
+                install_dir=str(claude_cache_dir),
+                ttyd_install_dir=str(shim_install_dir),
+                supports_resume=True,
+                credentials_json={"token": "test"},
+                session_blob_encrypt=_xor,
+                session_blob_decrypt=_xor,
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result("cc-conv-prime", session_id=None, timeout=60)
+        await _wait_widget_data(optio, "cc-conv-prime")
+        result_seen = asyncio.Event()
+        conv.on_event(lambda e: result_seen.set() if e.get("type") == "result" else None)
+        await conv.send("ping")
+        await asyncio.wait_for(result_seen.wait(), 60)
+        await conv.close()
+        await _wait_terminal(optio, "cc-conv-prime")
+
+        snap = await load_latest_snapshot(mongo_db, prefix="ccprime", process_id="cc-conv-prime")
+        stored = await _read_blob(mongo_db, snap["conversationBlobId"])
+        exported = json.loads(_xor(stored))
+        assert any(e[1].get("type") == "result" for e in exported)
+
+        conv2 = await optio.launch_and_await_result(
+            "cc-conv-prime", resume=True, session_id=None, timeout=60,
+        )
+        # The listener is built after the result is published.
+        await _wait_for(lambda: len(primed) == 2, "the resumed run's listener")
+        await conv2.close()
+        await _wait_terminal(optio, "cc-conv-prime")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    assert primed[0] is None  # the fresh launch
+    assert primed[1] == [(seq, event) for seq, event in exported]

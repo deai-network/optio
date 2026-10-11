@@ -79,6 +79,12 @@ def patched(monkeypatch):
             raise RuntimeError("capture failed")
         return True
 
+    async def _no_record(ctx):
+        # The stub ctx has no database; the carry-forward itself is covered
+        # in test_conversation_record.py.
+        return None
+
+    monkeypatch.setattr(S, "_carry_conversation_forward", _no_record)
     monkeypatch.setattr(S.host_actions, "tmux_session_alive", _alive)
     monkeypatch.setattr(S.host_actions, "find_tmux", _find_tmux)
     monkeypatch.setattr(S.host_actions, "_tmux_socket_path", _socket)

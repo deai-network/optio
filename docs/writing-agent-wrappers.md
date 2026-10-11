@@ -1028,8 +1028,11 @@ JSON is kept in memory and stored as the snapshot's own GridFS blob (`conversati
 through `session_blob_encrypt` like the session blob, referenced as
 `conversationBlobId`). It never becomes a workdir file: the workdir blob is plaintext,
 and every claudecode workdir tar excludes `.optio-conversation-buffer.json`, the file
-older versions wrote. Keep any conversation content you persist out of the workdir the
-same way.
+older versions wrote. A resume re-primes the listener from that blob, decrypted with
+`session_blob_decrypt` (a missing or unreadable record means an empty view, never a
+failed resume). The captures without a listener (crash rescue, Resurrect) carry the
+previous record forward as a new blob holding the same stored bytes. Keep any
+conversation content you persist out of the workdir the same way.
 
 ## Appendix D — Task configuration surface
 
