@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Alert, Button, Layout, Segmented, Select, Typography, notification } from 'antd';
+import { Alert, Button, Layout, Segmented, Select, Typography, notification, theme } from 'antd';
 import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
 import {
   OptioProvider,
@@ -22,6 +22,10 @@ import { styleMode, switchStyleMode, useDaeoTheme, type StyleMode } from './styl
 // light/dark toggle (☀/🌙 in the conversation header); in the Daeo look the
 // host's theme rules (Ant Design X experiment, styleMode.tsx).
 registerConversationWidget({ ownTheme: styleMode === 'plain' });
+
+// The plain look's header is antd's dark navy, so its text is white; the Daeo
+// look's header follows the theme, so it keeps the theme's colours.
+const headerText = (plain: string) => (styleMode === 'plain' ? plain : undefined);
 
 /** Ant Design X experiment: the Daeo or plain look (reloads), and the Daeo look's light/dark. */
 function StyleSwitch() {
@@ -73,6 +77,7 @@ function Dashboard({
   siderCollapsed: boolean;
 }) {
   const { processes, connected: listConnected } = useProcessListStream();
+  const { token } = theme.useToken();
   const { launch, resurrect, cancel, dismiss } = useProcessActions();
   const live = useOptioLive();
 
@@ -88,7 +93,7 @@ function Dashboard({
             collapsed={siderCollapsed}
             collapsedWidth={0}
             trigger={null}
-            style={{ background: '#fff', overflow: 'auto' }}
+            style={{ background: styleMode === 'plain' ? '#fff' : token.colorBgContainer, overflow: 'auto' }}
           >
             <ProcessFilters />
             <FilteredProcessList
@@ -165,7 +170,7 @@ function AppContent() {
       {/* One instance (e.g. pinned by MONGODB_URL + OPTIO_PREFIX): nothing to
           pick, so name it instead of offering a selector. */}
       {instances.length === 1 && selected && (
-        <span style={{ color: 'rgba(255, 255, 255, 0.65)' }}>{instanceKey(selected)}</span>
+        <span style={{ color: headerText('rgba(255, 255, 255, 0.65)') }}>{instanceKey(selected)}</span>
       )}
       {instances.length > 1 && (
         <>
@@ -188,7 +193,7 @@ function AppContent() {
     return (
       <Layout style={{ height: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
-          <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+          <Title level={4} style={{ color: headerText('#fff'), margin: 0 }}>Optio Dashboard</Title>
           {headerRight}
         </Header>
         <Alert
@@ -218,9 +223,9 @@ function AppContent() {
               title={siderCollapsed ? 'Show the process list' : 'Hide the process list'}
               aria-label={siderCollapsed ? 'Show the process list' : 'Hide the process list'}
               onClick={() => setSiderCollapsed(!siderCollapsed)}
-              style={{ color: '#fff' }}
+              style={{ color: headerText('#fff') }}
             />
-            <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+            <Title level={4} style={{ color: headerText('#fff'), margin: 0 }}>Optio Dashboard</Title>
           </div>
           {headerRight}
         </Header>
