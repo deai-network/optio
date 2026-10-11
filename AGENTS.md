@@ -245,7 +245,13 @@ class TaskInstance:
     ui_widget: str | None = None             # widget name registered via registerWidget() in optio-ui
     auto_cancel_children: bool = True        # cancel(this) recursively cancels active direct descendants; set False for tasks that finalize children themselves
     schedule_offset_seconds: int | None = None  # second (0-59) within each matching minute at which `schedule` fires; None = second 0
+    read_conversation: Callable[[ReadOnlyProcessContext], Awaitable[list | dict | None]] | None = None  # last field; returns a suspended process's saved conversation record ([[seq, event], ...] or {events, capturedAt}; None = no record) for the engine's conversation archive listener; gets a read-only context (process_id, _db, _prefix, load_blob)
 ```
+
+The engine's conversation archive listener (`optio_core.ConversationArchiveListener`, started by
+`run()`, stopped by `shutdown()`) serves `read_conversation` over HTTP for the optio-api proxy:
+`GET /conversation/{_id}` behind basic auth, address published as `conversationArchive` in
+`{prefix}_engine_endpoints`. Details: `packages/optio-core/AGENTS.md` "Conversation archive listener".
 
 `NothingToResurrect` and `ResurrectOutcome` are exported from `optio_core`. The only task
 that sets `resurrect` today is optio-claudecode's (`create_claudecode_task`, when

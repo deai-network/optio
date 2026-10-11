@@ -14,11 +14,18 @@ Errors are JSON {"reason": <code>, "message": <text>}:
   409 not-suspended            not cancelled + supportsResume + hasSavedState
   404 no-conversation-support  no registered task, or no read_conversation hook
   404 no-conversation          the hook returned None (no record)
-  500 read-failed              the hook raised (or returned something unusable)
+  500 read-failed              the hook raised or returned something unusable,
+                               or anything else in the request failed (e.g.
+                               MongoDB); a middleware turns every uncaught
+                               exception into this JSON reply
+Unknown routes and methods keep aiohttp's own 404 / 405.
 
 Every response carries Cache-Control: no-store. Decryption happens inside the
 task's hook, in this process; the plaintext exists only in memory and in
-transit. Nothing here logs conversation content or the password.
+transit. Nothing here logs conversation content or the password. The hook gets
+a ReadOnlyProcessContext (process_id, _db, _prefix, load_blob only), so a read
+cannot call the context's write methods; at most READ_CONCURRENCY hooks run at
+once.
 
 The address is published as {_id: "conversationArchive", url, password,
 updatedAt} in {prefix}_engine_endpoints and deleted on stop (a crashed engine
@@ -28,6 +35,7 @@ Spec: docs/2026-10-12-suspended-conversation-view-design.md §1.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -51,7 +59,9 @@ ENDPOINT_ID = "conversationArchive"
 # Bound aiohttp's graceful-shutdown wait (the 60 s default would stall engine
 # shutdown behind a slow read).
 SHUTDOWN_TIMEOUT_S = 2.0
-_OBJECTID_RE = re.compile(r"^[0-9a-fA-F]{24}$")
+# Concurrent read hooks (each holds a decrypted record in memory).
+READ_CONCURRENCY = 4
+_OBJECTID_RE = re.compile(r"[0-9a-fA-F]{24}")  # used with fullmatch
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
@@ -96,6 +106,60 @@ def _error(status: int, reason: str, message: str) -> web.Response:
     )
 
 
+def _read_failed() -> web.Response:
+    return _error(500, "read-failed", "Reading the conversation record failed.")
+
+
+@web.middleware
+async def _json_errors(request: web.Request, handler):
+    """Any uncaught exception becomes the JSON 500 read-failed reply (not
+    aiohttp's plain-text 500); aiohttp's own HTTP errors (unknown route 404,
+    wrong method 405) pass through. Logs the exception type only."""
+    try:
+        return await handler(request)
+    except web.HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "conversation archive: request for process %r failed: %s",
+            request.match_info.get("processId"), type(exc).__name__,
+        )
+        return _read_failed()
+
+
+class ReadOnlyProcessContext:
+    """What a read_conversation hook gets: a view of the detached
+    ProcessContext with only what a read needs — `process_id`, `_db`,
+    `_prefix` and `load_blob`. Every other attribute (the write methods:
+    set_widget_data, mark_has_saved_state, store_blob, report_progress, ...)
+    raises AttributeError, and so does setting one, so a read cannot change
+    the suspended process through its context."""
+
+    __slots__ = ("__inner",)
+
+    def __init__(self, inner: "ProcessContext") -> None:
+        object.__setattr__(self, "_ReadOnlyProcessContext__inner", inner)
+
+    @property
+    def process_id(self) -> str:
+        return self.__inner.process_id
+
+    @property
+    def _db(self):
+        return self.__inner._db
+
+    @property
+    def _prefix(self) -> str:
+        return self.__inner._prefix
+
+    def load_blob(self, file_id: ObjectId):
+        """`async with ctx.load_blob(file_id) as reader:` (ProcessContext.load_blob)."""
+        return self.__inner.load_blob(file_id)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f"read-only context: cannot set {name!r}")
+
+
 class ConversationArchiveListener:
     def __init__(
         self,
@@ -110,6 +174,7 @@ class ConversationArchiveListener:
         self._resolve_task = resolve_task
         self._make_context = make_context
         self._password = secrets.token_urlsafe(32)
+        self._read_slots = asyncio.Semaphore(READ_CONCURRENCY)
         self._runner: web.AppRunner | None = None
         self._url: str | None = None
 
@@ -144,7 +209,7 @@ class ConversationArchiveListener:
             return _error(401, "unauthorized", "Missing or wrong credentials.")
         id_str = request.match_info["processId"]
         doc = None
-        if _OBJECTID_RE.match(id_str):
+        if _OBJECTID_RE.fullmatch(id_str):
             doc = await self._db[f"{self._prefix}_processes"].find_one(
                 {"_id": ObjectId(id_str)},
             )
@@ -160,15 +225,21 @@ class ConversationArchiveListener:
                 "This task does not keep a readable conversation record.",
             )
         try:
-            payload = _payload(await hook(self._make_context(doc)))
-            body = None if payload is None else json.dumps(payload)
+            # Bounded: each read holds a decrypted record until it is sent.
+            async with self._read_slots:
+                ctx = ReadOnlyProcessContext(self._make_context(doc))
+                payload = _payload(await hook(ctx))
+                body = (
+                    None if payload is None
+                    else await asyncio.to_thread(json.dumps, payload)
+                )
         except Exception as exc:  # noqa: BLE001
             # The exception type only: its message may carry conversation content.
             logger.error(
                 "conversation archive: reading the record of process %s (%s) failed: %s",
                 id_str, doc["processId"], type(exc).__name__,
             )
-            return _error(500, "read-failed", "Reading the conversation record failed.")
+            return _read_failed()
         if body is None:
             return _error(404, "no-conversation", "No saved conversation record.")
         return web.Response(text=body, content_type="application/json", headers=_NO_STORE)
@@ -179,7 +250,7 @@ class ConversationArchiveListener:
         """Bind (OPTIO_WIDGET_TUNNEL_BIND, ephemeral port) and publish the address."""
         bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
         upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
-        app = web.Application()
+        app = web.Application(middlewares=[_json_errors])
         app.router.add_get("/conversation/{processId}", self._handle_conversation)
         runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_TIMEOUT_S)
         await runner.setup()

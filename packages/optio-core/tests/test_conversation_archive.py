@@ -5,6 +5,7 @@ Spec: docs/2026-10-12-suspended-conversation-view-design.md §1.
 
 import asyncio
 import base64
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -12,14 +13,20 @@ from datetime import datetime, timezone
 import aiohttp
 import pytest
 from bson import ObjectId
+from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+from pymongo.errors import AutoReconnect
+from yarl import URL
 
+import optio_core.lifecycle as lifecycle_mod
 from optio_core.context import ProcessContext
-from optio_core.conversation_archive import ConversationArchiveListener
+from optio_core.conversation_archive import (
+    READ_CONCURRENCY, ConversationArchiveListener, ReadOnlyProcessContext,
+)
 from optio_core.lifecycle import Optio
 from optio_core.models import TaskInstance
 
 ENDPOINT_ID = "conversationArchive"
-_HANG = 30.0  # a hang ceiling only
+_HANG = 60.0  # a hang ceiling only
 
 
 async def _noop(ctx):
@@ -76,13 +83,14 @@ def _basic(user, password):
     return {"Authorization": f"Basic {token}"}
 
 
-async def _get(listener, oid, *, auth="right"):
+async def _get(listener, oid, *, auth="right", session=None):
     if auth == "right":
         headers = _basic("optio", listener.password)
     else:
         headers = auth or {}
+    url = URL(f"{listener.url}conversation/{oid}", encoded=True)
     async with aiohttp.ClientSession() as s:
-        async with s.get(f"{listener.url}conversation/{oid}", headers=headers) as r:
+        async with (session or s).get(url, headers=headers) as r:
             return r.status, await r.json(), dict(r.headers)
 
 
@@ -154,10 +162,12 @@ async def test_requires_basic_auth(mongo_db):
 async def test_unknown_process_404(mongo_db):
     listener = await _started(mongo_db, "ca5")
     try:
-        for pid in (ObjectId(), "not-an-object-id"):
-            status, body, _ = await _get(listener, pid)
+        # A trailing newline (%0A) must not slip past the ObjectId check.
+        for pid in (ObjectId(), "not-an-object-id", f"{ObjectId()}%0A", "a" * 24 + "%0A"):
+            status, body, headers = await _get(listener, pid)
             assert status == 404
             assert body["reason"] == "not-found" and body["message"]
+            assert headers["Cache-Control"] == "no-store"
     finally:
         await listener.stop()
 
@@ -205,13 +215,19 @@ async def test_hook_none_404(mongo_db):
 
 
 async def test_returns_events_no_store(mongo_db):
-    seen = []
+    seen, made = [], []
+
+    def make_context(doc):
+        made.append(doc)
+        return _Ctx(doc)
 
     async def hook(ctx):
         seen.append(ctx)
         return [[1, {"type": "user"}]]
     oid = await _insert_proc(mongo_db, "ca9")
-    listener = await _started(mongo_db, "ca9", {"t1": _task(read_conversation=hook)})
+    listener = await _started(
+        mongo_db, "ca9", {"t1": _task(read_conversation=hook)}, make_context=make_context,
+    )
     try:
         status, body, headers = await _get(listener, oid)
     finally:
@@ -219,8 +235,10 @@ async def test_returns_events_no_store(mongo_db):
     assert status == 200
     assert body == {"events": [[1, {"type": "user"}]], "capturedAt": None}
     assert headers["Cache-Control"] == "no-store"
-    # The hook got the context built from this process's document.
-    assert len(seen) == 1 and seen[0].doc["_id"] == oid
+    # The hook got a read-only view of the context built from this process's document.
+    assert [d["_id"] for d in made] == [oid]
+    assert len(seen) == 1 and isinstance(seen[0], ReadOnlyProcessContext)
+    assert seen[0].process_id == "t1"
 
 
 async def test_dict_result_carries_captured_at(mongo_db):
@@ -285,6 +303,142 @@ async def test_unserializable_result_is_read_failed(mongo_db, caplog):
     assert (status, body["reason"]) == (500, "read-failed")
 
 
+class _FailingProcesses:
+    async def find_one(self, *args, **kwargs):
+        raise AutoReconnect("mongo down DB-ERROR-TEXT")
+
+
+class _FailingDb:
+    """The real database, except that process lookups fail."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getitem__(self, name):
+        if name.endswith("_processes"):
+            return _FailingProcesses()
+        return self._real[name]
+
+
+async def test_uncaught_errors_are_json_500(mongo_db, caplog):
+    caplog.set_level(logging.DEBUG, logger="optio_core")
+    caplog.set_level(logging.DEBUG, logger="aiohttp")
+    listener = ConversationArchiveListener(
+        db=_FailingDb(mongo_db), prefix="ca17", resolve_task={}.get, make_context=_Ctx,
+    )
+    await listener.start()
+    oid = ObjectId()
+    try:
+        url = f"{listener.url}conversation/{oid}"
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=_basic("optio", listener.password)) as r:
+                status, text = r.status, await r.text()
+                headers = dict(r.headers)
+            # aiohttp's own 404 / 405 stay as they are.
+            async with s.get(f"{listener.url}nope", headers=_basic("optio", listener.password)) as r:
+                assert r.status == 404
+            async with s.post(url, headers=_basic("optio", listener.password)) as r:
+                assert r.status == 405
+    finally:
+        await listener.stop()
+    assert status == 500
+    assert headers["Content-Type"].startswith("application/json")
+    assert headers["Cache-Control"] == "no-store"
+    body = json.loads(text)
+    assert body["reason"] == "read-failed" and body["message"]
+    assert "Traceback" not in text and "DB-ERROR-TEXT" not in text
+    assert str(oid) in caplog.text and "AutoReconnect" in caplog.text
+    assert "DB-ERROR-TEXT" not in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+@pytest.mark.parametrize("write", [
+    lambda ctx: ctx.set_widget_data({"x": 1}),
+    lambda ctx: ctx.clear_has_saved_state(),
+    lambda ctx: ctx.mark_has_saved_state(),
+    lambda ctx: ctx.store_blob("x"),
+    lambda ctx: ctx.report_progress(None, "reading"),
+    lambda ctx: setattr(ctx, "process_id", "other"),
+])
+async def test_read_hook_cannot_write_through_its_context(mongo_db, write):
+    async def hook(ctx):
+        result = write(ctx)
+        if asyncio.iscoroutine(result):
+            await result
+        return [[1, {"type": "user"}]]
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="ca18")
+    proc = await fw.adhoc_define(_task("w1", hook))
+    coll = mongo_db["ca18_processes"]
+    await coll.update_one({"_id": proc["_id"]}, {"$set": {
+        "status.state": "cancelled", "hasSavedState": True,
+    }})
+    before = await coll.find_one({"_id": proc["_id"]})
+    listener = await _started(
+        mongo_db, "ca18", {"w1": _task("w1", hook)}, make_context=fw._detached_context,
+    )
+    try:
+        status, body, _ = await _get(listener, proc["_id"])
+    finally:
+        await listener.stop()
+    assert (status, body["reason"]) == (500, "read-failed")
+    assert await coll.find_one({"_id": proc["_id"]}) == before
+
+
+async def test_concurrent_reads_are_bounded(mongo_db):
+    resolved = 0
+    entered = 0
+    in_flight = 0
+    max_in_flight = 0
+    gate = asyncio.Event()
+
+    async def hook(ctx):
+        nonlocal entered, in_flight, max_in_flight
+        entered += 1
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        try:
+            await gate.wait()
+        finally:
+            in_flight -= 1
+        return [[1, {"type": "user"}]]
+    task = _task(read_conversation=hook)
+
+    def resolve(pid):
+        # Called synchronously right before the read slot is taken: once all 8
+        # requests got here, each is either inside the hook or waiting for a slot.
+        nonlocal resolved
+        resolved += 1
+        return task
+    oid = await _insert_proc(mongo_db, "ca19")
+    listener = ConversationArchiveListener(
+        db=mongo_db, prefix="ca19", resolve_task=resolve, make_context=_Ctx,
+    )
+    await listener.start()
+    try:
+        async with aiohttp.ClientSession() as s:
+            gets = [
+                asyncio.create_task(_get(listener, oid, session=s)) for _ in range(8)
+            ]
+            try:
+                async def all_resolved():
+                    return resolved == 8
+                await _wait_until(all_resolved)
+                entered_while_gated = entered
+            finally:
+                gate.set()
+                results = await asyncio.wait_for(
+                    asyncio.gather(*gets, return_exceptions=True), _HANG,
+                )
+    finally:
+        await listener.stop()
+    assert READ_CONCURRENCY == 4
+    assert entered_while_gated == READ_CONCURRENCY
+    assert [r[0] for r in results] == [200] * 8
+    assert all(r[1]["events"] == [[1, {"type": "user"}]] for r in results)
+    assert entered == 8 and max_in_flight == READ_CONCURRENCY
+
+
 # -- Optio wiring -------------------------------------------------------------
 
 
@@ -333,10 +487,18 @@ async def test_detached_context_shared_with_resurrect(mongo_db, monkeypatch):
 
 async def test_run_starts_and_shutdown_stops_listener(mongo_db):
     seen = []
+    blob_id = await AsyncIOMotorGridFSBucket(mongo_db).upload_from_stream(
+        "conversation", b'[[7, {"type": "assistant"}]]',
+    )
 
     async def read_conversation(ctx):
+        # Everything a read needs is on the read-only context.
         seen.append(ctx)
-        return {"events": [[7, {"type": "assistant"}]], "capturedAt": "2026-10-12T00:00:00+00:00"}
+        assert ctx._prefix == "ca14"
+        assert await ctx._db["ca14_processes"].find_one({"processId": ctx.process_id})
+        async with ctx.load_blob(blob_id) as reader:
+            events = json.loads(await reader.read())
+        return {"events": events, "capturedAt": "2026-10-12T00:00:00+00:00"}
 
     async def get_tasks(services, metadata_filter=None):
         return [_task("conv", read_conversation)]
@@ -368,8 +530,10 @@ async def test_run_starts_and_shutdown_stops_listener(mongo_db):
                     "capturedAt": "2026-10-12T00:00:00+00:00",
                 }
         ctx = seen[0]
-        assert isinstance(ctx, ProcessContext)
-        assert ctx.process_id == "conv" and ctx.resume is False and ctx.session_id is None
+        assert isinstance(ctx, ReadOnlyProcessContext)
+        assert ctx.process_id == "conv"
+        with pytest.raises(AttributeError):
+            ctx.resume
     finally:
         await fw.shutdown()
         await asyncio.wait_for(runner, _HANG)
@@ -402,7 +566,9 @@ async def test_listener_starts_before_rpc_server(mongo_db, redis_url):
 
 
 async def test_listener_start_failure_does_not_stop_the_engine(mongo_db, monkeypatch, caplog):
-    monkeypatch.setenv("OPTIO_WIDGET_TUNNEL_BIND", "256.0.0.1")  # cannot bind
+    async def failing_start(self):
+        raise OSError("address in use")
+    monkeypatch.setattr(lifecycle_mod.ConversationArchiveListener, "start", failing_start)
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="ca16")
     runner = asyncio.create_task(fw.run())

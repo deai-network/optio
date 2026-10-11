@@ -128,12 +128,15 @@ class TaskInstance(TaskInstanceCore):
     # Optional "read conversation" hook: returns the conversation record a
     # suspended process saved, for a read-only view, without resuming it. Called
     # by the engine's conversation archive listener (optio_core.conversation_archive)
-    # with a detached ProcessContext (the one Optio.resurrect builds), only for a
-    # suspended process (cancelled + supportsResume + hasSavedState). Returns
+    # only for a suspended process (cancelled + supportsResume + hasSavedState),
+    # with a conversation_archive.ReadOnlyProcessContext: a view of the detached
+    # ProcessContext Optio.resurrect also builds, exposing only process_id, _db,
+    # _prefix and load_blob (anything else raises AttributeError). Returns
     # either a list of [seq, event] entries (capturedAt is then null), or a dict
     # {"events": [[seq, event], ...], "capturedAt": <ISO string or datetime of
     # the record, or None>}; None (or a dict whose "events" is None) means "no
-    # record". It runs in the engine, so it may decrypt; it must not write.
+    # record". It runs in the engine, so it may decrypt; it must not write. At
+    # most 4 run at once.
     # Spec: docs/2026-10-12-suspended-conversation-view-design.md §1.
     read_conversation: Callable[..., Awaitable[list | dict | None]] | None = None
 

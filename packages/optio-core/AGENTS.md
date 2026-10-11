@@ -601,14 +601,18 @@ app that builds claudecode tasks has it). Spec:
 @dataclass
 class TaskInstance:
     ...
-    read_conversation: Callable[[ProcessContext], Awaitable[list | dict | None]] | None = None
+    read_conversation: Callable[[ReadOnlyProcessContext], Awaitable[list | dict | None]] | None = None
 ```
 
 Optional, last field. Returns the conversation record a suspended process saved, for a
 read-only view without resuming it. The engine's conversation archive listener (below)
-calls it with a detached `ProcessContext` (`Optio._detached_context`, the same one
-`Optio.resurrect` builds: own never-set cancellation flag, `resume=False`), and only for
-a suspended process (`status.state == "cancelled"`, `supportsResume`, `hasSavedState`).
+calls it only for a suspended process (`status.state == "cancelled"`, `supportsResume`,
+`hasSavedState`), with a `ReadOnlyProcessContext` (exported from `optio_core`): a view of
+the detached `ProcessContext` that `Optio._detached_context` builds (the same one
+`Optio.resurrect` uses: own never-set cancellation flag, `resume=False`), exposing only
+`process_id`, `_db`, `_prefix` and `load_blob`. Any other attribute (the write methods
+`set_widget_data`, `mark_has_saved_state`, `store_blob`, `report_progress`, ...) raises
+`AttributeError`, and so does setting one; the read then fails with `read-failed`.
 It returns either a list of `[seq, event]` entries (`capturedAt` is then null), or a dict
 `{"events": [[seq, event], ...], "capturedAt": <ISO string or datetime, or None>}` (a
 naive datetime is taken as UTC). `None`, or a dict whose `events` is `None`, means "no
@@ -635,6 +639,9 @@ await listener.start()   # bind + publish; listener.url, listener.password
 await listener.stop()    # unpublish (only its own document) + close; idempotent
 ```
 
+- **Hook calls:** each read wraps `make_context(proc_doc)` in a `ReadOnlyProcessContext`;
+  at most `READ_CONCURRENCY` (4) hooks run at once (each holds a decrypted record), and
+  the response body is serialized off the event loop (`asyncio.to_thread`).
 - **Lifecycle:** `Optio.run()` starts it before the RPC server (resolving tasks through
   the executor's task registry, contexts through `Optio._detached_context`);
   `Optio.shutdown()` stops it right after the RPC server. A failure to start is logged
@@ -660,7 +667,9 @@ await listener.stop()    # unpublish (only its own document) + close; idempotent
   | 409 | `not-suspended` | not `cancelled` + `supportsResume` + `hasSavedState` |
   | 404 | `no-conversation-support` | no registered task, or its `read_conversation` is `None` |
   | 404 | `no-conversation` | the hook returned `None` |
-  | 500 | `read-failed` | the hook raised or returned something unusable |
+  | 500 | `read-failed` | the hook raised or returned something unusable, or anything else failed (e.g. MongoDB) |
 
-  A failed read is logged with the process `_id`, its `processId` and the exception type
-  only, never the exception message (it may carry content). Nothing logs the password.
+  A middleware turns any uncaught exception into the JSON `read-failed` reply (never
+  aiohttp's plain-text 500); unknown routes and methods keep aiohttp's own 404 / 405. A
+  failed read is logged with the process id(s) and the exception type only, never the
+  exception message (it may carry content). Nothing logs the password.
