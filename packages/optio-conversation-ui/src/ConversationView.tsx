@@ -15,6 +15,7 @@ import { ConversationWelcomeContext, type ConversationWelcome } from './welcome.
 import { resolveText, useLanguage } from './text.js';
 import { ConversationSetBusyContext } from './busy.js';
 import { AnswerBlock } from './AnswerBlock.js';
+import { ResumeBandText, SwitchBandText } from './BandText.js';
 import { ControlErrorSlot, CustomControls } from './CustomControls.js';
 import { AnswerFiles, FILE_LINK_CLASS } from './FileCards.js';
 import { SlotSpinner } from './spinners/SlotSpinner.js';
@@ -1970,9 +1971,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       case 'closed':
         return renderDivider(`closed-${item.seq}`, undefined, `conversation ended${item.reason ? ` (${item.reason})` : ''}`, 'solid');
       case 'resumed':
+      case 'switched':
         // Resume marker (owner request 2026-10-08): the session was captured
-        // here and resumed later.
-        return renderDivider(`resumed-${item.seq}`, 'resume-band', 'Session has been saved and resumed.', 'solid');
+        // here and resumed later; it names the mode the resumed run runs in.
+        // Switch marker (owner request 2026-10-12), the same divider: the
+        // model or a task-defined control's option was switched here.
+        return item.kind === 'resumed'
+          ? renderDivider(`resumed-${item.seq}`, 'resume-band',
+            <ResumeBandText item={item} customControls={props.customControls} />, 'solid')
+          : renderDivider(`switched-${item.seq}`, 'switch-band',
+            <SwitchBandText item={item} controls={props.controls} customControls={props.customControls} />, 'solid');
       case 'compacting':
       case 'compacted':
         // Compaction markers (owner request 2026-10-08), around the summary.
@@ -1984,11 +1992,14 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     }
   }
 
-  // A marker across the transcript (conversation ended, resumed, compacted):
+  // A marker across the transcript (conversation ended, resumed, switched,
+  // compacted):
   // an X Bubble.Divider (Ant Design X experiment), its text in the middle.
   // Keyed apart from the row that may draw it (a resume notice, a compaction
   // summary), which carries the same seq.
-  function renderDivider(key: string, testId: string | undefined, label: string, variant: 'solid' | 'dashed') {
+  function renderDivider(
+    key: string, testId: string | undefined, label: React.ReactNode, variant: 'solid' | 'dashed',
+  ) {
     return (
       <div key={key} data-testid={testId} style={{ alignSelf: 'stretch' }}>
         <Bubble.Divider content={label} dividerProps={{ variant, plain: true }} />

@@ -43,16 +43,27 @@ function optionalText(text: LocalizedText | null | undefined, language: string):
   return text === null || text === undefined ? undefined : resolveText(text, language);
 }
 
+// The label of a custom control's option in `language`; undefined for a
+// control or option not in `controls`.
+export function customOptionLabel(
+  controls: CustomControl[] | undefined, controlId: string, optionValue: string, language: string,
+): string | undefined {
+  const option = controls?.find((c) => c.id === controlId)?.options.find((o) => o.value === optionValue);
+  return option ? resolveText(option.label, language) : undefined;
+}
+
 function CustomOneOf({ control: c, language, disabled, onPick }: {
   control: CustomControl;
   language: string;
   disabled: boolean;
   onPick: (id: string, value: string) => Promise<void>;
 }) {
+  const description = optionalText(c.description, language);
   const field = useOneOfField<string>({
     id: `${CUSTOM_CONTROL_PREFIX}${c.id}`,
-    label: resolveText(c.label, language),
-    description: optionalText(c.description, language),
+    // The accessible name: the caption, else the description, else the id.
+    label: optionalText(c.label, language) ?? description ?? c.id,
+    description,
     enabled: !disabled,
     choices: c.options.map((o) => ({
       value: o.value,
@@ -75,12 +86,13 @@ function CustomOneOf({ control: c, language, disabled, onPick }: {
 // OneOfSegmented led by its muted caption, as SessionControls renders its
 // controls: the caption carries `optio-cc-control-label`, so the toolbar's
 // compact mode hides it too (the segmented keeps the label as its accessible
-// name). Option descriptions are the segments' tooltips. Texts follow the UI
-// language. Disabled while a turn runs or the conversation is closed. A pick
-// calls onChange, which resolves to null once applied, else to why not, shown
-// through onError (the input bar's error slot, also offered through
-// ControlErrorSlot). Every control carries a `custom-control-<id>`
-// data-testid.
+// name). A control with no label has no caption; its description, else its
+// id, is its accessible name. Option descriptions are the segments' tooltips.
+// Texts follow the UI language. Disabled while a turn runs or the
+// conversation is closed. A pick calls onChange, which resolves to null once
+// applied, else to why not, shown through onError (the input bar's error
+// slot, also offered through ControlErrorSlot). Every control carries a
+// `custom-control-<id>` data-testid.
 export function CustomControls({ controls, disabled, onChange, onError }: {
   controls: CustomControl[];
   disabled: boolean;
@@ -101,14 +113,19 @@ export function CustomControls({ controls, disabled, onChange, onError }: {
   };
   return (
     <>
-      {controls.map((c) => (
-        <span key={c.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span className="optio-cc-control-label" style={{ fontSize: 12, opacity: 0.65, whiteSpace: 'nowrap' }}>
-            {resolveText(c.label, language)}
+      {controls.map((c) => {
+        const caption = optionalText(c.label, language);
+        return (
+          <span key={c.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {caption !== undefined ? (
+              <span className="optio-cc-control-label" style={{ fontSize: 12, opacity: 0.65, whiteSpace: 'nowrap' }}>
+                {caption}
+              </span>
+            ) : null}
+            <CustomOneOf control={c} language={language} disabled={disabled} onPick={pick} />
           </span>
-          <CustomOneOf control={c} language={language} disabled={disabled} onPick={pick} />
-        </span>
-      ))}
+        );
+      })}
     </>
   );
 }

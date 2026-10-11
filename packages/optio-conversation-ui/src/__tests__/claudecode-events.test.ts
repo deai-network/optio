@@ -1225,3 +1225,137 @@ describe('live model switch echo (local-command-stdout)', () => {
     expect(s.busy).toBe(true);
   });
 });
+
+// Switch bands (owner request 2026-10-12): a model switch, and a confirmed
+// pick of a task-defined control, are drawn as a band, not a user bubble.
+// optio announces its own pick (x-optio-custom-pick) ahead of the switch; the
+// CLI's echo of it draws nothing, the control update that confirms it draws
+// the band, a refusal draws none.
+describe('switch bands', () => {
+  const echo = (model: string) => ({
+    type: 'user', isReplay: true, timestamp: T9, uuid: `echo-${model}`,
+    message: { role: 'user', content: `<local-command-stdout>Set model to \`${model}\`</local-command-stdout>` },
+  });
+  const SPEED = {
+    id: 'speed', label: null, description: 'What should be the balance between detail level and speed?',
+    options: [{ value: 'fast', label: 'Fast' }, { value: 'extensive', label: 'Extensive' }],
+    value: 'extensive',
+  };
+  const TONE = { id: 'tone', label: 'Tone', options: [{ value: 'concise', label: 'Concise' }], value: 'concise' };
+  const pick = (value: string) => ({ type: 'x-optio-custom-pick', id: 'speed', value });
+  const controlResponse = { type: 'control_response', response: { subtype: 'success', request_id: 'req_1', response: {} } };
+  const update = (value: string | null) => ({ type: 'x-optio-control-update', controls: [], customControls: [{ ...SPEED, value }] });
+  const resumedWith = (value: string | null) => ({ type: 'x-optio-resumed', customControls: [{ id: 'speed', value }] });
+  const turn = [user('q'), assistantText('a', 'msg_1'), result('a')];
+  const withSpeed: ChatState = { ...initialChatState, customControls: [SPEED] as any };
+  const bands = (s: ChatState) => ofKind(s, 'switched');
+
+  it('a model switch optio did not ask for is a band naming the model, not a user bubble', () => {
+    const s = run([...turn, echo('claude-sonnet-5-5')]);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'switched']);
+    expect(bands(s)).toEqual([{ kind: 'switched', seq: 4, timestamp: Date.parse(T9), model: 'claude-sonnet-5-5' }]);
+  });
+
+  it('our pick, its echo and the update that confirms it: exactly one band, naming the option', () => {
+    const s = run([...turn, pick('fast'), echo('claude-sonnet-5-5'), controlResponse, update('fast')], withSpeed);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'switched']);
+    expect(bands(s)).toEqual([{
+      kind: 'switched', seq: 7, control: 'speed', option: 'fast', model: 'claude-sonnet-5-5', timestamp: Date.parse(T9),
+    }]);
+    expect(s.pendingPick).toBeUndefined();
+    expect(s.customControls?.[0].value).toBe('fast');
+  });
+
+  it('a pick that changes only the effort (no echo) still draws its band', () => {
+    const s = run([...turn, pick('fast'), controlResponse, update('fast')], withSpeed);
+    expect(bands(s)).toEqual([{ kind: 'switched', seq: 6, control: 'speed', option: 'fast' }]);
+  });
+
+  it('an update without customControls (a value patch, a built-ins snapshot) does not end the pick', () => {
+    const patch = { type: 'x-optio-control-update', id: 'custom:speed', value: 'fast' };
+    const builtIns = { type: 'x-optio-control-update', controls: [] };
+    const s = run([...turn, pick('fast'), patch, echo('claude-sonnet-5-5'), builtIns, update('fast')], withSpeed);
+    expect(bands(s)).toHaveLength(1);
+    expect(bands(s)[0]).toMatchObject({ control: 'speed', option: 'fast', model: 'claude-sonnet-5-5' });
+  });
+
+  it.each([['the old value', 'extensive'], ['no option', null]])(
+    'a refused pick (the update shows %s) draws no band and ends: a later switch is generic',
+    (_, value) => {
+      const s = run([...turn, pick('fast'), update(value)], withSpeed);
+      expect(bands(s)).toEqual([]);
+      expect(s.pendingPick).toBeUndefined();
+      expect(bands(run([echo('claude-haiku-5')], s))).toEqual([
+        { kind: 'switched', seq: 1, timestamp: Date.parse(T9), model: 'claude-haiku-5' },
+      ]);
+    },
+  );
+
+  it('busy is left as it was by the pick, its echo, the answer and the update', () => {
+    const events = [pick('fast'), echo('claude-sonnet-5-5'), controlResponse, update('fast')];
+    for (const [prefix, busy] of [[turn, false], [[user('q'), assistantText('a', 'msg_1')], true]] as const) {
+      let s = run([...prefix], withSpeed);
+      expect(s.busy).toBe(busy);
+      for (const ev of events) {
+        s = reduceEvent(s, ev, 99);
+        expect(s.busy).toBe(busy);
+      }
+    }
+  });
+
+  it('any other local command output renders as before, busy unchanged', () => {
+    const other = {
+      type: 'user', isReplay: true, timestamp: T9,
+      message: { role: 'user', content: '<local-command-stdout>Set effort to high</local-command-stdout>' },
+    };
+    const s = run([...turn, pick('fast'), other], withSpeed);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'user']);
+    expect(s.busy).toBe(false);
+  });
+
+  it('x-optio-resumed with customControls: the band records the selected options, the values are folded', () => {
+    const from: ChatState = { ...initialChatState, customControls: [SPEED, TONE] as any };
+    const marker = { type: 'x-optio-resumed', customControls: [{ id: 'speed', value: 'fast' }, { id: 'tone', value: null }] };
+    const s = run([...turn, marker], from);
+    expect(ofKind(s, 'resumed')).toEqual([{ kind: 'resumed', seq: 4, options: [{ control: 'speed', option: 'fast' }] }]);
+    expect(s.customControls?.map((c) => [c.id, c.value])).toEqual([['speed', 'fast'], ['tone', null]]);
+  });
+
+  it('x-optio-resumed without customControls draws the band as before', () => {
+    expect(ofKind(run([...turn, { type: 'x-optio-resumed' }], withSpeed), 'resumed')).toEqual([{ kind: 'resumed', seq: 4 }]);
+  });
+
+  it('a second marker right after the first names the mode of the newer run', () => {
+    const s = run([...turn, resumedWith('extensive'), resumedWith('fast')], withSpeed);
+    expect(ofKind(s, 'resumed')).toEqual([{ kind: 'resumed', seq: 4, options: [{ control: 'speed', option: 'fast' }] }]);
+  });
+
+  it('a pick the old run never answered ends with that run', () => {
+    const s = run([...turn, pick('fast'), { type: 'x-optio-resumed' }, echo('claude-sonnet-5-5')], withSpeed);
+    expect(bands(s)).toEqual([{ kind: 'switched', seq: 6, timestamp: Date.parse(T9), model: 'claude-sonnet-5-5' }]);
+  });
+
+  // A pick persisted with no outcome after it (the conversation closed during
+  // the switch) must not pair with the next run's first control update.
+  it.each([
+    ['x-optio-resumed', { type: 'x-optio-resumed' }],
+    ['x-optio-resumed with customControls', resumedWith('extensive')],
+    ['x-optio-closed', { type: 'x-optio-closed', reason: 'ended' }],
+  ])('a pending pick is dropped at %s: a later update showing that option draws no band', (_, marker) => {
+    const s = run([...turn, pick('fast'), marker, update('fast')], withSpeed);
+    expect(bands(s)).toEqual([]);
+    expect(s.pendingPick).toBeUndefined();
+  });
+
+  it('a replayed buffer (old run, then the resume marker) draws the same bands in place', () => {
+    const s = run([
+      ...turn, pick('fast'), echo('claude-sonnet-5-5'), controlResponse, update('fast'), echo('claude-opus-5'),
+      resumedWith('fast'), user('System: you have been resumed'),
+    ], withSpeed);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'switched', 'switched', 'resumed', 'activity']);
+    expect(bands(s).map((b) => [b.control, b.option, b.model])).toEqual([
+      ['speed', 'fast', 'claude-sonnet-5-5'], [undefined, undefined, 'claude-opus-5'],
+    ]);
+    expect(ofKind(s, 'resumed')[0].options).toEqual([{ control: 'speed', option: 'fast' }]);
+  });
+});

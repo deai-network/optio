@@ -201,6 +201,44 @@ describe('custom controls in the session toolbar', () => {
   });
 });
 
+// A control may have no label (owner request 2026-10-12): no caption; its
+// description, else its id, names it.
+describe('a control without a label', () => {
+  const CAPTIONLESS: CustomControl = {
+    ...SPEED,
+    label: null,
+    description: {
+      en: 'What should be the balance between detail level and speed?',
+      hu: 'Mi legyen az egyensúly a részletesség és a gyorsaság között?',
+    },
+  };
+
+  it('shows no caption; its description is its accessible name', () => {
+    render(<ConversationView {...base({ customControls: [CAPTIONLESS] })} />);
+    expect(captions()).toEqual([]);
+    const wrapper = screen.getByTestId('custom-control-speed');
+    expect(within(wrapper).getByLabelText('What should be the balance between detail level and speed?')).toBeTruthy();
+  });
+
+  it('its description in the UI language', () => {
+    render(<ConfigProvider locale={huHU}><ConversationView {...base({ customControls: [CAPTIONLESS] })} /></ConfigProvider>);
+    expect(captions()).toEqual([]);
+    const wrapper = screen.getByTestId('custom-control-speed');
+    expect(within(wrapper).getByLabelText('Mi legyen az egyensúly a részletesség és a gyorsaság között?')).toBeTruthy();
+  });
+
+  it('named by its id without a description', () => {
+    render(<ConversationView {...base({ customControls: [{ ...CAPTIONLESS, description: null }] })} />);
+    expect(captions()).toEqual([]);
+    expect(within(screen.getByTestId('custom-control-speed')).getByLabelText('speed')).toBeTruthy();
+  });
+
+  it('next to a labelled control, only that one has a caption', () => {
+    render(<ConversationView {...base({ customControls: [CAPTIONLESS, TONE] })} />);
+    expect(captions()).toEqual(['Tone']);
+  });
+});
+
 describe('custom control texts follow the UI language', () => {
   it('the language entry (hu)', async () => {
     render(<ConfigProvider locale={huHU}><ConversationView {...base()} /></ConfigProvider>);

@@ -161,8 +161,19 @@ export type ChatItem =
   | { kind: 'closed'; reason: string; seq: number }
   // Resume band (owner request 2026-10-08): the session was captured here and
   // resumed later. Rendered as a full-width zig-zag band, in front of the
-  // harness "System: you have been resumed" row.
-  | { kind: 'resumed'; seq: number }
+  // harness "System: you have been resumed" row. `options` (owner request
+  // 2026-10-12): the task-defined controls' options the resumed run launched
+  // with (claudecode's x-optio-resumed customControls, the selected ones),
+  // which the band names as its mode.
+  | { kind: 'resumed'; seq: number; options?: { control: string; option: string }[] }
+  // Switch band (owner request 2026-10-12): the model, or a task-defined
+  // control's option, was switched here. The resume band's look. `control` /
+  // `option`: optio's own pick of that option (claudecode x-optio-custom-pick,
+  // confirmed by the control update after it); `model`: the model the CLI
+  // said it switched to (its "Set model to" echo), `timestamp` that echo's
+  // wire time. A band with neither control nor option is a model switch
+  // optio did not ask for.
+  | { kind: 'switched'; seq: number; timestamp?: number; model?: string; control?: string; option?: string }
   // Compaction bands (owner request 2026-10-08), two per compaction, around
   // its summary: 'compacting' where the CLI compacted the context, and
   // 'compacted' after the summary. The same band, in the System bubble's
@@ -212,11 +223,12 @@ export interface CustomControlOption {
 // A task-defined session control (optio_agents CustomControl), as the engine
 // sends it in widgetData.customControls and in its control updates: a
 // segmented choice whose options each set a fixed model / effort / permission
-// mode. Texts arrive unresolved. `value` is the option whose settings all
+// mode. Texts arrive unresolved. `label` null: no caption (the description,
+// else the id, names the control). `value` is the option whose settings all
 // match the running ones, null when none does (no segment highlighted).
 export interface CustomControl {
   id: string;
-  label: LocalizedText;
+  label: LocalizedText | null;
   description?: LocalizedText | null;
   options: CustomControlOption[];
   value: string | null;
@@ -235,6 +247,11 @@ export interface ChatState {
   // Reducer-private (claudecode): background task ids already applied, so the
   // system event and the injected notification turn for one task apply once.
   finishedTaskIds?: string[];
+  // Reducer-private (claudecode, switch bands): optio's custom pick
+  // (x-optio-custom-pick) until the control update that answers it; `model`
+  // and `timestamp` from the CLI's echo of the switch, when one came. Dropped
+  // at x-optio-resumed / x-optio-closed: the run that made it is gone.
+  pendingPick?: { id: string; value: string; model?: string; timestamp?: number };
   // Reducer-private (claudecode): the latest user/assistant wire timestamp seen
   // (epoch ms). The time base for events that carry none (system, result,
   // optio's synthetic events), so a replay shows the live durations.
@@ -285,11 +302,24 @@ export const COMPACT_SUMMARY_PREFIX = 'This session is being continued from a pr
 // Append a resume or compaction band, unless the conversation already ends in
 // one of that kind: a marker draws it (claudecode's x-optio-resumed or
 // compact_boundary), and the message that follows the marker (the resume
-// notice, the compaction summary) must not draw a second.
-export function appendBand(items: ChatItem[], kind: 'resumed' | 'compacting' | 'compacted', seq: number): ChatItem[] {
+// notice, the compaction summary) must not draw a second. `options`: a resume
+// band's mode (a marker's selection, see the `resumed` item); given for a
+// resume band the conversation already ends in (a second marker with nothing
+// in between), they replace its own: the band names the latest run's mode.
+export function appendBand(
+  items: ChatItem[], kind: 'resumed' | 'compacting' | 'compacted', seq: number,
+  options?: { control: string; option: string }[],
+): ChatItem[] {
   const content = items.filter((i) => !isPinned(i));
-  if (content.length > 0 && content[content.length - 1].kind === kind) return items;
-  return appendItems(items, [{ kind, seq }]);
+  const last = content[content.length - 1];
+  if (last?.kind !== kind) {
+    return appendItems(items, [kind === 'resumed' && options?.length ? { kind, seq, options } : { kind, seq }]);
+  }
+  if (last.kind !== 'resumed' || options === undefined) return items;
+  const band: Extract<ChatItem, { kind: 'resumed' }> = { kind: 'resumed', seq: last.seq };
+  if (options.length > 0) band.options = options;
+  const idx = items.indexOf(last);
+  return [...items.slice(0, idx), band, ...items.slice(idx + 1)];
 }
 
 // -- Steering: queued bubbles (engine-neutral; every reducer uses these) ----
