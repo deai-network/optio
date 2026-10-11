@@ -524,15 +524,27 @@ async def run_claudecode_session(
         # file nor its flags.
         mcp_config_path = await _plant_mcp_servers(ctx, host, config)
 
-        # The `--model` value at launch: the configured model or the
-        # operator's pick (an alias from the CLI's list, or a full id). None:
-        # no --model (claude's default) on a fresh launch; a continued session
-        # runs the default alias (models.launch_model). Once claude runs,
-        # conversation.model holds it, and each live switch updates it.
-        current_model = cc_models.launch_model(config.model, continuing=pass_continue)
+        # The task's custom controls: each control's default option replaces
+        # the config's own model / reasoning effort / permission mode
+        # (controls.custom_defaults). `base_*` is what a session runs while
+        # nothing is picked; a resume's saved picks replace them in turn. The
+        # models the options name are the task's own: launched and switched
+        # to as given, like a configured model (conversation.task_models).
+        defaults = cc_controls.custom_defaults(config.custom_controls)
+        base_model = defaults.get("model") or config.model
+        base_effort = defaults.get("reasoning_effort") or config.reasoning_effort
+        base_mode = defaults.get("permission_mode") or config.permission_mode
+        conversation.task_models = cc_controls.task_models(config.custom_controls)
+        # The `--model` value at launch: the configured model (or a custom
+        # control's default) or the operator's pick (an alias from the CLI's
+        # list, or a full id). None: no --model (claude's default) on a fresh
+        # launch; a continued session runs the default alias
+        # (models.launch_model). Once claude runs, conversation.model holds
+        # it, and each live switch updates it.
+        current_model = cc_models.launch_model(base_model, continuing=pass_continue)
         # Graded reasoning effort, `--effort` at launch the same way; then
         # conversation.effort, which a live switch updates.
-        current_effort = config.reasoning_effort
+        current_effort = base_effort
         # An optio resume of a continued conversation brings back the
         # operator's picks (picks.py), each checked against this run: the
         # permission mode below, the model and effort once the CLI has listed
@@ -557,6 +569,9 @@ async def run_claudecode_session(
         # every live switch to re-emit the controls snapshot (effort presence
         # and preselected level follow the selected model).
         build_controls = None
+        # Set next to it: () -> widgetData.customControls for the running
+        # values (controls.custom_controls_snapshot).
+        build_custom_controls = None
         # The controls snapshot the widget was last given (widgetData or an
         # x-optio-control-update). The system/init branch re-emits only a
         # changed one; the permission branch (system/init carries
@@ -597,15 +612,17 @@ async def run_claudecode_session(
             # launched without the saved model (so the list holds no echo of
             # it): the saved model while listed, else its family
             # (models.restore_model), else the configured model, else default;
-            # an effort level that model lacks gives way to its default. True
-            # when the model or effort to run is not the one launched.
+            # a model the task names (a custom control's option) is kept as
+            # is. An effort level that model lacks gives way to its default.
+            # True when the model or effort to run is not the one launched.
             nonlocal current_model, current_effort, picks
             launched = (current_model, current_effort)
             if saved_picks.model:
-                restored = cc_models.restore_model(
-                    catalog, saved=saved_picks.model, resolved=saved_picks.model_resolved,
-                )
-                target = restored or cc_models.launch_model(config.model, continuing=True)
+                restored = (saved_picks.model if saved_picks.model in conversation.task_models
+                            else cc_models.restore_model(
+                                catalog, saved=saved_picks.model,
+                                resolved=saved_picks.model_resolved))
+                target = restored or cc_models.launch_model(base_model, continuing=True)
                 if restored != saved_picks.model:
                     label = next((m["label"] for m in catalog if m["id"] == target), target)
                     ctx.report_progress(
@@ -624,7 +641,7 @@ async def run_claudecode_session(
 
         async def _spawn(model: str | None, *, do_continue: bool):
             claude_flags = host_actions.build_claude_flags(
-                permission_mode=conversation.permission_mode or config.permission_mode,
+                permission_mode=conversation.permission_mode or base_mode,
                 allow_bypass=config.bypass_allowed,
                 allowed_tools=config.allowed_tools,
                 disallowed_tools=config.disallowed_tools,
@@ -729,13 +746,26 @@ async def run_claudecode_session(
         launched_handle = handle
         conversation.model, conversation.effort = current_model, current_effort
 
+        def _emit_controls() -> None:
+            # The running values to the widget: the built-in controls
+            # snapshot and the custom controls with their derived selection,
+            # in one x-optio-control-update. Also the listener's
+            # refresh_controls, after a refused custom pick.
+            nonlocal shown_controls
+            if build_controls is None:
+                return      # not shown yet: widgetData will carry the values
+            shown_controls = build_controls()
+            conversation.emit_control_update(
+                shown_controls, custom_controls=build_custom_controls(),
+            )
+
         async def _on_settings_change(applied: bool) -> None:
             # A live model/effort switch claude answered (the conversation's
-            # apply_settings): taken, it is kept for a resume; either way the
-            # widget gets the running values (it patched its select
-            # optimistically). Saved before the snapshot goes out, so the
-            # answer to the pick finds it saved.
-            nonlocal picks, shown_controls, cli_models
+            # apply_settings, from a built-in or a custom control): taken, it
+            # is kept for a resume; either way the widget gets the running
+            # values (it patched its select optimistically). Saved before the
+            # snapshot goes out, so the answer to the pick finds it saved.
+            nonlocal picks, cli_models
             if not config.conversation_ui:
                 return
             if applied:
@@ -749,14 +779,11 @@ async def run_claudecode_session(
                     f"{AGENT_INFO.name} switched to model={conversation.model or 'default'} "
                     f"effort={conversation.effort or 'default'}",
                 )
-            if build_controls is None:
-                return      # not shown yet: widgetData will carry the values
-            if cli_models is None:
+            if cli_models is None and build_controls is not None:
                 # The CLI could not list its models at launch; the switch
                 # asked again (apply_settings), and maybe learned them.
                 cli_models = conversation.models_offered
-            shown_controls = build_controls()
-            conversation.emit_control_update(shown_controls)
+            _emit_controls()
 
         conversation.on_settings_change = _on_settings_change
         await _on_agent_live(ctx, config)
@@ -808,6 +835,10 @@ async def run_claudecode_session(
                 # Only the controls the widget shows may be set: none when the
                 # controls bar is off, else the session_controls allowlist.
                 allowed_controls=config.settable_controls,
+                # The task's own controls ("custom:<id>"), whatever the bar
+                # says; a refused pick re-sends the running values.
+                custom_controls=config.custom_controls,
+                refresh_controls=_emit_controls,
                 # Reasoning gets its own rows: a cut-off reply's partial keeps
                 # only its text.
                 show_thinking=config.thinking_verbosity == "visible",
@@ -849,9 +880,22 @@ async def run_claudecode_session(
                     catalog=cli_models or cc_models.fallback_models(),
                     model=conversation.model, effort=conversation.effort,
                     runtime_model=conversation.runtime_model,
-                    permission_mode=conversation.permission_mode or config.permission_mode,
+                    permission_mode=conversation.permission_mode or base_mode,
                     permission_options=permission_options,
                     allowed=config.session_controls,
+                )
+
+            def build_custom_controls():
+                # See controls.custom_controls_snapshot: each custom control
+                # as defined (labels unresolved), selecting the option whose
+                # settings all match the running values (none after a manual
+                # change in the built-in controls). Not narrowed by the
+                # session_controls allowlist, sent whatever the bar says.
+                return cc_controls.custom_controls_snapshot(
+                    config.custom_controls,
+                    catalog=cli_models or cc_models.fallback_models(),
+                    model=conversation.model, effort=conversation.effort,
+                    permission_mode=conversation.permission_mode or base_mode,
                 )
 
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
@@ -866,6 +910,7 @@ async def run_claudecode_session(
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
                 "controls": shown_controls,
+                "customControls": build_custom_controls(),
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,
@@ -956,28 +1001,31 @@ async def run_claudecode_session(
                     # conversation.model (the picked value) is unchanged. ---
                     conversation.runtime_model_observed.clear()
                     if build_controls is not None:
+                        # (The custom controls' selection does not depend on
+                        # the running model's full id.)
                         snapshot = build_controls()
                         if snapshot != shown_controls:
                             shown_controls = snapshot
-                            conversation.emit_control_update(snapshot)
+                            conversation.emit_control_update(
+                                snapshot, custom_controls=build_custom_controls(),
+                            )
                     continue
 
                 if perm_task in done and close_task not in done and wait_task not in done:
                     # --- the running permission mode changed (our live switch,
                     # a refused one, or Claude's own, e.g. leaving plan mode):
-                    # keep it for a resume while it differs from the configured
-                    # mode, then re-emit the controls snapshot so the select
-                    # shows it (saved first: whoever sees the snapshot finds
-                    # it saved). ---
+                    # keep it for a resume while it differs from the mode a
+                    # session starts in (the configured one, or a custom
+                    # control's default), then re-emit the controls snapshot
+                    # so the select shows it (saved first: whoever sees the
+                    # snapshot finds it saved). ---
                     conversation.permission_mode_observed.clear()
                     mode = conversation.permission_mode
-                    kept = mode if mode and mode != config.permission_mode else None
+                    kept = mode if mode and mode != base_mode else None
                     if config.conversation_ui and kept != picks.permission_mode:
                         picks = dataclasses.replace(picks, permission_mode=kept)
                         await _save_picks()
-                    if build_controls is not None:
-                        shown_controls = build_controls()
-                        conversation.emit_control_update(shown_controls)
+                    _emit_controls()
                     continue
 
                 if close_task in done and wait_task not in done:

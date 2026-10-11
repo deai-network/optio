@@ -355,6 +355,8 @@ async def test_conversation_ui_session_lifecycle(
                     ],
                 },
             ],
+            # No custom controls (custom_controls unset): an empty list.
+            "customControls": [],
             "showFileUpload": False,
             "maxUploadBytes": 10_000_000,
             "fileDownload": False,

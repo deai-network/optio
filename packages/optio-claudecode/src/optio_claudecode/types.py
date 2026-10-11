@@ -35,6 +35,8 @@ from optio_agents.protocol.session import (
 from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
+from optio_claudecode.controls import validate_custom_controls
+
 # AllowedDir, ConversationMode, ToolVerbosity, ThinkingVerbosity, SeedProvider
 # and SeedUnavailableError are the shared vocabulary owned by optio_agents; they
 # are imported above and re-exported here (see __all__) so existing
@@ -252,6 +254,11 @@ class ClaudeCodeTaskConfig(
     # SessionControlsConfigMixin. Claude Code's controls: "model" (default
     # config.model), "reasoning_effort", "permission_mode". The bar requires
     # mode="conversation" and conversation_ui=True.
+    # custom_controls (CustomControlsConfigMixin): the task's own selectors,
+    # shown whatever show_session_controls says (also mode="conversation" and
+    # conversation_ui=True). Each control's default option replaces model /
+    # reasoning_effort / permission_mode below at launch; a pick switches
+    # claude live (/control id "custom:<id>").
     # Replace the generic working-spinner with claudecode's on-brand native
     # spinner in the conversation widget. Requires mode="conversation" and
     # conversation_ui=True.
@@ -379,6 +386,19 @@ class ClaudeCodeTaskConfig(
             )
         self._validate_session_controls()
         self._validate_welcome()
+        if self.custom_controls:
+            # Shown in the conversation widget, picked there; each default
+            # replaces the config's own model / effort / permission mode at
+            # launch, so its mode must be one this task can run in.
+            if not (self.mode == "conversation" and self.conversation_ui):
+                raise ValueError(
+                    "ClaudeCodeTaskConfig: custom_controls requires "
+                    "mode='conversation' and conversation_ui=True."
+                )
+            validate_custom_controls(
+                self.custom_controls, permission_gate=self.permission_gate,
+                bypass_allowed=self.bypass_allowed, owner="ClaudeCodeTaskConfig",
+            )
         if self.native_spinner and not (self.mode == "conversation" and self.conversation_ui):
             raise ValueError(
                 "ClaudeCodeTaskConfig: native_spinner=True requires "

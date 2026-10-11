@@ -57,13 +57,15 @@ permission mode) are kept across an optio resume (`picks.py`: a file in
 `home/.claude`, so in the session blob; only an optio resume reads it back, not
 `session_restore_from` or a seed). Before the resumed launch a short-lived
 claude (same env and isolation, no `--continue`, no turn, no transcript;
-`--model` the configured model or `default`, never the saved one, so the list
+`--model` the configured model (or a custom control's default) or `default`,
+never the saved one, so the list
 holds no echo of it) is asked only `initialize`, and each pick is checked
 against that list: a model it no longer lists moves to the newest entry of its
 family (`models.restore_model`: the
 `claude-<family>-<version>` of the full id saved with the pick, its `[variant]`
 kept when offered, never `default`), else the configured model, else
-`default`; an effort level the model lacks gives way to its default; a
+`default` (a model a custom control's option names stays as is); an effort
+level the model lacks gives way to its default; a
 permission mode the task does not offer is dropped. When that probe cannot
 tell, claude is launched on the configured model (else `default`), its list is
 used, and a correction is switched to live, before the first message. See
@@ -413,6 +415,42 @@ when the hook returns, and when it raises `NothingToResurrect`.
   answer, no models, no answer in `models.INITIALIZE_TIMEOUT_S`) the select
   offers the bare aliases default/opus/sonnet/haiku without descriptions or
   effort levels, and each live switch asks again.
+* `CustomControlsConfigMixin` (`custom_controls`, `optio_agents.custom_controls`)
+  — the task's own selectors, each option a fixed `ControlSettings` (model /
+  reasoning effort / permission mode). Requires conversation mode +
+  `conversation_ui`; independent of `show_session_controls` and the
+  `session_controls` allowlist. On top of the shared checks the config refuses
+  an option whose permission mode this task cannot switch to
+  (`controls.permission_mode_unusable`: Manual / Plan without
+  `permission_gate`, Bypass unless `bypass_allowed`) and two options of one
+  control that do not differ in a setting both set (both could match, so the
+  selection would be ambiguous). Launch: each control's default option
+  replaces the config's `model` / `reasoning_effort` / `permission_mode`
+  (`controls.custom_defaults`; the session's `base_*`), fresh and on a resume
+  that saved no pick; saved picks win over them, and a permission mode is
+  saved while it differs from that launch mode. The models the options name
+  (`controls.task_models`, `conversation.task_models`) are the task's own,
+  like a configured model: switched to and restored as given, though the
+  CLI's list (its picker's entries, e.g. no plain `opus`) may not name them.
+  widgetData `customControls` and every `x-optio-control-update`
+  (`controls.custom_controls_snapshot`): per control `{id, label,
+  description, options: [{value, label, description}], value}`, labels and
+  descriptions as defined (a string or a language map; a missing description
+  is null), `value` the option whose settings all match the running values
+  (`controls.custom_control_value`; the model compared as the model select
+  shows it), else null (e.g. after a manual built-in change). `[]` without
+  custom controls. `POST /control {id: "custom:<control id>", value: <option
+  value>}` (`controls.CUSTOM_CONTROL_PREFIX`; accepted whatever
+  `settable_controls` says) applies the option's settings in ONE
+  `apply_settings` (one `apply_flag_settings`, plus `set_permission_mode`
+  when it sets a mode); the hook saves the picks and re-emits. 400 `bad-id` /
+  `bad-value` for a control / option the task does not define; 409 with
+  nothing changed: `closed`, `busy` while a turn runs (the listener's
+  `_turn_running`: claude would apply a model change only after the turn),
+  `rejected` + `error` when claude refuses or the session cannot apply the
+  option's values (`ValueError`). After `busy` / `rejected` the listener's
+  `refresh_controls` re-emits the running values, replacing the widget's
+  optimistic selection.
 * `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt` —
   inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
   (alongside the `ClaustrumConfigMixin` triad). Optional synchronous

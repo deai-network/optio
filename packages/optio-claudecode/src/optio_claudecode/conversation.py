@@ -92,6 +92,11 @@ class ClaudeCodeConversation:
         # could not tell), then a switch asks claude for it first, and while
         # it still cannot tell, a model is taken as given.
         self.models_offered: list[dict] | None = None
+        # Models the task itself names (its custom controls' options,
+        # controls.task_models; set by the owning body): switched to as given,
+        # like a configured model, though the CLI's list (its picker's
+        # entries, e.g. no plain `opus`) may not name them.
+        self.task_models: frozenset[str] = frozenset()
         # Awaited after every model/effort switch claude answered, with
         # whether it took it: the owning body keeps the picks for a resume
         # and re-emits the controls snapshot (after a refusal too: the widget
@@ -422,7 +427,8 @@ class ClaudeCodeConversation:
         given and drops an unknown level silently), so they are checked here
         first, against the CLI's model list (``models_offered``, asked of
         claude when not known yet): a model it does not offer (the running
-        one always passes; any model while the CLI cannot tell), a level that
+        one and the task's own, ``task_models``, always pass; any model while
+        the CLI cannot tell), a level that
         model does not list, a mode this session does not offer raise
         ``ValueError`` and nothing reaches claude. ``ControlRejected`` (its
         message) when claude refuses: the values stay as they were.
@@ -488,7 +494,7 @@ class ClaudeCodeConversation:
         catalog = self.models_offered or []
         target = model if model is not None else (self.model or cc_models.DEFAULT_MODEL)
         if (model is not None and model != self.model and self.models_offered
-                and not cc_models.offers(catalog, model)):
+                and model not in self.task_models and not cc_models.offers(catalog, model)):
             raise ValueError(f"model {model!r} is not offered by this session")
         levels, preselected = cc_models.model_effort(
             cc_models.shown_model(catalog, picked=target, runtime=None), catalog,
@@ -583,18 +589,22 @@ class ClaudeCodeConversation:
         inner = response.get("response")
         return inner if isinstance(inner, dict) else {}
 
-    def emit_control_update(self, controls: list[dict]) -> None:
+    def emit_control_update(
+        self, controls: list[dict], *, custom_controls: list[dict] | None = None,
+    ) -> None:
         """Fan out a synthetic ``x-optio-control-update`` carrying a full
-        controls snapshot so the widget reducer re-projects ``state.controls``.
+        controls snapshot so the widget reducer re-projects ``state.controls``
+        (and, when given, the custom controls with their derived selection:
+        ``customControls``, ``controls.custom_controls_snapshot``).
 
         Used after a live model/effort switch to make the reasoning_effort
         slider's presence and preselected level follow the (possibly new)
         model — the same reactive path other engines use on a live control
         change."""
-        self._event_queue.put_nowait({
-            "type": "x-optio-control-update",
-            "controls": controls,
-        })
+        event: dict = {"type": "x-optio-control-update", "controls": controls}
+        if custom_controls is not None:
+            event["customControls"] = custom_controls
+        self._event_queue.put_nowait(event)
 
     def emit_event(self, event: dict) -> None:
         """Fan out a synthetic ``x-optio-*`` event to on_event subscribers, in
