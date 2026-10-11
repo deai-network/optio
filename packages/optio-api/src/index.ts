@@ -5,6 +5,7 @@ export {
   getProcessTree,
   getProcessLog,
   getProcessTreeLog,
+  getProcessConversation,
   launchProcess,
   cancelProcess,
   dismissProcess,
@@ -19,7 +20,19 @@ export {
   type ResurrectCommandResult,
   type ResyncCommandResult,
   type ForbiddenResult,
+  type ConversationResult,
 } from './handlers.js';
+
+// Conversation archive proxy (read a suspended process's record; for custom adapters)
+export {
+  resolveConversationArchive,
+  forgetConversationArchive,
+  fetchConversation,
+  CONVERSATION_ARCHIVE_CACHE_TTL_MS,
+  CONVERSATION_ARCHIVE_TIMEOUT_MS,
+  type ConversationArchiveEndpoint,
+  type ConversationFetchResult,
+} from './conversation-archive.js';
 
 // Authentication + per-request access (scope / authorize hooks)
 export {
@@ -46,6 +59,7 @@ export {
   inScope,
   findScopedProcess,
   gateProcess,
+  findActionTarget,
   gateInstances,
   scopedResyncFilter,
   toProcessRef,

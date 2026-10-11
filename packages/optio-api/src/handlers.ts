@@ -4,12 +4,16 @@ import { metadataFilterToMongo } from './metadata-filter-query.js';
 import type { OptioContext } from './context.js';
 import { resolveDb, resolveOptioEngine } from './resolve.js';
 import { UNRESTRICTED, type Access } from './auth.js';
-import { andScope, findScopedProcess, gateProcess, scopedResyncFilter } from './access-scope.js';
+import {
+  andScope, findActionTarget, findScopedProcess, gateProcess, scopedResyncFilter,
+} from './access-scope.js';
+import { fetchConversation, type ConversationFetchResult } from './conversation-archive.js';
 import type {
   LaunchFailureReason as LaunchFailureReasonType,
   CancelFailureReason as CancelFailureReasonType,
   DismissFailureReason as DismissFailureReasonType,
   ResurrectFailureReason as ResurrectFailureReasonType,
+  ConversationFailureReason as ConversationFailureReasonType,
 } from 'optio-contracts';
 
 function col(db: Db, prefix: string) {
@@ -208,6 +212,47 @@ export async function getProcessTreeLog(
     nextCursor: hasNext ? String(startIdx + limit) : null,
     totalCount: allLogs.length,
   };
+}
+
+// --- Conversation record of a suspended process (proxied from the engine) ---
+
+/**
+ * `GET /processes/:id/conversation`. `headers` must go out with the answer:
+ * the record is decrypted conversation content, never to be cached.
+ */
+export type ConversationResult = (
+  | ConversationFetchResult
+  | { status: 403; body: { reason: ConversationFailureReasonType; message: string } }
+) & { headers: { 'Cache-Control': 'no-store' } };
+
+const NO_STORE = { 'Cache-Control': 'no-store' } as const;
+
+/**
+ * The saved conversation of a suspended process, read through the engine's
+ * conversation archive (`conversation-archive.ts`): the engine decrypts, this
+ * only relays. Gated as the 'widget' action (scope: 404, authorize: 403)
+ * before anything reaches the engine. The engine is always asked by the
+ * process document's `_id`, also when `id` is a `processId` string.
+ */
+export async function getProcessConversation(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,
+  access: Access = UNRESTRICTED,
+): Promise<ConversationResult> {
+  const { db, prefix } = resolveDb(ctx.dbOpts, query);
+  const processes = col(db, prefix);
+  const gate = await gateProcess(processes, id, access, 'widget');
+  if (!gate.ok && gate.status === 403) {
+    return { status: 403, body: { reason: 'forbidden', message: 'Forbidden' }, headers: NO_STORE };
+  }
+  // Unrestricted access skips gateProcess's lookup; find the document here.
+  const doc = gate.ok ? (gate.doc ?? (await findActionTarget(processes, id))) : null;
+  if (!doc) {
+    return { status: 404, body: { reason: 'not-found', message: 'No such process.' }, headers: NO_STORE };
+  }
+  const result = await fetchConversation(db, prefix, doc._id.toString());
+  return { ...result, headers: NO_STORE };
 }
 
 // --- Command handlers ---

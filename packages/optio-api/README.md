@@ -132,6 +132,7 @@ All adapters mount the same endpoints under `/api/processes/:prefix/...`:
 | GET | `/api/processes/:prefix/:id/tree` | Get process subtree |
 | GET | `/api/processes/:prefix/:id/log` | Get process log |
 | GET | `/api/processes/:prefix/:id/tree/log` | Get merged subtree log |
+| GET | `/api/processes/:prefix/:id/conversation` | Read a suspended process's saved conversation, proxied from the engine's conversation archive (the engine decrypts). 200 `{ events, capturedAt }`; 403/404/409/500/503 with `{reason, message}` per `ConversationFailureReason` (503 `engine-unavailable`: no engine, unreachable, or no answer within 15 s). Gated as the `'widget'` action; always `Cache-Control: no-store`. |
 | POST | `/api/processes/:prefix/:id/launch` | Forward launch to engine. 200 on success; 404/409 with `{reason, message}` per `LaunchFailureReason`. |
 | POST | `/api/processes/:prefix/:id/cancel` | Forward cancel to engine. 200 on success; 404/409 per `CancelFailureReason`. |
 | POST | `/api/processes/:prefix/:id/dismiss` | Forward dismiss to engine. 200 on success; 404/409 per `DismissFailureReason`. |
@@ -175,10 +176,11 @@ import {
   listProcesses, getProcess, getProcessTree,
   getProcessLog, getProcessTreeLog,
   launchProcess, cancelProcess, dismissProcess, resurrectProcess, resyncProcesses,
+  getProcessConversation,
   createListPoller, createTreePoller,
   type ListQuery, type PaginationQuery, type TreeLogQuery,
   type LaunchCommandResult, type CancelCommandResult, type DismissCommandResult,
-  type ResurrectCommandResult,
+  type ResurrectCommandResult, type ConversationResult,
   type StreamPollerOptions, type TreePollerOptions, type ListPollerHandle,
 } from 'optio-api';
 ```
@@ -191,6 +193,9 @@ later positional args. Command handlers (`launchProcess`, `cancelProcess`,
 (`LaunchCommandResult` / `CancelCommandResult` / `DismissCommandResult` /
 `ResurrectCommandResult`) whose 404/409 bodies are `{ reason, message }` —
 map these to HTTP responses directly.
+
+`getProcessConversation` returns `{ status, body, headers }`: send `headers`
+(`Cache-Control: no-store`) with the response.
 
 Stream pollers expose a `{ start(), stop() }` handle; call `start()` when the
 client connects and `stop()` when they disconnect.
@@ -208,8 +213,8 @@ registerOptioApi(app, {
   // null for an unrestricted user. Other tenants' processes behave as missing.
   scope: (req) => (req.user.admin ? null : { customerId: req.user.customerId }),
   // Decide individual actions: launch, cancel, dismiss, resurrect (a
-  // single-process action like launch), resync, the widget routes and
-  // instance discovery. false -> 403.
+  // single-process action like launch), resync, the widget routes (also
+  // gating the conversation read) and instance discovery. false -> 403.
   authorize: (req, { action, process, clean }) =>
     action === 'instances' ? req.user.admin
       : action === 'resync' && clean ? req.user.admin

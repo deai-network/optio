@@ -2,7 +2,7 @@
 
 ## Architectural rule
 
-**Engine owns all writes.** This package reads MongoDB directly for queries (REST GETs, SSE streams, widget proxy) and forwards every mutating operation to the engine via clamator RPC. The API enforces no state machine, no policy, no command-acceptance rules. The engine is the single source of truth for what commands are allowed and what state results.
+**Engine owns all writes.** This package reads MongoDB directly for queries (REST GETs, SSE streams, widget proxy, the conversation-archive proxy) and forwards every mutating operation to the engine via clamator RPC. The API enforces no state machine, no policy, no command-acceptance rules. The engine is the single source of truth for what commands are allowed and what state results.
 
 ---
 
@@ -140,7 +140,8 @@ type AuthorizeCallback<TRequest> = (req: TRequest, input: AuthorizeInput) => boo
 ```
 
 `'resurrect'` is a single-process action like `'launch'`: `authorize` receives the
-target `process`.
+target `process`. `'widget'` also gates `GET /api/processes/:id/conversation` (reading
+a suspended process's conversation record), with the target `process`.
 
 **`scope(req)`** returns a flat exact-match metadata map, or `null` / `{}` for
 an unscoped request. A process is in scope when every key equals its
@@ -154,12 +155,15 @@ Enforcement:
 | `GET /api/processes/:id`, `/tree`, `/log`, `/tree/log`, `/:id/tree/stream` | 404 `Process not found` |
 | `GET /api/processes/tree/multi/stream` | reported in `missing` |
 | `POST /api/processes/:id/launch` / `cancel` / `dismiss` / `resurrect` | 404 `{ reason: 'not-found' }`; the engine is not called |
+| `GET /api/processes/:id/conversation` | 404 `{ reason: 'not-found' }`; the engine is not called |
 | widget proxy, `widget-control`, `widget-upload` (Fastify) | the route's not-found response |
 | `POST /api/processes/resync` | runs with the client's flat filter plus the scope keys (the engine filters regenerated tasks and pruned records by it); 403 if the filter contradicts the scope, 400 for a predicate-tree filter |
 
 **`authorize(req, input)`** runs after the scope check for launch, cancel,
-dismiss, resurrect, resync, the three widget routes and `GET /api/optio/instances`;
-`false` gives **403** `{ message: 'Forbidden' }` and the engine is not called.
+dismiss, resurrect, resync, the three widget routes, the conversation read (as
+`'widget'`) and `GET /api/optio/instances`; `false` gives **403**
+`{ message: 'Forbidden' }` (the conversation read: `{ reason: 'forbidden', message: 'Forbidden' }`)
+and the engine is not called.
 
 Without either hook behaviour is exactly as before: commands go straight to
 the engine and no extra lookups run.
@@ -316,6 +320,22 @@ async function resyncProcesses(
 Command results also carry `{ status: 403; body: { message: 'Forbidden' } }`
 (`ForbiddenResult`) when the host's `authorize` hook refuses.
 
+```typescript
+// GET /api/processes/:id/conversation: the saved conversation record of a
+// suspended process, read through the engine's conversation archive.
+async function getProcessConversation(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,           // either id form
+  access?: Access,
+): Promise<ConversationResult>
+// ConversationResult = ({ status: 200; body: { events: unknown[]; capturedAt: string | null } }
+//   | { status: 403 | 404 | 409 | 500 | 503; body: { reason: ConversationFailureReason; message } })
+//   & { headers: { 'Cache-Control': 'no-store' } }   // adapters must send `headers`
+```
+
+See "Conversation archive proxy" below.
+
 The 404/409 response body for `launchProcess` / `cancelProcess` / `dismissProcess` /
 `resurrectProcess` is `{ reason, message }`, typed via `LaunchErrorBody` / `CancelErrorBody` /
 `DismissErrorBody` / `ResurrectErrorBody` in `optio-contracts/src/api-to-frontend.ts`. The
@@ -332,6 +352,39 @@ result into HTTP status + body. Failure reasons (`not-found`, `not-launchable`, 
 `launch-blocked`, `not-cancellable`, `not-dismissable`, and for resurrect `not-resurrectable`,
 `no-resurrect-support`, `resurrect-in-progress`, `shutting-down`) come from the engine; the API only
 maps each to 404 or 409 (`not-found` is 404, every other reason 409).
+
+## Conversation archive proxy
+
+`GET /api/processes/:id/conversation` (contract route `processes.getConversation`)
+shows a suspended agent task's conversation read-only. The record is encrypted at
+rest and only the engine holds the key, so the engine decrypts and this package
+relays (spec `docs/2026-10-12-suspended-conversation-view-design.md` §3):
+
+- The engine runs one aiohttp listener (optio-core `conversation_archive.py`) and
+  publishes `{ _id: 'conversationArchive', url, password, updatedAt }` in
+  `{prefix}_engine_endpoints`; it serves `GET <url>conversation/<_id>` behind basic auth
+  `optio:<password>`.
+- `getProcessConversation` (`handlers.ts`): `gateProcess(..., 'widget')` (out of
+  scope: 404 `not-found`; refused: 403 `forbidden`); resolves the target document
+  (`findActionTarget`, either id form; missing: 404 `not-found`); then
+  `fetchConversation` with the document's `_id`.
+- `conversation-archive.ts`: `resolveConversationArchive(db, prefix)` reads the
+  endpoint document and caches a found address for 30 s
+  (`CONVERSATION_ARCHIVE_CACHE_TTL_MS`), per MongoClient, database name and prefix; an
+  absence is not cached. `fetchConversation` asks with a 15 s timeout
+  (`CONVERSATION_ARCHIVE_TIMEOUT_MS`, covering the body too) and passes the archive's
+  200 / 404 (`not-found`, `no-conversation-support`, `no-conversation`) / 409
+  (`not-suspended`) / 500 (`read-failed`) through. Everything else is 503
+  `engine-unavailable` and drops the cached address
+  (`forgetConversationArchive`), so the next request reads MongoDB again: no
+  endpoint document, a connection failure, the timeout, an upstream 401 (an engine
+  restarted on the same port publishes a new password), or an answer that is not the
+  archive's (wrong status or body shape). Redirects are not followed.
+- Every answer carries `Cache-Control: no-store`; the handler returns it as
+  `headers` and each adapter sets it natively (fastify `reply.headers`, express
+  `res.set`, Next Pages `res.setHeader`, Next App ts-rest `responseHeaders`).
+- Nothing on this path logs; the password and the record never reach a log line or
+  an error message. No MongoDB writes.
 
 ## Types
 

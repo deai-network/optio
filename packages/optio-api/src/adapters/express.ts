@@ -149,6 +149,13 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
+    getConversation: async ({ params, query, req, res }) => {
+      const { headers, ...result } = await handlers.getProcessConversation(
+        ctx, query, params.id, await access(req),
+      );
+      res.set(headers);
+      return result as any;
+    },
     launch: async ({ params, query, body, req }) => {
       const result = await handlers.launchProcess(
         ctx, query, params.id, body?.resume === true, null, await access(req),

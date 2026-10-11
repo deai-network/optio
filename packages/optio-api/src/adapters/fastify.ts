@@ -518,6 +518,13 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
+    getConversation: async ({ params, query, request, reply }) => {
+      const { headers, ...result } = await handlers.getProcessConversation(
+        ctx, query, params.id, await access(request),
+      );
+      reply.headers(headers);
+      return result as any;
+    },
     launch: async ({ params, query, body, request }) => {
       const result = await handlers.launchProcess(
         ctx, query, params.id, body?.resume === true, body?.sessionId ?? null, await access(request),

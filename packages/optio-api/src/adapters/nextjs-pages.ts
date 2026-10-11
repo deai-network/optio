@@ -107,6 +107,13 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
+    getConversation: async ({ params, query, res }) => {
+      const { headers, ...result } = await handlers.getProcessConversation(
+        ctx, query, params.id, await currentAccess(),
+      );
+      for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+      return result as any;
+    },
     launch: async ({ params, query, body }) => {
       const result = await handlers.launchProcess(
         ctx, query, params.id, body?.resume === true, null, await currentAccess(),

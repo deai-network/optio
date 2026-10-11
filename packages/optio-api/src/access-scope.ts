@@ -73,11 +73,21 @@ export type GateResult =
   | { ok: false; status: 404 | 403 };
 
 /**
+ * The document a single-process action targets: by `_id` for a 24-hex id,
+ * else by `processId`, where a duplicated `processId` resolves to the newest
+ * document, as the engine does.
+ */
+export async function findActionTarget(col: Collection, id: string): Promise<Document | null> {
+  return ObjectId.isValid(id) && /^[a-f0-9]{24}$/i.test(id)
+    ? col.findOne({ _id: new ObjectId(id) })
+    : col.find({ processId: id }).sort({ _id: -1 }).limit(1).next();
+}
+
+/**
  * Admit a single-process action: the process must exist, be in scope (else
  * 404, its existence is not revealed) and pass `authorize` (else 403).
  * Unrestricted access skips the lookup, leaving everything to the engine as
- * before. A duplicated `processId` resolves to the newest document, as the
- * engine does.
+ * before. The target is found by `findActionTarget`.
  */
 export async function gateProcess(
   col: Collection,
@@ -86,9 +96,7 @@ export async function gateProcess(
   action: OptioAction,
 ): Promise<GateResult> {
   if (!access.restricted) return { ok: true, doc: null };
-  const doc = ObjectId.isValid(id) && /^[a-f0-9]{24}$/i.test(id)
-    ? await col.findOne({ _id: new ObjectId(id) })
-    : await col.find({ processId: id }).sort({ _id: -1 }).limit(1).next();
+  const doc = await findActionTarget(col, id);
   if (!doc || !(await inScope(col, doc, access.scope))) return { ok: false, status: 404 };
   if (!(await access.authorize({ action, process: toProcessRef(doc) }))) {
     return { ok: false, status: 403 };
