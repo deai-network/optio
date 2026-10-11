@@ -78,6 +78,19 @@ function rerenderView(r: ReturnType<typeof render>, props: ConversationViewProps
   r.rerender(<ConfigProvider>{(<ConversationView {...props} />) as ReactElement}</ConfigProvider>);
 }
 
+// The per-answer copy control is X's Actions.Copy: antd's copyable Text, whose
+// own button does the copying.
+function clickAnswerCopy(): void {
+  fireEvent.click(within(screen.getByTestId('answer-copy')).getByRole('button', { name: 'Copy' }));
+}
+
+// The X shape class (default / round / corner) of a Bubble's surface, which
+// sets its corner radii.
+function bubbleShape(bubble: HTMLElement): string | undefined {
+  const content = bubble.querySelector('.ant-bubble-content');
+  return Array.from(content?.classList ?? []).find((c) => /^ant-bubble-content-(default|round|corner)$/.test(c));
+}
+
 describe('failed tool call', () => {
   it('shows the error in the row, in the error color', () => {
     const row: ChatItem = {
@@ -90,7 +103,10 @@ describe('failed tool call', () => {
     const line = screen.getByTestId('tool-call');
     expect(line.getAttribute('data-tool-status')).toBe('failed');
     expect(line.textContent).toContain('client does not implement it');
-    expect(line.style.color).not.toBe('');
+    // The error colour is X's: the row's ThoughtChain node carries the error
+    // status, whose icon X paints in colorError.
+    const node = line.closest('.ant-thought-chain-node') as HTMLElement;
+    expect(node.querySelector('.ant-thought-chain-status-error')).not.toBeNull();
   });
 });
 
@@ -106,7 +122,10 @@ describe('foreground tool', () => {
     };
     renderView(makeProps({ state: makeState([row]), toolVerbosity: 'description-only' }));
     const line = screen.getByTestId('tool-call');
-    expect(line.querySelector('.ant-spin')).not.toBeNull();
+    // No app-lent Spinner here, so the node's icon is X's own loading status
+    // (the lent-Spinner path is spinnerSlot.test.tsx's).
+    const node = line.closest('.ant-thought-chain-node') as HTMLElement;
+    expect(node.querySelector('.ant-thought-chain-status-loading .anticon-loading')).not.toBeNull();
     expect(line.textContent).toContain('Say hi');
     expect(line.textContent).toContain('12s');
   });
@@ -181,7 +200,10 @@ describe('ConversationView item rendering', () => {
     expect(screen.getByText('Reasoning')).toBeTruthy();
   });
 
-  it('gives the user bubble a right-tail radius and the assistant bubble a left-tail radius', () => {
+  // The hand-drawn tails (a flattened bottom corner on the speaker's side)
+  // went with the switch to X's Bubble, whose default shape rounds every
+  // corner alike; the side a bubble sits on still tells who spoke.
+  it('places the user bubble on the right and the assistant bubble on the left', () => {
     renderView(
       makeProps({
         state: makeState([
@@ -190,10 +212,10 @@ describe('ConversationView item rendering', () => {
         ]),
       }),
     );
-    const user = screen.getByText('u') as HTMLElement;
-    const assistant = screen.getByText('a').closest('div[style*="border-radius"]') as HTMLElement;
-    expect(user.style.borderRadius).toBe('14px 14px 4px 14px');
-    expect(assistant.style.borderRadius).toBe('14px 14px 14px 4px');
+    const user = screen.getByText('u').closest('.ant-bubble') as HTMLElement;
+    const assistant = screen.getByText('a').closest('.ant-bubble') as HTMLElement;
+    expect(user.classList.contains('ant-bubble-end')).toBe(true);
+    expect(assistant.classList.contains('ant-bubble-start')).toBe(true);
   });
 
   it('renders a status-tinted permission card (warning border)', () => {
@@ -261,7 +283,7 @@ describe('ConversationView item rendering', () => {
 });
 
 describe('ConversationView per-answer copy', () => {
-  it('copies the raw answer text to the clipboard', () => {
+  it('copies the raw answer text to the clipboard', async () => {
     renderView(
       makeProps({
         state: makeState([
@@ -269,8 +291,8 @@ describe('ConversationView per-answer copy', () => {
         ]),
       }),
     );
-    fireEvent.click(screen.getByTestId('answer-copy'));
-    expect(writeText).toHaveBeenCalledWith('copy me verbatim');
+    clickAnswerCopy();
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('copy me verbatim'));
   });
 });
 
@@ -592,14 +614,22 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
     expect(screen.queryByTestId('tool-elapsed')).toBeNull();
   });
 
-  it('verbose shows the result under the args once the row is expanded', () => {
+  it('verbose shows the result under the args once the row is expanded', async () => {
     const state = makeState([
       { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status: 'done', result: 'file1', startedAt: 0, endedAt: 1000 },
     ]);
     renderView(makeProps({ state, toolVerbosity: 'verbose' }));
-    expect(screen.getByTestId('tool-result').textContent).toBe('file1');
+    // The node's content: the args (the command as a code block), then the
+    // result in its own "output" code block.
+    const result = screen.getByTestId('tool-result');
+    expect(result.querySelector('.ant-codeHighlighter-code')?.textContent).toBe('file1');
+    const node = result.closest('.ant-thought-chain-node') as HTMLElement;
+    const blocks = Array.from(node.querySelectorAll('.ant-codeHighlighter-code')).map((b) => b.textContent);
+    expect(blocks).toEqual(['ls', 'file1']);
+    // Collapsing is X's animated one: the content leaves once its collapse
+    // motion ends (X's 500ms motion deadline in jsdom).
     fireEvent.click(screen.getByText('Bash'));
-    expect(screen.queryByTestId('tool-result')).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId('tool-result')).toBeNull(), { timeout: 2000 });
   });
 
   it('silent keeps a running background job as the muted spinner line', () => {
@@ -637,7 +667,9 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
     renderView(makeProps({ state, toolVerbosity: 'description-only' }));
     const row = screen.getByTestId('tool-call');
     expect(row.getAttribute('data-tool-status')).toBe('stopped');
-    expect(row.textContent).toContain('⏹');
+    // The stopped glyph is X's abort status icon on the row's node.
+    const node = row.closest('.ant-thought-chain-node') as HTMLElement;
+    expect(node.querySelector('.ant-thought-chain-status-abort')).not.toBeNull();
   });
 
   it('silent hides tool rows but keeps a stopped background job as one muted line', () => {
@@ -752,8 +784,12 @@ describe('ConversationView steering', () => {
     const bubble = screen.getByTestId('queued-bubble');
     expect(bubble.textContent).toContain('do this next');
     expect(bubble.textContent).toContain('Queued — the agent reads it when ready');
-    expect(bubble.getAttribute('style')).toContain('dashed');
-    expect(bubble.style.opacity).toBe('0.6');
+    // Muted and dashed: the bubble's own surface (X's outlined content box),
+    // not the full-width row around it.
+    const surface = bubble.querySelector('.ant-bubble-content') as HTMLElement;
+    expect(surface.classList.contains('ant-bubble-content-outlined')).toBe(true);
+    expect(surface.style.borderStyle).toBe('dashed');
+    expect(surface.style.opacity).toBe('0.6');
   });
 
   // Fix 13b, owner ruling 2026-09-15: Send now delivers up to the bubble it
@@ -856,7 +892,10 @@ describe('ConversationView steering', () => {
     ]) }));
     const cut = screen.getAllByTestId('answer-interrupted');
     expect(cut).toHaveLength(1);
-    expect(cut[0].className).toContain('optio-cc-interrupted');
+    // The jagged edge goes on the bubble's surface (X's content box), and
+    // only on the interrupted answer's.
+    expect(cut[0].querySelector('.ant-bubble-content')?.classList.contains('optio-cc-interrupted')).toBe(true);
+    expect(document.querySelectorAll('.optio-cc-interrupted')).toHaveLength(1);
     expect(cut[0].textContent).toContain('cut off');
     expect(document.getElementById('optio-cc-interrupted-style')).not.toBeNull();
   });
@@ -883,22 +922,34 @@ describe('ConversationView steering', () => {
   // the summary, the same band as for a resume, in the System bubble's
   // colours: its fill, and its border colour along the zig-zag edges (the
   // outer layer, showing around the fill inset inside it).
+  // Since the X switch the System row is X's Bubble.System in the glass tinted
+  // with the theme's preset purple (published on the view root as
+  // --optio-x-system); the bands paint that preset's light shades: purple1
+  // as the fill, purple3 along the zig-zag edges.
   it('compacting and compacted items render as bands in the System bubble colours, with their own labels', () => {
     renderView(makeProps({ state: makeState([
       { kind: 'activity', text: 'System: x', seq: 1, system: true },
       { kind: 'compacting', seq: 2 },
       { kind: 'compacted', seq: 3 },
     ]) }));
+    const token = theme.getDesignToken();
+    const asCss = (color: string) => {
+      const probe = document.createElement('div');
+      probe.style.background = color;
+      return probe.style.background;
+    };
     const bubble = screen.getByTestId('activity-bubble');
-    expect(bubble.style.borderColor).not.toBe('');
+    expect(bubble.querySelector('.ant-bubble-content')?.classList.contains('optio-x-glass-system')).toBe(true);
+    const root = bubble.closest('[style*="--optio-x-system"]') as HTMLElement;
+    expect(root.style.getPropertyValue('--optio-x-system')).toBe(token.purple);
     const start = screen.getByTestId('compaction-start-band');
     const end = screen.getByTestId('compaction-end-band');
     expect(start.textContent).toBe('Context is being compacted.');
     expect(end.textContent).toBe('Context has been compacted.');
     for (const band of [start, end]) {
       expect(band.className).toContain('optio-cc-band');
-      expect(band.style.background).toBe(bubble.style.borderColor);
-      expect(within(band).getByTestId('band-fill').style.background).toBe(bubble.style.background);
+      expect(band.style.background).toBe(asCss(token.purple3));
+      expect(within(band).getByTestId('band-fill').style.background).toBe(asCss(token.purple1));
     }
     const css = document.getElementById('optio-cc-band-style')?.textContent ?? '';
     expect(css).toContain('.optio-cc-band-fill');
@@ -1244,15 +1295,15 @@ describe('ConversationView interrupted-answer ellipsis (Fix 16)', () => {
     expect(screen.queryByText('finished normally…')).toBeNull();
   });
 
-  it('is render-only: item.text stays unchanged and the copy button does not include the ellipsis', () => {
+  it('is render-only: item.text stays unchanged and the copy button does not include the ellipsis', async () => {
     const item: Extract<ChatItem, { kind: 'assistant' }> = {
       kind: 'assistant', text: 'cut off', pending: false, seq: 1, msgId: 'm1', interrupted: true,
     };
     renderView(makeProps({ state: makeState([item]) }));
     expect(screen.getByTestId('answer-interrupted').textContent).toContain('cut off…');
     expect(item.text).toBe('cut off');
-    fireEvent.click(screen.getByTestId('answer-copy'));
-    expect(writeText).toHaveBeenCalledWith('cut off');
+    clickAnswerCopy();
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('cut off'));
   });
 
   // Review of the first cut (round 1): appending "…" to the raw markdown
@@ -1371,12 +1422,17 @@ describe('ConversationView message timestamps', () => {
         ]),
       }),
     );
-    for (const testId of ['conversation-error-item', 'queued-bubble']) {
-      const bubble = screen.getByTestId(testId);
-      expect(bubble.querySelector('[data-testid="message-time"]')).toBeNull();
-      const sibling = bubble.nextElementSibling;
-      expect(sibling?.getAttribute('data-testid')).toBe('message-time');
-    }
+    // The error row: the label is the bubble's next sibling.
+    const error = screen.getByTestId('conversation-error-item');
+    expect(error.querySelector('[data-testid="message-time"]')).toBeNull();
+    expect(error.nextElementSibling?.getAttribute('data-testid')).toBe('message-time');
+    // An X Bubble (the queued one): its tinted surface is the content box; the
+    // label sits in X's footer right after it, outside that surface.
+    const queued = screen.getByTestId('queued-bubble').querySelector('.ant-bubble-content') as HTMLElement;
+    expect(queued.querySelector('[data-testid="message-time"]')).toBeNull();
+    const footer = queued.nextElementSibling as HTMLElement;
+    expect(footer.classList.contains('ant-bubble-footer')).toBe(true);
+    expect(footer.firstElementChild?.getAttribute('data-testid')).toBe('message-time');
   });
 
   // Fix 9, owner ruling 2026-09-14 (manual-test finding 3): "System: …" rows
@@ -1409,12 +1465,17 @@ describe('ConversationView message timestamps', () => {
   it('a "System: " row (system: true) gets the user bubble\'s corner radius and a right-aligned time label', () => {
     const ts = Date.parse('2026-09-15T10:00:00.000Z');
     renderView(makeProps({
-      state: makeState([{ kind: 'activity', text: 'System: you have been resumed', seq: 1, system: true, timestamp: ts }]),
+      state: makeState([
+        { kind: 'user', text: 'u', seq: 1 },
+        { kind: 'activity', text: 'System: you have been resumed', seq: 2, system: true, timestamp: ts },
+      ]),
     }));
     const bubble = screen.getByTestId('activity-bubble');
-    // Same shorthand the user bubble uses (see "gives the user bubble a
-    // right-tail radius..." above) -- reused, not a duplicated magic number.
-    expect(bubble.style.borderRadius).toBe('14px 14px 4px 14px');
+    // The corners are X's: the System row's surface has the same X shape as
+    // the user bubble's, not a radius of its own.
+    const user = screen.getByText('u').closest('.ant-bubble') as HTMLElement;
+    expect(bubbleShape(user)).toBeTruthy();
+    expect(bubbleShape(bubble)).toBe(bubbleShape(user));
     const label = screen.getByTestId('message-time');
     expect(bubble.nextElementSibling).toBe(label);
     // The row's own column still centers itself in the transcript (position
@@ -1430,7 +1491,8 @@ describe('ConversationView message timestamps', () => {
       state: makeState([{ kind: 'activity', text: '✓ Background task finished: export', seq: 1 }]),
     }));
     const bubble = screen.getByTestId('activity-bubble');
-    expect(bubble.style.borderRadius).toBe('14px');
+    // X's default shape: every corner rounded alike (no tail corner).
+    expect(bubbleShape(bubble)).toBe('ant-bubble-content-default');
     const column = bubble.parentElement as HTMLElement;
     expect(column.style.alignItems).toBe('center');
   });
