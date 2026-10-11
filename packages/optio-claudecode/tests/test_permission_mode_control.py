@@ -224,9 +224,8 @@ async def test_set_control_switches_the_mode_live_through_the_control_protocol()
         "subtype": "success", "request_id": ctrl["request_id"], "response": {"mode": "plan"}}})
     await asyncio.wait_for(switch, 60)
     assert conv.permission_mode == "plan"
-    # a mode switch is live: no restart is requested
-    assert not conv.model_change_requested.is_set()
-    assert not conv.effort_change_requested.is_set()
+    # a mode switch is that one request: no apply_flag_settings, no restart
+    assert handle.stdin.lines.empty()
     handle.stdout.eof()
     await reader
 

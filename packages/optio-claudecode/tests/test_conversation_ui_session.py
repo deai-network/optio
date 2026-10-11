@@ -452,45 +452,141 @@ async def test_permission_mode_switches_live_and_the_allowlist_holds(
         await optio.shutdown(grace_seconds=1.0)
 
 
+def _remember_workdir(into: dict):
+    """before_execute: note the task's workdir (to read the picks file)."""
+    async def before(hook_ctx):
+        into["workdir"] = hook_ctx._host.workdir
+    return before
+
+
+def _log_lines(path: pathlib.Path) -> list:
+    return [json.loads(line) for line in path.read_text().splitlines() if line] if path.exists() else []
+
+
+def _replies(conv) -> "tuple[list[str], asyncio.Event]":
+    texts: list[str] = []
+    got = asyncio.Event()
+
+    def _on(text):
+        texts.append(text)
+        got.set()
+    conv.on_message(_on)
+    return texts, got
+
+
 @pytest.mark.asyncio
-async def test_a_model_relaunch_keeps_the_picked_permission_mode(
+async def test_a_model_pick_switches_live_without_a_relaunch(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+    tmp_path: pathlib.Path,
+):
+    """A model pick reaches the running claude as ONE apply_flag_settings
+    carrying the model and the effort level: no relaunch, the picked
+    permission mode stays, the pick is kept for a resume, the snapshot shows
+    it, and the next turn runs on the new model."""
+    argv_log, control_log = tmp_path / "argv.jsonl", tmp_path / "control.jsonl"
+    seen: dict = {}
+    optio = await _make_optio(mongo_db, "ccui-live")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-live", name="Live model switch",
+            config=_ui_config(
+                shim_install_dir, claude_cache_dir, show_session_controls=True,
+                before_execute=_remember_workdir(seen),
+                env={"FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+                     "FAKE_CLAUDE_CONTROL_LOG": str(control_log),
+                     "FAKE_CLAUDE_REPLY": "{model} {effort}"},
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result("cc-conv-live", session_id=None, timeout=60)
+        upstream = (await _wait_widget_upstream(optio, "cc-conv-live"))["widgetUpstream"]
+        await _wait_widget_data(optio, "cc-conv-live")
+        url, headers = upstream["url"], _basic(upstream["innerAuth"]["password"])
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{url}/events", headers=headers) as events:
+                await _post_control(session, url, headers, "permission_mode", "acceptEdits")
+                await _read_until(events, lambda e: _has_control(e, "permission_mode", "acceptEdits"))
+                await _post_control(session, url, headers, "model", "sonnet")
+                upd = await _read_until(events, lambda e: _has_control(e, "model", "sonnet"))
+                assert {c["id"]: c["value"] for c in upd["controls"]} == {
+                    "model": "sonnet", "reasoning_effort": "high", "permission_mode": "acceptEdits",
+                }
+        # Kept for a resume by the time /control answered.
+        picks = json.loads((pathlib.Path(seen["workdir"]) / "home/.claude/optio-picks.json").read_text())
+        assert picks == {"model": "sonnet", "model_resolved": "claude-sonnet-5",
+                         "effort": "high", "permission_mode": "acceptEdits"}
+        texts, replied = _replies(conv)
+        await conv.send("ping")
+        await asyncio.wait_for(replied.wait(), 60)
+        assert texts == ["claude-sonnet-5 high"]
+        assert conv.runtime_model == "claude-sonnet-5"
+        assert conv.permission_mode == "acceptEdits"
+        await conv.close()
+        await _wait_terminal(optio, "cc-conv-live")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    assert len(_log_lines(argv_log)) == 1                  # launched once: no relaunch
+    requests = _log_lines(control_log)
+    assert [r for r in requests if r["subtype"] == "apply_flag_settings"] == [
+        {"subtype": "apply_flag_settings", "settings": {"model": "sonnet", "effortLevel": "high"}},
+    ]
+    assert not any(r["subtype"] == "set_model" for r in requests)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_switch_leaves_the_values_and_surfaces_the_error(
     shim_install_dir: pathlib.Path,
     claude_cache_dir: pathlib.Path,
     task_root,
     mongo_db,
 ):
-    """A model change relaunches claude: it comes back in the mode the operator
-    picked, not the launch mode, and still able to return to bypass."""
-    optio = await _make_optio(mongo_db, "ccui-perm2")
+    """Claude answers apply_flag_settings with an error: /control says 409
+    rejected with claude's message; the model and effort stay what they were
+    (snapshot, picks, the next turn)."""
+    seen: dict = {}
+    optio = await _make_optio(mongo_db, "ccui-refused")
     try:
         task = create_claudecode_task(
-            process_id="cc-conv-perm2", name="Permission mode relaunch",
-            config=_ui_config(shim_install_dir, claude_cache_dir, show_session_controls=True),
+            process_id="cc-conv-refused", name="Refused switch",
+            config=_ui_config(
+                shim_install_dir, claude_cache_dir, show_session_controls=True,
+                before_execute=_remember_workdir(seen),
+                env={"FAKE_CLAUDE_APPLY_ERROR": "model switching is unavailable",
+                     "FAKE_CLAUDE_REPLY": "{model} {effort}"},
+            ),
         )
         await optio.adhoc_define(task)
-        conv = await optio.launch_and_await_result("cc-conv-perm2", session_id=None, timeout=60)
-        upstream = (await _wait_widget_upstream(optio, "cc-conv-perm2"))["widgetUpstream"]
-        await _wait_widget_data(optio, "cc-conv-perm2")
+        conv = await optio.launch_and_await_result("cc-conv-refused", session_id=None, timeout=60)
+        upstream = (await _wait_widget_upstream(optio, "cc-conv-refused"))["widgetUpstream"]
+        await _wait_widget_data(optio, "cc-conv-refused")
         url, headers = upstream["url"], _basic(upstream["innerAuth"]["password"])
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{url}/events", headers=headers) as events:
-                async with session.post(f"{url}/control", headers=headers,
-                                        json={"id": "permission_mode", "value": "acceptEdits"}) as r:
-                    assert r.status == 200
-                await _read_until(events, lambda e: _has_control(e, "permission_mode", "acceptEdits"))
-                async with session.post(f"{url}/control", headers=headers,
-                                        json={"id": "model", "value": "haiku"}) as r:
-                    assert r.status == 200
-                # The relaunched process's own init reports the picked mode.
-                await _read_until(events, lambda e: e.get("type") == "system"
-                                  and e.get("subtype") == "init"
-                                  and e.get("permissionMode") == "acceptEdits")
             async with session.post(f"{url}/control", headers=headers,
-                                    json={"id": "permission_mode", "value": "bypassPermissions"}) as r:
-                assert r.status == 200
-
+                                    json={"id": "model", "value": "sonnet"}) as r:
+                assert r.status == 409
+                assert await r.json() == {"ok": False, "reason": "rejected",
+                                          "error": "model switching is unavailable"}
+            async with session.post(f"{url}/control", headers=headers,
+                                    json={"id": "reasoning_effort", "value": "low"}) as r:
+                assert r.status == 409
+            async with session.get(f"{url}/events", headers=headers) as events:
+                # A snapshot built after the refusals: the values are unchanged.
+                await _post_control(session, url, headers, "permission_mode", "acceptEdits")
+                upd = await _read_until(events, lambda e: _has_control(e, "permission_mode", "acceptEdits"))
+                values = {c["id"]: c["value"] for c in upd["controls"]}
+                assert (values["model"], values["reasoning_effort"]) == ("default", "high")
+        picks = json.loads((pathlib.Path(seen["workdir"]) / "home/.claude/optio-picks.json").read_text())
+        assert picks == {"permission_mode": "acceptEdits"}
+        texts, replied = _replies(conv)
+        await conv.send("ping")
+        await asyncio.wait_for(replied.wait(), 60)
+        assert texts == ["claude-opus-5[1m] default"]
         await conv.close()
-        await _wait_terminal(optio, "cc-conv-perm2")
+        await _wait_terminal(optio, "cc-conv-refused")
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
@@ -502,9 +598,9 @@ async def test_a_picked_alias_stays_selected_when_claude_reports_its_full_id(
     task_root,
     mongo_db,
 ):
-    """Picking Haiku relaunches claude with --model haiku; its system/init
-    names the full id (claude-haiku-4-5-20251001). The select keeps showing
-    the alias, and the effort slider goes (Haiku has no effort levels)."""
+    """Picking Haiku switches claude to it; the next turn's system/init names
+    the full id (claude-haiku-4-5-20251001). The select keeps showing the
+    alias, and the effort slider goes (Haiku has no effort levels)."""
     optio = await _make_optio(mongo_db, "ccui-alias")
     try:
         task = create_claudecode_task(
@@ -521,6 +617,7 @@ async def test_a_picked_alias_stays_selected_when_claude_reports_its_full_id(
                 async with session.post(f"{url}/control", headers=headers,
                                         json={"id": "model", "value": "haiku"}) as r:
                     assert r.status == 200
+                await conv.send("ping")
                 await _read_until(events, lambda e: e.get("type") == "system"
                                   and e.get("subtype") == "init"
                                   and e.get("model") == "claude-haiku-4-5-20251001")
@@ -800,7 +897,8 @@ async def test_when_the_probe_cannot_tell_the_launched_list_corrects_the_pick(
     """A claude that answers initialize only when continuing (the fake's
     error-fresh): the probe before the resumed launch learns nothing, so the
     launched process's list shows the saved Opus (1M context) is gone, and
-    the session relaunches on the family's Opus."""
+    the session switches it live to the family's Opus (no relaunch)."""
+    argv_log, control_log = tmp_path / "argv.jsonl", tmp_path / "control.jsonl"
     models_file = tmp_path / "models.json"
     models_file.write_text(json.dumps(CLI_MODELS))
     optio = await _make_optio(mongo_db, "ccui-fallback2")
@@ -812,7 +910,9 @@ async def test_when_the_probe_cannot_tell_the_launched_list_corrects_the_pick(
                 supports_resume=True, credentials_json={"token": "test"},
                 before_execute=_plant_transcript_on("claude-opus-5[1m]"),
                 env={"FAKE_CLAUDE_MODELS_FILE": str(models_file),
-                     "FAKE_CLAUDE_INITIALIZE": "error-fresh"},
+                     "FAKE_CLAUDE_INITIALIZE": "error-fresh",
+                     "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+                     "FAKE_CLAUDE_CONTROL_LOG": str(control_log)},
             ),
         )
         await optio.adhoc_define(task)
@@ -846,6 +946,7 @@ async def test_when_the_probe_cannot_tell_the_launched_list_corrects_the_pick(
         url, headers = upstream["url"], _basic(upstream["innerAuth"]["password"])
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{url}/events", headers=headers) as events:
+                # The resume notice's turn already runs on the corrected model.
                 await _read_until(events, lambda e: e.get("type") == "system"
                                   and e.get("subtype") == "init"
                                   and e.get("model") == "claude-opus-6")
@@ -854,38 +955,48 @@ async def test_when_the_probe_cannot_tell_the_launched_list_corrects_the_pick(
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
+    # Two runs, one launch each (the second after its model probe): no relaunch.
+    spawned = [argv for argv in _log_lines(argv_log) if "--replay-user-messages" in argv]
+    assert len(spawned) == 2, spawned
+    assert {"subtype": "apply_flag_settings",
+            "settings": {"model": "opus", "effortLevel": "high"}} in _log_lines(control_log)
+
 
 @pytest.mark.asyncio
-async def test_without_the_cli_list_the_picker_offers_the_aliases_and_a_relaunch_asks_again(
+async def test_without_the_cli_list_the_picker_offers_the_aliases_and_a_pick_asks_again(
     shim_install_dir: pathlib.Path,
     claude_cache_dir: pathlib.Path,
     task_root,
     mongo_db,
+    tmp_path: pathlib.Path,
 ):
-    """The first claude refuses initialize: the model select still offers the
-    bare aliases (never empty). A relaunch (here: picking Sonnet) asks the new
-    claude, and the snapshot then carries the CLI's list."""
+    """The claude refuses initialize: the model select still offers the bare
+    aliases (never empty), a pick switches it live, and the session asks
+    claude for its list again after the switch."""
+    control_log = tmp_path / "control.jsonl"
     optio = await _make_optio(mongo_db, "ccui-fallback")
     try:
         task = create_claudecode_task(
             process_id="cc-conv-fallback", name="Model list fallback",
             config=_ui_config(
                 shim_install_dir, claude_cache_dir, show_session_controls=True,
-                env={"FAKE_CLAUDE_INITIALIZE": "error-fresh"},
+                env={"FAKE_CLAUDE_INITIALIZE": "error-fresh",
+                     "FAKE_CLAUDE_CONTROL_LOG": str(control_log)},
             ),
         )
         await optio.adhoc_define(task)
         conv = await optio.launch_and_await_result("cc-conv-fallback", session_id=None, timeout=60)
         upstream = (await _wait_widget_upstream(optio, "cc-conv-fallback"))["widgetUpstream"]
         proc = await _wait_widget_data(optio, "cc-conv-fallback")
-        model = next(c for c in proc["widgetData"]["controls"] if c["id"] == "model")
-        assert model["value"] == "default"
-        assert model["options"] == [
+        aliases = [
             {"value": "default", "label": "Default", "disabled": False},
             {"value": "opus", "label": "Opus", "disabled": False},
             {"value": "sonnet", "label": "Sonnet", "disabled": False},
             {"value": "haiku", "label": "Haiku", "disabled": False},
         ]
+        model = next(c for c in proc["widgetData"]["controls"] if c["id"] == "model")
+        assert model["value"] == "default"
+        assert model["options"] == aliases
         url, headers = upstream["url"], _basic(upstream["innerAuth"]["password"])
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{url}/events", headers=headers) as events:
@@ -894,13 +1005,18 @@ async def test_without_the_cli_list_the_picker_offers_the_aliases_and_a_relaunch
                     assert r.status == 200
                 upd = await _read_until(events, lambda e: _has_control(e, "model", "sonnet"))
                 model = next(c for c in upd["controls"] if c["id"] == "model")
-                assert [o["value"] for o in model["options"]] == [m["value"] for m in CLI_MODELS]
-                assert model["options"][2]["description"] == CLI_MODELS[2]["description"]
+                assert model["options"] == aliases      # this claude still cannot tell
 
         await conv.close()
         await _wait_terminal(optio, "cc-conv-fallback")
     finally:
         await optio.shutdown(grace_seconds=1.0)
+
+    # Asked at launch, and again by the switch (which, still without a list,
+    # takes the model as given).
+    requests = _log_lines(control_log)
+    assert [r["subtype"] for r in requests] == ["initialize", "initialize", "apply_flag_settings"]
+    assert requests[2]["settings"] == {"model": "sonnet", "effortLevel": "high"}
 
 
 # --- the session's opening messages go before the viewer's ----------------

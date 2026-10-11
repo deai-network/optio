@@ -695,8 +695,9 @@ message sent while it starts goes after them; stage 1 wires Claude Code
 message (the steering id, for messages Steering sends) and a trailing blank
 line on a busy native-queue send. `Steering.reset_transport()` (Fix 25)
 re-writes an in-flight message rather than dropping it when a wrapper
-relaunches its transport mid-turn (Claude Code: a model/effort change),
-so the queue behind it keeps draining and the UI does not stay stuck busy.
+relaunches its transport mid-turn (Claude Code did for a model/effort change;
+it now switches them live, without a relaunch), so the queue behind it keeps
+draining and the UI does not stay stuck busy.
 `begin_transport_reset()` (Fix 29) latches that in-flight message from the
 moment the relaunch begins, so the dying process's own last events cannot
 clear it first and leave nothing to rescue.

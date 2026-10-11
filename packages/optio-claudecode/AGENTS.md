@@ -48,9 +48,10 @@ configured model, else the `default` alias (`models.launch_model`, both modes).
 `--continue` alone keeps the full model id the transcript ended on (even over a
 settings.json `model`; verified on CLI 2.1.268), while an alias runs the newest
 model it names, so a resumed session moves to a newer model by itself; a pinned
-full id stays pinned. A fresh launch passes only a configured model. An
-in-session relaunch (a model or effort pick) passes the picked model, else the
-launch value, else none (`--continue` then keeps the model the process ran).
+full id stays pinned. A fresh launch passes only a configured model. A model
+or effort pick never relaunches: it switches the running claude live (see the
+session controls below). Every launch keeps passing `--model` / `--effort`:
+bare `--continue` restores the model but not the effort (CLI 2.1.296).
 The operator's picks in the conversation widget (model, reasoning effort,
 permission mode) are kept across an optio resume (`picks.py`: a file in
 `home/.claude`, so in the session blob; only an optio resume reads it back, not
@@ -65,7 +66,7 @@ kept when offered, never `default`), else the configured model, else
 `default`; an effort level the model lacks gives way to its default; a
 permission mode the task does not offer is dropped. When that probe cannot
 tell, claude is launched on the configured model (else `default`), its list is
-used, and a correction relaunches. See
+used, and a correction is switched to live, before the first message. See
 `docs/2026-05-29-optio-claudecode-resume-design.md`.
 
 Every resume that continues a transcript tells claude so with
@@ -337,8 +338,7 @@ when the hook returns, and when it raises `NothingToResurrect`.
   `host_actions.MCP_CONFIG_REL`; the session blob is encrypted only when
   `session_blob_encrypt` is set), the plaintext workdir tar runs after
   home/.claude is removed, and the seed manifests are allowlists that do not
-  name it. A model/effort relaunch reuses the launch's file and flags; the
-  model probe gets neither. A provider's exception fails the launch with its
+  name it. The model probe gets neither the file nor the flags. A provider's exception fails the launch with its
   message; header values (credentials) are never logged.
 * Positional prompts (the auto_start kickoff, the resume notice) go after `--`
   (`host_actions.positional_prompt_args`): `--tools`, `--mcp-config` and
@@ -346,16 +346,38 @@ when the hook returns, and when it raises `NothingToResurrect`.
 * `SessionControlsConfigMixin` — the conversation widget's controls bar:
   `show_session_controls` (requires conversation mode + `conversation_ui`)
   and the optional `session_controls` allowlist of control ids (None: all).
-  Claude Code's controls (`controls.build_controls`): `model` and
-  `reasoning_effort` (applied by relaunching claude with `--model` /
-  `--effort` + `--continue`), and `permission_mode`, switched in place with
-  the stream-json control request `set_permission_mode`. The select always
+  Claude Code's controls (`controls.build_controls`): `model`,
+  `reasoning_effort` and `permission_mode`, all switched live, without a
+  restart, by `ClaudeCodeConversation.apply_settings(model=, effort=,
+  permission_mode=)` (None: unchanged; `set_control` routes to it). A model
+  and/or effort change is ONE stream-json control request
+  `apply_flag_settings {settings: {model, effortLevel}}`, always with both
+  keys and explicit values (claude falls a missing or null one back to the
+  account's default, not the launch flags): the effort sent with a model
+  change is the running level when the new model lists it (or lists none),
+  else the model's preselected one; an effort change carries the running
+  model (`default` when none was set). A permission mode is
+  `set_permission_mode`, sent first and switched back if claude then refuses
+  the model/effort change. Claude takes an unknown model as given and drops
+  an unknown level silently, so each value is checked first against the
+  CLI's model list (`conversation.models_offered`, `models.offers`;
+  the running model always passes; while the CLI cannot list its models,
+  each switch asks it again and takes a model as given): `ValueError` (→ /control 400
+  `bad-value`), nothing sent. Claude's error answer raises `ControlRejected`
+  (→ 409 `rejected` with its message) and leaves the values as they were. On
+  success `conversation.model` / `effort` hold the new values, the picks are
+  saved and an `x-optio-control-update` re-emitted (the body's
+  `conversation.on_settings_change` hook; after a refusal the hook re-emits
+  the unchanged values, replacing the widget's optimistic one). Claude
+  answers a model change made while a turn runs after that turn; it applies
+  from the next turn, whose `system/init` names the new model (until then
+  `runtime_model` is None). The permission_mode select always
   lists all six modes with a description each
   (`controls.permission_mode_options`); without `permission_gate` Manual and
   Plan (they ask the operator) are disabled with the reason, and Bypass is
   disabled unless `bypass_allowed`. Only enabled modes can be set. The select
-  follows the mode the stream reports (`system/init`, `system/status`); a
-  relaunch keeps the running mode. Every snapshot is narrowed by the
+  follows the mode the stream reports (`system/init`, `system/status`).
+  Every snapshot is narrowed by the
   allowlist, and the listener's /control refuses an id outside
   `settable_controls` (403 `not-allowed`; all of them while the bar is off).
 * `WelcomeConfigMixin` — `welcome: WelcomeCard | None = None`: the card the
@@ -390,7 +412,7 @@ when the hook returns, and when it raises `NothingToResurrect`.
   entry stays offered after a switch); when the CLI cannot tell (an error
   answer, no models, no answer in `models.INITIALIZE_TIMEOUT_S`) the select
   offers the bare aliases default/opus/sonnet/haiku without descriptions or
-  effort levels, and the next relaunch asks again.
+  effort levels, and each live switch asks again.
 * `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt` —
   inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
   (alongside the `ClaustrumConfigMixin` triad). Optional synchronous
@@ -651,11 +673,14 @@ Replay-buffer semantics:
   nothing in its queue, so the next message goes when the turn ends idle.
   Messages still pending when the session ends are never written.
 * Relaunch (Fix 25, final-review-2 I3 / ledger line 399; latched and
-  hardened by Fix 29/W1-W3, wave-2 re-review). A model or reasoning-effort
-  change kills `claude` mid-turn and relaunches it with `--continue`: the
+  hardened by Fix 29/W1-W3, wave-2 re-review). Since model and effort switch
+  live (custom session controls), `session.py` no longer relaunches; the
+  transport support below stays for a future relaunch, and describes the
+  relaunch arm `session.py` had. A relaunch kills
+  `claude` mid-turn and relaunches it with `--continue`: the
   dead process takes its in-flight steering message with it, so neither its
   `command_lifecycle` nor the turn's own `result` will ever arrive for it.
-  `session.py`'s relaunch arm calls `conversation.begin_restart()` AND
+  The relaunch arm calls `conversation.begin_restart()` AND
   `ConversationListener.begin_transport_reset()` (→
   `Steering.begin_transport_reset()`) BEFORE the kill: the latch stops the
   dying process's own last gasp — an abort `result` + trailing idle, or a
@@ -676,7 +701,7 @@ Replay-buffer semantics:
   29/W2). `ClaudeCodeConversation.attach()` zeroes `_pending` and
   `_sends_since_result` (alongside `_restarting`), so `is_pending()` does
   not stay stuck True from the dead turn once the new process is attached.
-  `session.py`'s relaunch arm then calls `ConversationListener.
+  The relaunch arm then calls `ConversationListener.
   reset_transport()` (the same spot `requeue_undelivered()` is called from
   for a resume), which delegates to `Steering.reset_transport()`: it clears
   the `begin_transport_reset()` latch and, unless the drained events already

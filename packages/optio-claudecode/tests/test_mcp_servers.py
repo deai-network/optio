@@ -5,8 +5,8 @@ On every launch, fresh and resume, the task's MCP servers are resolved
 ``<workdir>/home/.claude/optio-mcp.json`` (mode 0600), and claude is pointed
 at that file with ``--mcp-config <path> --strict-mcp-config``. Without servers
 a stale file (an older snapshot's) is removed and no flags are passed. The
-model probe gets no MCP flags; a model/effort relaunch reuses the launch's
-flags. Header values (tokens) are never logged, and the file never enters a
+model probe gets no MCP flags (a model/effort pick switches live, without a
+relaunch). Header values (tokens) are never logged, and the file never enters a
 snapshot (the session capture leaves it out; it is rewritten at every launch).
 """
 
@@ -282,8 +282,8 @@ async def test_the_model_probe_gets_no_mcp_flags(
 ):
     """A resume restoring a model pick first asks a short-lived claude for its
     model list: that probe gets no MCP flags. Every real launch does (the
-    fresh one, the relaunch for the pick, the resumed one), and the provider
-    is awaited once per launch: a relaunch reuses the launch's flags."""
+    fresh one and the resumed one; the pick switches live, no relaunch), and
+    the provider is awaited once per launch."""
     argv_log = tmp_path / "argv.jsonl"
     pid = "cc-mcp-probe"
     calls: list[str] = []
@@ -301,7 +301,8 @@ async def test_the_model_probe_gets_no_mcp_flags(
         )
         await optio.adhoc_define(task)
         conv = await optio.launch_and_await_result(pid, session_id=None, timeout=60)
-        await conv.set_control("model", "sonnet")  # a relaunch; saved as a pick
+        await conv.set_control("model", "sonnet")  # live; saved as a pick
+        await conv.send("ping")                     # the next turn names the model
         await _wait_for(lambda: conv.runtime_model == "claude-sonnet-5")
         await conv.close()
         await _wait_terminal(optio, pid)
@@ -320,7 +321,7 @@ async def test_the_model_probe_gets_no_mcp_flags(
     # conversation_ui launches replay user messages; the probe does not.
     probes = [argv for argv in launches if "--replay-user-messages" not in argv]
     spawned = [argv for argv in launches if "--replay-user-messages" in argv]
-    assert len(probes) == 1 and len(spawned) == 3, launches
+    assert len(probes) == 1 and len(spawned) == 2, launches
     assert "--mcp-config" not in probes[0]
     assert "--strict-mcp-config" not in probes[0]
     for argv in spawned:

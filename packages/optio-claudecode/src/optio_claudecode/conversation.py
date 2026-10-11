@@ -24,6 +24,7 @@ from optio_agents.conversation import (
     PermissionRequest,
 )
 
+from optio_claudecode import models as cc_models
 from optio_claudecode.info import AGENT_INFO
 
 _LOG = logging.getLogger(__name__)
@@ -77,15 +78,26 @@ class ClaudeCodeConversation:
         self._close_reason: str | None = None
         # Cooperative-shutdown request towards the owning task body.
         self.close_requested = asyncio.Event()
-        # Model-change request towards the owning task body. When set, the
-        # conversation body kills and relaunches claude with requested_model.
-        self.model_change_requested: asyncio.Event = asyncio.Event()
-        self.requested_model: str | None = None
-        # Reasoning-effort-change request towards the owning task body. When
-        # set, the body relaunches claude with the new --effort (same restart
-        # path as a model change); requested_effort holds the picked level.
-        self.effort_change_requested: asyncio.Event = asyncio.Event()
-        self.requested_effort: str | None = None
+        # The model and reasoning effort the running claude runs: the
+        # `--model` / `--effort` it was launched with (set by the owning
+        # body), then each live switch claude accepted (apply_settings). The
+        # model as picked (an alias or a full id); None: claude's default
+        # (no --model; the select shows `default`). effort None: claude's
+        # default (no --effort, nothing switched yet).
+        self.model: str | None = None
+        self.effort: str | None = None
+        # The CLI's model list (models.parse_cli_models of its initialize
+        # answer) apply_settings checks a model and an effort level against.
+        # Set by the owning body; None: not known (not asked yet, or the CLI
+        # could not tell), then a switch asks claude for it first, and while
+        # it still cannot tell, a model is taken as given.
+        self.models_offered: list[dict] | None = None
+        # Awaited after every model/effort switch claude answered, with
+        # whether it took it: the owning body keeps the picks for a resume
+        # and re-emits the controls snapshot (after a refusal too: the widget
+        # patched its select optimistically). Its exceptions are logged.
+        self.on_settings_change = None
+        self._settings_lock = asyncio.Lock()
         # Runtime model announced by the stream's system/init event (the REAL
         # running model, e.g. "claude-opus-4-8[1m]" — carries a [variant]
         # suffix and is populated even for a default-model session where
@@ -119,9 +131,10 @@ class ClaudeCodeConversation:
         self._private_acks: set[str] = set()
         self._dispatcher_task: asyncio.Task | None = None
         # Set while the session body is killing the current claude process to
-        # relaunch it on a new model. A process EOF during a restart must NOT
-        # close the conversation (no x-optio-closed, _closed stays clear) — the
-        # task and the widget stay live across the swap. attach() clears it.
+        # relaunch it (begin_restart; no caller since model and effort switch
+        # live). A process EOF during a restart must NOT close the
+        # conversation (no x-optio-closed, _closed stays clear) — the task and
+        # the widget stay live across the swap. attach() clears it.
         self._restarting = False
         # Fix 19: set by begin_session_end() when a cooperative cancel ends
         # the session while a turn runs. From then on nothing new may reach
@@ -371,20 +384,132 @@ class ClaudeCodeConversation:
     async def set_control(self, control_id: str, value) -> None:
         """Push a session-control value change to the native transport.
 
-        Claude Code applies both a model change and a reasoning-effort change by
-        restart: it stores the requested value and fires the matching change
-        Event, making the session body kill and relaunch claude with the new
-        ``--model`` / ``--effort`` (the restart loop handles both arms). ``model``
-        and ``reasoning_effort`` are the controls claudecode exposes; unknown ids
-        are ignored."""
+        All three of claudecode's controls switch the running claude live
+        (``apply_settings``): ``model`` and ``reasoning_effort`` with
+        ``apply_flag_settings``, ``permission_mode`` with
+        ``set_permission_mode``. Unknown ids are ignored; a value that is not
+        a non-empty string raises ValueError."""
+        if control_id in ("model", "reasoning_effort", "permission_mode") and (
+                not isinstance(value, str) or not value):
+            raise ValueError(f"{control_id}: {value!r} is not offered by this session")
         if control_id == "model":
-            self.requested_model = value
-            self.model_change_requested.set()
+            await self.apply_settings(model=value)
         elif control_id == "reasoning_effort":
-            self.requested_effort = value
-            self.effort_change_requested.set()
+            await self.apply_settings(effort=value)
         elif control_id == "permission_mode":
-            await self._set_permission_mode(value)
+            await self.apply_settings(permission_mode=value)
+
+    async def apply_settings(
+        self,
+        model: str | None = None,
+        effort: str | None = None,
+        permission_mode: str | None = None,
+    ) -> None:
+        """Switch the running claude without a restart. None leaves a
+        setting as it is.
+
+        A model and/or effort change is ONE stream-json control request
+        ``apply_flag_settings`` carrying both ``model`` and ``effortLevel``,
+        always with explicit values: claude falls a missing or null one back
+        to the account's default, not to the launch flags. The level sent
+        with a model change is the running one when the new model lists it
+        (or lists none), else the new model's preselected level. A
+        permission mode change is ``set_permission_mode``, sent first; if
+        claude then refuses the model/effort change, the mode is switched
+        back (best effort).
+
+        Claude does not check these values (it takes an unknown model as
+        given and drops an unknown level silently), so they are checked here
+        first, against the CLI's model list (``models_offered``, asked of
+        claude when not known yet): a model it does not offer (the running
+        one always passes; any model while the CLI cannot tell), a level that
+        model does not list, a mode this session does not offer raise
+        ``ValueError`` and nothing reaches claude. ``ControlRejected`` (its
+        message) when claude refuses: the values stay as they were.
+        ``ConversationClosed`` when the conversation is closed or ends first.
+        Switches run one at a time, in order.
+
+        On success ``model`` / ``effort`` hold the new values, and after a
+        model change ``runtime_model`` is unknown again until the next turn's
+        system/init names it. Claude answers a model change asked for while a
+        turn runs after that turn; it applies from the next turn."""
+        if self.closed:
+            raise ConversationClosed(self._close_reason or "conversation closed")
+        if permission_mode is not None and permission_mode not in self.permission_modes_offered:
+            raise ValueError(f"permission mode {permission_mode!r} is not offered by this session")
+        # One switch at a time: each request carries both values, so one
+        # computed while another is unanswered would undo it.
+        async with self._settings_lock:
+            await self._apply_settings(model, effort, permission_mode)
+
+    async def _apply_settings(self, model, effort, permission_mode) -> None:
+        settings = None
+        if model is not None or effort is not None:
+            settings = await self._flag_settings(model, effort)
+        previous_mode = self.permission_mode
+        if permission_mode is not None:
+            await self._set_permission_mode(permission_mode)
+        if settings is None:
+            return
+        try:
+            await self._control_request(
+                {"subtype": "apply_flag_settings", "settings": settings},
+            )
+        except ControlRejected:
+            if permission_mode is not None and previous_mode and previous_mode != permission_mode:
+                try:
+                    await self._set_permission_mode(previous_mode)
+                except Exception:  # noqa: BLE001 — the stream reports the mode it runs
+                    _LOG.warning("conversation: could not switch the permission mode back "
+                                 "to %r", previous_mode, exc_info=True)
+            await self._settings_changed(applied=False)
+            raise
+        if model is not None:
+            if model != self.model:
+                # The running process has not named its new model yet: the
+                # next turn's system/init does.
+                self.runtime_model = None
+                self.runtime_model_observed.clear()
+            self.model = model
+        self.effort = settings["effortLevel"]
+        await self._settings_changed(applied=True)
+
+    async def _flag_settings(self, model, effort) -> dict:
+        """The ``apply_flag_settings`` settings for a change to ``model``
+        and/or ``effort`` (None: unchanged), checked against the CLI's model
+        list; ValueError for a value it does not offer."""
+        if model is not None and (not isinstance(model, str) or not model):
+            raise ValueError(f"model {model!r} is not offered by this session")
+        if effort is not None and effort not in cc_models.EFFORT_LEVELS:
+            raise ValueError(f"reasoning effort {effort!r} is not a known level")
+        if self.models_offered is None:
+            self.models_offered = await cc_models.fetch_cli_models(self)
+        # None: the CLI cannot tell; then a model is taken as given.
+        catalog = self.models_offered or []
+        target = model if model is not None else (self.model or cc_models.DEFAULT_MODEL)
+        if (model is not None and model != self.model and self.models_offered
+                and not cc_models.offers(catalog, model)):
+            raise ValueError(f"model {model!r} is not offered by this session")
+        levels, preselected = cc_models.model_effort(
+            cc_models.shown_model(catalog, picked=target, runtime=None), catalog,
+        )
+        if effort is not None:
+            if levels and effort not in levels:
+                raise ValueError(f"reasoning effort {effort!r} is not offered for {target}")
+            level = effort
+        elif self.effort and (not levels or self.effort in levels):
+            level = self.effort
+        else:
+            level = preselected or self.effort or cc_models.DEFAULT_EFFORT
+        return {"model": target, "effortLevel": level}
+
+    async def _settings_changed(self, *, applied: bool) -> None:
+        if self.on_settings_change is None:
+            return
+        try:
+            await self.on_settings_change(applied)
+        except Exception:  # noqa: BLE001 — the switch itself is done (or refused) already
+            _LOG.exception("conversation: on_settings_change raised")
 
     def _observe_permission_mode(self, obj: dict) -> None:
         mode = obj.get("permissionMode")
@@ -394,10 +519,22 @@ class ClaudeCodeConversation:
 
     async def _set_permission_mode(self, mode) -> None:
         """Switch the running Claude's permission mode in place: a
-        ``set_permission_mode`` control_request, awaiting Claude's answer. No
-        restart (unlike model and effort)."""
+        ``set_permission_mode`` control_request, awaiting Claude's answer."""
         if mode not in self.permission_modes_offered:
             raise ValueError(f"permission mode {mode!r} is not offered by this session")
+        try:
+            await self._control_request({"subtype": "set_permission_mode", "mode": mode})
+        except ControlRejected:
+            self.permission_mode_observed.set()
+            raise
+        self.permission_mode = mode
+        self.permission_mode_observed.set()
+
+    async def _control_request(self, request: dict) -> dict:
+        """Write one control_request and await claude's answer: its
+        ``response`` dict. ControlRejected (claude's message) on an error
+        answer; ConversationClosed when closed, or when the process ends
+        before answering."""
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         self._next_request_id += 1
@@ -407,15 +544,13 @@ class ClaudeCodeConversation:
         await self._write_json({
             "type": "control_request",
             "request_id": rid,
-            "request": {"subtype": "set_permission_mode", "mode": mode},
+            "request": request,
         })
         obj = await fut
         response = obj.get("response") or {}
         if response.get("subtype") == "error":
-            self.permission_mode_observed.set()
             raise ControlRejected(str(response.get("error") or "refused"))
-        self.permission_mode = mode
-        self.permission_mode_observed.set()
+        return response
 
     async def initialize(self) -> dict:
         """Ask the running Claude about itself: the stream-json control
@@ -452,9 +587,10 @@ class ClaudeCodeConversation:
         """Fan out a synthetic ``x-optio-control-update`` carrying a full
         controls snapshot so the widget reducer re-projects ``state.controls``.
 
-        Used after a model/effort relaunch to make the reasoning_effort slider's
-        presence and preselected level follow the (possibly new) running model —
-        the same reactive path other engines use on a live control change."""
+        Used after a live model/effort switch to make the reasoning_effort
+        slider's presence and preselected level follow the (possibly new)
+        model — the same reactive path other engines use on a live control
+        change."""
         self._event_queue.put_nowait({
             "type": "x-optio-control-update",
             "controls": controls,
@@ -468,9 +604,11 @@ class ClaudeCodeConversation:
         self._event_queue.put_nowait(event)
 
     def begin_restart(self) -> None:
-        """Mark that the current process is about to be killed for a model
-        swap, so its EOF does not close the conversation. Cleared by attach()
-        when the relaunched process is wired in.
+        """Mark that the current process is about to be killed for a
+        relaunch, so its EOF does not close the conversation. Cleared by
+        attach() when the relaunched process is wired in. (A transport
+        capability: since model and effort switch live, session.py no longer
+        relaunches.)
 
         Fix 29/W3 (wave-2 re-review, pre-existing gap this wave's relaunch
         path newly reaches): also fails every outstanding control_request

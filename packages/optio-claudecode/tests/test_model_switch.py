@@ -2,9 +2,9 @@
 pinned interfaces in the Phase-2 plan).
 
 These cover the file-disjoint units that don't need a live claude:
-config validation and the conversation model-change signal. The model list
-(the CLI's own, from initialize) is covered in test_cli_models.py; the restart
-loop in test_conversation_ui_session.py.
+config validation and set_control's routing. The model list (the CLI's own,
+from initialize) is covered in test_cli_models.py; the live switch itself in
+test_live_switch.py and, end to end, test_conversation_ui_session.py.
 """
 
 import pytest
@@ -58,23 +58,17 @@ def test_native_spinner_requires_conversation_ui():
 
 
 @pytest.mark.asyncio
-async def test_set_control_model_sets_restart_signal():
-    from optio_claudecode.conversation import ClaudeCodeConversation
-    conv = ClaudeCodeConversation()
-    await conv.set_control("model", "sonnet")
-    assert conv.requested_model == "sonnet"
-    assert conv.model_change_requested.is_set()
-
-
-@pytest.mark.asyncio
 async def test_set_control_ignores_unknown_id():
-    # claudecode exposes only the model control; any other id is a no-op and
-    # never triggers a restart.
+    # claudecode exposes model, reasoning_effort and permission_mode; any
+    # other id is a no-op: nothing reaches claude, nothing changes.
     from optio_claudecode.conversation import ClaudeCodeConversation
+    from .test_conversation_driver import _FakeHandle
     conv = ClaudeCodeConversation()
+    handle = _FakeHandle()
+    conv.attach(handle)
     await conv.set_control("thinking", "high")
-    assert conv.requested_model is None
-    assert not conv.model_change_requested.is_set()
+    assert handle.stdin.lines.empty()
+    assert (conv.model, conv.effort) == (None, None)
 
 
 @pytest.mark.asyncio
