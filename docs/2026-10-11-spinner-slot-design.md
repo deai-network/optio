@@ -21,7 +21,8 @@ Design, agreed with the owner on 2026-10-11. The full design, including the cont
   "Loading…" texts of ProcessDetailView and IframeWidget (spinner before the text). AGENTS.md and README
   (deps, peers). optio-dashboard's `OPTIO_DEV_VULTUS` alias and dedupe include vultus-core.
 - optio-conversation-ui: background-task, tool-row, working and todo spinners; OpencodeView's
-  "Loading…"; the scopes in the seven agent views; the `vultus-antd` peer raised to the release with
-  the slot; README's stale vultus-antd range.
+  "Loading…"; the scopes in the seven agent views; README's stale vultus-antd range. The `vultus-antd` peer
+  (and optio-ui's `vultus-core` peer) are raised to the releases with the slot at release time;
+  until then the workspace link to unitas provides them.
 - Releases after vultus-core and vultus-antd: optio-ui, then optio-conversation-ui (minor each), each
   with the owner's go.

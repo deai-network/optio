@@ -23,7 +23,8 @@
 - `react-i18next: >=15`
 - `i18next: >=24`
 - `vultus-core: >=0.3.0` — a peer so the app has one copy and one components context
-  (see "Spinner slot"); in this workspace a dev dependency linked to `../unitas/packages/vultus-core`
+  (see "Spinner slot"); in this workspace a dev dependency linked to `../unitas/packages/vultus-core`.
+  Raised to `>=0.4.0` (the release that adds the slot) when optio-ui is next released.
 
 ## Conventions
 

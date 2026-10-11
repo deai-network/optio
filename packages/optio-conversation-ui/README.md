@@ -16,6 +16,9 @@ links, a lent loading spinner) into the conversation's buttons. The
 [loading spinner](#loading-spinner) slot needs the vultus-antd release that adds
 `VultusProvider components` (and the vultus-core release under it); this range is raised to
 `>=0.6.0` with that release. Until then the workspace link to unitas provides it.
+optio-ui (a dependency) takes `vultus-core` as a peer: list `vultus-core` in the app too, at
+the range vultus-antd depends on, so both resolve to one copy (two copies mean two contexts,
+and optio-ui's spinners would quietly stay antd's).
 
 ## Usage
 

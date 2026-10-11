@@ -25,7 +25,11 @@ npm install optio-ui
 | `vultus-core` | >=0.3.0 |
 
 `vultus-core` is a peer so that an app has a single copy of it, and with it a single
-components context (see [Loading spinner](#loading-spinner)).
+components context (see [Loading spinner](#loading-spinner)). The slot needs the vultus-core
+release that adds it; this range is raised to `>=0.4.0` with that release. Until then the
+workspace link to unitas provides it. An app that uses both should list `vultus-core` itself, at the range its vultus-antd depends
+on, so that optio-ui's peer and vultus-antd's dependency resolve to one copy (two copies
+mean two contexts, and optio-ui would quietly keep antd's spinners).
 
 ## Quick Setup
 
