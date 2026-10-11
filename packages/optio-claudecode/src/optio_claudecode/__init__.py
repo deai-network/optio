@@ -28,6 +28,9 @@ from optio_claudecode.seed_manifest import (
     purge_seed,
 )
 
+# Registers optio-claudecode's deferred migrations (run at engine start).
+import optio_claudecode.migrations  # noqa: F401,E402
+
 
 # asyncssh emits per-connection INFO lines that flood worker stdout
 # once an SSH-backed session starts. Quiet by default.

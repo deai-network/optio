@@ -158,6 +158,26 @@ directory <taskdir> for Resurrect") and `hasUnsavedWork` stays set, so
 Resurrect can retry. Otherwise `cleanup_taskdir(aggressive=cancelled)` runs
 as before.
 
+Deferred migration `claudecode_conversation_buffer_out_of_workdir`
+(`migrations.py`, registered on `optio_core.deferred_migrations` when
+`optio_claudecode` is imported; runs at engine start after the initial sync,
+blocking; spec §6): captures before the fix left the replay buffer in the
+plaintext workdir blob as `.optio-conversation-buffer.json`. It visits every
+snapshot document without `conversationBufferMigrated: true`, oldest first. A
+document that has a `conversationBlobId` is only marked. Otherwise its workdir
+blob is streamed through `tar_strip.strip_member` (gzip tar in, gzip tar out,
+on a thread with bounded queues; headers kept; strips the top-level member,
+`./` or not) into a new `workdir` blob. Buffer found: with a task
+(`ctx.task_for`) the bytes become a `conversation` blob, through
+`task.session_crypto.encrypt` when set; without one they are dropped. One
+`update_one` sets the new `workdirBlobId`, the `conversationBlobId` and the
+marker, then the old blob is deleted. No buffer: the new blob is deleted and
+the document only marked. A missing or unreadable workdir blob is marked as it
+is, with a warning (no retry would fix it). New blobs' metadata is
+`{processId: <process doc _id as str, else the snapshot's processId>, prefix,
+name}`. An interruption before the update leaves orphan new blobs and an
+unmarked document, redone on the next start.
+
 ## Resurrect
 
 `create_claudecode_task` sets `TaskInstance.resurrect` when

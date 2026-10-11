@@ -14,6 +14,9 @@ One document per terminal run per process_id. Layout:
                                      # (export_buffer() JSON), encrypted like
                                      # the session blob; never a workdir file
       deliverablesEmitted: list,     # audit metadata only; not replayed
+      conversationBufferMigrated: bool,  # optional; set by the deferred
+                                     # migration in optio_claudecode.migrations
+                                     # once the document is checked
     }
 
 No `sessionId`: claude resolves its own most-recent session via `--continue`,
