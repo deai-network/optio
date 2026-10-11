@@ -4,9 +4,10 @@ On every launch, fresh and resume, the task's MCP servers are resolved
 (``optio_agents.mcp.resolve_mcp_servers``) and written to
 ``<workdir>/home/.claude/optio-mcp.json`` (mode 0600), and claude is pointed
 at that file with ``--mcp-config <path> --strict-mcp-config``. Without servers
-a stale file (a restored snapshot's) is removed and no flags are passed. The
+a stale file (an older snapshot's) is removed and no flags are passed. The
 model probe gets no MCP flags; a model/effort relaunch reuses the launch's
-flags. Header values (tokens) are never logged.
+flags. Header values (tokens) are never logged, and the file never enters a
+snapshot (the session capture leaves it out; it is rewritten at every launch).
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from optio_host.host import LocalHost
 from optio_host.paths import task_dir
 
 from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task, host_actions
-from optio_claudecode.session import run_claudecode_session
+from optio_claudecode.session import _archive_home_claude, run_claudecode_session
 from optio_claudecode.snapshots import load_latest_snapshot
 
 from .test_conversation_ui_session import (
@@ -119,6 +120,32 @@ async def test_plant_mcp_config_removes_a_stale_file_when_there_are_no_servers(t
     assert await host_actions.plant_mcp_config(host, host.workdir, []) is None
 
 
+# --- the session capture leaves the file out --------------------------------
+
+
+async def test_the_session_archive_leaves_the_mcp_file_out(tmp_path):
+    """The tokens never reach a session blob, encrypted or not: the file is
+    rewritten at every launch, so the capture gains nothing by keeping it."""
+    host = _local_host(tmp_path)
+    await host_actions.plant_mcp_config(host, host.workdir, [_kontext("secret-token")])
+    home = pathlib.Path(host.workdir, "home/.claude")
+    (home / ".credentials.json").write_text('{"token": "test"}')
+    (home / "projects").mkdir()
+    (home / "projects" / "s.jsonl").write_text("{}\n")
+
+    data = await _archive_home_claude(host)
+
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        names = tar.getnames()
+        contents = b"".join(tar.extractfile(m).read() for m in tar.getmembers() if m.isfile())
+    assert "home/.claude/.credentials.json" in names
+    assert "home/.claude/projects/s.jsonl" in names
+    assert not any(name.endswith("optio-mcp.json") for name in names), names
+    assert b"secret-token" not in contents
+    # The file itself stays on the host (a running claude may still read it).
+    assert pathlib.Path(host.workdir, MCP_FILE).exists()
+
+
 # --- launches, iframe mode (tmux + fake claude) ------------------------------
 
 
@@ -169,12 +196,21 @@ async def test_a_resumed_launch_resolves_the_provider_again(
     mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch, caplog,
 ):
     """The provider is awaited on the fresh launch and again on the resume, so
-    the resumed claude gets a fresh token, not the one the restored snapshot
-    carried (Review Focus 5)."""
+    the resumed claude gets a fresh token (Review Focus 5). The snapshots
+    carry no MCP file at all: the resumed launch's file is the one it wrote."""
     caplog.set_level(logging.DEBUG)
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "idempotent_done")
     pid = "cc_mcp_resume"
     calls: list[str] = []
+    planted: list[dict] = []
+    plant = host_actions.plant_mcp_config
+
+    async def recording_plant(host, workdir, servers):
+        path = await plant(host, workdir, servers)
+        planted.append(json.loads(pathlib.Path(path).read_text(encoding="utf-8")))
+        return path
+
+    monkeypatch.setattr(host_actions, "plant_mcp_config", recording_plant)
     config = _iframe_config(
         shim_install_dir, claude_cache_dir, mcp_servers=_counting_provider(calls),
     )
@@ -182,10 +218,14 @@ async def test_a_resumed_launch_resolves_the_provider_again(
         await run_claudecode_session(await _ctx(mongo_db, pid, resume=resume), config)
 
     assert calls == [pid, pid]
+    assert [p["mcpServers"]["kontext"]["headers"] for p in planted] == [
+        {"Authorization": "Bearer token-1"}, {"Authorization": "Bearer token-2"}]
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
     session = await _blob_files(mongo_db, snap["sessionBlobId"])
-    servers = json.loads(_member(session, MCP_FILE))["mcpServers"]
-    assert servers["kontext"]["headers"] == {"Authorization": "Bearer token-2"}
+    # Tokens never reach a snapshot: not the session blob (encrypted only
+    # when session_blob_encrypt is set), not the plaintext workdir blob.
+    assert not any(name.endswith("optio-mcp.json") for name in session), sorted(session)
+    assert not any(b"token-" in data for data in session.values())
 
     launches = [json.loads(line) for line in
                 _member(session, "fake_claude_argv.json").decode().splitlines() if line]
@@ -197,10 +237,9 @@ async def test_a_resumed_launch_resolves_the_provider_again(
     assert launches[1][-2] == "--"
     assert launches[1][-1].startswith("System:")
 
-    # Tokens stay in the encrypted session blob: never in the plaintext
-    # workdir blob, never in a log line.
     workdir = await _blob_files(mongo_db, snap["workdirBlobId"])
     assert not any(name.endswith("optio-mcp.json") for name in workdir)
+    # Nor a log line.
     assert "token-1" not in caplog.text and "token-2" not in caplog.text
 
 

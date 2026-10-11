@@ -132,6 +132,19 @@ stay top-level on each config — callers write `fs_isolation=` /
   widgets ignore it). Engines call `self._validate_welcome()` from
   `__post_init__` (anything but a `WelcomeCard` or None raises
   `ValueError`). Both names are exported from `optio_agents`.
+* `McpConfigMixin` (in `optio_agents.mcp`, with the rest of the MCP
+  vocabulary) — `mcp_servers`: None (no MCP servers, the default), a static
+  list of `McpServer`, or a `McpServersProvider` (an async callable awaited
+  with the process id, like `SeedProvider`, so per-launch credentials stay
+  fresh). `McpServer(name, url, headers)` is one remote streamable-HTTP server
+  (name of letters, digits, `_`, `-`; an http(s) URL; header values are
+  credentials, never shown in a `repr` or an error). Engines call
+  `self._validate_mcp(supported=..., agent=...)` from `__post_init__` (an
+  engine without a translation refuses any non-None value; a static list is
+  checked) and `resolve_mcp_servers(config, process_id)` on every launch,
+  fresh and resume (a provider's result is checked; its exception fails the
+  launch). Only claudecode translates it so far: ask
+  `optio_agents_all.supports_mcp(agent_type)`.
 
 ## Localized text (`optio_agents.text`)
 

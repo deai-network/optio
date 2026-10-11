@@ -1691,11 +1691,11 @@ async def _plant_mcp_servers(
     ctx: ProcessContext, host: Host, config: ClaudeCodeTaskConfig,
 ) -> str | None:
     """This launch's MCP servers, planted for ``--mcp-config``: the file's
-    path, or None without servers (a file a restored snapshot carried is
-    removed). Resolved anew on every launch, fresh and resume, so a provider
-    hands out fresh credentials each time; a provider's exception fails the
-    launch with its own message. Logs the server names only (header values
-    are credentials)."""
+    path, or None without servers (a file an older snapshot carried is
+    removed; the capture now leaves it out). Resolved anew on every launch,
+    fresh and resume, so a provider hands out fresh credentials each time; a
+    provider's exception fails the launch with its own message. Logs the
+    server names only (header values are credentials)."""
     servers = await resolve_mcp_servers(config, ctx.process_id)
     if servers:
         _LOG.info("MCP servers for this launch: %s", ", ".join(s.name for s in servers))
@@ -1777,12 +1777,19 @@ async def _has_transcript(host: Host) -> bool:
 
 
 async def _archive_home_claude(host: Host) -> bytes:
-    """tar.gz the sensitive ``home/.claude`` subtree and fetch it as bytes."""
+    """tar.gz the sensitive ``home/.claude`` subtree and fetch it as bytes.
+
+    Without the MCP file (``host_actions.MCP_CONFIG_REL``): its header values
+    are credentials, and it is rewritten at every launch, so no snapshot
+    (encrypted or not) ever carries them. The file stays on the host."""
     workdir = host.workdir.rstrip("/")
     tmpfile = f"{workdir}/.optio-claudecode-session.tar.gz"
     _trace("archive_home: tar run_command START")
+    # --exclude before the operand: GNU tar applies it to the names after it.
     r = await host.run_command(
-        f"tar -czf {shlex.quote(tmpfile)} -C {shlex.quote(workdir)} home/.claude"
+        f"tar -czf {shlex.quote(tmpfile)} "
+        f"--exclude={shlex.quote(host_actions.MCP_CONFIG_REL)} "
+        f"-C {shlex.quote(workdir)} home/.claude"
     )
     _trace("archive_home: tar run_command DONE exit=%d", r.exit_code)
     if r.exit_code != 0:

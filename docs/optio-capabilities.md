@@ -553,11 +553,12 @@ provider's exception fails the launch); an engine calls it on every launch, fres
 
 Only **claudecode** translates it: it writes `home/.claude/optio-mcp.json` (mode 0600) and passes
 `--mcp-config <file> --strict-mcp-config`, so claude sees no other MCP source; with no servers it
-removes a stale file a restored snapshot carried. `home/.claude` travels only in the session blob
-(never in the plaintext workdir tar, never in a seed), and that blob is encrypted only when
-`session_blob_encrypt` is set. claudecode also gained `tools` (`--tools`; `[]` gives claude no
-built-in tools). The other six configs refuse any non-None `mcp_servers` ("<agent> does not support
-mcp_servers yet") until their translation lands; the three ACP wrappers still send an empty
+removes a stale file an older snapshot carried. The file is rewritten at every launch, so it enters
+no snapshot: the session capture of `home/.claude` leaves it out (that blob is encrypted only when
+`session_blob_encrypt` is set), `home/.claude` never enters the plaintext workdir tar, and the seed
+manifests are allowlists that do not name it. claudecode also gained `tools` (`--tools`; `[]` gives
+claude no built-in tools). The other six configs refuse any non-None `mcp_servers` ("<agent> does
+not support mcp_servers yet") until their translation lands; the three ACP wrappers still send an empty
 `mcpServers` slot on the wire. Since every config has the field, the field set no longer tells
 support apart: ask `optio_agents_all.supports_mcp(agent_type)` (backed by `MCP_AGENT_TYPES`).
 

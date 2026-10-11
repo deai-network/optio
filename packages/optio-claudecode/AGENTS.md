@@ -331,10 +331,13 @@ when the hook returns, and when it raises `NothingToResurrect`.
   `{"mcpServers": {<name>: {"type": "http", "url", "headers"}}}`, mode 0600,
   created empty before the headers go in). Claude gets `--mcp-config <path>
   --strict-mcp-config`, so no other MCP source applies (an `mcpServers` key in
-  settings.json is ignored by Claude Code anyway). No servers: a file a restored
-  snapshot carried is removed, no flags. Like all of home/.claude the file is
-  kept only in the encrypted session blob, never in a seed (allowlist
-  manifests). A model/effort relaunch reuses the launch's file and flags; the
+  settings.json is ignored by Claude Code anyway). No servers: a file an older
+  snapshot carried is removed, no flags. The file never enters a snapshot: the
+  session capture leaves it out (`session._archive_home_claude` excludes
+  `host_actions.MCP_CONFIG_REL`; the session blob is encrypted only when
+  `session_blob_encrypt` is set), the plaintext workdir tar runs after
+  home/.claude is removed, and the seed manifests are allowlists that do not
+  name it. A model/effort relaunch reuses the launch's file and flags; the
   model probe gets neither. A provider's exception fails the launch with its
   message; header values (credentials) are never logged.
 * Positional prompts (the auto_start kickoff, the resume notice) go after `--`

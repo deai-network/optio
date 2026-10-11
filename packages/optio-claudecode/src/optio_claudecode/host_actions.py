@@ -652,10 +652,12 @@ async def apply_claude_settings(
     await host.write_text(settings_rel, json.dumps(merged, indent=2))
 
 
-# The task's MCP servers for claude (`--mcp-config`). Inside home/.claude, so
-# the file travels only in the encrypted session blob (home/.claude is removed
-# before the plaintext workdir tar) and never in a seed (the seed manifests
-# are allowlists). Claude Code ignores an `mcpServers` key in settings.json.
+# The task's MCP servers for claude (`--mcp-config`). Its header values are
+# credentials, and it is rewritten at every launch, so it enters no snapshot:
+# the session capture leaves it out (session._archive_home_claude), and it is
+# inside home/.claude, which is removed before the plaintext workdir tar and
+# reaches a seed only through allowlist manifests that do not name it.
+# Claude Code ignores an `mcpServers` key in settings.json.
 MCP_CONFIG_REL = "home/.claude/optio-mcp.json"
 
 
@@ -664,8 +666,8 @@ async def plant_mcp_config(
 ) -> str | None:
     """Write this launch's MCP servers to ``<workdir>/home/.claude/optio-mcp.json``
     and return the file's absolute path, for ``build_claude_flags(
-    mcp_config_path=...)``. With no servers, remove the file (a restored
-    snapshot carries the previous launch's) and return None.
+    mcp_config_path=...)``. With no servers, remove the file (a snapshot
+    captured before the capture left it out may carry one) and return None.
 
     The content is Claude Code's ``{"mcpServers": {<name>: {"type": "http",
     "url": ..., "headers": {...}}}}`` (remote streamable-HTTP servers only).
