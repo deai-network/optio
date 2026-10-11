@@ -131,11 +131,18 @@ describe('GrokView (Stage 7 parity)', () => {
     expect(clickSpy).toHaveBeenCalled();
   });
 
-  it('verbose tool verbosity renders the ACP rawInput as a key-value table', () => {
+  it('verbose tool verbosity renders the ACP rawInput as code blocks', () => {
     render(<ConversationWidget {...makeProps({ protocol: 'grok', toolVerbosity: 'verbose' })} />);
     fire(toolCall('Shell', { command: 'ls -la', cwd: '/w' }));
-    expect(screen.getByText('command')).toBeTruthy();
-    expect(screen.getByText('ls -la')).toBeTruthy();
-    expect(screen.getByText('cwd')).toBeTruthy();
+    const node = screen.getByTestId('tool-call').closest('.ant-thought-chain-node')!;
+    // The node's content: X CodeHighlighter blocks (header title, code text).
+    const blocks = Array.from(node.querySelectorAll('.ant-codeHighlighter')).map((b) => ({
+      title: b.querySelector('.ant-codeHighlighter-header-title')?.textContent,
+      code: b.querySelector('.ant-codeHighlighter-code')?.textContent ?? '',
+    }));
+    // The command as a bash block, the rest of the input (cwd) as JSON.
+    expect(blocks.map((b) => b.title)).toEqual(['bash', 'input']);
+    expect(blocks[0].code).toBe('ls -la');
+    expect(JSON.parse(blocks[1].code)).toMatchObject({ cwd: '/w' });
   });
 });

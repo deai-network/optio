@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConversationView, type ConversationViewProps } from '../ConversationView.js';
 import { initialChatState, type ChatItem, type ChatState } from '../chat.js';
@@ -29,7 +29,14 @@ function view(items: ChatItem[], toolVerbosity: ConversationViewProps['toolVerbo
 }
 
 const toolRow = () => screen.queryByTestId('tool-call');
-const detail = () => document.querySelector('[data-testid="tool-call"] table');
+// A tool row is an X ThoughtChain node: the tool name is its title (a click
+// there toggles the row) and the detail is its collapsible content, the input
+// as code blocks (here the Bash command as a bash block).
+const toolNode = () => toolRow()?.closest('.ant-thought-chain-node') ?? null;
+const detail = () => toolNode()?.querySelector('.ant-thought-chain-node-content .ant-codeHighlighter') ?? null;
+const toggle = () => fireEvent.click(toolNode()!.querySelector('.ant-thought-chain-node-title')!);
+// A collapse runs X's leave motion before the content is removed.
+const collapsed = () => waitFor(() => expect(detail()).toBeNull());
 
 describe('tool verbosity — silent', () => {
   it('renders no tool row, running or finished', () => {
@@ -51,8 +58,9 @@ describe('tool verbosity — description-while-active', () => {
     view([toolItem({ status: 'done' })], 'description-while-active');
     expect(toolRow()).not.toBeNull();
     expect(detail()).toBeNull();
-    fireEvent.click(toolRow()!.querySelector('div')!);
+    toggle();
     expect(detail()).not.toBeNull();
+    expect(detail()!.textContent).toContain('echo hi');
   });
 });
 
@@ -62,7 +70,7 @@ describe('tool verbosity — description-only', () => {
       view([toolItem({ status })], 'description-only');
       expect(toolRow()).not.toBeNull();
       expect(toolRow()!.getAttribute('data-tool-status')).toBe(expected);
-      expect(detail()).toBeNull(); // no args table at this level
+      expect(detail()).toBeNull(); // collapsed: no input blocks at this level
       cleanup();
     }
   });
@@ -72,19 +80,20 @@ describe('tool verbosity — verbose', () => {
   it('shows the detail while running', () => {
     view([toolItem({ status: 'running' })], 'verbose');
     expect(detail()).not.toBeNull();
+    expect(detail()!.textContent).toContain('echo hi');
   });
-  it('starts expanded once finished, and a click collapses', () => {
+  it('starts expanded once finished, and a click collapses', async () => {
     view([toolItem({ status: 'done' })], 'verbose');
     expect(toolRow()).not.toBeNull();
     expect(detail()).not.toBeNull();
-    fireEvent.click(toolRow()!.querySelector('div')!);
-    expect(detail()).toBeNull();
+    toggle();
+    await collapsed();
   });
-  it('a running row starts expanded, and a click collapses it', () => {
+  it('a running row starts expanded, and a click collapses it', async () => {
     view([toolItem({ status: 'running' })], 'verbose');
     expect(detail()).not.toBeNull();
-    fireEvent.click(toolRow()!.querySelector('div')!);
-    expect(detail()).toBeNull();
+    toggle();
+    await collapsed();
   });
 });
 
