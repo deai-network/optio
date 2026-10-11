@@ -241,6 +241,8 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     file_download=True,
                     permission_gate=True,       # exercises the approve/deny UI
                     host_protocol=False,        # pure conversation gate
+                    # Ant Design X experiment: show the reasoning (X Think).
+                    thinking_verbosity="visible",
                     # Conversation-mode launch is now claustrum-wrapped too.
                     delivery_type="system-notices",
                     ssh=ssh,
