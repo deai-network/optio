@@ -320,6 +320,26 @@ when the hook returns, and when it raises `NothingToResurrect`.
   `--allow-dangerously-skip-permissions`). None: only when starting in it;
   True: also from another starting mode; False: never (contradicts starting in
   it, a config error). `bypass_allowed` resolves it.
+* `tools: list[str] | None = None` — the built-in tools claude has at all
+  (`--tools <comma-separated>`). None: claude's default set; `[]`: `--tools ""`,
+  no built-in tools (unlike `allowed_tools`, where an empty list means unset).
+* `mcp_servers` (`optio_agents.McpConfigMixin`: a list of `McpServer`, or a
+  provider awaited with the process id) — resolved on every launch, fresh and
+  resume, right after the session content is planted
+  (`session._plant_mcp_servers`), and written to
+  `<workdir>/home/.claude/optio-mcp.json` (`host_actions.plant_mcp_config`:
+  `{"mcpServers": {<name>: {"type": "http", "url", "headers"}}}`, mode 0600,
+  created empty before the headers go in). Claude gets `--mcp-config <path>
+  --strict-mcp-config`, so no other MCP source applies (an `mcpServers` key in
+  settings.json is ignored by Claude Code anyway). No servers: a file a restored
+  snapshot carried is removed, no flags. Like all of home/.claude the file is
+  kept only in the encrypted session blob, never in a seed (allowlist
+  manifests). A model/effort relaunch reuses the launch's file and flags; the
+  model probe gets neither. A provider's exception fails the launch with its
+  message; header values (credentials) are never logged.
+* Positional prompts (the auto_start kickoff, the resume notice) go after `--`
+  (`host_actions.positional_prompt_args`): `--tools`, `--mcp-config` and
+  `--allowed-tools` take several values and would swallow a prompt after them.
 * `SessionControlsConfigMixin` — the conversation widget's controls bar:
   `show_session_controls` (requires conversation mode + `conversation_ui`)
   and the optional `session_controls` allowlist of control ids (None: all).

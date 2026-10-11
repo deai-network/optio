@@ -131,6 +131,14 @@ class ClaudeCodeTaskConfig(
     allow_bypass_permissions: bool | None = None
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] | None = None
+    # The built-in tools claude has at all: `--tools <comma-separated>`. None:
+    # claude's default set; [] (unlike allowed_tools): `--tools ""`, no
+    # built-in tools (e.g. a chat that only uses its MCP servers' tools).
+    tools: list[str] | None = None
+    # mcp_servers (McpConfigMixin): resolved on every launch, fresh and
+    # resume, and written to home/.claude/optio-mcp.json (mode 0600; like all
+    # of home/.claude it is kept only in the encrypted session blob), which
+    # claude gets as `--mcp-config <path> --strict-mcp-config`.
     # When True, a fresh launch passes a trailing positional prompt
     # ("System: Read CLAUDE.md and execute the task it describes") so claude starts the
     # task unattended. Suppressed on resume (--continue) to avoid re-triggering.

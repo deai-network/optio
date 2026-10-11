@@ -264,10 +264,17 @@ def run_stream_json_mode(argv: list[str]) -> int:
                                    initialize with an error (as a CLI without
                                    it would) unless launched with --continue
                                    (a relaunch answers normally).
+      FAKE_CLAUDE_ARGV_LOG       — a file path: append this launch's argv
+                                   (without argv[0]) as one JSON line.
     """
     def emit(obj):
         sys.stdout.write(json.dumps(obj) + "\n")
         sys.stdout.flush()
+
+    argv_log = os.environ.get("FAKE_CLAUDE_ARGV_LOG")
+    if argv_log:
+        with open(argv_log, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(argv[1:]) + "\n")
 
     reply_tpl = os.environ.get("FAKE_CLAUDE_REPLY", "reply-{n}")
     want_permission = os.environ.get("FAKE_CLAUDE_PERMISSION") == "1"

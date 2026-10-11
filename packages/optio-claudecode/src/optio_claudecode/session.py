@@ -34,6 +34,7 @@ from optio_core.models import BasicAuth, SessionCrypto, TaskInstance
 from optio_agents.context import HookContext
 from optio_agents.conversation import ConversationClosed
 from optio_agents.fs_grants import fs_isolation_dirs
+from optio_agents.mcp import resolve_mcp_servers
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import (
     Host, LocalHost, ProcessHandle, RemoteHost, proc_wait, unwind_tracing,
@@ -376,6 +377,7 @@ async def run_claudecode_session(
             ctx, host, hook_ctx, config, protocol,
             resuming=resuming, resolved_seed_id=resolved_seed_id,
         )
+        mcp_config_path = await _plant_mcp_servers(ctx, host, config)
 
         # Network binding (same env handling as opencode for multi-container deploys)
         bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
@@ -395,30 +397,35 @@ async def run_claudecode_session(
             permission_mode=config.permission_mode,
             allowed_tools=config.allowed_tools,
             disallowed_tools=config.disallowed_tools,
+            tools=config.tools,
+            mcp_config_path=mcp_config_path,
             # A continued session runs an alias (default when none is
             # configured), not the full id its transcript ended on.
             model=cc_models.launch_model(config.model, continuing=pass_continue),
             resuming=pass_continue,
         )
-        # auto_start: append the kickoff prompt ONLY on a genuine fresh launch.
-        # Gated on `resuming` (not pass_continue): a no-transcript resume still
-        # drops --continue (D3) but must NOT re-issue the kickoff, which would
-        # restart the task instead of leaving the restored session as-is.
+        # The positional prompts (at most one of the two), after `--` so no
+        # multi-value option before them takes them for its values.
         claude_flags = [
             *claude_flags,
-            *host_actions.build_auto_start_args(
-                auto_start=config.auto_start, resuming=resuming,
-            ),
-        ]
-        # Resume notification: a System:-prefixed positional appended after
-        # --continue, so the restored conversation gets a "you have been
-        # resumed" turn. Gated on pass_continue (a transcript is actually
-        # being continued); a no-transcript resume sends nothing.
-        claude_flags = [
-            *claude_flags,
-            *host_actions.build_resume_notice_args(
-                resuming=resuming, pass_continue=pass_continue,
-            ),
+            *host_actions.positional_prompt_args([
+                # auto_start: the kickoff prompt ONLY on a genuine fresh
+                # launch. Gated on `resuming` (not pass_continue): a
+                # no-transcript resume still drops --continue (D3) but must
+                # NOT re-issue the kickoff, which would restart the task
+                # instead of leaving the restored session as-is.
+                *host_actions.build_auto_start_args(
+                    auto_start=config.auto_start, resuming=resuming,
+                ),
+                # Resume notification: a System:-prefixed positional with
+                # --continue, so the restored conversation gets a "you have
+                # been resumed" turn. Gated on pass_continue (a transcript is
+                # actually being continued); a no-transcript resume sends
+                # nothing.
+                *host_actions.build_resume_notice_args(
+                    resuming=resuming, pass_continue=pass_continue,
+                ),
+            ]),
         ]
         launch_env = {
             **(config.env or {}),
@@ -513,6 +520,9 @@ async def run_claudecode_session(
             resuming=resuming, resolved_seed_id=resolved_seed_id,
         )
         cred_baseline = cred_baseline_out
+        # Resolved once per launch: a model/effort relaunch (_spawn) reuses
+        # the file and its flags; the model probe gets neither.
+        mcp_config_path = await _plant_mcp_servers(ctx, host, config)
 
         # The `--model` value, also the model select's value: the configured
         # model or the operator's pick (an alias from the CLI's list, or a
@@ -611,6 +621,8 @@ async def run_claudecode_session(
                 allow_bypass=config.bypass_allowed,
                 allowed_tools=config.allowed_tools,
                 disallowed_tools=config.disallowed_tools,
+                tools=config.tools,
+                mcp_config_path=mcp_config_path,
                 model=model,
                 resuming=do_continue,
                 effort=current_effort,
@@ -1673,6 +1685,21 @@ async def _plant_session_content(
     if config.before_execute is not None:
         await config.before_execute(hook_ctx)
     return cred_baseline, focus_env
+
+
+async def _plant_mcp_servers(
+    ctx: ProcessContext, host: Host, config: ClaudeCodeTaskConfig,
+) -> str | None:
+    """This launch's MCP servers, planted for ``--mcp-config``: the file's
+    path, or None without servers (a file a restored snapshot carried is
+    removed). Resolved anew on every launch, fresh and resume, so a provider
+    hands out fresh credentials each time; a provider's exception fails the
+    launch with its own message. Logs the server names only (header values
+    are credentials)."""
+    servers = await resolve_mcp_servers(config, ctx.process_id)
+    if servers:
+        _LOG.info("MCP servers for this launch: %s", ", ".join(s.name for s in servers))
+    return await host_actions.plant_mcp_config(host, host.workdir, servers)
 
 
 async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
