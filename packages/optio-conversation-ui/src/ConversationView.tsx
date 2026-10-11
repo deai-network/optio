@@ -6,7 +6,7 @@ import {
   denyWithReason, useBoolField, useOneOfField, useSpinnerKey, useVultusComponents, type ActionStatus,
 } from 'vultus-antd';
 import type { TextAreaProps, TextAreaRef } from 'antd/es/input/TextArea';
-import type { ChatItem, ChatState, SessionControl } from './chat.js';
+import type { ChatItem, ChatState, CustomControl, SessionControl } from './chat.js';
 import { Actions, Attachments, Bubble, Sender, Think, ThoughtChain, Welcome, XProvider } from '@ant-design/x';
 import type { ThoughtChainItemType } from '@ant-design/x';
 import { transcriptKeys } from './transcriptKeys.js';
@@ -15,6 +15,7 @@ import { ConversationWelcomeContext, type ConversationWelcome } from './welcome.
 import { resolveText, useLanguage } from './text.js';
 import { ConversationSetBusyContext } from './busy.js';
 import { AnswerBlock } from './AnswerBlock.js';
+import { CustomControls } from './CustomControls.js';
 import { AnswerFiles, FILE_LINK_CLASS } from './FileCards.js';
 import { SlotSpinner } from './spinners/SlotSpinner.js';
 import { CodeBlock } from './CodeBlock.js';
@@ -161,6 +162,11 @@ export interface ConversationViewProps {
   // to the wrapper (POST /control or UI-local).
   controls?: SessionControl[];
   onControlChange?: (id: string, value: string | boolean) => void;
+  // Task-defined controls (widgetData.customControls), before the built-in
+  // ones and shown whatever `controls` is. onCustomControlChange picks an
+  // option: resolves to null once applied, else to why not (the error slot).
+  customControls?: CustomControl[];
+  onCustomControlChange?: (id: string, value: string) => Promise<string | null>;
   // theming (only set by ConversationWidget when ownTheme):
   themeMode?: 'light' | 'dark';
   onToggleTheme?: () => void; // absent => no ☀/🌙 button
@@ -2162,14 +2168,26 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               /* Sender's footer: a single-height toolbar — model + attach on the left,
                   Send/Interrupt pushed right. All size="small" so heights match. */
               <div ref={toolbarRef} data-testid="session-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {props.controls && props.onControlChange ? (
+                {(props.customControls?.length && props.onCustomControlChange) || (props.controls && props.onControlChange) ? (
                   <>
+                    {/* The task's own controls (custom) first, then the built-in
+                        ones; both collapse into the Settings popover together. */}
                     <span className="optio-cc-inline-controls">
-                      <SessionControls
-                        controls={props.controls}
-                        disabled={props.busy || props.state.closed}
-                        onChange={props.onControlChange}
-                      />
+                      {props.customControls?.length && props.onCustomControlChange ? (
+                        <CustomControls
+                          controls={props.customControls}
+                          disabled={props.busy || props.state.closed}
+                          onChange={props.onCustomControlChange}
+                          onError={setError}
+                        />
+                      ) : null}
+                      {props.controls && props.onControlChange ? (
+                        <SessionControls
+                          controls={props.controls}
+                          disabled={props.busy || props.state.closed}
+                          onChange={props.onControlChange}
+                        />
+                      ) : null}
                     </span>
                     {/* When even the compact toolbar is too wide (optio-cc-collapsed),
                         the controls collapse into this button, which opens them,
@@ -2181,11 +2199,21 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                         rootClassName="optio-cc-settings-popover"
                         content={
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
-                            <SessionControls
-                              controls={props.controls}
-                              disabled={props.busy || props.state.closed}
-                              onChange={props.onControlChange}
-                            />
+                            {props.customControls?.length && props.onCustomControlChange ? (
+                              <CustomControls
+                                controls={props.customControls}
+                                disabled={props.busy || props.state.closed}
+                                onChange={props.onCustomControlChange}
+                                onError={setError}
+                              />
+                            ) : null}
+                            {props.controls && props.onControlChange ? (
+                              <SessionControls
+                                controls={props.controls}
+                                disabled={props.busy || props.state.closed}
+                                onChange={props.onControlChange}
+                              />
+                            ) : null}
                           </div>
                         }
                       >

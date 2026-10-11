@@ -2,6 +2,8 @@
 // adapter reduces its native wire events into, and the shape the generic
 // conversation widget renders.
 
+import type { LocalizedText } from './text.js';
+
 export type ChatItem =
   | {
       kind: 'user';
@@ -201,11 +203,35 @@ export interface SessionControl {
   inlineDescriptions?: boolean; // select: option descriptions in the open list, not in tooltips
 }
 
+export interface CustomControlOption {
+  value: string;
+  label: LocalizedText;
+  description?: LocalizedText | null;
+}
+
+// A task-defined session control (optio_agents CustomControl), as the engine
+// sends it in widgetData.customControls and in its control updates: a
+// segmented choice whose options each set a fixed model / effort / permission
+// mode. Texts arrive unresolved. `value` is the option whose settings all
+// match the running ones, null when none does (no segment highlighted).
+export interface CustomControl {
+  id: string;
+  label: LocalizedText;
+  description?: LocalizedText | null;
+  options: CustomControlOption[];
+  value: string | null;
+}
+
+// A custom control's id on /control and in a value patch: `custom:<id>`.
+export const CUSTOM_CONTROL_PREFIX = 'custom:';
+
 export interface ChatState {
   items: ChatItem[];
   busy: boolean;
   closed: boolean;
   controls: SessionControl[];
+  // Task-defined controls (claudecode only so far); absent for other engines.
+  customControls?: CustomControl[];
   // Reducer-private (claudecode): background task ids already applied, so the
   // system event and the injected notification turn for one task apply once.
   finishedTaskIds?: string[];
@@ -383,15 +409,38 @@ export const initialChatState: ChatState = {
   controls: [],
 };
 
-// Merge a live control update into state.controls. Accepts either a full
-// snapshot (controls) or a single-value patch ({id, value}); patch updates the
-// matching control's value in place, leaving chat items untouched.
+// Merge a live control update into state.controls / state.customControls.
+// Accepts either a full snapshot (controls and/or customControls, each
+// replaced when present) or a single-value patch ({id, value}); patch updates
+// the matching control's value in place, a custom control's for the id
+// `custom:<id>` (null: no option), leaving chat items untouched.
 export function foldControlUpdate(
   state: ChatState,
-  update: { controls?: SessionControl[]; id?: string; value?: string | boolean },
+  update: {
+    controls?: SessionControl[];
+    customControls?: CustomControl[];
+    id?: string;
+    value?: string | boolean | null;
+  },
 ): ChatState {
-  if (update.controls) return { ...state, controls: update.controls };
+  if (update.controls || update.customControls) {
+    return {
+      ...state,
+      ...(update.controls ? { controls: update.controls } : null),
+      ...(update.customControls ? { customControls: update.customControls } : null),
+    };
+  }
   if (update.id === undefined) return state;
+  if (update.id.startsWith(CUSTOM_CONTROL_PREFIX)) {
+    const id = update.id.slice(CUSTOM_CONTROL_PREFIX.length);
+    if (!state.customControls) return state;
+    return {
+      ...state,
+      customControls: state.customControls.map((c) =>
+        c.id === id ? { ...c, value: update.value as string | null } : c,
+      ),
+    };
+  }
   return {
     ...state,
     controls: state.controls.map((c) =>

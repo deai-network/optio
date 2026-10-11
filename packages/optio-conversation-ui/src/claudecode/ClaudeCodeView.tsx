@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
 import { SpinnerScope } from 'vultus-antd';
-import type { ChatState, SessionControl } from '../chat.js';
+import { CUSTOM_CONTROL_PREFIX, type ChatState, type CustomControl, type SessionControl } from '../chat.js';
 import { initialChatState, reduceEvent } from './events.js';
 import type { Attachment } from '../attachments.js';
 import { resolveUploadUrl, uploadFiles, bundleUploadNotice } from '../uploads.js';
@@ -25,6 +25,16 @@ function chatReducer(thinkingRows: boolean) {
     reduceEvent(state, action.ev, action.seq, undefined, { thinkingRows });
 }
 
+// What a refused custom-control pick shows, from the listener's /control
+// answer (null: no answer): claude's own message when it refused the switch,
+// else the reason in words.
+function controlFailure(body: Record<string, unknown> | null): string {
+  if (typeof body?.error === 'string' && body.error) return `Switch failed: ${body.error}`;
+  if (body?.reason === 'busy') return 'Switch failed: the agent is busy.';
+  if (body?.reason === 'closed') return 'Switch failed: the conversation has ended.';
+  return 'Switch failed — retry.';
+}
+
 export function ClaudeCodeView(props: WidgetProps) {
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
     'silent' | 'description-while-active' | 'description-only' | 'verbose';
@@ -32,8 +42,11 @@ export function ClaudeCodeView(props: WidgetProps) {
     'hidden' | 'visible';
   const initialControls = ((props.process.widgetData as any)?.controls ?? []) as SessionControl[];
   const showSessionControls = Boolean((props.process.widgetData as any)?.showSessionControls);
+  const initialCustomControls = ((props.process.widgetData as any)?.customControls ?? []) as CustomControl[];
   const reducer = useMemo(() => chatReducer(thinkingVerbosity === 'visible'), [thinkingVerbosity]);
-  const [state, dispatch] = useReducer(reducer, { ...initialChatState, controls: initialControls });
+  const [state, dispatch] = useReducer(reducer, {
+    ...initialChatState, controls: initialControls, customControls: initialCustomControls,
+  });
   const localSeqRef = useRef(0);
   const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
   const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
@@ -65,25 +78,34 @@ export function ClaudeCodeView(props: WidgetProps) {
   // send flag that a busy-change effect could fail to clear on a mid-turn send.
   const busy = state.busy;
 
-  // POST a JSON body. Returns the parsed response on 2xx ({} when the body is
-  // not a JSON object), null on failure.
-  async function postJson(path: string, body: unknown): Promise<Record<string, unknown> | null> {
+  // POST a JSON body. Resolves to whether the answer was 2xx, with its body
+  // ({} when the body is not a JSON object); null when the request failed.
+  async function postForResult(
+    path: string, body: unknown,
+  ): Promise<{ ok: boolean; body: Record<string, unknown> } | null> {
     try {
       const resp = await fetch(`${widgetProxyUrl}${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!resp.ok) return null;
+      let parsed: unknown = null;
       try {
-        const parsed: unknown = await resp.json();
-        return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+        parsed = await resp.json();
       } catch {
-        return {};
+        /* no JSON body */
       }
+      return { ok: resp.ok, body: parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {} };
     } catch {
       return null;
     }
+  }
+
+  // POST a JSON body. Returns the parsed response on 2xx ({} when the body is
+  // not a JSON object), null on failure.
+  async function postJson(path: string, body: unknown): Promise<Record<string, unknown> | null> {
+    const result = await postForResult(path, body);
+    return result?.ok ? result.body : null;
   }
 
   async function post(path: string, body: unknown): Promise<boolean> {
@@ -201,6 +223,22 @@ export function ClaudeCodeView(props: WidgetProps) {
           localSeqRef.current -= 1;
           dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current });
           void post('control', { id, value });
+        }}
+        customControls={state.customControls}
+        onCustomControlChange={async (id, value) => {
+          // As for the built-ins: an optimistic patch through the reducer, then
+          // POST /control (id `custom:<id>`); the engine's control update is
+          // the source of truth. A refused pick is put back here: a refusal for
+          // a closed conversation (or a bad id) is followed by no update.
+          const wireId = `${CUSTOM_CONTROL_PREFIX}${id}`;
+          const before = state.customControls?.find((c) => c.id === id)?.value ?? null;
+          localSeqRef.current -= 1;
+          dispatch({ ev: { type: 'x-optio-control-update', id: wireId, value }, seq: localSeqRef.current });
+          const result = await postForResult('control', { id: wireId, value });
+          if (result?.ok) return null;
+          localSeqRef.current -= 1;
+          dispatch({ ev: { type: 'x-optio-control-update', id: wireId, value: before }, seq: localSeqRef.current });
+          return controlFailure(result?.body ?? null);
         }}
         notice={<ResumeSendNotice processId={props.process._id} state={resumeSend} />}
         draft={resumeSend?.phase === 'failed' ? resumeSend.text : undefined}
