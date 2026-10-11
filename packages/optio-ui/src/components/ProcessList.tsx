@@ -1,4 +1,5 @@
 import { List } from 'antd';
+import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import { ProcessItem } from './ProcessItem.js';
 
 interface ProcessListProps {
@@ -11,9 +12,13 @@ interface ProcessListProps {
 }
 
 export function ProcessList({ processes, loading, onLaunch, onResurrect, onCancel, onProcessClick }: ProcessListProps) {
+  const { Spinner } = useVultusComponents();
+  const spinnerKey = useSpinnerKey('optio:process-list');
   return (
     <List
-      loading={loading}
+      loading={Spinner
+        ? { spinning: loading, indicator: <Spinner spinnerKey={spinnerKey} size="default" /> }
+        : loading}
       dataSource={processes}
       pagination={{ pageSize: 16 }}
       renderItem={(item: any) => (

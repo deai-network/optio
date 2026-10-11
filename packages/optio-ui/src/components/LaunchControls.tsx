@@ -4,6 +4,7 @@ import {
   DownOutlined, LoadingOutlined, MedicineBoxOutlined, PlayCircleOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import { isLaunchable, isResumable, isResurrectable, isResurrecting } from '../process-state.js';
 
 export interface LaunchControlsProps {
@@ -49,6 +50,8 @@ export function LaunchControls({
   process, onLaunch, onResurrect, size = 'small', iconFontSize, denyReason,
 }: LaunchControlsProps) {
   const { t } = useTranslation();
+  const { Spinner } = useVultusComponents();
+  const resurrectingKey = useSpinnerKey(`optio:process:${process?._id}:resurrecting`);
   if (!isLaunchable(process) || !onLaunch) return null;
   const iconStyle = iconFontSize ? { fontSize: iconFontSize } : undefined;
 
@@ -84,7 +87,9 @@ export function LaunchControls({
             type="text"
             size={size}
             aria-label={t('processes.resurrectingLabel', { defaultValue: 'Resurrecting' })}
-            icon={<LoadingOutlined spin style={iconStyle} />}
+            icon={Spinner
+              ? <Spinner spinnerKey={resurrectingKey} size="small" />
+              : <LoadingOutlined spin style={iconStyle} />}
             disabled
             style={{ pointerEvents: 'none' }}
           />

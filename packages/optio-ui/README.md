@@ -20,6 +20,12 @@ npm install optio-ui
 | `@tanstack/react-query` | >=5 |
 | `react-i18next` | >=15 |
 | `i18next` | >=24 |
+| `antd` | >=6 |
+| `@ant-design/icons` | >=6 |
+| `vultus-core` | >=0.3.0 |
+
+`vultus-core` is a peer so that an app has a single copy of it, and with it a single
+components context (see [Loading spinner](#loading-spinner)).
 
 ## Quick Setup
 
@@ -103,6 +109,34 @@ following keys:
 | `processes.showSpecial` | `ProcessFilters` — checkbox label |
 | `status.<state>` | `ProcessStatusBadge` — state label (e.g. `status.running`, `status.done`, `status.failed`) |
 | `common.noData` | `ProcessLogPanel` — empty state message |
+
+## Loading spinner
+
+By default the loading states show antd's spinners. An app can lend its own spinner through
+vultus-core's components slot, and optio-ui renders it in their place:
+
+```tsx
+import { VultusComponentsContext } from 'vultus-core';
+
+<VultusComponentsContext.Provider value={{ Spinner: MySpinner }}>
+  <App />
+</VultusComponentsContext.Provider>
+```
+
+(With vultus-antd, `<VultusProvider components={{ Spinner: MySpinner }}>` does the same.)
+`MySpinner` receives vultus-core's `SpinnerProps`: a required `spinnerKey` (the spinner's
+identity), an optional `size` and an optional `label`.
+
+| Where | `spinnerKey` | `size` |
+|-------|--------------|--------|
+| `ProcessList` while `loading` (the List's indicator) | `optio:process-list` | `'default'` |
+| `LaunchControls` "Resurrecting" indicator (in place of antd's loading icon) | `optio:process:<id>:resurrecting` | `'small'` |
+| `ProcessDetailView` before "Loading…" | `optio:process:<id>:detail` | `'small'` |
+| Built-in `iframe` widget before "Loading…" | `optio:process:<id>:widget` | `'small'` |
+
+`<id>` is the process `_id`. Inside a vultus-core `<SpinnerScope name="...">` each key is
+prefixed with the scope chain (`outer/inner/optio:process-list`), so a page showing several
+instances keeps the keys unique. Without a lent spinner nothing changes.
 
 ## No Router Dependency
 

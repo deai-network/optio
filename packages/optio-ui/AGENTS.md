@@ -3,7 +3,7 @@
 ## Package
 
 - **name**: `optio-ui`
-- **version**: `0.1.0`
+- **version**: `0.6.1`
 - **type**: `module` (ESM)
 - **entry**: `src/index.ts`
 
@@ -11,6 +11,8 @@
 - `optio-contracts: workspace:*`
 - `@ts-rest/core: ^3.51.0`
 - `@ts-rest/react-query: ^3.51.0`
+- `@quaesitor-textus/core: ^0.4.2`
+- `@quaesitor-textus/antd: ^0.4.2`
 
 **Peer dependencies** (must be provided by the consuming app):
 - `antd: >=6`
@@ -20,6 +22,8 @@
 - `@tanstack/react-query: >=5`
 - `react-i18next: >=15`
 - `i18next: >=24`
+- `vultus-core: >=0.3.0` — a peer so the app has one copy and one components context
+  (see "Spinner slot"); in this workspace a dev dependency linked to `../unitas/packages/vultus-core`
 
 ## Conventions
 
@@ -65,6 +69,25 @@ file, fully tested, fixes this once.
 
 If in doubt: add a predicate, don't inline the check.
 
+## Spinner slot (vultus-core)
+
+optio-ui's loading sites render the spinner an app lends through vultus-core's components
+context (`useVultusComponents().Spinner`, set with `VultusComponentsContext.Provider` or
+vultus-antd's `VultusProvider components={{ Spinner }}`) in place of antd's. Each site calls
+`useVultusComponents()` and `useSpinnerKey(localKey)` unconditionally (before any early
+return) and renders `<Spinner spinnerKey={key} size=… />` when a Spinner is lent, its
+unchanged antd code otherwise.
+
+| Site | Local key | Size | Lent Spinner |
+|------|-----------|------|--------------|
+| `ProcessList` | `optio:process-list` | `'default'` | `List loading={{ spinning: loading, indicator: <Spinner …/> }}` |
+| `LaunchControls` (resurrecting) | `optio:process:${process._id}:resurrecting` | `'small'` | the disabled button's `icon`, in place of `LoadingOutlined` |
+| `ProcessDetailView` (no tree yet) | `optio:process:${processId}:detail` | `'small'` | before the "Loading…" text (test id `optio-detail-loading` unchanged) |
+| `IframeWidget` (no `widgetData` yet) | `optio:process:${process._id}:widget` | `'small'` | before the "Loading…" text (test id `optio-widget-loading` unchanged) |
+
+A `SpinnerScope` above a site prefixes its key with the scope chain (`outer/inner/<local key>`).
+Without a lent Spinner every site renders exactly as before. Tests: `src/__tests__/spinnerSlot.test.tsx`.
+
 ## OptioProvider
 
 ```ts
@@ -105,7 +128,7 @@ Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`).
 
 Rendering rules:
 - Renders **nothing** when the process is not in a launchable state (`idle | done | failed | cancelled`), or when `onLaunch` is not provided.
-- Renders a single disabled **Resurrecting** indicator while `isResurrecting(process)` (spinning loading icon, `aria-label` "Resurrecting", tooltip "Resurrecting: saving the unsaved work…"); clicking it does nothing. It takes precedence over all the cases below (a non-empty `denyReason` still wins).
+- Renders a single disabled **Resurrecting** indicator while `isResurrecting(process)` (spinning loading icon, or the app's lent Spinner — see "Spinner slot"; `aria-label` "Resurrecting", tooltip "Resurrecting: saving the unsaved work…"); clicking it does nothing. It takes precedence over all the cases below (a non-empty `denyReason` still wins).
 - Renders a **Resurrect** split button when `onResurrect` is provided and `isResurrectable(process)` (`supportsResurrect=true` and `hasUnsavedWork=true`); it takes precedence over the two cases below (a non-empty `denyReason` still wins):
   - Primary button: **Resurrect** (medicine-box icon, `aria-label` "Resurrect") — calls `onResurrect(id)`.
   - Menu item **Resume from last snapshot**, only when `isResumable(process)` — calls `onLaunch(id, { resume: true })`.
@@ -134,7 +157,7 @@ interface ProcessListProps {
 }
 ```
 
-Renders an Ant Design `List`. Each item delegates to `ProcessItem`. The launch button is provided via `LaunchControls`; `onResurrect` is forwarded to it through `ProcessItem`.
+Renders an Ant Design `List` (its loading indicator is the app's lent Spinner when one is set — see "Spinner slot"). Each item delegates to `ProcessItem`. The launch button is provided via `LaunchControls`; `onResurrect` is forwarded to it through `ProcessItem`.
 `FilteredProcessList` (`ProcessFilter.tsx`) takes the same callbacks, including `onResurrect`, and forwards them to `ProcessList`.
 
 Launchable states: `idle | done | failed | cancelled`.
@@ -333,7 +356,7 @@ function ProcessDetailView({ processId }: ProcessDetailViewProps): JSX.Element
 Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branches:
 
 - **No processId** — renders a centred "Select a process" placeholder.
-- **No tree yet** (stream not yet received) — renders a "Loading…" placeholder.
+- **No tree yet** (stream not yet received) — renders a "Loading…" placeholder (preceded by the app's lent Spinner, if any — see "Spinner slot").
 - **`tree.uiWidget` is set and registered** — renders the named widget component, passing
   `{ process: tree, apiBaseUrl, widgetProxyUrl, prefix }`.
 - **`tree.uiWidget` is set but unregistered** — warns to `console.warn` and falls back to
@@ -413,6 +436,9 @@ Reads configuration from `process.widgetData` (type `IframeWidgetData`):
 | `sandbox` | `string \| undefined` | iframe `sandbox` attribute |
 | `allow` | `string \| undefined` | iframe `allow` attribute (feature policy) |
 | `title` | `string \| undefined` | iframe `title`; falls back to `process.name` |
+
+Renders a "Loading…" placeholder (preceded by the app's lent Spinner, if any — see
+"Spinner slot") until `process.widgetData` arrives.
 
 Shows a dismissible "Session ended." banner overlay when the process is in a terminal
 state (`done`, `failed`, or `cancelled`).

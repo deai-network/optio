@@ -1,3 +1,4 @@
+import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import { useProcessStream } from '../hooks/useProcessStream.js';
 import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
@@ -37,6 +38,8 @@ export function ProcessDetailView({
     useProcessStream(processId ?? undefined);
   const { launch, cancel, resurrect } = useProcessActions();
   const widget = useProcessWidget(tree);
+  const { Spinner } = useVultusComponents();
+  const spinnerKey = useSpinnerKey(`optio:process:${processId}:detail`);
 
   if (!processId) {
     return (
@@ -69,7 +72,14 @@ export function ProcessDetailView({
   }
 
   if (!tree) {
-    return <div data-testid="optio-detail-loading">Loading…</div>;
+    return (
+      <div data-testid="optio-detail-loading">
+        {Spinner && (
+          <span style={{ marginInlineEnd: 8 }}><Spinner spinnerKey={spinnerKey} size="small" /></span>
+        )}
+        Loading…
+      </div>
+    );
   }
 
   if (widget) {

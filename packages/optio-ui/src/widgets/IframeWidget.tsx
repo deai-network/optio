@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import type { WidgetProps } from './registry.js';
 import { registerWidget } from './registry.js';
 import { isTerminalState } from '../process-state.js';
@@ -16,6 +17,8 @@ export function IframeWidget(props: WidgetProps) {
   const state: string | undefined = props.process.status?.state;
   const isTerminal = isTerminalState(state);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const { Spinner } = useVultusComponents();
+  const spinnerKey = useSpinnerKey(`optio:process:${props.process._id}:widget`);
 
   useEffect(() => {
     if (!widgetData?.localStorageOverrides) return;
@@ -31,7 +34,14 @@ export function IframeWidget(props: WidgetProps) {
   }, [widgetData?.localStorageOverrides, props.widgetProxyUrl]);
 
   if (!widgetData) {
-    return <div data-testid="optio-widget-loading">Loading…</div>;
+    return (
+      <div data-testid="optio-widget-loading">
+        {Spinner && (
+          <span style={{ marginInlineEnd: 8 }}><Spinner spinnerKey={spinnerKey} size="small" /></span>
+        )}
+        Loading…
+      </div>
+    );
   }
 
   const rawSrc = widgetData.iframeSrc ?? props.widgetProxyUrl;
