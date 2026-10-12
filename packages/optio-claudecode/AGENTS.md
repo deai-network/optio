@@ -475,6 +475,14 @@ when the hook returns, and when it raises `NothingToResurrect`.
   follows as the `x-optio-control-update` above. A
   resumed run's `x-optio-resumed` carries `customControls: [{id, value}]`,
   the selection it launches with (Replay-buffer semantics, Resume).
+* `ResumeConfigMixin` (`smooth_resume: bool = False`, `optio_agents`) —
+  "resume without confirmation when a message arrives". Published as
+  widgetData `smoothResume` (next to `customControls`, conversation UI only).
+  widgetData outlives a suspend, so the suspended replay
+  (optio-conversation-ui's `ClaudeCodeReplayView`) reads it there: set, a
+  send to the suspended session resumes it and sends the message without the
+  "Resume the session?" question; a send that would discard a failed run's
+  unsaved work (`isResurrectable`) still asks.
 * `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt` —
   inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
   (alongside the `ClaustrumConfigMixin` triad). Optional synchronous

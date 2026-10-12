@@ -260,6 +260,10 @@ class ClaudeCodeTaskConfig(
     # conversation_ui=True). Each control's default option replaces model /
     # reasoning_effort / permission_mode below at launch; a pick switches
     # claude live (/control id "custom:<id>").
+    # smooth_resume (ResumeConfigMixin): carried to the widget as
+    # widgetData.smoothResume, which outlives a suspend; the suspended replay
+    # then resumes the session on a send without asking (a send that discards
+    # unsaved work still asks).
     # Replace the generic working-spinner with claudecode's on-brand native
     # spinner in the conversation widget. Requires mode="conversation" and
     # conversation_ui=True.

@@ -357,6 +357,8 @@ async def test_conversation_ui_session_lifecycle(
             ],
             # No custom controls (custom_controls unset): an empty list.
             "customControls": [],
+            # smooth_resume unset: a send to the suspended session asks first.
+            "smoothResume": False,
             "showFileUpload": False,
             "maxUploadBytes": 10_000_000,
             "fileDownload": False,
@@ -392,6 +394,33 @@ async def test_conversation_ui_session_lifecycle(
         # Teardown stopped the listener: the port refuses connections.
         port = int(upstream["url"].rsplit(":", 1)[1])
         await _wait_port_refused(port)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_smooth_resume_reaches_the_widget(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+):
+    """smooth_resume=True is published as widgetData.smoothResume; widgetData
+    outlives a suspend, so the suspended replay reads it there and resumes on
+    a send without asking."""
+    optio = await _make_optio(mongo_db, "ccui-smooth")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-smooth",
+            name="Smooth resume",
+            config=_ui_config(shim_install_dir, claude_cache_dir, smooth_resume=True),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result("cc-smooth", session_id=None, timeout=60)
+        proc = await _wait_widget_data(optio, "cc-smooth")
+        assert proc["widgetData"]["smoothResume"] is True
+        await conv.close()
+        await _wait_terminal(optio, "cc-smooth")
     finally:
         await optio.shutdown(grace_seconds=1.0)
 

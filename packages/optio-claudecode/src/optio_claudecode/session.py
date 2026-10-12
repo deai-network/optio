@@ -940,6 +940,9 @@ async def run_claudecode_session(
                 "nativeSpinner": config.native_spinner,
                 "controls": shown_controls,
                 "customControls": build_custom_controls(),
+                # Read by the suspended replay (widgetData outlives the
+                # suspend): a send resumes the session without asking.
+                "smoothResume": config.smooth_resume,
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,
