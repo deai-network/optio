@@ -36,8 +36,14 @@ export interface UseProcessWidgetStateResult {
  * control only in `'suspended'` mode. Callers that only need the element
  * itself should use `useProcessWidget`, which delegates here.
  */
+export interface UseProcessWidgetOptions {
+  /** Passed to the widget as `WidgetProps.readOnly`. */
+  readOnly?: boolean;
+}
+
 export function useProcessWidgetState(
   tree: ProcessTreeNode | null | undefined,
+  options?: UseProcessWidgetOptions,
 ): UseProcessWidgetStateResult | null {
   const baseUrl = useOptioBaseUrl();
   const prefix = useOptioPrefix();
@@ -84,6 +90,7 @@ export function useProcessWidgetState(
         widgetProxyUrl={widgetProxyUrl}
         prefix={prefix}
         database={database}
+        {...(options?.readOnly ? { readOnly: true } : {})}
       />
     ),
   };
@@ -102,8 +109,11 @@ export function useProcessWidgetState(
  * Use `useProcessWidgetState` instead when the caller needs to know which
  * mode produced the element.
  */
-export function useProcessWidget(tree: ProcessTreeNode | null | undefined): ReactNode | null {
-  return useProcessWidgetState(tree)?.widget ?? null;
+export function useProcessWidget(
+  tree: ProcessTreeNode | null | undefined,
+  options?: UseProcessWidgetOptions,
+): ReactNode | null {
+  return useProcessWidgetState(tree, options)?.widget ?? null;
 }
 
 export interface ProcessWidgetProps {

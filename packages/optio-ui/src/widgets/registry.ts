@@ -6,6 +6,9 @@ export interface WidgetProps {
   widgetProxyUrl: string; // ends with '/' — trailing slash is load-bearing
   prefix: string;
   database?: string;
+  /** The host shows the process read-only (`ProcessDetailView readOnly`):
+   *  the widget must not launch or resume it. Absent: not read-only. */
+  readOnly?: boolean;
 }
 
 export type WidgetComponent = ComponentType<WidgetProps>;

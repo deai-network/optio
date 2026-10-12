@@ -1,5 +1,5 @@
 import { Alert } from 'antd';
-import { dismissResumeSend, type ResumeSendState } from './resumeAndSend.js';
+import { dismissResumeSend, failureTitle, type ResumeSendState } from './resumeAndSend.js';
 
 const RESUMING = 'Resuming the session; your message will be sent once it is ready.';
 
@@ -16,7 +16,7 @@ export function ResumeSendNotice({ processId, state }: { processId: string; stat
       <Alert
         type="warning"
         showIcon
-        title={`Your message was not sent: ${state.message}`}
+        title={failureTitle(state)}
         closable={{ onClose: () => dismissResumeSend(processId) }}
         data-testid="optio-resume-send-failed"
       />

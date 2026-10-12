@@ -399,6 +399,19 @@ describe('ProcessDetailView', () => {
       expect(container.querySelector('.anticon-play-circle')).toBeNull();
     });
 
+    it('passes readOnly to the widget (so it cannot resume the process itself)', () => {
+      const seen: unknown[] = [];
+      registerWidget('my-widget', () => null, {
+        suspended: (props) => { seen.push(props.readOnly); return <div data-testid="suspended-widget" />; },
+      });
+      mockProcessStream.mockReturnValue({ tree: suspendedTree(), logs: [], connected: true });
+      const { unmount } = render(<ProcessDetailView processId="abc" readOnly />);
+      expect(seen.at(-1)).toBe(true);
+      unmount();
+      render(<ProcessDetailView processId="abc" />);
+      expect(seen.at(-1)).toBeUndefined();
+    });
+
     it('falls back to default tree+log when suspended but no suspended variant is registered', () => {
       registerWidget('my-widget', () => <div data-testid="my-widget">live</div>);
       mockProcessStream.mockReturnValue({ tree: suspendedTree(), logs: [], connected: true });

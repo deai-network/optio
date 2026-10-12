@@ -38,7 +38,9 @@ export function ProcessDetailView({
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
   const { launch, cancel, resurrect } = useProcessActions();
-  const widgetResult = useProcessWidgetState(tree);
+  // readOnly reaches the widget too: a suspended conversation's composer
+  // would otherwise resume the process.
+  const widgetResult = useProcessWidgetState(tree, { readOnly });
   const { Spinner } = useVultusComponents();
   const spinnerKey = useSpinnerKey(`optio:process:${processId}:detail`);
 

@@ -504,13 +504,16 @@ describe('ConversationView sending through a resume (the suspended replay)', () 
     await waitFor(() => expect(box().value).toBe(''));
   });
 
-  it('draft: seeds the input, and a new draft replaces the text', () => {
-    const { rerender } = render(
-      <ConfigProvider><ConversationView {...makeProps({ draft: 'first try' })} /></ConfigProvider>,
-    );
+  it('draft: seeds an empty input', () => {
+    renderView(makeProps({ draft: 'first try' }));
     expect(box().value).toBe('first try');
-    rerender(<ConfigProvider><ConversationView {...makeProps({ draft: 'second try' })} /></ConfigProvider>);
-    expect(box().value).toBe('second try');
+  });
+
+  it('draft: text already typed is kept, the draft goes below it', () => {
+    const { rerender } = render(<ConfigProvider><ConversationView {...makeProps()} /></ConfigProvider>);
+    fireEvent.change(box(), { target: { value: 'my follow-up' } });
+    rerender(<ConfigProvider><ConversationView {...makeProps({ draft: 'the unsent one' })} /></ConfigProvider>);
+    expect(box().value).toBe('my follow-up\n\nthe unsent one');
   });
 
   it('notice: rendered above the input', () => {

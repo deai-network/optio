@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Modal } from 'antd';
-import type { WidgetProps } from 'optio-ui';
+import { isResurrectable, type WidgetProps } from 'optio-ui';
 import { SpinnerScope } from 'vultus-antd';
 import type { ChatState, SessionControl } from '../chat.js';
 import { initialChatState, reduceEvent, type ReduceOptions } from './events.js';
@@ -33,15 +33,22 @@ export interface ClaudeCodeReplayViewProps {
   database?: string;
   prefix?: string;
   widgetProxyUrl?: string;
+  // WidgetProps.readOnly: the host shows the process read-only, so the
+  // composer must not resume it.
+  readOnly?: boolean;
   // theming (only set by ConversationWidget's registration when ownTheme):
   themeMode?: 'light' | 'dark';
   onToggleTheme?: () => void;
 }
 
-const SUSPENDED_CLOSED_LABEL = 'Suspended — resume to continue';
+const SUSPENDED_CLOSED_LABEL = 'Session has been saved';
 const CONFIRM_TITLE = 'Resume the session?';
 const CONFIRM_TEXT = 'This session is currently suspended. Sending this message will resume it. Is this what you want?';
 const CONFIRM_OK = 'Resume and send';
+// A failed run left unsaved work on its host: resuming discards it, so the
+// question says so, as LaunchControls' Resume does.
+const DISCARD_TEXT = 'This discards the unsaved work left by the failed run.';
+const DISCARD_OK = 'Discard and send';
 
 const noSend = async (): Promise<boolean> => false;
 const noop = (): void => {};
@@ -78,6 +85,7 @@ export function ClaudeCodeReplayView({
   database,
   prefix,
   widgetProxyUrl,
+  readOnly,
   themeMode,
   onToggleTheme,
 }: ClaudeCodeReplayViewProps) {
@@ -109,13 +117,15 @@ export function ClaudeCodeReplayView({
   // Sending resumes the session (when the widget's URLs are known).
   const [modal, modalHolder] = Modal.useModal();
   const pending = useResumeSend(process._id);
-  const canResume = apiBaseUrl !== undefined && Boolean(prefix) && Boolean(widgetProxyUrl);
+  const canResume = !readOnly && apiBaseUrl !== undefined && Boolean(prefix) && Boolean(widgetProxyUrl);
+  const discards = isResurrectable(process);
   const confirmSend = (): Promise<boolean> =>
     new Promise((resolve) => {
       modal.confirm({
         title: CONFIRM_TITLE,
-        content: CONFIRM_TEXT,
-        okText: CONFIRM_OK,
+        content: discards ? `${CONFIRM_TEXT} ${DISCARD_TEXT}` : CONFIRM_TEXT,
+        okText: discards ? DISCARD_OK : CONFIRM_OK,
+        okButtonProps: discards ? { danger: true } : undefined,
         cancelText: 'Cancel',
         onOk: () => resolve(true),
         onCancel: () => resolve(false),

@@ -56,7 +56,7 @@ export { IframeInputWidget } from './widgets/IframeInputWidget.js';
 export { ProcessDetailView } from './components/ProcessDetailView.js';
 export type { ProcessDetailViewProps } from './components/ProcessDetailView.js';
 export { ProcessWidget, useProcessWidget, useProcessWidgetState } from './components/ProcessWidget.js';
-export type { ProcessWidgetProps, UseProcessWidgetStateResult } from './components/ProcessWidget.js';
+export type { ProcessWidgetProps, UseProcessWidgetStateResult, UseProcessWidgetOptions } from './components/ProcessWidget.js';
 
 // Process state predicates
 export {

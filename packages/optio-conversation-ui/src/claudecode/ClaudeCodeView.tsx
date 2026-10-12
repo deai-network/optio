@@ -18,6 +18,8 @@ interface ChatAction {
 }
 
 // thinkingRows: see ReduceOptions (the task's thinkingVerbosity is "visible").
+const WAIT_FOR_RESUME_SEND = 'Your earlier message is still waiting for the session; send this one once it has gone.';
+
 function chatReducer(thinkingRows: boolean) {
   return (state: ChatState, action: ChatAction): ChatState =>
     reduceEvent(state, action.ev, action.seq, undefined, { thinkingRows });
@@ -156,6 +158,8 @@ export function ClaudeCodeView(props: WidgetProps) {
         fileDownload={fileDownload}
         nativeSpinner={nativeSpinner ? <NativeSpinner engine="claudecode" /> : undefined}
         onSend={async (body, attachments) => {
+          // The message sent from the replay goes first.
+          if (resumeSend?.phase === 'resuming') return { error: WAIT_FOR_RESUME_SEND };
           dismissResumeSend(props.process._id);
           // Send (idle) or Send when ready (busy): the listener answers
           // {id, queued}; queued means Claude holds it until the next tool result.

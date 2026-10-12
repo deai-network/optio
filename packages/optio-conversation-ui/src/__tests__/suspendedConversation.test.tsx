@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor, act } from '@testing-library/react';
 import { ConfigProvider, theme } from 'antd';
 import type { ReactNode } from 'react';
 import { VultusProvider, type SpinnerProps } from 'vultus-antd';
@@ -103,6 +103,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchSpy);
 });
 afterEach(() => {
+  resetResumeSends();
   vi.unstubAllGlobals();
 });
 
@@ -143,7 +144,7 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
     expect(statuses()).toEqual(['done']);
     expect(screen.getByTestId('tool-call').textContent).toContain('Bash');
 
-    expect(screen.getByTestId('conversation-closed').textContent).toBe('Suspended — resume to continue');
+    expect(screen.getByTestId('conversation-closed').textContent).toBe('Session has been saved');
     // One divider: the closing event's own "conversation ended (suspended)" row is not shown.
     expect(screen.queryByText(/conversation ended/)).toBeNull();
 
@@ -200,7 +201,7 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
   it('an empty record still renders the closed, read-only view', () => {
     useProcessConversation.mockReturnValue(loaded([]));
     render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
-    expect(screen.getByTestId('conversation-closed').textContent).toBe('Suspended — resume to continue');
+    expect(screen.getByTestId('conversation-closed').textContent).toBe('Session has been saved');
     expect(reduceSpy.mock.calls.map((c) => c[2])).toEqual([1]);
   });
 
@@ -349,14 +350,16 @@ describe('SuspendedConversationWidget: sending resumes the session', () => {
   });
 
   it('a message that could not be sent comes back into the input, with the reason', async () => {
-    vi.stubGlobal('fetch', api(jsonResp(200, {}), 'failed'));
-    await startResumeSend(
-      { processId: 'p1', apiBaseUrl: '', database: 'db', prefix: 'gm', widgetProxyUrl: '/api/widget/db/gm/p1/' },
-      'try again later',
-      { pollMs: 0, timeoutMs: 2000, graceMs: 0 },
-    );
+    vi.stubGlobal('fetch', api(jsonResp(200, { status: { state: 'scheduled' } }), 'failed'));
     useProcessConversation.mockReturnValue(loaded(RECORD));
     render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
+    await act(async () => {
+      await startResumeSend(
+        { processId: 'p1', apiBaseUrl: '', database: 'db', prefix: 'gm', widgetProxyUrl: '/api/widget/db/gm/p1/' },
+        'try again later',
+        { pollMs: 0, timeoutMs: 600_000, graceMs: 600_000 },
+      );
+    });
     await waitFor(() => expect(screen.getByTestId('optio-resume-send-failed').textContent).toContain(
       'Your message was not sent: The session stopped before the message could be sent.',
     ));
@@ -364,6 +367,24 @@ describe('SuspendedConversationWidget: sending resumes the session', () => {
     expect(box().disabled).toBe(false);
     fireEvent.click(screen.getByTestId('optio-resume-send-failed').querySelector('.ant-alert-close-icon') as HTMLElement);
     await waitFor(() => expect(screen.queryByTestId('optio-resume-send-failed')).toBeNull());
+  });
+
+  it('over unsaved work, the question warns that resuming discards it', async () => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps({ supportsResurrect: true, hasUnsavedWork: true })} />));
+    typeAndSend('carry on');
+    const ok = await screen.findByRole('button', { name: 'Discard and send' });
+    expect(document.querySelector('.ant-modal-confirm-content')?.textContent).toBe(
+      'This session is currently suspended. Sending this message will resume it. Is this what you want? '
+      + 'This discards the unsaved work left by the failed run.',
+    );
+    expect(ok.className).toContain('ant-btn-dangerous');
+  });
+
+  it('readOnly (a read-only host): the composer stays disabled', () => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps()} {...{ readOnly: true }} />));
+    expect(box().disabled).toBe(true);
   });
 
   it('mounted without the widget URLs, the replay stays read-only', () => {

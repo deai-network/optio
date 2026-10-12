@@ -101,7 +101,8 @@ export interface ConversationViewProps {
   // Asked before onSend; false keeps the text and sends nothing, no error.
   confirmSend?: (text: string) => Promise<boolean>;
   // Put into the input when it changes to a non-empty value: a message that
-  // could not be delivered comes back to be sent again.
+  // could not be delivered comes back to be sent again. Text already typed
+  // is kept; the draft goes below it.
   draft?: string;
   // A line above the input (e.g. a message waiting for the session to resume).
   notice?: React.ReactNode;
@@ -1073,7 +1074,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
 
   const [text, setText] = useState(props.draft ?? '');
   useEffect(() => {
-    if (props.draft) setText(props.draft);
+    const draft = props.draft;
+    if (draft) setText((typed) => (typed.trim() && typed !== draft ? `${typed}\n\n${draft}` : draft));
   }, [props.draft]);
   // Whether the input takes text: not after the conversation closed, unless
   // the view sends through a resume (composeWhenClosed).

@@ -1,4 +1,5 @@
-import { useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
+import { notification } from 'antd';
 import { getSessionId, isTerminal, isWidgetLive } from 'optio-ui';
 
 // "Send to resume" for a suspended claudecode session: the suspended replay's
@@ -11,12 +12,18 @@ import { getSessionId, isTerminal, isWidgetLive } from 'optio-ui';
 // engine over the Redis RPC, and the message must not ride along with it (no
 // conversation content in Redis). The text lives only in this module's memory
 // until it is sent; a page reload before that loses it.
+//
+// A failure is shown where the user is: by the replay or live view of the
+// process when one is mounted (its notice, and the text back in the input),
+// else by an antd notification carrying the text. The process page renders no
+// widget for a failed or finished process, so that case is common.
 
 export type ResumeSendState =
   // The resume was accepted; the message waits for the session to go live.
   | { phase: 'resuming'; text: string }
-  // The message could not be sent after the resume was accepted.
-  | { phase: 'failed'; text: string; message: string };
+  // The message could not be sent after the resume was accepted. `uncertain`:
+  // the send request broke off, so it may have arrived after all.
+  | { phase: 'failed'; text: string; message: string; uncertain?: boolean };
 
 export interface ResumeSendTarget {
   processId: string;
@@ -47,16 +54,20 @@ export const DEFAULT_RESUME_SEND_TIMING: ResumeSendTiming = {
 const COULD_NOT_RESUME = 'Could not resume the session.';
 const ALREADY_WAITING = 'A message is already waiting for this session to resume.';
 const NOT_SENT = 'The session resumed, but the message could not be sent.';
+const MAYBE_SENT = 'The connection broke off while sending it. Check the conversation before sending it again.';
 const STOPPED = 'The session stopped before the message could be sent.';
 const TIMED_OUT = 'The session did not become ready in time.';
 const GONE = 'The process no longer exists.';
 
 // The widget proxy's answers while the resumed listener is not registered or
-// not reachable yet: try again on the next poll.
-const NOT_READY = new Set([404, 502, 503, 504]);
+// not reachable yet: try again on the next poll. Not 504: a gateway timeout
+// may come after the request reached the listener.
+const NOT_READY = new Set([404, 502, 503]);
 
 const states = new Map<string, ResumeSendState>();
 const listeners = new Set<() => void>();
+// Mounted views showing a process's resume-send (useResumeSend), per process.
+const displayed = new Map<string, number>();
 
 function put(processId: string, state: ResumeSendState | undefined): void {
   if (state) states.set(processId, state);
@@ -71,10 +82,26 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-/** The pending or failed resume-send of a process, if any. */
+/** The pending or failed resume-send of a process, if any. A view that calls
+ *  it shows the failure itself, so no notification is raised while it is
+ *  mounted. */
 export function useResumeSend(processId: string | undefined): ResumeSendState | undefined {
+  useEffect(() => {
+    if (!processId) return;
+    displayed.set(processId, (displayed.get(processId) ?? 0) + 1);
+    return () => {
+      const n = (displayed.get(processId) ?? 1) - 1;
+      if (n > 0) displayed.set(processId, n);
+      else displayed.delete(processId);
+    };
+  }, [processId]);
   const read = () => (processId ? states.get(processId) : undefined);
   return useSyncExternalStore(subscribe, read, read);
+}
+
+/** The notice's wording for a failed resume-send. */
+export function failureTitle(state: { message: string; uncertain?: boolean }): string {
+  return `${state.uncertain ? 'Your message may not have been sent' : 'Your message was not sent'}: ${state.message}`;
 }
 
 /** Forget a failed resume-send (its notice was closed, or a new send began). */
@@ -137,23 +164,44 @@ export async function startResumeSend(
     put(id, undefined);
     return { ok: false, message };
   }
-  void deliverWhenLive(target, entry, text, timing);
+  // The launch answers with the process as it left it: an active state means
+  // the old suspend is already gone, so a terminal one later is a failure.
+  let launched = false;
+  try {
+    const body: unknown = await resp.json();
+    launched = Boolean((body as any)?.status?.state) && !isTerminal(body as any);
+  } catch {
+    // no body: wait out the grace period instead
+  }
+  void deliverWhenLive(target, entry, text, timing, launched);
   return { ok: true };
 }
 
 async function deliverWhenLive(
-  t: ResumeSendTarget, entry: ResumeSendState, text: string, timing: ResumeSendTiming,
+  t: ResumeSendTarget,
+  entry: ResumeSendState,
+  text: string,
+  timing: ResumeSendTiming,
+  // Whether the process is known to have left its old terminal state.
+  launched: boolean,
 ): Promise<void> {
   const id = t.processId;
   // The wait ends quietly once its entry is no longer the current one
   // (resetResumeSends).
   const current = () => states.get(id) === entry;
-  const fail = (message: string) => {
-    if (current()) put(id, { phase: 'failed', text, message });
+  const fail = (message: string, uncertain = false) => {
+    if (!current()) return;
+    const failed: ResumeSendState = { phase: 'failed', text, message, ...(uncertain ? { uncertain } : {}) };
+    if ((displayed.get(id) ?? 0) > 0) return put(id, failed);
+    // No view of this process is mounted: tell the user here, with the text.
+    put(id, undefined);
+    notification.warning({
+      title: failureTitle(failed),
+      description: `Your message: \u201c${text}\u201d`,
+      duration: 0,
+    });
   };
   const started = Date.now();
-  // Set once the process has been seen out of its old terminal state.
-  let launched = false;
   while (Date.now() - started < timing.timeoutMs) {
     await sleep(timing.pollMs);
     if (!current()) return;
@@ -168,6 +216,7 @@ async function deliverWhenLive(
     }
     if (isWidgetLive(proc as any)) {
       launched = true;
+      if (!current()) return;
       let sent: Response;
       try {
         sent = await fetch(`${t.widgetProxyUrl}send`, {
@@ -178,7 +227,7 @@ async function deliverWhenLive(
       } catch {
         // The request may have reached the listener: sending it again could
         // deliver it twice, so report it instead.
-        return fail(NOT_SENT);
+        return fail(MAYBE_SENT, true);
       }
       if (sent.ok) {
         if (current()) put(id, undefined);

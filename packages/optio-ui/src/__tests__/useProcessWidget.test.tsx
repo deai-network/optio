@@ -114,6 +114,19 @@ describe('useProcessWidgetState', () => {
       expect(captured.process._id).toBe('abc');
     });
 
+    it('adds readOnly to WidgetProps only when the caller asks for it', () => {
+      let captured: any;
+      const Suspended = (props: any) => { captured = props; return null; };
+      registerWidget('my-widget', () => null, { suspended: Suspended });
+      function Host({ readOnly }: { readOnly?: boolean }) {
+        return <>{useProcessWidget(suspendedTree(), readOnly ? { readOnly } : undefined)}</>;
+      }
+      const { rerender } = render(<Host />);
+      expect('readOnly' in captured).toBe(false);
+      rerender(<Host readOnly />);
+      expect(captured.readOnly).toBe(true);
+    });
+
     it('returns null when suspended but no suspended variant is registered (Review Focus 5)', () => {
       // Only a live component registered — e.g. the iframe widget, which has
       // no suspended variant. A suspended process with this widget falls

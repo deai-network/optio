@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ConversationWidget } from '../ConversationWidget.js';
 import { resetResumeSends, startResumeSend } from '../claudecode/resumeAndSend.js';
@@ -443,12 +443,28 @@ describe('ConversationWidget: a message sent from the suspended replay', () => {
     MockEventSource.reset();
     (globalThis as any).EventSource = MockEventSource as any;
   });
+  afterEach(() => {
+    resetResumeSends();
+    vi.unstubAllGlobals();
+  });
 
   it('shows the message waiting while the session comes up', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.includes('/launch') ? json(200, {}) : json(200, { status: { state: 'scheduled' } }))));
-    await startResumeSend(TARGET, 'queued', { pollMs: 20, timeoutMs: 5000, graceMs: 0 });
+    await startResumeSend(TARGET, 'queued', { pollMs: 20, timeoutMs: 600_000, graceMs: 600_000 });
     render(<ConversationWidget {...makeProps()} />);
     expect(screen.getByTestId('optio-resume-send-pending').textContent).toContain('your message will be sent once it is ready');
+  });
+
+  it('a second send waits for the one from the replay', async () => {
+    const fetchMock = vi.fn(async (url: string) => (url.includes('/launch') ? json(200, { status: { state: 'scheduled' } }) : json(200, { status: { state: 'scheduled' } })));
+    vi.stubGlobal('fetch', fetchMock);
+    await startResumeSend(TARGET, 'first', { pollMs: 20, timeoutMs: 600_000, graceMs: 600_000 });
+    render(<ConversationWidget {...makeProps()} />);
+    fireEvent.change(screen.getByTestId('conversation-input-box'), { target: { value: 'second' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(screen.getByTestId('conversation-error').textContent).toContain('Your earlier message is still waiting'));
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/send'))).toBe(false);
+    expect((screen.getByTestId('conversation-input-box') as HTMLTextAreaElement).value).toBe('second');
   });
 
   it('a message that could not be sent comes back into the input; a new send clears the notice', async () => {
@@ -460,8 +476,10 @@ describe('ConversationWidget: a message sent from the suspended replay', () => {
         : json(200, { ok: true, id: 'q2', queued: false });
     });
     vi.stubGlobal('fetch', fetchMock);
-    await startResumeSend(TARGET, 'please retry me', { pollMs: 0, timeoutMs: 5000, graceMs: 0 });
     render(<ConversationWidget {...makeProps()} />);
+    await act(async () => {
+      await startResumeSend(TARGET, 'please retry me', { pollMs: 0, timeoutMs: 600_000, graceMs: 600_000 });
+    });
     await waitFor(() => expect(screen.getByTestId('optio-resume-send-failed')).toBeTruthy());
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     expect(box.value).toBe('please retry me');
