@@ -2,6 +2,7 @@ export { ConversationWidget, registerConversationWidget } from './ConversationWi
 export { ConversationWidenessContext } from './wideness.js';
 export { ConversationWelcomeContext } from './welcome.js';
 export type { ConversationWelcome } from './welcome.js';
+export { ConversationPlaceholder, type ConversationPlaceholderProps } from './ConversationView.js';
 export { resolveText, useLanguage } from './text.js';
 export type { LocalizedText } from './text.js';
 export type { ConversationWideness } from './wideness.js';

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import { ConfigProvider, theme } from 'antd';
 import huHU from 'antd/locale/hu_HU';
-import { ConversationView, type ConversationViewProps } from '../ConversationView.js';
+import { ConversationPlaceholder, ConversationView, type ConversationViewProps } from '../ConversationView.js';
 import { ConversationWidget } from '../ConversationWidget.js';
 
 // Ant Design X experiment (owner-approved 2026-10-12): an agent task's
@@ -190,5 +190,52 @@ describe('the welcome card', () => {
       expect(card()!.style.minHeight).toBe('');
       expect(icon().style.height).toBe('');
     });
+  });
+});
+
+// Owner, 2026-10-12: what a conversation shows before it exists (a chat that
+// is starting) is the same welcome card, in the same place, so the
+// conversation replacing it does not jump.
+describe('ConversationPlaceholder', () => {
+  const placeholderCard = () => document.querySelector('[data-testid="conversation-placeholder"] .ant-welcome') as HTMLElement | null;
+
+  it('is the welcome card: the title, any nodes as icon and description, the same glass and corners', () => {
+    render(
+      <ConversationPlaceholder
+        title="Starting chat"
+        icon={<span data-testid="spin" />}
+        description={<div data-testid="lines" />}
+      />,
+    );
+    expect(placeholderCard()).not.toBeNull();
+    expect(screen.getByText('Starting chat')).toBeTruthy();
+    expect(placeholderCard()!.querySelector('[data-testid="spin"]')).not.toBeNull();
+    expect(placeholderCard()!.querySelector('[data-testid="lines"]')).not.toBeNull();
+    expect(placeholderCard()!.classList.contains('optio-x-glass')).toBe(true);
+    expect(placeholderCard()!.style.borderRadius).toBe(`${2 * theme.getDesignToken().borderRadius}px`);
+  });
+
+  it("takes a welcome's minimum height", () => {
+    render(<ConversationPlaceholder title="Starting chat" icon={<span />} minHeight={300} />);
+    const icon = placeholderCard()!.querySelector('.ant-welcome-icon') as HTMLElement;
+    expect(icon.style.height).toBe('300px');
+    expect(icon.style.maxWidth).toBe('max(25%, 300px)');
+  });
+
+  it("sits in the transcript's reading column: narrow by default, the full width when wide", () => {
+    const view = render(<ConversationPlaceholder title="Starting chat" />);
+    expect(placeholderCard()!.parentElement!.style.maxWidth).toBe('880px');
+    view.unmount();
+    render(<ConversationPlaceholder title="Starting chat" wideness="wide" />);
+    expect(placeholderCard()!.parentElement!.style.maxWidth).toBe('100%');
+  });
+
+  it('resolves a language map, as the welcome card does', () => {
+    render(
+      <ConfigProvider locale={huHU}>
+        <ConversationPlaceholder title={{ en: 'Starting chat', hu: 'Chat indítása' }} />
+      </ConfigProvider>,
+    );
+    expect(screen.getByText('Chat indítása')).toBeTruthy();
   });
 });

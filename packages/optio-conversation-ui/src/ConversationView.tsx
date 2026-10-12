@@ -1162,7 +1162,11 @@ const SenderTextArea = forwardRef<TextAreaRef, TextAreaProps>(function SenderTex
 // grow each other without end. A minHeight is the icon's own minimum height
 // (the card grows to fit it); the cap is at least that wide, as a fixed
 // height cannot run away.
-function WelcomeCard({ welcome }: { welcome: ConversationWelcome }) {
+// `icon` / `description`, when given, stand in for the welcome's own (an
+// image URL, markdown): ConversationPlaceholder shows any nodes there.
+function WelcomeCard({ welcome, icon, description }: {
+  welcome: ConversationWelcome; icon?: React.ReactNode; description?: React.ReactNode;
+}) {
   const language = useLanguage();
   const dark = useDarkTheme();
   const { token } = theme.useToken();
@@ -1182,13 +1186,13 @@ function WelcomeCard({ welcome }: { welcome: ConversationWelcome }) {
     <Welcome
       ref={cardRef}
       classNames={{ root: dark ? GLASS_MODE.dark : GLASS_MODE.light }}
-      icon={welcome.icon
+      icon={icon ?? (welcome.icon
         ? <img src={welcome.icon} alt="" style={{ maxWidth: '100%', objectFit: 'contain' }} />
-        : undefined}
+        : undefined)}
       title={resolveText(welcome.title, language)}
-      description={welcome.description
+      description={description ?? (welcome.description
         ? <AnswerBlock text={resolveText(welcome.description, language)} />
-        : undefined}
+        : undefined)}
       styles={{
         // The glass's edge is an absolutely placed ring.
         root: { alignItems: 'flex-start', position: 'relative', borderRadius: 2 * token.borderRadius },
@@ -1199,6 +1203,46 @@ function WelcomeCard({ welcome }: { welcome: ConversationWelcome }) {
         },
       }}
     />
+  );
+}
+
+export interface ConversationPlaceholderProps {
+  /** The card's title: a plain string or a language map. */
+  title: ConversationWelcome['title'];
+  /** Where the welcome's icon goes, e.g. a spinner. */
+  icon?: React.ReactNode;
+  /** Where the welcome's description goes, e.g. skeleton lines. */
+  description?: React.ReactNode;
+  /** The icon's minimum height in CSS pixels, as a welcome's `minHeight`. */
+  minHeight?: number;
+  /** The reading width; absent: the host's ConversationWidenessContext. */
+  wideness?: ConversationWideness;
+}
+
+/**
+ * What a conversation shows before it exists, e.g. while its process starts
+ * (owner request 2026-10-12): a card in the place, size and style of the
+ * welcome card ConversationView opens its transcript with -- the same
+ * WelcomeCard, on the same surface, in the same reading column -- so the
+ * conversation that replaces it does not jump. `icon` and `description` take
+ * any nodes (a spinner, skeleton lines).
+ */
+export function ConversationPlaceholder({ title, icon, description, minHeight, wideness }: ConversationPlaceholderProps) {
+  const { token } = theme.useToken();
+  const fromWidget = useContext(ConversationWidenessContext);
+  // 'switch' starts narrow, as ConversationView does until the Wide switch is on.
+  const wide = (wideness ?? fromWidget) === 'wide';
+  return (
+    <div data-testid="conversation-placeholder" style={{
+      width: '100%', height: '100%', boxSizing: 'border-box', padding: TRANSCRIPT_PADDING, overflow: 'hidden',
+      background: token.colorBgContainer, color: token.colorText,
+      ['--optio-x-accent' as string]: token.colorPrimary,
+      ['--optio-x-system' as string]: token.purple,
+    }}>
+      <div style={{ maxWidth: wide ? '100%' : 880, margin: '0 auto', width: '100%' }}>
+        <WelcomeCard welcome={{ title, minHeight }} icon={icon} description={description} />
+      </div>
+    </div>
   );
 }
 
