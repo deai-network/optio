@@ -1592,19 +1592,22 @@ describe('ConversationView todo checklist', () => {
     expect(rows.map((row) => row.getAttribute('data-status'))).toEqual([
       'in_progress', 'pending', 'completed', 'cancelled',
     ]);
+    // Ant Design X experiment: each row is the title of an X ThoughtChain node,
+    // whose status icon tells its state (no provider lends a spinner here).
+    const nodeStatus = (row: HTMLElement) =>
+      /ant-thought-chain-status-(\w+)/.exec(
+        row.closest('.ant-thought-chain-node')?.querySelector('.ant-thought-chain-status')?.className ?? '',
+      )?.[1] ?? null;
     expect(rows[0].textContent).toContain('Write');
-    expect(rows[0].querySelector('[data-testid="conversation-todo-spinner"]')).toBeTruthy();
     expect(rows[0].textContent).not.toContain('▶');
     expect(rows[1].textContent).toContain('Ship');
-    expect(rows[1].textContent).toContain('·');
     expect(rows[2].textContent).toContain('Done');
-    expect(rows[2].textContent).toContain('✓');
     expect(rows[3].textContent).toContain('Skip');
-    expect(rows[3].style.textDecoration).toContain('line-through');
+    expect(rows.map(nodeStatus)).toEqual(['loading', null, 'success', 'abort']);
     expect(screen.getByTestId('conversation-todos-chevron').style.transform).toBe('rotate(180deg)');
   });
 
-  it('paints a finished step green and a step whose label ends with (failed) as a red x', () => {
+  it("a finished step is X's success, and one whose label ends with (failed) X's error", () => {
     renderView(makeProps({
       state: makeState([{ kind: 'user', text: 'hello from user', seq: 1 }]),
       todos: [
@@ -1614,34 +1617,15 @@ describe('ConversationView todo checklist', () => {
         { id: '4', text: 'Keep going (failed) later', status: 'pending' as const },
       ],
     }));
-    const css = (color: string) => {
-      const probe = document.createElement('div');
-      probe.style.color = color;
-      return probe.style.color;
-    };
-    const tokens = theme.getDesignToken();
     const rows = screen.getAllByTestId('conversation-todo');
-    const done = rows[0].querySelector('[data-testid="conversation-todo-mark"]') as HTMLElement;
-    const failed = rows[1].querySelector('[data-testid="conversation-todo-mark"]') as HTMLElement;
-    const shouted = rows[2].querySelector('[data-testid="conversation-todo-mark"]') as HTMLElement;
-    const pending = rows[3].querySelector('[data-testid="conversation-todo-mark"]') as HTMLElement;
-    expect(done.textContent).toBe('✓');
-    expect(done.style.color).toBe(css(tokens.colorSuccess));
-    expect(rows[0].style.color).toBe(css(tokens.colorText));
-    expect(rows[0].style.color).not.toBe(css(tokens.colorTextTertiary));
-    expect(failed.textContent).toBe('×');
-    expect(failed.style.color).toBe(css(tokens.colorError));
-    expect(rows[1].textContent).not.toContain('✓');
-    expect(rows[1].style.color).toBe(css(tokens.colorText));
-    expect(shouted.textContent).toBe('×');
-    expect(shouted.style.color).toBe(css(tokens.colorError));
-    expect(rows[1].textContent).toContain('Deploy');
-    expect(rows[1].textContent).not.toContain('(failed)');
-    expect(rows[2].textContent).toContain('Build');
-    expect(rows[2].textContent).not.toMatch(/\(failed\)/i);
-    expect(rows[2].textContent).not.toContain('✓');
-    expect(pending.textContent).toBe('·');
-    expect(rows[3].textContent).toContain('Keep going (failed) later');
+    const nodeStatus = (row: HTMLElement) =>
+      /ant-thought-chain-status-(\w+)/.exec(
+        row.closest('.ant-thought-chain-node')?.querySelector('.ant-thought-chain-status')?.className ?? '',
+      )?.[1] ?? null;
+    expect(rows.map(nodeStatus)).toEqual(['success', 'error', 'error', null]);
+    expect(rows[1].textContent).toBe('Deploy');
+    expect(rows[2].textContent).toBe('Build');
+    expect(rows[3].textContent).toBe('Keep going (failed) later');
   });
 
   const described = [
@@ -1677,7 +1661,7 @@ describe('ConversationView todo checklist', () => {
     renderView(describedProps());
     const rows = screen.getAllByTestId('conversation-todo');
     expect(rows[0].tagName).toBe('BUTTON');
-    expect(rows[2].tagName).toBe('DIV');
+    expect(rows[2].tagName).toBe('SPAN');
     const info = rows[0].querySelector('[data-testid="conversation-todo-info"]') as HTMLElement;
     expect(info).toBeTruthy();
     expect(info.getAttribute('aria-hidden')).toBe('true');

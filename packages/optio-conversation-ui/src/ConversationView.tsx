@@ -1,13 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState, Fragment } from 'react';
-import { Alert, Button, Input, Spin, Switch, Tooltip, theme } from 'antd';
+import { Fragment, forwardRef, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Alert, Button, Input, Popover, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken, UploadFile } from 'antd';
 import {
   ActionButton, BoolSwitch, CombinedActionButton, OneOfSegmented, OneOfSelect, OneOfSlider,
   denyWithReason, useBoolField, useOneOfField, useSpinnerKey, useVultusComponents, type ActionStatus,
 } from 'vultus-antd';
-import type { TextAreaRef } from 'antd/es/input/TextArea';
+import type { TextAreaProps, TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
-import { Actions, Attachments, Bubble, Think, ThoughtChain, XProvider } from '@ant-design/x';
+import { Actions, Attachments, Bubble, Sender, Think, ThoughtChain, XProvider } from '@ant-design/x';
 import type { ThoughtChainItemType } from '@ant-design/x';
 import { transcriptKeys } from './transcriptKeys.js';
 import { AnswerBlock } from './AnswerBlock.js';
@@ -451,11 +451,23 @@ const SEND_BUTTON_WIDTH = 222;
 // accessible names.
 const COMPACT_STYLE_ID = 'optio-cc-compact-style';
 function ensureCompactStyle(): void {
-  if (typeof document === 'undefined' || document.getElementById(COMPACT_STYLE_ID)) return;
-  const el = document.createElement('style');
-  el.id = COMPACT_STYLE_ID;
-  el.textContent = '.optio-cc-compact .optio-cc-control-label { display: none; }';
-  document.head.appendChild(el);
+  if (typeof document === 'undefined') return;
+  // Rewritten when present rather than skipped, so a hot reload of this module
+  // updates an already-open page.
+  let el = document.getElementById(COMPACT_STYLE_ID);
+  if (!el) {
+    el = document.createElement('style');
+    el.id = COMPACT_STYLE_ID;
+    document.head.appendChild(el);
+  }
+  // optio-cc-collapsed (2026-10-12): when even the compact toolbar is too
+  // wide, the session controls collapse into the Settings button, which opens
+  // them in a popover; the actions stay on the line.
+  el.textContent = '.optio-cc-compact .optio-cc-control-label { display: none; }\n'
+    + '.optio-cc-inline-controls { display: contents; }\n'
+    + '.optio-cc-settings-button { display: none; }\n'
+    + '.optio-cc-collapsed .optio-cc-inline-controls { display: none; }\n'
+    + '.optio-cc-collapsed .optio-cc-settings-button { display: inline-flex; }';
 }
 
 const SEND_BUTTON_STYLE_ID = 'optio-cc-send-button-style';
@@ -544,6 +556,17 @@ function sendBarIcon(testId: string, mark: React.ReactNode): React.ReactElement 
     >
       {mark}
     </span>
+  );
+}
+
+// The Settings button's gear (the session controls, collapsed).
+function SettingsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" strokeWidth={2}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
   );
 }
 
@@ -1093,6 +1116,13 @@ function SessionControls({
   );
 }
 
+// Ant Design X experiment: our textarea in X Sender's input slot. It carries
+// the input's test id (a data-* prop on Sender would land on Sender's root as
+// well); Sender hands it everything else (value, keys, autosize, borderless).
+const SenderTextArea = forwardRef<TextAreaRef, TextAreaProps>(function SenderTextArea(props, ref) {
+  return <Input.TextArea {...props} ref={ref} data-testid="conversation-input-box" />;
+});
+
 export function ConversationView(props: ConversationViewProps): React.JSX.Element {
   // The app's lent spinner (vultus-core slot), if any: a running ThoughtChain
   // tool node shows it instead of X's own loading icon.
@@ -1164,19 +1194,23 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [counting]);
-  const inputRef = useRef<TextAreaRef>(null);
+  const inputRef = useRef<React.ComponentRef<typeof Sender>>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const pasteSeq = useRef(0);
   // The session controls' labels hide (optio-cc-compact) when the toolbar
-  // would overflow with them: measured without the class and put back if
-  // needed, before paint, on every resize and controls change.
+  // would overflow with them, and when even the compact toolbar overflows the
+  // controls collapse into a Settings button (optio-cc-collapsed). Measured
+  // without the classes and put back as needed, before paint, on every
+  // resize and controls change.
   const toolbarRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = toolbarRef.current;
     if (!el) return undefined;
     const fit = () => {
-      el.classList.remove('optio-cc-compact');
-      if (el.scrollWidth > el.clientWidth) el.classList.add('optio-cc-compact');
+      el.classList.remove('optio-cc-compact', 'optio-cc-collapsed');
+      if (el.scrollWidth <= el.clientWidth) return;
+      el.classList.add('optio-cc-compact');
+      if (el.scrollWidth > el.clientWidth) el.classList.add('optio-cc-collapsed');
     };
     fit();
     const observer = new ResizeObserver(fit);
@@ -1342,11 +1376,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     setUploads(next);
   }
 
-  // A file pasted into the message box is attached (text pastes as text).
-  function pasteFiles(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const files = Array.from(e.clipboardData?.files ?? []);
+  // Files pasted into the message box (X Sender's onPasteFile: a paste with
+  // files and no text) are attached.
+  function attachFiles(files: File[]) {
     if (files.length === 0 || !showFileUpload || closed) return;
-    e.preventDefault();
     takeUploads([
       ...uploads,
       ...files.map((file): UploadFile => ({
@@ -1452,6 +1485,66 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     });
     flush();
     return out;
+  }
+
+  // One task as a ThoughtChain node: X's status icon (completed: success; a
+  // label ending in "(failed)": error; cancelled: abort; in progress: X's
+  // loading icon, or the app's lent spinner as the node's icon, blinking, as a
+  // running tool row; pending: X's plain node icon). The title carries the
+  // row: its label, and for a described task the info icon and the click that
+  // opens the detail panel (highlighted while selected).
+  function todoChainItem(todo: ConversationTodo): ThoughtChainItemType {
+    const { failed, label } = taskRowLabel(todo.text);
+    const description = todo.description?.trim() ? todo.description : undefined;
+    const running = todo.status === 'in_progress' && !failed;
+    const slot = running && lentSpinner !== undefined;
+    const status = slot ? undefined
+      : running ? 'loading'
+      : failed ? 'error'
+      : todo.status === 'completed' ? 'success'
+      : todo.status === 'cancelled' ? 'abort'
+      : undefined;
+    const selected = detailOpen && todo.id === selectedTodoId;
+    const title = description ? (
+      <button
+        type="button"
+        data-testid="conversation-todo"
+        data-status={todo.status}
+        onClick={() => setSelectedTodoId(todo.id)}
+        style={{
+          padding: '1px 4px',
+          border: 'none',
+          borderRadius: 4,
+          background: selected ? token.colorPrimaryBg : 'transparent',
+          textAlign: 'left',
+          font: 'inherit',
+          color: 'inherit',
+          cursor: 'pointer',
+        }}
+      >
+        {label}
+                      <Tooltip title="Click for details" mouseEnterDelay={0}>
+                        <span style={{ display: 'inline-flex', verticalAlign: 'text-bottom' }}>
+                          <TaskInfoIcon color={token.colorTextSecondary} />
+                        </span>
+                      </Tooltip>
+      </button>
+    ) : (
+      <span data-testid="conversation-todo" data-status={todo.status}>{label}</span>
+    );
+    return {
+      key: todo.id,
+      status,
+      ...(slot ? {
+        icon: (
+          <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex' }}>
+            <SlotSpinner localKey={`optio:todo:${todo.id}`} />
+          </span>
+        ),
+      } : {}),
+      blink: running,
+      title,
+    };
   }
 
   function renderToolChain(run: Extract<ChatItem, { kind: 'tool' }>[]): React.ReactNode {
@@ -1915,20 +2008,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             </div>
           )}
         </div>
-        {uploads.length > 0 && (
-          // X Attachments' list: a card per file (icon by extension, size, a
-          // remove button) and its own button to add more. Mounted only while
-          // there are files: empty, X would show its upload placeholder.
-          <div data-testid="attach-chips" style={{ maxWidth: wide ? '100%' : 880, margin: '0 auto', width: '100%', padding: '4px 8px' }}>
-            <Attachments
-              items={uploads}
-              beforeUpload={() => false}
-              onChange={({ fileList }) => takeUploads(fileList)}
-              multiple
-              disabled={closed}
-            />
-          </div>
-        )}
         <div style={{ borderTop: `1px solid ${token.colorBorderSecondary}`, padding: 8 }}>
           {/* Cap the composer to the reading column (honor the wide toggle) so
               it aligns with the messages; the bar/border stays full-width. */}
@@ -1947,14 +2026,24 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               style={{ marginBottom: 4 }}
             />
           )}
-          {/* Row 1: the message input (full width). */}
-          <Input.TextArea
-            data-testid="conversation-input-box"
-            className="optio-cc-flash"
+          {/* Ant Design X experiment (owner-approved 2026-10-12): the composer is
+              an X Sender. Our textarea fills its input slot (SenderTextArea),
+              today's toolbar is its footer, attached files show in its header,
+              and its own send button is off (suffix={false}): our keys and
+              buttons carry send / send when ready / interrupt and send. */}
+          <Sender
+            ref={inputRef}
+            components={{ input: SenderTextArea }}
+            classNames={{ input: 'optio-cc-flash' }}
             value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={onKeyDown}
-            onPaste={pasteFiles}
+            onChange={(value) => setText(value)}
+            // Our keys only (Enter, Cmd/Ctrl-Enter, Esc): returning false keeps
+            // X's own Enter-submits out of it.
+            onKeyDown={(e) => {
+              onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>);
+              return false;
+            }}
+            onPasteFile={showFileUpload ? (files) => attachFiles(Array.from(files)) : undefined}
             placeholder={
               steerable
                 ? 'Message agent…  (Enter: send when ready, ⌘/Ctrl+Enter: interrupt and send, Shift+Enter: newline)'
@@ -1962,88 +2051,136 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }
             autoSize={{ minRows: 2, maxRows: 8 }}
             disabled={inputClosed}
-            ref={inputRef}
+            suffix={false}
+            header={uploads.length > 0 ? (
+              // X Attachments' list (a card per file: icon by extension, size,
+              // a remove button; its own button to add more), shown while
+              // there are files: empty, X would show its upload placeholder.
+              <Sender.Header title="Attachments" open closable={false}>
+                <div data-testid="attach-chips">
+                  <Attachments
+                    items={uploads}
+                    beforeUpload={() => false}
+                    onChange={({ fileList }) => takeUploads(fileList)}
+                    multiple
+                    disabled={closed}
+                  />
+                </div>
+              </Sender.Header>
+            ) : undefined}
+            footer={
+              /* Sender's footer: a single-height toolbar — model + attach on the left,
+                  Send/Interrupt pushed right. All size="small" so heights match. */
+              <div ref={toolbarRef} data-testid="session-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {props.controls && props.onControlChange ? (
+                  <>
+                    <span className="optio-cc-inline-controls">
+                      <SessionControls
+                        controls={props.controls}
+                        disabled={props.busy || props.state.closed}
+                        onChange={props.onControlChange}
+                      />
+                    </span>
+                    {/* When even the compact toolbar is too wide (optio-cc-collapsed),
+                        the controls collapse into this button, which opens them,
+                        labelled, above the composer. */}
+                    <span className="optio-cc-settings-button">
+                      <Popover
+                        trigger="click"
+                        placement="topLeft"
+                        rootClassName="optio-cc-settings-popover"
+                        content={
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+                            <SessionControls
+                              controls={props.controls}
+                              disabled={props.busy || props.state.closed}
+                              onChange={props.onControlChange}
+                            />
+                          </div>
+                        }
+                      >
+                        <Button size="small" aria-label="Session settings" icon={<SettingsIcon />}>
+                          Settings
+                        </Button>
+                      </Popover>
+                    </span>
+                  </>
+                ) : null}
+                {/* The actions: one group, pushed right. minWidth 0 lets it shrink
+                    like the flat row did (the send slot gives way first). */}
+                <div className="optio-cc-toolbar-actions" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 'auto', minWidth: 0 }}>
+                  {showFileUpload && (
+                    // X Attachments around the paperclip: its click opens X's file
+                    // picker, and files dragged anywhere onto the conversation land
+                    // in its drop area.
+                    <Attachments
+                      items={uploads}
+                      beforeUpload={() => false}
+                      onChange={({ fileList }) => takeUploads(fileList)}
+                      multiple
+                      disabled={closed}
+                      getDropContainer={() => rootRef.current}
+                      placeholder={{ title: 'Drop files here' }}
+                    >
+                      <Tooltip title="Attach files">
+                        <Button size="small" data-testid="attach-button" disabled={closed}>
+                          📎
+                        </Button>
+                      </Tooltip>
+                    </Attachments>
+                  )}
+                  {/* Fix 10: always the one vultus multi-action button, never a
+                      separate plain Send button — idle shows only 'Send'; busy and
+                      steerable shows [Send when ready | Interrupt and send]. An
+                      engine without onSteer (steerable stays false even while
+                      busy) keeps showing plain 'Send' behaviour. Visibility
+                      toggles which actions CombinedActionButton renders — with one
+                      visible it renders a plain button, so idle and a non-steering
+                      engine look identical to before. keepOriginalDefault keeps
+                      the main half on 'Send when ready' after the menu action
+                      fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
+                      the footprint so it never resizes across any of that; the red
+                      Interrupt beside it stops and sends nothing. Each
+                      action's `icon` (plane / clock / bolt) plus iconPlacement="end"
+                      puts that icon on the right of the label; align="end" right-
+                      aligns every state's label within the fixed width, on the
+                      main half and — since iconPlacement="end" also reaches
+                      each open-list row — the row's own icon (after its
+                      label) too. */}
+                  <span
+                    data-testid="conversation-send-combined"
+                    className="optio-cc-send-btn"
+                    style={{ width: SEND_BUTTON_WIDTH }}
+                  >
+                    <CombinedActionButton
+                      size="small"
+                      keepOriginalDefault
+                      iconPlacement="end"
+                      align="end"
+                      actions={[
+                        barAction('send', 'Send', 'primary', sending || !text || inputClosed, () => void submit('send'), steerable, <SendPlaneIcon />),
+                        barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable, <SendWhenReadyClockIcon />),
+                        barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer'), !steerable, <InterruptAndSendBoltIcon />),
+                      ]}
+                    />
+                  </span>
+                  {/* Fix 18 (owner addition): Interrupt is now a vultus action
+                      (danger ActionStatus above) instead of a plain antd Button —
+                      it renders the same red button, but its own `pending` state
+                      drives ActionButton's antd `loading` spinner rather than
+                      swapping the label. Fix 20: the action's `icon` (a stop
+                      square) occupies the same slot antd's spinner takes over
+                      while pending, so the button's width no longer needs to be
+                      reserved — this wrapper only keeps the stable test id. Fix
+                      22: iconPlacement="end" puts that icon on the right of the
+                      label, matching every other send-bar action. */}
+                  <span data-testid="conversation-interrupt">
+                    <ActionButton action={interruptAction} size="small" iconPlacement="end" />
+                  </span>
+                </div>
+              </div>
+            }
           />
-          {/* Row 2: a single-height toolbar — model + attach on the left,
-              Send/Interrupt pushed right. All size="small" so heights match. */}
-          <div ref={toolbarRef} data-testid="session-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {props.controls && props.onControlChange ? (
-              <SessionControls
-                controls={props.controls}
-                disabled={props.busy || props.state.closed}
-                onChange={props.onControlChange}
-              />
-            ) : null}
-            <div style={{ flex: 1 }} />
-            {showFileUpload && (
-              // X Attachments around the paperclip: its click opens X's file
-              // picker, and files dragged anywhere onto the conversation land
-              // in its drop area.
-              <Attachments
-                items={uploads}
-                beforeUpload={() => false}
-                onChange={({ fileList }) => takeUploads(fileList)}
-                multiple
-                disabled={closed}
-                getDropContainer={() => rootRef.current}
-                placeholder={{ title: 'Drop files here' }}
-              >
-                <Tooltip title="Attach files">
-                  <Button size="small" data-testid="attach-button" disabled={closed}>
-                    📎
-                  </Button>
-                </Tooltip>
-              </Attachments>
-            )}
-            {/* Fix 10: always the one vultus multi-action button, never a
-                separate plain Send button — idle shows only 'Send'; busy and
-                steerable shows [Send when ready | Interrupt and send]. An
-                engine without onSteer (steerable stays false even while
-                busy) keeps showing plain 'Send' behaviour. Visibility
-                toggles which actions CombinedActionButton renders — with one
-                visible it renders a plain button, so idle and a non-steering
-                engine look identical to before. keepOriginalDefault keeps
-                the main half on 'Send when ready' after the menu action
-                fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
-                the footprint so it never resizes across any of that; the red
-                Interrupt beside it stops and sends nothing. Each
-                action's `icon` (plane / clock / bolt) plus iconPlacement="end"
-                puts that icon on the right of the label; align="end" right-
-                aligns every state's label within the fixed width, on the
-                main half and — since iconPlacement="end" also reaches
-                each open-list row — the row's own icon (after its
-                label) too. */}
-            <span
-              data-testid="conversation-send-combined"
-              className="optio-cc-send-btn"
-              style={{ width: SEND_BUTTON_WIDTH }}
-            >
-              <CombinedActionButton
-                size="small"
-                keepOriginalDefault
-                iconPlacement="end"
-                align="end"
-                actions={[
-                  barAction('send', 'Send', 'primary', sending || !text || inputClosed, () => void submit('send'), steerable, <SendPlaneIcon />),
-                  barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable, <SendWhenReadyClockIcon />),
-                  barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer'), !steerable, <InterruptAndSendBoltIcon />),
-                ]}
-              />
-            </span>
-            {/* Fix 18 (owner addition): Interrupt is now a vultus action
-                (danger ActionStatus above) instead of a plain antd Button —
-                it renders the same red button, but its own `pending` state
-                drives ActionButton's antd `loading` spinner rather than
-                swapping the label. Fix 20: the action's `icon` (a stop
-                square) occupies the same slot antd's spinner takes over
-                while pending, so the button's width no longer needs to be
-                reserved — this wrapper only keeps the stable test id. Fix
-                22: iconPlacement="end" puts that icon on the right of the
-                label, matching every other send-bar action. */}
-            <span data-testid="conversation-interrupt">
-              <ActionButton action={interruptAction} size="small" iconPlacement="end" />
-            </span>
-          </div>
           </>)}
           </div>
         </div>
@@ -2126,78 +2263,17 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             >
               Task list
             </span>
-            {props.todos.map((todo) => {
-              const { failed, label } = taskRowLabel(todo.text);
-              const description = todo.description?.trim() ? todo.description : undefined;
-              const rowStyle = {
-                color: todo.status === 'cancelled'
-                  ? token.colorTextTertiary
-                  : token.colorText,
-                textDecoration: todo.status === 'cancelled' ? 'line-through' : undefined,
-              };
-              const rowBody = (
-                <>
-                  {todo.status === 'in_progress' && !failed ? (
-                    <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: 6 }}>
-                      <SlotSpinner localKey={`optio:todo:${todo.id}`} />
-                    </span>
-                  ) : (
-                    <span
-                      data-testid="conversation-todo-mark"
-                      style={{
-                        color: failed
-                          ? token.colorError
-                          : todo.status === 'completed'
-                            ? token.colorSuccess
-                            : undefined,
-                      }}
-                    >
-                      {failed ? '×' : todo.status === 'completed' ? '✓' : '·'}
-                    </span>
-                  )}
-                  {todo.status === 'in_progress' && !failed ? null : ' '}
-                  {label}
-                </>
-              );
-              if (!description) {
-                return (
-                  <div key={todo.id}>
-                    <div data-testid="conversation-todo" data-status={todo.status} style={rowStyle}>
-                      {rowBody}
-                    </div>
-                  </div>
-                );
-              }
-              const selected = detailOpen && todo.id === selectedTodoId;
-              return (
-                <button
-                  key={todo.id}
-                  type="button"
-                  data-testid="conversation-todo"
-                  data-status={todo.status}
-                  onClick={() => setSelectedTodoId(todo.id)}
-                  style={{
-                    ...rowStyle,
-                    display: 'block',
-                    width: '100%',
-                    padding: '1px 4px',
-                    border: 'none',
-                    borderRadius: 4,
-                    background: selected ? token.colorPrimaryBg : 'transparent',
-                    textAlign: 'left',
-                    font: 'inherit',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {rowBody}
-                  <Tooltip title="Click for details" mouseEnterDelay={0}>
-                    <span style={{ display: 'inline-flex', verticalAlign: 'text-bottom' }}>
-                      <TaskInfoIcon color={token.colorTextSecondary} />
-                    </span>
-                  </Tooltip>
-                </button>
-              );
-            })}
+            {/* Ant Design X experiment (owner-approved 2026-10-12): the task list
+                is one X ThoughtChain, like the tool calls: a node per task,
+                linked by X's line, with X's status icons. X draws that line
+                beside a node's body, below its title row; a task node is
+                title-only, so each gets room below its title, and the chain no
+                gap, so the line runs into the next task's icon. */}
+            <ThoughtChain
+              data-testid="conversation-todos-chain"
+              items={props.todos.map(todoChainItem)}
+              styles={{ root: { gap: 0 }, item: { paddingBottom: 10 } }}
+            />
             </div>
           </div>
           <div

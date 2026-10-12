@@ -209,7 +209,9 @@ describe('todo (site 14)', () => {
   it('an in-progress todo renders the lent Spinner keyed by its id', () => {
     render(lent(<ConversationView {...makeProps({ state, todos })} />));
     const rows = screen.getAllByTestId('conversation-todo');
-    const slot = rows[0].querySelector('[data-testid="conversation-todo-spinner"]') as HTMLElement;
+    // Ant Design X experiment: the spinner is the task node's icon.
+    const slot = rows[0].closest('.ant-thought-chain-node')!
+      .querySelector('[data-testid="conversation-todo-spinner"]') as HTMLElement;
     expect(keysIn(slot)).toEqual(['optio:todo:t1']);
     expect(propsOf('optio:todo:t1')).toStrictEqual({ spinnerKey: 'optio:todo:t1', size: 'small' });
     expect(slot.querySelector('.ant-spin')).toBeNull();
@@ -218,11 +220,11 @@ describe('todo (site 14)', () => {
     expect(keysIn(rows[2])).toEqual([]);
   });
 
-  it('without a provider: antd\'s Spin, as before', () => {
+  it("without a provider: X's loading icon on the task node, as a running tool row", () => {
     render(bare(<ConversationView {...makeProps({ state, todos })} />));
-    const slot = screen.getAllByTestId('conversation-todo')[0]
-      .querySelector('[data-testid="conversation-todo-spinner"]') as HTMLElement;
-    expect(slot.querySelector('.ant-spin')).not.toBeNull();
+    const node = screen.getAllByTestId('conversation-todo')[0].closest('.ant-thought-chain-node')!;
+    expect(node.querySelector('[data-testid="conversation-todo-spinner"]')).toBeNull();
+    expect(node.querySelector('.ant-thought-chain-status-loading')).not.toBeNull();
     expect(screen.queryByTestId('rec-spinner')).toBeNull();
   });
 });
