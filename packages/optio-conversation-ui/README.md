@@ -83,8 +83,10 @@ resumes the session (claudecode, below).
   and is reported as "may not have been sent". The listener holds the message until the
   session has written its "you have been resumed" notice, so it always comes after it. A
   process with unsaved work (`isResurrectable`) gets the discard warning in the question and a
-  danger "Discard and send". Under `WidgetProps.readOnly` the composer stays disabled. While
-  the message waits, the live view holds a second send.
+  danger "Discard and send". When the task sets `smooth_resume` (`widgetData.smoothResume`
+  true), Send resumes a resumable session (`isResumable`) without the question; a process with
+  unsaved work still gets the discard question. Under `WidgetProps.readOnly` the composer
+  stays disabled. While the message waits, the live view holds a second send.
 - **While the session resumes** (optio-ui's `'resuming'` mode, by any route: Send, the Resume
   button, auto-resume), the replay stays on screen with the settings and record it had before
   the relaunch cleared them; its input gives way to a panel with a big spinner (the lent one,

@@ -397,6 +397,63 @@ describe('SuspendedConversationWidget: sending resumes the session', () => {
     ));
     expect(box().disabled).toBe(true);
   });
+
+  // The task's smooth_resume (widgetData.smoothResume): a send that resumes the
+  // session goes ahead without the question; one that discards unsaved work
+  // still asks.
+  describe('smoothResume', () => {
+    const smooth = (over: Record<string, unknown> = {}) =>
+      widgetProps({ widgetData: { protocol: 'claudecode', smoothResume: true }, ...over });
+    const launches = (f: { mock: { calls: unknown[][] } }) => f.mock.calls.filter((c) => c[0] === LAUNCH);
+
+    it('Send resumes the session at once: no question, one resume, the message waits', async () => {
+      const f = api(jsonResp(200, { _id: 'p1' }));
+      vi.stubGlobal('fetch', f);
+      useProcessConversation.mockReturnValue(loaded(RECORD));
+      render(wrap(<SuspendedConversationWidget {...smooth()} />));
+      typeAndSend('carry on');
+      // Whichever comes first, the question or the resume: it is the resume.
+      const question = () => document.querySelector('.ant-modal-confirm-title')?.textContent ?? null;
+      await waitFor(() => expect(launches(f).length > 0 || question() !== null).toBe(true));
+      expect(question()).toBeNull();
+      expect(launches(f)).toHaveLength(1);
+      const launch = launches(f)[0] as unknown as [string, RequestInit];
+      expect(JSON.parse(String(launch[1].body))).toMatchObject({ resume: true });
+      await waitFor(() => expect(screen.getByTestId('optio-resume-send-pending')).toBeTruthy());
+      expect(document.querySelector('.ant-modal-confirm')).toBeNull();
+      expect(box().value).toBe('');
+      expect(launches(f)).toHaveLength(1);
+    });
+
+    it('over unsaved work, the discard question still shows', async () => {
+      useProcessConversation.mockReturnValue(loaded(RECORD));
+      render(wrap(<SuspendedConversationWidget {...smooth({ supportsResurrect: true, hasUnsavedWork: true })} />));
+      typeAndSend('carry on');
+      const ok = await screen.findByRole('button', { name: 'Discard and send' });
+      expect(ok.className).toContain('ant-btn-dangerous');
+      expect(document.querySelector('.ant-modal-confirm-content')?.textContent).toContain(
+        'This discards the unsaved work left by the failed run.',
+      );
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('with no saved state to resume from, Send still asks', async () => {
+      useProcessConversation.mockReturnValue(loaded(RECORD));
+      render(wrap(<SuspendedConversationWidget {...smooth({ hasSavedState: false })} />));
+      typeAndSend('carry on');
+      await screen.findByRole('button', { name: 'Resume and send' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('false (or absent): Send asks first, as before', async () => {
+      useProcessConversation.mockReturnValue(loaded(RECORD));
+      render(wrap(<SuspendedConversationWidget {...widgetProps({ widgetData: { protocol: 'claudecode', smoothResume: false } })} />));
+      typeAndSend('carry on');
+      await screen.findByRole('button', { name: 'Resume and send' });
+      expect(document.querySelector('.ant-modal-confirm-title')?.textContent).toBe('Resume the session?');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('SuspendedConversationWidget: other protocols and the error states', () => {

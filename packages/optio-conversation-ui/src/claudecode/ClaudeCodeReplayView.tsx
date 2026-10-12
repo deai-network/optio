@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Modal } from 'antd';
-import { isResurrectable, type WidgetProps } from 'optio-ui';
+import { isResumable, isResurrectable, type WidgetProps } from 'optio-ui';
 import { SpinnerScope } from 'vultus-antd';
 import type { ChatState, CustomControl, SessionControl } from '../chat.js';
 import { initialChatState, reduceEvent, type ReduceOptions } from './events.js';
@@ -17,7 +17,9 @@ import { ResumingPanel } from './ResumingPanel.js';
 // same ConversationView, closed, with no transport: no EventSource, no POSTs.
 // Given the widget's API and proxy URLs, its composer stays usable: Send asks
 // to resume the session, then resumes it and sends the message once it is
-// live (resumeAndSend.ts). Without them the view is read-only.
+// live (resumeAndSend.ts). A task with smooth_resume (widgetData.smoothResume)
+// is not asked, unless the send discards unsaved work. Without the URLs the
+// view is read-only.
 
 export interface ClaudeCodeReplayViewProps {
   process: WidgetProps['process'];
@@ -104,6 +106,8 @@ export function ClaudeCodeReplayView({
   const showSessionControls = Boolean((widgetData as any)?.showSessionControls);
   const maxUploadBytes = Number((widgetData as any)?.maxUploadBytes ?? 10_000_000);
   const nativeSpinner = Boolean((widgetData as any)?.nativeSpinner);
+  // The task's smooth_resume: sending resumes the session without asking.
+  const smoothResume = (widgetData as any)?.smoothResume === true;
 
   // capturedAt, else one clock read at mount.
   const [mountedAt] = useState(() => Date.now());
@@ -130,6 +134,9 @@ export function ClaudeCodeReplayView({
   const pending = useResumeSend(process._id);
   const canResume = !readOnly && apiBaseUrl !== undefined && Boolean(prefix) && Boolean(widgetProxyUrl);
   const discards = isResurrectable(process);
+  // smooth_resume: a send that resumes the saved session goes straight to
+  // resume-and-send. One that discards a failed run's unsaved work still asks.
+  const asks = !(smoothResume && isResumable(process) && !discards);
   const confirmSend = (): Promise<boolean> =>
     new Promise((resolve) => {
       modal.confirm({
@@ -176,7 +183,7 @@ export function ClaudeCodeReplayView({
         // puts its text back (draft), with the reason in the notice.
         composeWhenClosed={canResume && pending?.phase !== 'resuming'}
         inputReplacement={resuming ? <ResumingPanel pending={pending} /> : undefined}
-        confirmSend={confirmSend}
+        confirmSend={asks ? confirmSend : undefined}
         draft={pending?.phase === 'failed' ? pending.text : undefined}
         // While resuming, the panel says it instead.
         notice={resuming ? undefined : <ResumeSendNotice processId={process._id} state={pending} />}
