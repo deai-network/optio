@@ -9,6 +9,7 @@ import { todosFromWidgetData } from '../todosFromWidgetData.js';
 import { NativeSpinner } from '../spinners/NativeSpinner.js';
 import { dismissResumeSend, startResumeSend, useResumeSend } from './resumeAndSend.js';
 import { ResumeSendNotice } from './ResumeSendNotice.js';
+import { ResumingPanel } from './ResumingPanel.js';
 
 // Read-only replay of a suspended claudecode task's saved conversation record
 // (docs/2026-10-12-suspended-conversation-view-design.md, section 5). It folds
@@ -36,6 +37,9 @@ export interface ClaudeCodeReplayViewProps {
   // WidgetProps.readOnly: the host shows the process read-only, so the
   // composer must not resume it.
   readOnly?: boolean;
+  // The session is resuming (optio-ui keeps this view on screen until the
+  // live one is ready): the input gives way to a spinner panel.
+  resuming?: boolean;
   // theming (only set by ConversationWidget's registration when ownTheme):
   themeMode?: 'light' | 'dark';
   onToggleTheme?: () => void;
@@ -86,6 +90,7 @@ export function ClaudeCodeReplayView({
   prefix,
   widgetProxyUrl,
   readOnly,
+  resuming,
   themeMode,
   onToggleTheme,
 }: ClaudeCodeReplayViewProps) {
@@ -162,9 +167,11 @@ export function ClaudeCodeReplayView({
         // A send still waiting for the resume locks the composer; a failed one
         // puts its text back (draft), with the reason in the notice.
         composeWhenClosed={canResume && pending?.phase !== 'resuming'}
+        inputReplacement={resuming ? <ResumingPanel pending={pending} /> : undefined}
         confirmSend={confirmSend}
         draft={pending?.phase === 'failed' ? pending.text : undefined}
-        notice={<ResumeSendNotice processId={process._id} state={pending} />}
+        // While resuming, the panel says it instead.
+        notice={resuming ? undefined : <ResumeSendNotice processId={process._id} state={pending} />}
         onInterrupt={noop}
         onPermission={noop}
         onFileDownload={noop}

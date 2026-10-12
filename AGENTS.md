@@ -1231,7 +1231,7 @@ Implemented as `useProcessWidgetState(tree, options)?.widget ?? null`. `options.
 
 **`useProcessWidgetState(tree, options?)`** — the layout-free primitive, for callers that need to know
 *which* mode produced the element (`ProcessDetailView` uses it to decide whether to show a
-Resume control). Returns `{ widget: ReactNode; mode: 'live' | 'suspended' } | null`. `null`
+Resume control). Returns `{ widget: ReactNode; mode: 'live' | 'suspended' | 'resuming' } | null`; `'resuming'`: the hook showed the process suspended and it is being launched, but its live widget is not ready yet (a relaunch clears `widgetData`), so the suspended variant stays on screen. `null`
 when `tree` or `tree.uiWidget` is missing, when the process is neither widget-live nor
 suspended, when `tree.widgetData` hasn't arrived, when the database is unknown, or when no
 component is registered for the applicable mode. `widget` is the registered component invoked

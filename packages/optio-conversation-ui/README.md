@@ -72,6 +72,12 @@ resumes the session (claudecode, below).
   process with unsaved work (`isResurrectable`) gets the discard warning in the question and a
   danger "Discard and send". Under `WidgetProps.readOnly` the composer stays disabled. While
   the message waits, the live view holds a second send.
+- **While the session resumes** (optio-ui's `'resuming'` mode, by any route: Send, the Resume
+  button, auto-resume), the replay stays on screen with the settings and record it had before
+  the relaunch cleared them; its input gives way to a panel with a big spinner (the lent one,
+  key `optio:process:<id>/resuming`, 48 px; else antd's large `Spin`), "Resuming the session…"
+  and, for a message sent to resume, "Your message will be sent once it is ready." The live view
+  replaces it once it is ready.
 - **Other protocols** show "Resume to view this conversation." and make no request; only
   claudecode keeps a record so far.
 - **Loading** shows the lent spinner (`optio:process:<id>:archive`, see below) and "Loading…".
@@ -92,8 +98,8 @@ read-only).
 
 `ConversationView` takes an optional `closedLabel` for that divider; without it the divider
 reads "conversation ended", as before. For sending through a resume it also takes
-`composeWhenClosed`, `confirmSend`, `draft` and `notice`, and `onSend` may resolve `{ error }`
-to show its own message.
+`composeWhenClosed`, `confirmSend`, `draft`, `notice` and `inputReplacement` (shown instead of
+the input and its toolbar), and `onSend` may resolve `{ error }` to show its own message.
 
 ## Features
 

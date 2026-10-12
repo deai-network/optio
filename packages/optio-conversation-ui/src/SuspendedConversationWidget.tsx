@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { Alert, Button, Typography, theme } from 'antd';
-import { useProcessConversation, type WidgetProps } from 'optio-ui';
+import { isActive, isSuspended, useProcessConversation, type WidgetProps } from 'optio-ui';
 import { useSpinnerKey, useVultusComponents } from 'vultus-antd';
 import { ClaudeCodeReplayView } from './claudecode/ClaudeCodeReplayView.js';
 
@@ -44,7 +44,15 @@ function Note({ text }: { text: string }) {
 
 export function SuspendedConversationWidget(props: WidgetProps) {
   const { process } = props;
-  const widgetData = process?.widgetData ?? undefined;
+  // optio-ui keeps this variant on screen while the process resumes, until
+  // its live widget is ready (useProcessWidgetState's 'resuming'). The
+  // relaunch clears widgetData and stoppedAt: keep what the suspended
+  // process had, so the replay neither changes nor refetches meanwhile.
+  const resuming = !isSuspended(process) && isActive(process);
+  const own = { widgetData: process?.widgetData ?? undefined, stoppedAt: process?.status?.stoppedAt ?? null };
+  const kept = useRef(own);
+  if (!resuming) kept.current = own;
+  const { widgetData, stoppedAt } = resuming ? kept.current : own;
   // widgetData.protocol survives the suspend. Only claudecode writes a record
   // today; the other agents get a note and no request.
   const protocol = widgetData?.protocol ?? 'claudecode';
@@ -59,18 +67,17 @@ export function SuspendedConversationWidget(props: WidgetProps) {
   // process document.
   const conversation = useProcessConversation(process?._id, {
     enabled: replayable,
-    stoppedAt: process?.status?.stoppedAt ?? null,
+    stoppedAt,
   });
 
   if (!replayable) return <Note text={OTHER_PROTOCOL_NOTE} />;
 
   const error = conversation.error;
   const reason: unknown = error?.body?.reason;
-  // The process resumed while this view was open: render nothing; the live
-  // widget takes over once the process is widget-live again.
-  if (reason === 'not-suspended') return null;
-
   const body = conversation.data?.body;
+  // The process resumed while this view was open, before the record was
+  // read: render nothing; the live widget takes over once it is ready.
+  if (reason === 'not-suspended' && !body) return null;
   if (body) {
     return (
       <ClaudeCodeReplayView
@@ -83,6 +90,7 @@ export function SuspendedConversationWidget(props: WidgetProps) {
         prefix={props.prefix}
         widgetProxyUrl={props.widgetProxyUrl}
         readOnly={(props as { readOnly?: boolean }).readOnly}
+        resuming={resuming}
         themeMode={(props as any).themeMode}
         onToggleTheme={(props as any).onToggleTheme}
       />

@@ -260,3 +260,63 @@ describe('useProcessWidget (backward-compatible: ReactNode | null, not an object
     expect(result.current).toBeNull();
   });
 });
+
+describe('useProcessWidgetState: a resume keeps the suspended variant on screen', () => {
+  // A relaunch clears widgetData until the task sets it again: without this,
+  // the hook returns null for those seconds and the host's layout flips.
+  const Live = () => <div data-testid="live" />;
+  const Suspended = () => <div data-testid="suspended" />;
+  const resumed = (overrides: Record<string, unknown> = {}) =>
+    baseTree({ supportsResume: true, hasSavedState: true, widgetData: null, ...overrides });
+  const hook = (tree: any) => renderHook(({ t }) => useProcessWidgetState(t), { initialProps: { t: tree } });
+
+  beforeEach(() => registerWidget('my-widget', Live, { suspended: Suspended }));
+
+  it('scheduled, then running without widgetData: still the suspended variant, mode "resuming"', () => {
+    const h = hook(suspendedTree());
+    expect(h.result.current?.mode).toBe('suspended');
+    h.rerender({ t: resumed({ status: { state: 'scheduled' } }) });
+    expect(h.result.current?.mode).toBe('resuming');
+    h.rerender({ t: resumed() });
+    expect(h.result.current?.mode).toBe('resuming');
+    render(<>{h.result.current?.widget}</>);
+    expect(screen.getByTestId('suspended')).toBeTruthy();
+  });
+
+  it('hands over to the live widget once its widgetData arrives', () => {
+    const h = hook(suspendedTree());
+    h.rerender({ t: resumed() });
+    h.rerender({ t: resumed({ widgetData: { protocol: 'claudecode' } }) });
+    expect(h.result.current?.mode).toBe('live');
+    // The latch is spent: a later gap shows nothing, as before.
+    h.rerender({ t: resumed() });
+    expect(h.result.current).toBeNull();
+  });
+
+  it('a run that ends before the live widget is ready falls back to nothing', () => {
+    const h = hook(suspendedTree());
+    h.rerender({ t: resumed() });
+    h.rerender({ t: resumed({ status: { state: 'failed' } }) });
+    expect(h.result.current).toBeNull();
+  });
+
+  it('without having shown the suspended variant first, a starting run shows nothing', () => {
+    const h = hook(resumed());
+    expect(h.result.current).toBeNull();
+  });
+
+  it('only for the process it showed', () => {
+    const h = hook(suspendedTree());
+    h.rerender({ t: resumed({ _id: 'other' }) });
+    expect(h.result.current).toBeNull();
+  });
+
+  it('no latch when the suspended variant was never rendered (none registered)', () => {
+    _clearWidgetRegistry();
+    registerWidget('my-widget', Live);
+    const h = hook(suspendedTree());
+    expect(h.result.current).toBeNull();
+    h.rerender({ t: resumed() });
+    expect(h.result.current).toBeNull();
+  });
+});

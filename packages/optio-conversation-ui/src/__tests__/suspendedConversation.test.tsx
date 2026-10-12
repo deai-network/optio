@@ -418,10 +418,11 @@ describe('SuspendedConversationWidget: other protocols and the error states', ()
     expect(container.innerHTML).toBe('');
   });
 
-  it('not-suspended wins over a record fetched before the resume', () => {
+  it('a record fetched before the resume stays on screen when a refetch answers not-suspended', () => {
+    // The replay is kept through a resume (optio-ui's 'resuming' mode).
     useProcessConversation.mockReturnValue({ ...loaded(RECORD), error: { status: 409, body: { reason: 'not-suspended', message: 'x' } } });
-    const { container } = render(<SuspendedConversationWidget {...widgetProps()} />);
-    expect(container.innerHTML).toBe('');
+    render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
+    expect(screen.getByText('List the files')).toBeTruthy();
   });
 
   it('a 500 shows the message and a Retry that refetches', () => {
@@ -486,6 +487,60 @@ describe('SuspendedConversationWidget: loading', () => {
     useProcessConversation.mockReturnValue(pending());
     render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
     expect(screen.getByTestId('optio-widget-loading').innerHTML).toBe('Loading…');
+  });
+});
+
+describe('SuspendedConversationWidget: while the session resumes', () => {
+  // optio-ui keeps the suspended variant on screen until the live widget is
+  // ready; the relaunch has cleared widgetData and stoppedAt meanwhile.
+  const resumingProcess = (state = 'running') => ({ status: { state }, widgetData: null });
+
+  it('keeps the replay, with the settings and record it had, and puts a spinner panel in place of the input', () => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    const props = widgetProps({ widgetData: { protocol: 'claudecode', toolVerbosity: 'silent' } });
+    const { rerender } = render(wrap(<SuspendedConversationWidget {...props} />));
+    expect(screen.getByTestId('conversation-input-box')).toBeTruthy();
+    rerender(wrap(<SuspendedConversationWidget {...props} process={{ ...props.process, ...resumingProcess() }} />));
+    expect(screen.getByText('List the files')).toBeTruthy();
+    expect(screen.queryAllByTestId('tool-call')).toHaveLength(0); // still silent
+    // Same query as before the resume: the record is not fetched again.
+    expect(useProcessConversation.mock.calls.at(-1)![1]).toEqual({ enabled: true, stoppedAt: '2026-10-12T09:05:01.000Z' });
+    expect(screen.getByTestId('optio-replay-resuming').textContent).toContain('Resuming the session…');
+    expect(screen.queryByTestId('conversation-input-box')).toBeNull();
+  });
+
+  it('a message sent to resume is mentioned in the panel, once', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: { state: 'scheduled' } }), { status: 200 })));
+    await startResumeSend(
+      { processId: 'p1', apiBaseUrl: '', database: 'db', prefix: 'gm', widgetProxyUrl: '/api/widget/db/gm/p1/' },
+      'carry on',
+      { pollMs: 50, timeoutMs: 600_000, graceMs: 600_000 },
+    );
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    const props = widgetProps();
+    const { rerender } = render(wrap(<SuspendedConversationWidget {...props} />));
+    rerender(wrap(<SuspendedConversationWidget {...props} process={{ ...props.process, ...resumingProcess('scheduled') }} />));
+    expect(screen.getByTestId('optio-replay-resuming').textContent).toContain('Your message will be sent once it is ready.');
+    expect(screen.queryByTestId('optio-resume-send-pending')).toBeNull();
+  });
+
+  it('shows the app\'s lent spinner, big, keyed under the process', () => {
+    calls.length = 0;
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    const props = widgetProps();
+    const { rerender } = render(lent(<SuspendedConversationWidget {...props} />));
+    rerender(lent(<SuspendedConversationWidget {...props} process={{ ...props.process, ...resumingProcess() }} />));
+    const panel = screen.getByTestId('optio-replay-resuming');
+    expect(within(panel).getByTestId('rec-spinner').getAttribute('data-key')).toBe('optio:process:p1/resuming');
+    expect(calls.find((c) => c.spinnerKey === 'optio:process:p1/resuming')?.size).toBe(48);
+  });
+
+  it('without a lent spinner: antd\'s large Spin', () => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    const props = widgetProps();
+    const { rerender } = render(wrap(<SuspendedConversationWidget {...props} />));
+    rerender(wrap(<SuspendedConversationWidget {...props} process={{ ...props.process, ...resumingProcess() }} />));
+    expect(screen.getByTestId('optio-replay-resuming').querySelector('.ant-spin-lg')).not.toBeNull();
   });
 });
 

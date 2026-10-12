@@ -1,15 +1,18 @@
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { useOptioBaseUrl, useOptioPrefix, useOptioDatabase } from '../context/useOptioContext.js';
 import { getWidget, getSuspendedWidget } from '../widgets/registry.js';
-import { isWidgetLive, isSuspended } from '../process-state.js';
+import { isActive, isWidgetLive, isSuspended } from '../process-state.js';
 import type { ProcessTreeNode } from '../hooks/useProcessStream.js';
 
 export interface UseProcessWidgetStateResult {
   widget: ReactNode;
   /** `'live'` while the task is running and its live widget is shown;
    *  `'suspended'` while the task is suspended and its suspended variant is
-   *  shown (same `WidgetProps` either way). */
-  mode: 'live' | 'suspended';
+   *  shown (same `WidgetProps` either way); `'resuming'` while a process this
+   *  hook was showing suspended resumes and its live widget is not ready yet:
+   *  the suspended variant stays on screen (a relaunch clears `widgetData`
+   *  until the task sets it again), so the host's layout does not flip. */
+  mode: 'live' | 'suspended' | 'resuming';
 }
 
 /**
@@ -48,25 +51,39 @@ export function useProcessWidgetState(
   const baseUrl = useOptioBaseUrl();
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
+  // The process this hook last rendered with its suspended variant (its
+  // _id), if any: set where a suspended or resuming widget is returned,
+  // cleared on every other outcome.
+  const shownSuspended = useRef<string | null>(null);
+  const none = () => {
+    shownSuspended.current = null;
+    return null;
+  };
 
-  if (!tree) return null;
+  if (!tree) return none();
 
   const widgetName = (tree as any).uiWidget as string | undefined;
-  if (!widgetName) return null;
+  if (!widgetName) return none();
 
   const live = isWidgetLive(tree as any);
   const suspended = !live && isSuspended(tree as any);
-  if (!live && !suspended) return null;
-
   const widgetDataReady = (tree as any).widgetData != null;
-  if (!widgetDataReady) return null;
+  // Resuming: this hook showed the process suspended, and it has since been
+  // launched, but its live widget is not ready yet. Keep the suspended
+  // variant until it is (or the run ends).
+  const resuming = !suspended
+    && shownSuspended.current === tree._id
+    && isActive(tree as any)
+    && !(live && widgetDataReady);
+  if (!live && !suspended && !resuming) return none();
+  if (!widgetDataReady && !resuming) return none();
 
-  const Widget = live ? getWidget(widgetName) : getSuspendedWidget(widgetName);
+  const Widget = live && !resuming ? getWidget(widgetName) : getSuspendedWidget(widgetName);
   if (!Widget) {
     if (live) {
       console.warn(`[optio-ui] No widget registered under name "${widgetName}"; falling back to default rendering.`);
     }
-    return null;
+    return none();
   }
 
   if (!database) {
@@ -75,14 +92,16 @@ export function useProcessWidgetState(
       `(no explicit database on <OptioProvider> and instance discovery has not resolved); ` +
       `falling back to default rendering.`,
     );
-    return null;
+    return none();
   }
 
   const widgetProxyUrl =
     `${baseUrl}/api/widget/${encodeURIComponent(database)}/${encodeURIComponent(prefix)}/${tree._id}/`;
 
+  const mode = resuming ? 'resuming' : live ? 'live' : 'suspended';
+  shownSuspended.current = mode === 'live' ? null : tree._id;
   return {
-    mode: live ? 'live' : 'suspended',
+    mode,
     widget: (
       <Widget
         process={tree as any}

@@ -106,6 +106,9 @@ export interface ConversationViewProps {
   draft?: string;
   // A line above the input (e.g. a message waiting for the session to resume).
   notice?: React.ReactNode;
+  // Shown instead of the input and its toolbar (the suspended replay while
+  // the session resumes: a spinner and what is happening).
+  inputReplacement?: React.ReactNode;
   // Resolves whether the request reached the listener (Fix 6, manual-test
   // finding 1): the Interrupt button shows a pending state while in flight
   // and 'Interrupt failed — retry.' through the same error slot the input
@@ -1877,6 +1880,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             display: 'flex', flexDirection: 'column', gap: 8,
           }}>
           {props.notice}
+          {props.inputReplacement ?? (<>
           {error && (
             <Alert
               type="error"
@@ -1993,6 +1997,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               <ActionButton action={interruptAction} size="small" iconPlacement="end" />
             </span>
           </div>
+          </>)}
           </div>
         </div>
         </div>

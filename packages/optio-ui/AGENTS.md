@@ -395,7 +395,7 @@ function useProcessWidget(tree: ProcessTreeNode | null | undefined, options?: Us
 
 interface UseProcessWidgetStateResult {
   widget: ReactNode;
-  mode: 'live' | 'suspended';
+  mode: 'live' | 'suspended' | 'resuming';
 }
 function useProcessWidgetState(tree: ProcessTreeNode | null | undefined, options?: UseProcessWidgetOptions): UseProcessWidgetStateResult | null
 
@@ -417,6 +417,14 @@ mapping is otherwise identical between the two. `useProcessWidget` is implemente
 `useProcessWidgetState(tree, options)?.widget ?? null`. `options.readOnly` adds
 `readOnly: true` to the widget's props (absent otherwise); `ProcessDetailView` passes its own
 `readOnly`.
+
+**Resuming.** A relaunch clears `widgetData` until the task sets it again. When the hook
+rendered a process with its suspended variant and that process is then launched (active, live
+widget not ready: not widget-live with `widgetData`), it keeps returning the suspended variant
+with `mode: 'resuming'`, so a host's layout does not flip between widget and no-widget. It
+hands over to the live widget once that is ready, and returns `null` as usual if the run ends
+first. The latch is per hook instance and per process `_id`; a page opened mid-resume shows no
+widget until the live one is ready. `ProcessDetailView` shows no Resume row in this mode.
 
 `useProcessWidgetState` owns:
 
