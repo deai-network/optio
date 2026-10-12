@@ -23,6 +23,7 @@ from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
     SessionControlsConfigMixin,
+    WelcomeConfigMixin,
 )
 from optio_agents.protocol.session import (
     CallerMessageCallback,
@@ -90,7 +91,10 @@ def _identity_resume_refresh(config: "ClaudeCodeTaskConfig") -> "ClaudeCodeTaskC
 
 
 @dataclass(frozen=True, kw_only=True)
-class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
+class ClaudeCodeTaskConfig(
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    WelcomeConfigMixin,
+):
     """Configuration for one optio-claudecode task instance.
 
     See ``docs/2026-05-28-optio-claudecode-design.md`` for full field
@@ -359,6 +363,7 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionC
                 "mode='conversation' and conversation_ui=True."
             )
         self._validate_session_controls()
+        self._validate_welcome()
         if self.native_spinner and not (self.mode == "conversation" and self.conversation_ui):
             raise ValueError(
                 "ClaudeCodeTaskConfig: native_spinner=True requires "

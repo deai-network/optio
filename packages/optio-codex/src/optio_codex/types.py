@@ -37,6 +37,7 @@ from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
     SessionControlsConfigMixin,
+    WelcomeConfigMixin,
 )
 from optio_agents.protocol.session import (
     CallerMessageCallback,
@@ -97,7 +98,10 @@ def _identity_resume_refresh(config: "CodexTaskConfig") -> "CodexTaskConfig":
 
 
 @dataclass(frozen=True, kw_only=True)
-class CodexTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
+class CodexTaskConfig(
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    WelcomeConfigMixin,
+):
     """Configuration for one optio-codex task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
@@ -305,6 +309,7 @@ class CodexTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionContro
         self._validate_claustrum()
         self._validate_blob_crypto()
         self._validate_session_controls()
+        self._validate_welcome()
         if self.mode not in _VALID_MODES:
             raise ValueError(
                 f"CodexTaskConfig.mode={self.mode!r} is not one of "

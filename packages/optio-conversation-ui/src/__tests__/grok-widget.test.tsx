@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ConversationWidget } from '../ConversationWidget.js';
 
+// The paperclip's file input: X Attachments' picker, inside the button's antd
+// Upload (its drop area holds a second, separate file input).
+const pickerInput = () =>
+  screen.getByTestId('attach-button').closest('.ant-upload')!.querySelector('input[type="file"]') as HTMLInputElement;
+
 // GrokView parity (Stage 7): the model picker, file upload (System: reference),
 // file download, and tool-verbosity all funnel through the shared
 // ConversationView, driven by grok's ACP wire over the listener SSE.
@@ -67,7 +72,7 @@ describe('GrokView (Stage 7 parity)', () => {
     vi.stubGlobal('fetch', fetchMock as any);
     render(<ConversationWidget {...makeProps({ protocol: 'grok', showFileUpload: true, maxUploadBytes: 1000, uploadUrl: '/api/widget-upload/db/gm/p1' })} />);
 
-    const fileInput = screen.getByTestId('file-input') as HTMLInputElement;
+    const fileInput = pickerInput();
     const file = new File([new Uint8Array([104, 105])], 'note.txt', { type: 'text/plain' });
     await act(async () => {
       fireEvent.change(fileInput, { target: { files: [file] } });
@@ -120,9 +125,14 @@ describe('GrokView (Stage 7 parity)', () => {
     });
     fire({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } });
 
-    const link = await screen.findByText(/report/);
+    // The answer's file card (FileCard.List under the reply) downloads it.
+    const card = await waitFor(() => {
+      const el = document.querySelector('.ant-file-card-list .ant-file-card-file');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
     await act(async () => {
-      fireEvent.click(link);
+      fireEvent.click(card);
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const dlCall = (fetchMock.mock.calls as any[]).find((c) => String(c[0]).includes('/download'));
@@ -131,11 +141,18 @@ describe('GrokView (Stage 7 parity)', () => {
     expect(clickSpy).toHaveBeenCalled();
   });
 
-  it('verbose tool verbosity renders the ACP rawInput as a key-value table', () => {
+  it('verbose tool verbosity renders the ACP rawInput as code blocks', () => {
     render(<ConversationWidget {...makeProps({ protocol: 'grok', toolVerbosity: 'verbose' })} />);
     fire(toolCall('Shell', { command: 'ls -la', cwd: '/w' }));
-    expect(screen.getByText('command')).toBeTruthy();
-    expect(screen.getByText('ls -la')).toBeTruthy();
-    expect(screen.getByText('cwd')).toBeTruthy();
+    const node = screen.getByTestId('tool-call').closest('.ant-thought-chain-node')!;
+    // The node's content: X CodeHighlighter blocks (header title, code text).
+    const blocks = Array.from(node.querySelectorAll('.ant-codeHighlighter')).map((b) => ({
+      title: b.querySelector('.ant-codeHighlighter-header-title')?.textContent,
+      code: b.querySelector('.ant-codeHighlighter-code')?.textContent ?? '',
+    }));
+    // The command as a bash block, the rest of the input (cwd) as JSON.
+    expect(blocks.map((b) => b.title)).toEqual(['bash', 'input']);
+    expect(blocks[0].code).toBe('ls -la');
+    expect(JSON.parse(blocks[1].code)).toMatchObject({ cwd: '/w' });
   });
 });

@@ -1,5 +1,6 @@
 import pytest
 
+from optio_agents import WelcomeCard
 from optio_opencode.session import conversation_widget_data
 from optio_opencode.types import OpencodeTaskConfig
 
@@ -73,6 +74,7 @@ def test_widget_data_carries_model_fields():
         "directory": "/wd",
         "toolVerbosity": "verbose",
         "thinkingVerbosity": "hidden",
+        "welcome": None,
         "showSessionControls": True,
         "sessionControls": None,
         "nativeSpinner": False,
@@ -96,6 +98,25 @@ def test_widget_data_defaults():
     # No effort configured ⇒ the widget seeds nothing (opencode's per-model
     # default stands).
     assert wd["defaultEffort"] is None
+    assert wd["welcome"] is None
+
+
+def test_widget_data_carries_the_welcome_card():
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="task", fs_isolation=False,
+        mode="conversation",
+        conversation_ui=True,
+        # A language-map title (published unresolved) and a minimum height.
+        welcome=WelcomeCard(
+            title={"en": "Hello", "hu": "Szia"}, description="Try **this**.",
+            icon="img/w.png", min_height=200,
+        ),
+    )
+    wd = conversation_widget_data(cfg, session_id="s1", directory="/wd")
+    assert wd["welcome"] == {
+        "title": {"en": "Hello", "hu": "Szia"}, "description": "Try **this**.",
+        "icon": "/img/w.png", "minHeight": 200,
+    }
 
 
 def test_reasoning_effort_accepted():

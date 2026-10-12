@@ -80,16 +80,21 @@ describe('AntigravityView (transcript wire over the listener)', () => {
     expect(screen.getByText('hello agy')).toBeTruthy();
   });
 
-  it('verbose tool verbosity renders a PLANNER_RESPONSE tool_call args as a key-value table', () => {
+  it('verbose tool verbosity renders a PLANNER_RESPONSE tool_call args as code blocks', () => {
     render(<ConversationWidget {...makeProps({ protocol: 'antigravity', toolVerbosity: 'verbose' })} />);
     fire({
       source: 'MODEL',
       type: 'PLANNER_RESPONSE',
       tool_calls: [{ name: 'list_dir', args: { DirectoryPath: '/w', toolAction: 'Listing' } }],
     });
-    expect(screen.getByText('DirectoryPath')).toBeTruthy();
-    expect(screen.getByText('/w')).toBeTruthy();
-    expect(screen.getByText('toolAction')).toBeTruthy();
+    const node = screen.getByTestId('tool-call').closest('.ant-thought-chain-node')!;
+    // The node's content: X CodeHighlighter blocks (header title, code text).
+    const blocks = Array.from(node.querySelectorAll('.ant-codeHighlighter')).map((b) => ({
+      title: b.querySelector('.ant-codeHighlighter-header-title')?.textContent,
+      code: b.querySelector('.ant-codeHighlighter-code')?.textContent ?? '',
+    }));
+    expect(blocks.map((b) => b.title)).toEqual(['input']);
+    expect(JSON.parse(blocks[0].code)).toMatchObject({ DirectoryPath: '/w', toolAction: 'Listing' });
   });
 
   it('an optio-file: link in the answer fetches /download and triggers a blob save', async () => {
@@ -103,9 +108,14 @@ describe('AntigravityView (transcript wire over the listener)', () => {
     render(<ConversationWidget {...makeProps({ protocol: 'antigravity', fileDownload: true })} />);
     fire({ source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'Here: [report](optio-file:out/r.md)' });
 
-    const link = await screen.findByText(/report/);
+    // The answer's file card (FileCard.List under the reply) downloads it.
+    const card = await waitFor(() => {
+      const el = document.querySelector('.ant-file-card-list .ant-file-card-file');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
     await act(async () => {
-      fireEvent.click(link);
+      fireEvent.click(card);
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const dlCall = (fetchMock.mock.calls as any[]).find((c) => String(c[0]).includes('/download'));

@@ -26,6 +26,7 @@ from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
     SessionControlsConfigMixin,
+    WelcomeConfigMixin,
 )
 from optio_agents.protocol.session import (
     CallerMessageCallback,
@@ -97,6 +98,7 @@ def _identity_resume_refresh(
 @dataclass(frozen=True, kw_only=True)
 class AntigravityTaskConfig(
     ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    WelcomeConfigMixin,
 ):
     """Configuration for one optio-antigravity task instance (Stage 0).
 
@@ -276,6 +278,7 @@ class AntigravityTaskConfig(
         self._validate_claustrum()
         self._validate_blob_crypto()
         self._validate_session_controls()
+        self._validate_welcome()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

@@ -622,6 +622,8 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 "protocol": "grok",
                 "toolVerbosity": config.tool_verbosity,
                 "thinkingVerbosity": config.thinking_verbosity,
+                # The welcome card atop the transcript (None: no card).
+                "welcome": config.welcome_widget_data,
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
                 "controls": _build_controls(current_model),

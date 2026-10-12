@@ -16,6 +16,8 @@ from optio_agents.config_types import (
     ThinkingVerbosity,
     TOOL_VERBOSITIES,
     ToolVerbosity,
+    WelcomeCard,
+    WelcomeConfigMixin,
 )
 from optio_agents.context import HookContext, HookContextProtocol, SYSTEM_MESSAGE_PREFIX
 from optio_agents.conversation import (
@@ -64,6 +66,7 @@ from optio_agents.steering import (
     resolve_busy_send,
 )
 from optio_agents.session_controls import ControlOption, SessionControl
+from optio_agents.text import Text, check_text, resolve_text
 from optio_agents import input_listener
 from optio_agents import tmux_input
 from optio_agents.input_listener import serialized, start_input_listener
@@ -83,6 +86,8 @@ __all__ = [
     "ThinkingVerbosity",
     "TOOL_VERBOSITIES",
     "ToolVerbosity",
+    "WelcomeCard",
+    "WelcomeConfigMixin",
     "input_listener",
     "tmux_input",
     "serialized",
@@ -111,6 +116,9 @@ __all__ = [
     "BUSY_SEND_VALUES",
     "SessionControl",
     "ControlOption",
+    "Text",
+    "check_text",
+    "resolve_text",
     "run_log_protocol_session",
     "fetch_deliverable_text",
     "AgentSender",

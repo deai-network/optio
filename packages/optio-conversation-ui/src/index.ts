@@ -1,6 +1,12 @@
 export { ConversationWidget, registerConversationWidget } from './ConversationWidget.js';
 export { ConversationWidenessContext } from './wideness.js';
+export { ConversationWelcomeContext } from './welcome.js';
+export type { ConversationWelcome } from './welcome.js';
+export { resolveText, useLanguage } from './text.js';
+export type { LocalizedText } from './text.js';
 export type { ConversationWideness } from './wideness.js';
+export { ConversationSetBusyContext } from './busy.js';
+export type { ConversationSetBusy } from './busy.js';
 export { SuspendedConversationWidget } from './SuspendedConversationWidget.js';
 export { ClaudeCodeReplayView } from './claudecode/ClaudeCodeReplayView.js';
 export type { ClaudeCodeReplayViewProps } from './claudecode/ClaudeCodeReplayView.js';

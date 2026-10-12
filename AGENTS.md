@@ -644,6 +644,20 @@ grok, kimicode, antigravity) inherit their common field sets from mixins in
   an id outside `settable_controls` (403 `not-allowed`; every id while the bar
   is off). opencode builds its controls in the browser, so its widget applies
   the allowlist there and it has no server-side gate.
+- **`WelcomeConfigMixin`** — `welcome: WelcomeCard | None`, the card the
+  conversation widget shows atop the transcript. `WelcomeCard(title,
+  description=None, icon=None, min_height=None)` (exported from
+  `optio_agents`): `title` (not blank) and `description` (markdown) are
+  `optio_agents.Text` — a plain string or a map of language code to string
+  (`{"en": ..., "hu": ...}`), checked with `check_text`; `icon` is a URL
+  relative to the web app root (`"img/a.png"` → `"/img/a.png"`; `"/x.png"`
+  and `https://...` stay); `min_height` is a positive int of CSS pixels.
+  Every engine publishes `welcome_widget_data`
+  (`{title, description, icon, minHeight}` with the texts unresolved, or
+  None) as the conversation widget's `welcome` widgetData key; the widget
+  resolves a map for the viewer's language (`resolve_text`: the language's
+  entry, else `"en"`, else the first). Anything but a `WelcomeCard` or None
+  raises `ValueError`.
 
 `optio-agents-all` guards this uniformity with a union-wide test; its
 `create_task` passes configs through verbatim. Details:

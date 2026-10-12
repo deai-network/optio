@@ -34,6 +34,11 @@ engines (guarded by `tests/test_config_uniformity.py`):
   session snapshot, ds-scoped key) and `seed_blob_encrypt`/`decrypt` (shared
   pool-account SEED tar, pool-scoped key; falls back to the session pair when
   unset). Asymmetric pairs raise `ValueError` at construction on every engine.
+* `SessionControlsConfigMixin` — `show_session_controls` / `session_controls`.
+* `WelcomeConfigMixin` — `welcome` (a `WelcomeCard` or None; anything else
+  raises `ValueError`) and `welcome_widget_data`, the
+  `{title, description, icon, minHeight}` dict every engine publishes as the
+  conversation widget's `welcome` widgetData key.
 
 Full mixin semantics: `packages/optio-agents/AGENTS.md`.
 

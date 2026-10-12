@@ -70,6 +70,14 @@ The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` 
   the mixin's `seed_encrypt`/`seed_decrypt` accessors. Per pair: both set →
   encrypted at rest; both `None` (default) → plaintext; one without the
   other raises `ValueError`.
+- `welcome: WelcomeCard | None = None` — inherited from
+  `optio_agents.config_types.WelcomeConfigMixin`: the card the conversation
+  widget shows atop the transcript (title, markdown description, both plain
+  strings or language maps; icon URL relative to the web app root;
+  `min_height` in CSS pixels). `conversation_widget_data` publishes
+  `config.welcome_widget_data` (`{title, description, icon, minHeight}`,
+  texts unresolved, or None) as widgetData `welcome`; the iframe widget
+  ignores it.
 
 ### OpencodeTaskConfig.workdir_exclude
 

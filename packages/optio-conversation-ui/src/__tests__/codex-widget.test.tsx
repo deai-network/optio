@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ConversationWidget } from '../ConversationWidget.js';
 
+// The paperclip's file input: X Attachments' picker, inside the button's antd
+// Upload (its drop area holds a second, separate file input).
+const pickerInput = () =>
+  screen.getByTestId('attach-button').closest('.ant-upload')!.querySelector('input[type="file"]') as HTMLInputElement;
+
 // CodexView parity (Stage 7): the model picker, file upload (System:
 // reference), file download, and tool-verbosity all funnel through the shared
 // ConversationView, driven by codex's app-server wire over the listener SSE.
@@ -70,7 +75,7 @@ describe('CodexView (Stages 6-7 parity)', () => {
     vi.stubGlobal('fetch', fetchMock as any);
     render(<ConversationWidget {...makeProps({ protocol: 'codex', showFileUpload: true, maxUploadBytes: 1000, uploadUrl: '/api/widget-upload/db/gm/p1' })} />);
 
-    const fileInput = screen.getByTestId('file-input') as HTMLInputElement;
+    const fileInput = pickerInput();
     const file = new File([new Uint8Array([104, 105])], 'note.txt', { type: 'text/plain' });
     await act(async () => {
       fireEvent.change(fileInput, { target: { files: [file] } });
@@ -112,9 +117,14 @@ describe('CodexView (Stages 6-7 parity)', () => {
       params: { threadId: 't1', turn: { id: 'turn-1', status: 'completed', items: [] } },
     });
 
-    const link = await screen.findByText(/report/);
+    // The answer's file card (FileCard.List under the reply) downloads it.
+    const card = await waitFor(() => {
+      const el = document.querySelector('.ant-file-card-list .ant-file-card-file');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
     await act(async () => {
-      fireEvent.click(link);
+      fireEvent.click(card);
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const dlCall = (fetchMock.mock.calls as any[]).find((c) => String(c[0]).includes('/download'));
@@ -123,14 +133,22 @@ describe('CodexView (Stages 6-7 parity)', () => {
     expect(clickSpy).toHaveBeenCalled();
   });
 
-  it('verbose tool verbosity renders the command item as a key-value table', () => {
+  it('verbose tool verbosity renders the command item as code blocks', () => {
     render(<ConversationWidget {...makeProps({ protocol: 'codex', toolVerbosity: 'verbose' })} />);
     fire(cmdStarted('ls -la', '/w'));
-    expect(screen.getByText('command')).toBeTruthy();
+    const node = screen.getByTestId('tool-call').closest('.ant-thought-chain-node')!;
+    // The node's content: X CodeHighlighter blocks (header title, code text).
+    const blocks = Array.from(node.querySelectorAll('.ant-codeHighlighter')).map((b) => ({
+      title: b.querySelector('.ant-codeHighlighter-header-title')?.textContent,
+      code: b.querySelector('.ant-codeHighlighter-code')?.textContent ?? '',
+    }));
     // codex names the tool row by the command itself (no separate ACP title),
-    // so `ls -la` appears both as the row name and the KV `command` value.
-    expect(screen.getAllByText('ls -la').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('cwd')).toBeTruthy();
+    // so `ls -la` is both the node title and the bash block; cwd is the rest
+    // of the input, as JSON.
+    expect(node.querySelector('.ant-thought-chain-node-title')!.textContent).toBe('ls -la');
+    expect(blocks.map((b) => b.title)).toEqual(['bash', 'input']);
+    expect(blocks[0].code).toBe('ls -la');
+    expect(JSON.parse(blocks[1].code)).toMatchObject({ cwd: '/w' });
   });
 
   it('a permission request renders a card and answering POSTs /permission', async () => {

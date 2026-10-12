@@ -10,6 +10,8 @@ import { KimiCodeView } from './kimicode/KimiCodeView.js';
 import { AntigravityView } from './antigravity/AntigravityView.js';
 import { SuspendedConversationWidget } from './SuspendedConversationWidget.js';
 import { ConversationWidenessContext, type ConversationWideness } from './wideness.js';
+import { ConversationWelcomeContext, welcomeOf } from './welcome.js';
+import { ConversationSetBusyContext, type ConversationSetBusy } from './busy.js';
 
 const THEME_KEY = 'optio-conversation:theme';
 
@@ -24,21 +26,29 @@ export interface ConversationWidgetProps extends WidgetProps {
    *  ConversationWidenessContext, which it can change live ('narrow' when the
    *  host sets none). */
   wideness?: ConversationWideness;
+  /** The host app's callback for the agent's busy / idle state (see
+   *  busy.ts). Absent: the host's ConversationSetBusyContext, if any. */
+  setBusy?: ConversationSetBusy;
 }
 
 /** Engine-neutral conversation widget: the task declares its wire protocol
  *  via widgetData.protocol; each view speaks that protocol natively through
  *  the widget proxy. */
-export function ConversationWidget({ ownTheme, wideness, ...props }: ConversationWidgetProps) {
+export function ConversationWidget({ ownTheme, wideness, setBusy, ...props }: ConversationWidgetProps) {
   const fromHost = useContext(ConversationWidenessContext);
+  const setBusyFromHost = useContext(ConversationSetBusyContext);
   return (
     <ConversationWidenessContext.Provider value={wideness ?? fromHost}>
-      <ConversationWidgetBody ownTheme={ownTheme} {...props} />
+      <ConversationSetBusyContext.Provider value={setBusy ?? setBusyFromHost}>
+        <ConversationWelcomeContext.Provider value={welcomeOf(props.process)}>
+          <ConversationWidgetBody ownTheme={ownTheme} {...props} />
+        </ConversationWelcomeContext.Provider>
+      </ConversationSetBusyContext.Provider>
     </ConversationWidenessContext.Provider>
   );
 }
 
-function ConversationWidgetBody({ ownTheme, ...props }: Omit<ConversationWidgetProps, 'wideness'>) {
+function ConversationWidgetBody({ ownTheme, ...props }: Omit<ConversationWidgetProps, 'wideness' | 'setBusy'>) {
   const protocol = (props.process as any)?.widgetData?.protocol ?? 'claudecode';
 
   const dispatchedView = (extra: { themeMode?: 'light' | 'dark'; onToggleTheme?: () => void }) => {
@@ -102,20 +112,29 @@ function ThemedSuspendedConversation(props: WidgetProps) {
  *  ConfigProvider). Default: inherit the host theme. `wideness` fixes the
  *  conversation's reading width ('wide' | 'narrow' | 'switch', see
  *  wideness.ts), for the suspended variant too; without it the widget follows
- *  the host's ConversationWidenessContext ('narrow' when none). */
+ *  the host's ConversationWidenessContext ('narrow' when none). `setBusy`
+ *  receives the agent's busy / idle state (see busy.ts); without it the widget
+ *  reports to the host's ConversationSetBusyContext, if any. The suspended
+ *  variant is idle. */
 export function registerConversationWidget(
-  opts?: { ownTheme?: boolean; wideness?: ConversationWideness },
+  opts?: { ownTheme?: boolean; wideness?: ConversationWideness; setBusy?: ConversationSetBusy },
 ): void {
   const wideness = opts?.wideness;
   const Widget = (props: WidgetProps) => (
-    <ConversationWidget ownTheme={opts?.ownTheme} wideness={wideness} {...props} />
+    <ConversationWidget ownTheme={opts?.ownTheme} wideness={wideness} setBusy={opts?.setBusy} {...props} />
   );
   const Suspended = opts?.ownTheme ? ThemedSuspendedConversation : SuspendedConversationWidget;
-  // Without a registered wideness the suspended variant, like the live one,
-  // follows the host's ConversationWidenessContext.
-  const SuspendedWidget = wideness === undefined ? Suspended : (props: WidgetProps) => (
-    <ConversationWidenessContext.Provider value={wideness}>
+  // The suspended variant shows the task's welcome card too; without a
+  // registered wideness it follows the host's ConversationWidenessContext,
+  // like the live one.
+  const SuspendedWithWelcome = (props: WidgetProps) => (
+    <ConversationWelcomeContext.Provider value={welcomeOf(props.process)}>
       <Suspended {...props} />
+    </ConversationWelcomeContext.Provider>
+  );
+  const SuspendedWidget = wideness === undefined ? SuspendedWithWelcome : (props: WidgetProps) => (
+    <ConversationWidenessContext.Provider value={wideness}>
+      <SuspendedWithWelcome {...props} />
     </ConversationWidenessContext.Provider>
   );
   registerWidget('conversation', Widget, { suspended: SuspendedWidget });

@@ -25,6 +25,7 @@ import pytest
 
 from optio_core.lifecycle import Optio
 
+from optio_agents import WelcomeCard
 from optio_kimicode import KimiCodeTaskConfig, create_kimicode_task
 
 
@@ -355,6 +356,11 @@ async def test_conversation_ui_forwards_frontend_parity_widget_data(
                 max_upload_bytes=4242,
                 file_download=True,
                 max_download_bytes=8484,
+                # A language-map title (published unresolved) and a minimum height.
+                welcome=WelcomeCard(
+                    title={"en": "Hello", "hu": "Szia"}, description="Try **this**.",
+                    icon="img/w.png", min_height=200,
+                ),
             ),
         )
         await optio.adhoc_define(task)
@@ -369,6 +375,11 @@ async def test_conversation_ui_forwards_frontend_parity_widget_data(
         assert wd["maxUploadBytes"] == 4242
         assert wd["fileDownload"] is True
         assert wd["maxDownloadBytes"] == 8484
+        # The welcome card, its icon rooted at the web app.
+        assert wd["welcome"] == {
+            "title": {"en": "Hello", "hu": "Szia"}, "description": "Try **this**.",
+            "icon": "/img/w.png", "minHeight": 200,
+        }
         # widgetData advertises the generic upload route (resolved relative to
         # {widgetProxyUrl} by the client) with this task's db/prefix/pid.
         assert wd["uploadUrl"] == (
@@ -411,6 +422,7 @@ async def test_conversation_ui_widget_data_defaults_when_ungated(
         assert wd["fileDownload"] is False
         assert wd["toolVerbosity"] == "description-only"
         assert wd["thinkingVerbosity"] == "hidden"
+        assert wd["welcome"] is None
         # No config.model override → the model control shows the live ACP current model.
         model = next(c for c in wd["controls"] if c["id"] == "model")
         assert model["value"] == "kimi-k2"

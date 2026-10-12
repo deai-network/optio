@@ -40,6 +40,13 @@ Frozen kw-only dataclass composing the shared mixins from
   `/control` refuses an id outside `settable_controls` (403 `not-allowed`;
   nothing is settable while the bar is off). The session's own startup
   `set_control("mode", …)` pin is internal and not gated.
+* `WelcomeConfigMixin` — `welcome: WelcomeCard | None = None`: the card the
+  conversation widget shows atop the transcript (title, markdown
+  description, both plain strings or language maps; icon URL relative to the
+  web app root; `min_height` in CSS pixels). The conversation UI publishes
+  `config.welcome_widget_data` (`{title, description, icon, minHeight}`,
+  texts unresolved, or None) as widgetData `welcome`, next to
+  `thinkingVerbosity`; the iframe widget ignores it.
 
 ## Seed lifecycle
 

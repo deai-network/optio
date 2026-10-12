@@ -20,6 +20,7 @@ import pytest
 
 from optio_core.lifecycle import Optio
 
+from optio_agents import WelcomeCard
 from optio_grok import GrokTaskConfig, create_grok_task
 
 
@@ -417,6 +418,42 @@ async def test_conversation_ui_file_upload_materialize(
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_publishes_the_welcome_card(
+    shim_install_dir, task_root, mongo_db,
+):
+    """config.welcome reaches widgetData's welcome key, its icon rooted at
+    the web app."""
+    optio = await _make_optio(mongo_db, "gkconvwelcome")
+    try:
+        task = create_grok_task(
+            process_id="gk-conv-welcome",
+            name="Conversation welcome",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True,
+                # A language-map title (published unresolved) and a minimum height.
+                welcome=WelcomeCard(
+                    title={"en": "Hello", "hu": "Szia"}, description="Try **this**.",
+                    icon="img/w.png", min_height=200,
+                ),
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "gk-conv-welcome", session_id=None, timeout=60,
+        )
+        wd = await _wait_widget_data(optio, "gk-conv-welcome")
+        assert wd["welcome"] == {
+            "title": {"en": "Hello", "hu": "Szia"}, "description": "Try **this**.",
+            "icon": "/img/w.png", "minHeight": 200,
+        }
+
+        await conv.close()
+        await _wait_terminal(optio, "gk-conv-welcome")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
 
 
 @pytest.mark.asyncio

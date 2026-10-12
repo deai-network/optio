@@ -27,6 +27,7 @@ import pytest
 
 from optio_core.lifecycle import Optio
 
+from optio_agents import WelcomeCard
 from optio_antigravity import AntigravityTaskConfig, create_antigravity_task
 
 
@@ -240,6 +241,7 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
             "protocol": "antigravity",
             "toolVerbosity": "description-only",
             "thinkingVerbosity": "hidden",
+            "welcome": None,
             "showSessionControls": False,
             "nativeSpinner": False,
             "controls": [{
@@ -291,6 +293,40 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
 
         port = int(upstream["url"].rsplit(":", 1)[1])
         await _wait_port_refused(port)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_publishes_the_welcome_card(shim_install_dir, task_root, mongo_db):
+    """config.welcome reaches widgetData's welcome key, its icon rooted at
+    the web app."""
+    optio = await _make_optio(mongo_db, "agconvwelcome")
+    try:
+        task = create_antigravity_task(
+            process_id="ag-conv-welcome",
+            name="Conversation welcome",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True,
+                # A language-map title (published unresolved) and a minimum height.
+                welcome=WelcomeCard(
+                    title={"en": "Hello", "hu": "Szia"}, description="Try **this**.",
+                    icon="img/w.png", min_height=200,
+                ),
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "ag-conv-welcome", session_id=None, timeout=60,
+        )
+        proc = await _wait_widget_data(optio, "ag-conv-welcome")
+        assert proc["widgetData"]["welcome"] == {
+            "title": {"en": "Hello", "hu": "Szia"}, "description": "Try **this**.",
+            "icon": "/img/w.png", "minHeight": 200,
+        }
+
+        await conv.close()
+        await _wait_terminal(optio, "ag-conv-welcome")
     finally:
         await optio.shutdown(grace_seconds=1.0)
 

@@ -19,3 +19,13 @@ class ResizeObserverStub {
 if (!('ResizeObserver' in globalThis)) {
   (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub;
 }
+
+// jsdom has no object URLs either; X Attachments previews an attached image
+// file through one (Ant Design X experiment). Tests that check object URLs
+// replace these with their own spies.
+if (typeof URL.createObjectURL !== 'function') {
+  URL.createObjectURL = () => 'blob:jsdom';
+}
+if (typeof URL.revokeObjectURL !== 'function') {
+  URL.revokeObjectURL = () => {};
+}

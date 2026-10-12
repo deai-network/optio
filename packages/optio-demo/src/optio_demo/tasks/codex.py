@@ -41,6 +41,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from optio_agents import WelcomeCard
 from optio_agents_all import CodexTaskConfig, create_task, get_agent_info
 from optio_codex import (
     HookContext,
@@ -259,6 +260,18 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     delivery_type="system-notices",
                     mode="conversation",
                     conversation_ui=True,
+                    welcome=WelcomeCard(
+                        title=f"{_NAME} conversation",
+                        description=(
+                            f"A {_NAME} session from a captured seed: type a message to start. "
+                            "Tool calls appear as one-line rows, and those that need permission "
+                            "wait for you to **approve or deny** them. "
+                            "Try the session controls (model, and reasoning effort on models "
+                            "that have it), "
+                            "attach a file, or ask for a file and download it from the reply."
+                        ),
+                        icon="/welcome/optio.png",
+                    ),
                     tool_verbosity="description-only",
                     show_session_controls=True,
                     show_file_upload=True,

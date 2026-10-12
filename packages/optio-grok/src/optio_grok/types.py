@@ -26,6 +26,7 @@ from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
     SessionControlsConfigMixin,
+    WelcomeConfigMixin,
 )
 from optio_agents.protocol.session import (
     CallerMessageCallback,
@@ -86,7 +87,10 @@ def _identity_resume_refresh(config: "GrokTaskConfig") -> "GrokTaskConfig":
 
 
 @dataclass(frozen=True, kw_only=True)
-class GrokTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
+class GrokTaskConfig(
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    WelcomeConfigMixin,
+):
     """Configuration for one optio-grok task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
@@ -268,6 +272,7 @@ class GrokTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControl
         self._validate_claustrum()
         self._validate_blob_crypto()
         self._validate_session_controls()
+        self._validate_welcome()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

@@ -19,7 +19,7 @@ docstrings (`src/optio_codex/types.py`).
 
 ## Shared config mixins
 
-`CodexTaskConfig` inherits three shared field sets from
+`CodexTaskConfig` inherits four shared field sets from
 `optio_agents.config_types`; all fields stay top-level on the config:
 
 * `ClaustrumConfigMixin` — `fs_isolation` / `extra_allowed_dirs` /
@@ -43,6 +43,13 @@ docstrings (`src/optio_codex/types.py`).
   the `x-optio-control-update` re-emitted on a model switch) go through
   `filter_controls`; the listener's `/control` refuses an id outside
   `settable_controls` with 403 `not-allowed` (every id while the bar is off).
+* `WelcomeConfigMixin` — `welcome: WelcomeCard | None = None`: the card the
+  conversation widget shows atop the transcript (title, markdown
+  description, both plain strings or language maps; icon URL relative to the
+  web app root; `min_height` in CSS pixels). The conversation UI publishes
+  `config.welcome_widget_data` (`{title, description, icon, minHeight}`,
+  texts unresolved, or None) as widgetData `welcome`, next to
+  `thinkingVerbosity`; the iframe widget ignores it.
 
 ## Binary provisioning (PINNED-BY-DESIGN)
 

@@ -202,14 +202,19 @@ describe('compact controls bar', () => {
   });
 
   describe('labels', () => {
-    const widths = (scroll: number, client: number) => {
+    // `compact`: the content's width with the labels hidden; collapsed, it fits.
+    const widths = (scroll: number, client: number, compact = client - 1) => {
       const own = (el: HTMLElement) => el.dataset.testid === 'session-toolbar';
       const scrollDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth');
       const clientDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
       Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
         configurable: true,
         // Without the compact class the labels take room: the content is wider.
-        get() { return own(this) ? (this.classList.contains('optio-cc-compact') ? client - 1 : scroll) : 0; },
+        get() {
+          if (!own(this)) return 0;
+          if (this.classList.contains('optio-cc-collapsed')) return client;
+          return this.classList.contains('optio-cc-compact') ? compact : scroll;
+        },
       });
       Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
         configurable: true, get() { return own(this) ? client : 0; },
@@ -231,6 +236,7 @@ describe('compact controls bar', () => {
       try {
         view();
         expect(screen.getByTestId('session-toolbar').classList.contains('optio-cc-compact')).toBe(false);
+        expect(screen.getByTestId('session-toolbar').classList.contains('optio-cc-collapsed')).toBe(false);
       } finally { restore(); }
     });
 
@@ -239,8 +245,39 @@ describe('compact controls bar', () => {
       try {
         view();
         expect(screen.getByTestId('session-toolbar').classList.contains('optio-cc-compact')).toBe(true);
+        expect(screen.getByTestId('session-toolbar').classList.contains('optio-cc-collapsed')).toBe(false);
         expect(screen.getByRole('switch', { name: 'Wide' })).toBeTruthy();
         expect(screen.getByRole('slider', { name: 'Effort' })).toBeTruthy();
+      } finally { restore(); }
+    });
+
+    // 2026-10-12 (owner: the controls did not fit the composer's footer and
+    // were clipped; wrapping them was "ugly as sin"): when even the compact
+    // toolbar is too wide, the session controls collapse into a Settings
+    // button, which opens them, labelled, in a popover; the actions
+    // (paperclip, send, interrupt) stay on the same line.
+    it('collapses the controls into a Settings button when even compact overflows it', async () => {
+      const restore = widths(900, 600, 700);
+      try {
+        view();
+        const toolbar = screen.getByTestId('session-toolbar');
+        expect(toolbar.classList.contains('optio-cc-compact')).toBe(true);
+        expect(toolbar.classList.contains('optio-cc-collapsed')).toBe(true);
+        const css = document.getElementById('optio-cc-compact-style')?.textContent ?? '';
+        expect(css).toMatch(/\.optio-cc-collapsed \.optio-cc-inline-controls\s*\{[^}]*display:\s*none/);
+        expect(css).toMatch(/\.optio-cc-collapsed \.optio-cc-settings-button\s*\{[^}]*display:\s*inline-flex/);
+        const actions = toolbar.querySelector('.optio-cc-toolbar-actions');
+        expect(actions?.contains(screen.getByTestId('conversation-send-combined'))).toBe(true);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Session settings', hidden: true }));
+        const popover = await waitFor(() => {
+          const el = document.querySelector('.optio-cc-settings-popover');
+          expect(el).not.toBeNull();
+          return el as HTMLElement;
+        });
+        expect(within(popover).getByRole('switch', { name: 'Wide' })).toBeTruthy();
+        expect(within(popover).getByRole('slider', { name: 'Effort' })).toBeTruthy();
+        expect([...popover.querySelectorAll('.optio-cc-control-label')].map((l) => l.textContent)).toEqual(['Wide', 'Thinking', 'Effort']);
       } finally { restore(); }
     });
   });

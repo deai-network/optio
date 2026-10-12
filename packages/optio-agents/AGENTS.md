@@ -115,6 +115,37 @@ stay top-level on each config — callers write `fs_isolation=` /
   must be a list of ids and needs the bar on). `settable_controls` is what a
   `/control` endpoint may change: `[]` while the bar is off, else the
   allowlist.
+* `WelcomeConfigMixin` — the conversation widget's welcome card, shown at the
+  top of the transcript: `welcome: WelcomeCard | None = None`.
+  `WelcomeCard(title, description=None, icon=None, min_height=None)`
+  (frozen): `title` and `description` (markdown) are `Text` (see below),
+  checked with `check_text` (a map is stored as a plain dict copy); `title`
+  must also not be blank. `icon` is a URL relative to the web app root — a
+  value with no leading "/" and no "://" gets one (`"img/a.png"` →
+  `"/img/a.png"`), `"/x.png"` and absolute URLs stay as given.
+  `min_height` is the card's minimum height in CSS pixels (a positive int;
+  bool, 0, negatives and non-ints raise `ValueError`). `to_widget_data()`
+  returns `{"title", "description", "icon", "minHeight"}`: texts unresolved
+  (the widget picks the viewer's language), icon normalized, None kept. The
+  mixin's `welcome_widget_data` is that dict or None; every engine publishes
+  it as the conversation widget's `welcome` widgetData key (iframe / TUI
+  widgets ignore it). Engines call `self._validate_welcome()` from
+  `__post_init__` (anything but a `WelcomeCard` or None raises
+  `ValueError`). Both names are exported from `optio_agents`.
+
+## Localized text (`optio_agents.text`)
+
+* `Text = str | Mapping[str, str]` — a plain string, or a map of language code
+  (`"en"`, `"hu"`, `"de"`, ...) to a non-empty string. Configuration keeps it
+  unresolved and publishes it as is (a map as a plain dict); the viewer picks
+  the language.
+* `check_text(value, *, what)` — returns a non-empty string as is, or a
+  non-empty map with non-empty string keys and values as a plain dict copy;
+  anything else raises `ValueError` naming `what`.
+* `resolve_text(text, language)` — a string as is; from a map, the language's
+  entry, else `"en"`, else the first entry.
+
+All three are exported from `optio_agents`.
 
 ## Session controls (`optio_agents.session_controls`)
 

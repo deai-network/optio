@@ -1,15 +1,24 @@
-import { Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Spin, Switch, Tooltip, theme } from 'antd';
-import type { GlobalToken } from 'antd';
+import { Fragment, forwardRef, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Alert, Button, Input, Popover, Spin, Switch, Tooltip, theme } from 'antd';
+import type { GlobalToken, UploadFile } from 'antd';
 import {
   ActionButton, BoolSwitch, CombinedActionButton, OneOfSegmented, OneOfSelect, OneOfSlider,
   denyWithReason, useBoolField, useOneOfField, useSpinnerKey, useVultusComponents, type ActionStatus,
 } from 'vultus-antd';
-import type { TextAreaRef } from 'antd/es/input/TextArea';
+import type { TextAreaProps, TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
+import { Actions, Attachments, Bubble, Sender, Think, ThoughtChain, Welcome, XProvider } from '@ant-design/x';
+import type { ThoughtChainItemType } from '@ant-design/x';
 import { transcriptKeys } from './transcriptKeys.js';
 import { ConversationWidenessContext, type ConversationWideness } from './wideness.js';
+import { ConversationWelcomeContext, type ConversationWelcome } from './welcome.js';
+import { resolveText, useLanguage } from './text.js';
+import { ConversationSetBusyContext } from './busy.js';
 import { AnswerBlock } from './AnswerBlock.js';
+import { AnswerFiles, FILE_LINK_CLASS } from './FileCards.js';
+import { SlotSpinner } from './spinners/SlotSpinner.js';
+import { CodeBlock } from './CodeBlock.js';
+import { useDarkTheme } from './themeMode.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 import { formatDuration } from './duration.js';
@@ -68,6 +77,9 @@ export interface ConversationViewProps {
   // The reading width (see wideness.ts); absent: ConversationWidget's
   // (ConversationWidenessContext), 'narrow' outside one.
   wideness?: ConversationWideness;
+  // The agent task's welcome card (see welcome.ts); absent: ConversationWidget's
+  // (ConversationWelcomeContext, from the process's widget data).
+  welcome?: ConversationWelcome | null;
   state: ChatState;
   closed: boolean;
   // The text of the divider shown after the transcript while `closed`.
@@ -168,12 +180,9 @@ const bubbleBase: React.CSSProperties = {
   overflowWrap: 'anywhere',
 };
 
-// The user bubble's own corner treatment: full top corners, a flattened
-// bottom-right one (its "tail", pointing at its own right-aligned time
-// label). Named so it can be reused verbatim — Fix 14, owner ruling
-// 2026-09-15, gives a "System: " activity row this same radius instead of a
-// second copy of the shorthand.
-const USER_BUBBLE_RADIUS = '14px 14px 4px 14px';
+// Plain-text bubble content (an X Bubble holding a user message): keep the
+// operator's line breaks, and wrap a long unbroken word instead of overflowing.
+const BUBBLE_TEXT: React.CSSProperties = { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' };
 
 // One-time mount flash: a thick pulsating ring (box-shadow, so it doesn't
 // shift layout) that plays ~4×0.5s = 2s then stops. Injected once into the
@@ -221,48 +230,102 @@ function ensureInterruptedStyle(): void {
   document.head.appendChild(el);
 }
 
+// The "glass" bubble of X's own homepage (owner request 2026-10-09): copied
+// from ant-design/x packages/x/.dumi/pages/index/common/CustomizationProvider.tsx
+// (useCustomizationBgStyle), which X's site sets on Bubble's content through
+// classNames. A translucent gradient fill plus a 1px edge fading out downwards
+// (an ::after ring cut out with a mask). The base class draws the shape from
+// three variables; the colour classes below set them.
+//
+// - Agent bubbles: the homepage's white glass (dark; the original) and our
+//   black-tinted counterpart with a drop shadow (light).
+// - User bubbles: the same glass tinted with the theme's accent, colorPrimary,
+//   which the view publishes as --optio-x-accent on its root. So the user
+//   bubble follows whatever theme the host sets (e.g. daeo-style's accent).
+// - System rows (X's Bubble.System): tinted with the theme's preset purple,
+//   published as --optio-x-system, as the lavender rows were before.
+//
+// XProvider gives every Bubble the base and mode classes (see the view's
+// root); user bubbles add GLASS_USER, System rows GLASS_SYSTEM.
+const GLASS_STYLE_ID = 'optio-x-glass-style';
+const GLASS_MODE = { dark: 'optio-x-glass optio-x-glass-dark', light: 'optio-x-glass optio-x-glass-light' } as const;
+const GLASS_USER = 'optio-x-glass-user';
+const GLASS_SYSTEM = 'optio-x-glass-system';
+function ensureGlassStyle(): void {
+  if (typeof document === 'undefined') return;
+  const accent = (pct: number) => `color-mix(in srgb, var(--optio-x-accent) ${pct}%, transparent)`;
+  const system = (pct: number) => `color-mix(in srgb, var(--optio-x-system) ${pct}%, transparent)`;
+  // Rewritten when present rather than skipped, so a hot reload of this module
+  // updates an already-open page.
+  let el = document.getElementById(GLASS_STYLE_ID);
+  if (!el) {
+    el = document.createElement('style');
+    el.id = GLASS_STYLE_ID;
+    document.head.appendChild(el);
+  }
+  el.textContent = `.optio-x-glass {
+    background: var(--optio-x-glass-fill) !important;
+    box-shadow: var(--optio-x-glass-shadow, none);
+    overflow: hidden;
+  }
+  .optio-x-glass::after {
+    content: '';
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    border-radius: inherit;
+    pointer-events: none;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
+    padding: 1px;
+    background: var(--optio-x-glass-edge);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+  }
+  .optio-x-glass-dark {
+    --optio-x-glass-fill: linear-gradient(135deg, #ffffff26 14%, #ffffff0d 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, #ffffff26 0%, #ffffff00 100%);
+  }
+  .optio-x-glass-light {
+    --optio-x-glass-fill: linear-gradient(135deg, #0000000f 14%, #00000005 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, #0000001a 0%, #00000000 100%);
+    --optio-x-glass-shadow: 0 1px 2px #0000000f, 0 4px 14px #00000012;
+  }
+  .optio-x-glass-dark.${GLASS_USER} {
+    --optio-x-glass-fill: linear-gradient(135deg, ${accent(40)} 14%, ${accent(14)} 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, ${accent(60)} 0%, ${accent(0)} 100%);
+  }
+  .optio-x-glass-light.${GLASS_USER} {
+    --optio-x-glass-fill: linear-gradient(135deg, ${accent(20)} 14%, ${accent(7)} 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, ${accent(35)} 0%, ${accent(0)} 100%);
+    --optio-x-glass-shadow: 0 1px 2px ${accent(12)}, 0 4px 14px ${accent(18)};
+  }
+  .optio-x-glass-dark.${GLASS_SYSTEM} {
+    --optio-x-glass-fill: linear-gradient(135deg, ${system(40)} 14%, ${system(14)} 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, ${system(60)} 0%, ${system(0)} 100%);
+  }
+  .optio-x-glass-light.${GLASS_SYSTEM} {
+    --optio-x-glass-fill: linear-gradient(135deg, ${system(16)} 14%, ${system(5)} 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, ${system(30)} 0%, ${system(0)} 100%);
+    --optio-x-glass-shadow: 0 1px 2px ${system(10)}, 0 4px 14px ${system(14)};
+  }
+  /* A download link is not external: no X-markdown external-link marker
+     (owner-approved 2026-10-12; FileCards.tsx). */
+  .x-markdown-light a.${FILE_LINK_CLASS}::after,
+  .x-markdown-dark a.${FILE_LINK_CLASS}::after {
+    content: none;
+  }`;
+}
+// Also on module load: a hot reload re-runs this module but not the view's
+// mount effect, so without this an open page keeps the old stylesheet.
+ensureGlassStyle();
+
 // Padding of the transcript's scroll container; the bands reach through it to
 // the container's edges.
 const TRANSCRIPT_PADDING = 8;
-
-// Resume and compaction bands (owner request 2026-10-08): where the session
-// was saved and resumed, or its context compacted, a band with zig-zag top
-// and bottom edges. Same conic-gradient zigzag as the interrupted answer
-// above, once per edge. It spans the whole transcript area, not just the
-// reading column: the scroll container is a size container, so 100cqw is its
-// width inside the padding, and the margin shifts the band from the centred
-// column's left edge to the container's.
-const BAND_STYLE_ID = 'optio-cc-band-style';
-function ensureBandStyle(): void {
-  if (typeof document === 'undefined') return;
-  const mask = `conic-gradient(from 135deg at top, #0000, #000 1deg 89deg, #0000 90deg) top / 12px 51% repeat-x,
-      conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) bottom / 12px 51% repeat-x`;
-  // Reuse the element, but always write the current rules: a hot reload
-  // keeps the page, and an older version's rules with it.
-  const existing = document.getElementById(BAND_STYLE_ID);
-  const el = existing ?? document.createElement('style');
-  el.id = BAND_STYLE_ID;
-  // The band paints its edge colour; its fill sits inset 1.5px from the top
-  // and bottom under the same zigzag, so the edge colour shows as a ~1px line
-  // along both zig-zag edges (a plain border would be cut off by the mask).
-  el.textContent = `.optio-cc-band {
-    position: relative;
-    width: calc(100cqw + ${2 * TRANSCRIPT_PADDING}px);
-    margin-left: calc(50% - 50cqw - ${TRANSCRIPT_PADDING}px);
-    -webkit-mask: ${mask};
-    mask: ${mask};
-  }
-  .optio-cc-band-fill {
-    position: absolute;
-    inset: 1.5px 0;
-    -webkit-mask: ${mask};
-    mask: ${mask};
-  }
-  .optio-cc-band-label {
-    position: relative;
-  }`;
-  if (!existing) document.head.appendChild(el);
-}
 
 // Fix 16 (owner ruling 2026-09-15, manual-test finding): an interrupted
 // answer's cut-off text (the jagged-edge bubble above) also trails off with
@@ -398,11 +461,23 @@ const SEND_BUTTON_WIDTH = 222;
 // accessible names.
 const COMPACT_STYLE_ID = 'optio-cc-compact-style';
 function ensureCompactStyle(): void {
-  if (typeof document === 'undefined' || document.getElementById(COMPACT_STYLE_ID)) return;
-  const el = document.createElement('style');
-  el.id = COMPACT_STYLE_ID;
-  el.textContent = '.optio-cc-compact .optio-cc-control-label { display: none; }';
-  document.head.appendChild(el);
+  if (typeof document === 'undefined') return;
+  // Rewritten when present rather than skipped, so a hot reload of this module
+  // updates an already-open page.
+  let el = document.getElementById(COMPACT_STYLE_ID);
+  if (!el) {
+    el = document.createElement('style');
+    el.id = COMPACT_STYLE_ID;
+    document.head.appendChild(el);
+  }
+  // optio-cc-collapsed (2026-10-12): when even the compact toolbar is too
+  // wide, the session controls collapse into the Settings button, which opens
+  // them in a popover; the actions stay on the line.
+  el.textContent = '.optio-cc-compact .optio-cc-control-label { display: none; }\n'
+    + '.optio-cc-inline-controls { display: contents; }\n'
+    + '.optio-cc-settings-button { display: none; }\n'
+    + '.optio-cc-collapsed .optio-cc-inline-controls { display: none; }\n'
+    + '.optio-cc-collapsed .optio-cc-settings-button { display: inline-flex; }';
 }
 
 const SEND_BUTTON_STYLE_ID = 'optio-cc-send-button-style';
@@ -494,6 +569,17 @@ function sendBarIcon(testId: string, mark: React.ReactNode): React.ReactElement 
   );
 }
 
+// The Settings button's gear (the session controls, collapsed).
+function SettingsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" strokeWidth={2}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
 function SendPlaneIcon() {
   return sendBarIcon(
     'send-icon',
@@ -522,66 +608,84 @@ function InterruptAndSendBoltIcon() {
   );
 }
 
-// Colors come from the antd theme (ConfigProvider algorithm), so the widget
-// follows the host app's light/dark switch instead of a hardcoded palette.
-function kvCell(token: GlobalToken): React.CSSProperties {
-  return {
-    border: `1px solid ${token.colorWarningBorder}`,
-    padding: '2px 6px',
-    verticalAlign: 'top',
-    fontFamily: 'monospace',
-    fontSize: 12,
-  };
+// Ant Design X experiment: a tool row's details as X CodeHighlighter blocks.
+// A shell command is bash, an edit a diff, a written file in its file's
+// language; the remaining input fields (or all of them, for any other tool)
+// are JSON. Fields the row's one-line summary already shows (description) are
+// left out. Long blocks scroll.
+const TOOL_CODE_MAX_HEIGHT = 360;
+const LANG_BY_EXT: Record<string, string> = {
+  ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx', mjs: 'javascript', cjs: 'javascript',
+  py: 'python', sh: 'bash', bash: 'bash', json: 'json', md: 'markdown', yml: 'yaml', yaml: 'yaml',
+  toml: 'toml', css: 'css', html: 'markup', xml: 'markup', svg: 'markup', sql: 'sql', rs: 'rust', go: 'go',
+};
+
+function langForPath(path: string): string {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  return LANG_BY_EXT[ext] ?? 'log';
 }
 
-// Render a tool-permission input object as a key→value table. Falls back to a
-// JSON string for non-object inputs (a bare string/array argument).
-function renderInputKV(input: unknown, token: GlobalToken): React.ReactNode {
-  const cell = kvCell(token);
+function looksLikeJson(text: string): boolean {
+  const t = text.trim();
+  if (!(t.startsWith('{') || t.startsWith('['))) return false;
+  try { JSON.parse(t); return true; } catch { return false; }
+}
+
+// old_string/new_string as a unified-diff-looking block (no context lines).
+function editDiff(oldText: string, newText: string): string {
+  const mark = (prefix: string, text: string) => text.split('\n').map((l) => prefix + l).join('\n');
+  return `${mark('- ', oldText)}\n${mark('+ ', newText)}`;
+}
+
+// A tool input's `description` field, when it has one.
+function inputDescription(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const d = (input as Record<string, unknown>).description;
+  return typeof d === 'string' && d !== '' ? d : undefined;
+}
+
+function renderToolInput(input: unknown, preview: string | undefined): React.ReactNode {
   if (input && typeof input === 'object' && !Array.isArray(input)) {
-    const entries = Object.entries(input as Record<string, unknown>);
-    if (entries.length === 0) return null;
-    return (
-      <table style={{ borderCollapse: 'collapse', width: 'auto', maxWidth: '100%' }}>
-        <tbody>
-          {entries.map(([k, v]) => (
-            <tr key={k}>
-              <td style={{ ...cell, fontWeight: 600, whiteSpace: 'nowrap', color: token.colorWarningText }}>{k}</td>
-              <td style={{ ...cell, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: token.colorTextSecondary }}>
-                {typeof v === 'string' ? v : JSON.stringify(v)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    );
+    const fields = { ...(input as Record<string, unknown>) };
+    delete fields.description;
+    const blocks: React.ReactNode[] = [];
+    if (typeof fields.command === 'string') {
+      blocks.push(<CodeBlock key="command" lang="bash" maxHeight={TOOL_CODE_MAX_HEIGHT}>{fields.command}</CodeBlock>);
+      delete fields.command;
+    }
+    if (typeof fields.old_string === 'string' && typeof fields.new_string === 'string') {
+      blocks.push(
+        <CodeBlock key="edit" lang="diff" title={typeof fields.file_path === 'string' ? fields.file_path : 'diff'} maxHeight={TOOL_CODE_MAX_HEIGHT}>
+          {editDiff(fields.old_string, fields.new_string)}
+        </CodeBlock>,
+      );
+      delete fields.old_string;
+      delete fields.new_string;
+      delete fields.file_path;
+    }
+    if (typeof fields.content === 'string' && typeof fields.file_path === 'string') {
+      blocks.push(
+        <CodeBlock key="content" lang={langForPath(fields.file_path)} title={fields.file_path} maxHeight={TOOL_CODE_MAX_HEIGHT}>
+          {fields.content}
+        </CodeBlock>,
+      );
+      delete fields.content;
+      delete fields.file_path;
+    }
+    if (Object.keys(fields).length > 0) {
+      blocks.push(
+        <CodeBlock key="input" lang="json" title="input" maxHeight={TOOL_CODE_MAX_HEIGHT}>
+          {JSON.stringify(fields, null, 2)}
+        </CodeBlock>,
+      );
+    }
+    if (blocks.length > 0) return <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{blocks}</div>;
+  } else if (input !== undefined && input !== null) {
+    return <CodeBlock lang="json" title="input" maxHeight={TOOL_CODE_MAX_HEIGHT}>{JSON.stringify(input, null, 2)}</CodeBlock>;
   }
-  return (
-    <div style={{ fontFamily: 'monospace', fontSize: 12, color: token.colorTextSecondary, overflowWrap: 'anywhere' }}>
-      {JSON.stringify(input)}
-    </div>
-  );
-}
-
-// Render a tool/permission's detail: the `input` KV table when it has fields,
-// else the `content`-derived text `preview`. kimi/cursor permission cards and
-// lazy/pending tool_calls carry NO rawInput — their detail lives only in the
-// ACP `content` text (see acp/events.ts acpContentText), so without this the
-// card shows just the tool name (the empty-card bug). Null when neither exists.
-function renderDetail(
-  input: unknown,
-  preview: string | undefined,
-  token: GlobalToken,
-): React.ReactNode {
-  const kv = renderInputKV(input, token);
-  if (kv) return kv;
-  if (preview) {
-    return (
-      <div style={{ fontFamily: 'monospace', fontSize: 12, color: token.colorTextSecondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-        {preview}
-      </div>
-    );
-  }
+  // No input fields (kimi/cursor permission-less tool calls carry their
+  // detail only in the ACP content text): the preview.
+  if (preview) return <CodeBlock lang="log" title="preview" maxHeight={TOOL_CODE_MAX_HEIGHT}>{preview}</CodeBlock>;
   return null;
 }
 
@@ -750,20 +854,6 @@ function QuestionCard({
   );
 }
 
-// A loading site's spinner. When the app lends a Spinner through vultus-core's
-// slot (vultus-antd's VultusProvider components={{ Spinner }}), this renders
-// that Spinner, keyed `localKey` within any enclosing SpinnerScope (each agent
-// view scopes its conversation with optio:process:<id>); the lent Spinner wins
-// over `fallback` (the working indicator's agent-brand nativeSpinner).
-// Otherwise it renders `fallback`, else antd's small Spin: exactly what the
-// site rendered before the slot existed.
-function SlotSpinner({ localKey, fallback }: { localKey: string; fallback?: React.ReactNode }): React.ReactNode {
-  const { Spinner } = useVultusComponents();
-  const spinnerKey = useSpinnerKey(localKey);
-  if (Spinner) return <Spinner spinnerKey={spinnerKey} size="small" />;
-  return fallback ?? <Spin size="small" />;
-}
-
 function renderBackgroundRunning(
   item: Extract<ChatItem, { kind: 'tool' }>,
   elapsed: string | null,
@@ -829,43 +919,18 @@ function renderTimeLabel(timestamp: number | undefined, now: number, token: Glob
 }
 
 // The summary the agent continues from after a compaction (owner ruling
-// 2026-10-08): kept, as a centred System-style row (the lavender bubble) that
-// shows its first line and expands to the whole summary, rendered as
-// markdown, on click. Its own component for the expanded state.
+// 2026-10-08): kept, as an X Think (Ant Design X experiment) titled with the
+// summary's first line; the rest, as markdown, is its collapsed content.
 function CompactSummaryRow({ item, now, token }: {
   item: Extract<ChatItem, { kind: 'summary' }>; now: number; token: GlobalToken;
 }) {
-  const [open, setOpen] = useState(false);
   const [first, ...rest] = item.text.split('\n');
   const body = rest.join('\n').trim();
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'center', alignItems: 'center', maxWidth: '80%' }}>
-      <div
-        data-testid="compaction-summary"
-        style={{
-          ...bubbleBase,
-          background: token.purple1,
-          border: `1px solid ${token.purple3}`,
-          color: token.colorTextSecondary,
-          fontSize: 12,
-          borderRadius: 14,
-        }}
-      >
-        {first}
-        {body !== '' && (
-          <>
-            {' '}
-            <Button type="link" size="small" style={{ fontSize: 12, padding: 0, height: 'auto' }} onClick={() => setOpen(!open)}>
-              {open ? 'Hide summary' : 'Show summary'}
-            </Button>
-            {open && (
-              <div style={{ whiteSpace: 'normal', marginTop: 6 }}>
-                <AnswerBlock text={body} />
-              </div>
-            )}
-          </>
-        )}
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'center', alignItems: 'flex-start', maxWidth: '80%' }}>
+      <Think data-testid="compaction-summary" title={first} defaultExpanded={false}>
+        {body !== '' ? <AnswerBlock text={body} /> : null}
+      </Think>
       {renderTimeLabel(item.timestamp, now, token)}
     </div>
   );
@@ -1061,8 +1126,75 @@ function SessionControls({
   );
 }
 
-export function ConversationView(props: ConversationViewProps): React.JSX.Element {
+// Ant Design X experiment: our textarea in X Sender's input slot. It carries
+// the input's test id (a data-* prop on Sender would land on Sender's root as
+// well); Sender hands it everything else (value, keys, autosize, borderless).
+const SenderTextArea = forwardRef<TextAreaRef, TextAreaProps>(function SenderTextArea(props, ref) {
+  return <Input.TextArea {...props} ref={ref} data-testid="conversation-input-box" />;
+});
+
+// Ant Design X experiment (owner-approved 2026-10-12): the agent task's welcome
+// card (see welcome.ts). X's Welcome turns only an http(s) string into an
+// image, so the icon (a URL relative to the web app root) is passed as one. Its
+// texts may be language maps (resolved for antd's locale). It wears the agent
+// answers' glass (owner, 2026-10-12) in place of X's flat fill, and their
+// corners (X Bubble's default shape: twice the theme's borderRadius).
+// The icon fills the card's height. X gives it a fixed one (a title line and
+// one description line), and CSS cannot size the icon's width from a height
+// the text beside it decides, so the text (X's content wrapper, the card's
+// last child) is measured. The card top-aligns the text so that it keeps its
+// own height and the icon can shrink with it. The icon keeps its width beside
+// long text (the image's percentage max-width would let flex shrink it), but
+// takes at most a quarter of the card's, or on a narrow card the two would
+// grow each other without end. A minHeight is the icon's own minimum height
+// (the card grows to fit it); the cap is at least that wide, as a fixed
+// height cannot run away.
+function WelcomeCard({ welcome }: { welcome: ConversationWelcome }) {
+  const language = useLanguage();
+  const dark = useDarkTheme();
   const { token } = theme.useToken();
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [textHeight, setTextHeight] = useState(0);
+  useLayoutEffect(() => {
+    const text = cardRef.current?.lastElementChild;
+    if (!text) return undefined;
+    const measure = () => setTextHeight(text.getBoundingClientRect().height);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(text);
+    return () => observer.disconnect();
+  }, []);
+  const iconHeight = Math.max(textHeight, welcome.minHeight ?? 0);
+  return (
+    <Welcome
+      ref={cardRef}
+      classNames={{ root: dark ? GLASS_MODE.dark : GLASS_MODE.light }}
+      icon={welcome.icon
+        ? <img src={welcome.icon} alt="" style={{ maxWidth: '100%', objectFit: 'contain' }} />
+        : undefined}
+      title={resolveText(welcome.title, language)}
+      description={welcome.description
+        ? <AnswerBlock text={resolveText(welcome.description, language)} />
+        : undefined}
+      styles={{
+        // The glass's edge is an absolutely placed ring.
+        root: { alignItems: 'flex-start', position: 'relative', borderRadius: 2 * token.borderRadius },
+        icon: {
+          flexShrink: 0,
+          maxWidth: welcome.minHeight ? `max(25%, ${welcome.minHeight}px)` : '25%',
+          ...(iconHeight > 0 ? { height: iconHeight } : {}),
+        },
+      }}
+    />
+  );
+}
+
+export function ConversationView(props: ConversationViewProps): React.JSX.Element {
+  // The app's lent spinner (vultus-core slot), if any: a running ThoughtChain
+  // tool node shows it instead of X's own loading icon.
+  const { Spinner: lentSpinner } = useVultusComponents();
+  const { token } = theme.useToken();
+  const dark = useDarkTheme();
   const {
     state,
     closed,
@@ -1091,9 +1223,21 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const [sending, setSending] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Ant Design X experiment (owner-approved 2026-10-12): the files to send are
+  // X Attachments' upload list (antd UploadFile, the File in originFileObj);
+  // `attachments` is what onSend / onSteer get, as before.
+  const [uploads, setUploads] = useState<UploadFile[]>([]);
+  const attachments = uploads.map((u) => toAttachment(u.originFileObj as File));
+  const welcomeFromWidget = useContext(ConversationWelcomeContext);
+  const welcome = props.welcome !== undefined ? props.welcome : welcomeFromWidget;
   const widenessFromWidget = useContext(ConversationWidenessContext);
   const wideness = props.wideness ?? widenessFromWidget;
+  // The agent's busy / idle state for the host (see busy.ts): on every
+  // change, and idle when the view goes away.
+  const setBusy = useContext(ConversationSetBusyContext);
+  const working = props.busy && !props.closed;
+  useEffect(() => { setBusy?.(working); }, [setBusy, working]);
+  useEffect(() => () => setBusy?.(false), [setBusy]);
   const [wideChosen, setWide] = useState(false);
   const wide = wideness === 'wide' || (wideness === 'switch' && wideChosen);
   // The task sidebar starts open. The chevron collapses the column itself.
@@ -1107,13 +1251,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // start closed. An entry here overrides that default. Running tools toggle
   // the same way as finished ones. Silent does not use this.
   const [toolOpen, setToolOpen] = useState<Map<number, boolean>>(() => new Map());
-  const toggleTool = (seq: number) =>
-    setToolOpen((prev) => {
-      const next = new Map(prev);
-      const current = prev.has(seq) ? prev.get(seq)! : toolVerbosity === 'verbose';
-      next.set(seq, !current);
-      return next;
-    });
 
   // The wall clock for message-time formatting (Fix 4): read fresh at each
   // render — the formatter itself is pure and never reads the clock (see
@@ -1134,18 +1271,23 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [counting]);
-  const inputRef = useRef<TextAreaRef>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<React.ComponentRef<typeof Sender>>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const pasteSeq = useRef(0);
   // The session controls' labels hide (optio-cc-compact) when the toolbar
-  // would overflow with them: measured without the class and put back if
-  // needed, before paint, on every resize and controls change.
+  // would overflow with them, and when even the compact toolbar overflows the
+  // controls collapse into a Settings button (optio-cc-collapsed). Measured
+  // without the classes and put back as needed, before paint, on every
+  // resize and controls change.
   const toolbarRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = toolbarRef.current;
     if (!el) return undefined;
     const fit = () => {
-      el.classList.remove('optio-cc-compact');
-      if (el.scrollWidth > el.clientWidth) el.classList.add('optio-cc-compact');
+      el.classList.remove('optio-cc-compact', 'optio-cc-collapsed');
+      if (el.scrollWidth <= el.clientWidth) return;
+      el.classList.add('optio-cc-compact');
+      if (el.scrollWidth > el.clientWidth) el.classList.add('optio-cc-collapsed');
     };
     fit();
     const observer = new ResizeObserver(fit);
@@ -1216,9 +1358,9 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     ensureFlashStyle();
     ensureCopyStyle();
     ensureInterruptedStyle();
-    ensureBandStyle();
     ensureSendButtonStyle();
     ensureCompactStyle();
+    ensureGlassStyle();
     inputRef.current?.focus();
     const timers = [100, 400, 1000].map((ms) => setTimeout(() => inputRef.current?.focus(), ms));
     return () => timers.forEach(clearTimeout);
@@ -1300,6 +1442,34 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // happen to catch everything, which is why this was latent) left
   // `sending` stuck true forever (the send bar, every Send now link and the
   // error Alert dead until remount) plus an unhandled promise rejection.
+  // Every change of the files to send (picked, dropped, pasted, removed): each
+  // file must be within the cap, otherwise nothing changes and the error line
+  // says so.
+  function takeUploads(next: UploadFile[]) {
+    if (!withinCap(next.map((u) => toAttachment(u.originFileObj as File)), maxUploadBytes)) {
+      setError('File too large.');
+      return;
+    }
+    setUploads(next);
+  }
+
+  // Files pasted into the message box (X Sender's onPasteFile: a paste with
+  // files and no text) are attached.
+  function attachFiles(files: File[]) {
+    if (files.length === 0 || !showFileUpload || closed) return;
+    takeUploads([
+      ...uploads,
+      ...files.map((file): UploadFile => ({
+        uid: `optio-paste-${++pasteSeq.current}`,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        originFileObj: file as UploadFile['originFileObj'],
+        status: 'done',
+      })),
+    ]);
+  }
+
   async function submit(kind: 'send' | 'steer') {
     const body = text;
     if (!body || sending || sendingNowRef.current || submittingRef.current || inputClosed) return;
@@ -1313,7 +1483,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       const ok = await deliver(body, attachments);
       if (ok === true) {
         setText('');
-        setAttachments([]);
+        setUploads([]);
       } else {
         setError(ok && typeof ok === 'object' ? ok.error : 'Send failed — retry.');
       }
@@ -1369,104 +1539,250 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     }
   }
 
+  // Ant Design X experiment: tool rows are X ThoughtChain nodes. A run of
+  // consecutive tool calls is one chain (its line links the steps); any other
+  // item ends the run. Silent keeps its own rendering (renderItem).
+  function renderTranscript(items: ChatItem[]): React.ReactNode[] {
+    const out: React.ReactNode[] = [];
+    // A chain is keyed by its first call (tools-<seq>); every other row by
+    // transcriptKeys (kind and seq: one event can yield several rows).
+    const keys = transcriptKeys(items);
+    let run: Extract<ChatItem, { kind: 'tool' }>[] = [];
+    const flush = () => {
+      if (run.length > 0) out.push(renderToolChain(run));
+      run = [];
+    };
+    items.forEach((item, i) => {
+      if (item.kind === 'tool' && toolVerbosity !== 'silent') {
+        run.push(item);
+        return;
+      }
+      flush();
+      out.push(<Fragment key={keys[i]}>{renderItem(item)}</Fragment>);
+    });
+    flush();
+    return out;
+  }
+
+  // One task as a ThoughtChain node: X's status icon (completed: success; a
+  // label ending in "(failed)": error; cancelled: abort; in progress: X's
+  // loading icon, or the app's lent spinner as the node's icon, blinking, as a
+  // running tool row; pending: X's plain node icon). The title carries the
+  // row: its label, and for a described task the info icon and the click that
+  // opens the detail panel (highlighted while selected).
+  function todoChainItem(todo: ConversationTodo): ThoughtChainItemType {
+    const { failed, label } = taskRowLabel(todo.text);
+    const description = todo.description?.trim() ? todo.description : undefined;
+    const running = todo.status === 'in_progress' && !failed;
+    const slot = running && lentSpinner !== undefined;
+    const status = slot ? undefined
+      : running ? 'loading'
+      : failed ? 'error'
+      : todo.status === 'completed' ? 'success'
+      : todo.status === 'cancelled' ? 'abort'
+      : undefined;
+    const selected = detailOpen && todo.id === selectedTodoId;
+    const title = description ? (
+      <button
+        type="button"
+        data-testid="conversation-todo"
+        data-status={todo.status}
+        onClick={() => setSelectedTodoId(todo.id)}
+        style={{
+          padding: '1px 4px',
+          border: 'none',
+          borderRadius: 4,
+          background: selected ? token.colorPrimaryBg : 'transparent',
+          textAlign: 'left',
+          font: 'inherit',
+          color: 'inherit',
+          cursor: 'pointer',
+        }}
+      >
+        {label}
+                      <Tooltip title="Click for details" mouseEnterDelay={0}>
+                        <span style={{ display: 'inline-flex', verticalAlign: 'text-bottom' }}>
+                          <TaskInfoIcon color={token.colorTextSecondary} />
+                        </span>
+                      </Tooltip>
+      </button>
+    ) : (
+      <span data-testid="conversation-todo" data-status={todo.status}>{label}</span>
+    );
+    return {
+      key: todo.id,
+      status,
+      ...(slot ? {
+        icon: (
+          <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex' }}>
+            <SlotSpinner localKey={`optio:todo:${todo.id}`} />
+          </span>
+        ),
+      } : {}),
+      blink: running,
+      title,
+    };
+  }
+
+  function renderToolChain(run: Extract<ChatItem, { kind: 'tool' }>[]): React.ReactNode {
+    const isOpen = (seq: number) => (toolOpen.has(seq) ? toolOpen.get(seq)! : toolVerbosity === 'verbose');
+    return (
+      <ThoughtChain
+        key={`tools-${run[0].seq}`}
+        data-testid="tool-chain"
+        items={run.map(toolChainItem)}
+        // Open/closed stays ours (toolOpen + the verbosity default), so a
+        // verbosity change re-opens or closes the untouched rows.
+        expandedKeys={run.filter((t) => isOpen(t.seq)).map((t) => String(t.seq))}
+        onExpand={(keys) => setToolOpen((prev) => {
+          const next = new Map(prev);
+          for (const t of run) next.set(t.seq, keys.includes(String(t.seq)));
+          return next;
+        })}
+      />
+    );
+  }
+
+  // One tool call as a ThoughtChain node: X's status icon for running / done /
+  // failed / stopped, the tool name as title, our one-line summary and elapsed
+  // time as description, and the input and result as its collapsible content.
+  function toolChainItem(item: Extract<ChatItem, { kind: 'tool' }>): ThoughtChainItemType {
+    const { finished, failed } = toolLifecycle(item);
+    const stopped = item.status === 'stopped';
+    const elapsed =
+      item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
+    let summary = toolSummary(item.input);
+    if (failed && item.result) summary = item.result.split('\n')[0].slice(0, 160);
+    else if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
+    // Summary, then a finished background job's outcome, then the elapsed
+    // time: " · " between whichever are present.
+    const line = [summary, item.background && finished ? item.result : ''].filter(Boolean).join(' · ');
+    const detail = renderToolInput(item.input, item.preview);
+    const hasContent = detail !== null || !!item.result;
+    // Running with a lent spinner: the slot spinner as the node's icon (X
+    // shows a status icon over any icon, so no status then); else X's own.
+    const slot = !finished && !stopped && lentSpinner !== undefined;
+    return {
+      key: String(item.seq),
+      status: slot ? undefined : !finished ? 'loading' : stopped ? 'abort' : failed ? 'error' : 'success',
+      ...(slot ? { icon: <SlotSpinner localKey={`optio:tool:${item.callId ?? item.seq}`} /> } : {}),
+      blink: !finished,
+      title: item.name,
+      description: (
+        <span
+          data-testid="tool-call"
+          data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
+        >
+          {line}
+          {elapsed ? <span data-testid="tool-elapsed">{`${line ? ' · ' : ''}${elapsed}`}</span> : null}
+        </span>
+      ),
+      collapsible: hasContent,
+      content: hasContent ? (
+        <>
+          {detail}
+          {item.result ? (
+            <div data-testid="tool-result" style={{ marginTop: 8 }}>
+              <CodeBlock lang={looksLikeJson(item.result) ? 'json' : 'log'} title="output" maxHeight={TOOL_CODE_MAX_HEIGHT}>
+                {item.result}
+              </CodeBlock>
+            </div>
+          ) : null}
+        </>
+      ) : undefined,
+    };
+  }
+
   function renderItem(item: ChatItem) {
     switch (item.kind) {
+      // Ant Design X experiment (owner request 2026-10-08): user messages and
+      // answers are X Bubbles. Bubble places itself (start/end), so these rows
+      // stretch across the column; our time labels go in its footer slot.
+      // Variant and shape are X's defaults (filled), as in X's own templates.
       case 'user':
-        // A Send when ready the agent has not taken yet: user colours, dashed
-        // and muted; the reducer keeps it pinned at the bottom.
+        // A Send when ready the agent has not taken yet: dashed and muted; the
+        // reducer keeps it pinned at the bottom.
         if (item.queued) {
-          return withTimeLabel(
-            item.seq,
-            'flex-end',
-            'flex-end',
-            <div
+          return (
+            <Bubble
+              key={item.seq}
               data-testid="queued-bubble"
-              style={{
-                ...bubbleBase,
-                background: token.colorPrimaryBg,
-                border: `1px dashed ${token.colorPrimaryBorder}`,
-                borderRadius: USER_BUBBLE_RADIUS,
-                color: token.colorText,
-                opacity: 0.6,
-              }}
-            >
-              {item.text}
-              <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
-                Queued — the agent reads it when ready
-                {steerable ? (
-                  <>
-                    {' · '}
-                    <Button
-                      type="link"
-                      size="small"
-                      data-testid="queued-send-now"
-                      disabled={sending}
-                      style={{ padding: 0, height: 'auto', fontSize: 12 }}
-                      onClick={() => void sendQueuedNow(item.queueId)}
-                    >
-                      Send now
-                    </Button>
-                  </>
-                ) : null}
-              </div>
-            </div>,
-            renderTimeLabel(item.timestamp, renderedAt, token),
+              placement="end"
+              variant="outlined"
+              style={{ alignSelf: 'stretch' }}
+              classNames={{ content: GLASS_USER }}
+              styles={{ content: { ...BUBBLE_TEXT, borderStyle: 'dashed', opacity: 0.6 } }}
+              content={item.text}
+              contentRender={(text) => (
+                <>
+                  {text}
+                  <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
+                    Queued — the agent reads it when ready
+                    {steerable ? (
+                      <>
+                        {' · '}
+                        <Button
+                          type="link"
+                          size="small"
+                          data-testid="queued-send-now"
+                          disabled={sending}
+                          style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                          onClick={() => void sendQueuedNow(item.queueId)}
+                        >
+                          Send now
+                        </Button>
+                      </>
+                    ) : null}
+                  </div>
+                </>
+              )}
+              footer={renderTimeLabel(item.timestamp, renderedAt, token)}
+              footerPlacement="outer-end"
+            />
           );
         }
-        return withTimeLabel(
-          item.seq,
-          'flex-end',
-          'flex-end',
-          <div
-            style={{
-              ...bubbleBase,
-              background: token.colorPrimaryBg,
-              border: `1px solid ${token.colorPrimaryBorder}`,
-              borderRadius: USER_BUBBLE_RADIUS,
-              // Explicit token color — without it the text inherits the host's
-              // default and is unreadable on the dark-mode bubble.
-              color: token.colorText,
-            }}
-          >
-            {item.text}
-          </div>,
-          renderTimeLabel(item.timestamp, renderedAt, token),
+        return (
+          <Bubble
+            key={item.seq}
+            placement="end"
+            style={{ alignSelf: 'stretch' }}
+            classNames={{ content: GLASS_USER }}
+            styles={{ content: BUBBLE_TEXT }}
+            content={item.text}
+            footer={renderTimeLabel(item.timestamp, renderedAt, token)}
+            footerPlacement="outer-end"
+          />
         );
       case 'assistant': {
         const ellipsis = withInterruptEllipsis(item.text, item.interrupted);
-        return withTimeLabel(
-          item.seq,
-          'flex-start',
-          'flex-start',
-          <div
+        const timeLabel = renderTimeLabelRange(item.timestamp, item.endTimestamp, renderedAt, token);
+        return (
+          <Bubble
+            key={item.seq}
             // An answer the operator interrupted keeps its text and gets a
             // jagged bottom edge (the class is installed on mount).
             data-testid={item.interrupted ? 'answer-interrupted' : undefined}
-            className={item.interrupted ? 'optio-cc-interrupted' : undefined}
-            style={{
-              ...bubbleBase,
-              background: token.colorBgContainer,
-              border: `1px solid ${token.colorBorderSecondary}`,
-              borderRadius: '14px 14px 14px 4px',
-            }}
-          >
-            <div className="optio-cc-answer" style={{ position: 'relative' }}>
-              <AnswerBlock text={ellipsis.markdownText} />
-              {ellipsis.trailingSpan && <span data-testid="answer-interrupt-ellipsis">{ELLIPSIS}</span>}
-              <Button
-                size="small"
-                type="text"
-                className="optio-cc-copy"
-                data-testid="answer-copy"
-                style={{ position: 'absolute', top: 0, right: 0 }}
-                onClick={() => void navigator.clipboard?.writeText(item.text)}
-              >
-                ⧉
-              </Button>
-            </div>
-            {item.pending && <span style={{ color: token.colorTextTertiary }}>▍</span>}
-          </div>,
-          renderTimeLabelRange(item.timestamp, item.endTimestamp, renderedAt, token),
+            placement="start"
+            style={{ alignSelf: 'stretch' }}
+            classNames={{ content: item.interrupted ? 'optio-cc-interrupted' : undefined }}
+            streaming={item.pending}
+            loading={item.pending && item.text === ''}
+            content={item.text}
+            contentRender={() => (
+              <div className="optio-cc-answer">
+                <AnswerBlock text={ellipsis.markdownText} pending={item.pending} />
+                <AnswerFiles text={item.text} />
+                {ellipsis.trailingSpan && <span data-testid="answer-interrupt-ellipsis">{ELLIPSIS}</span>}
+              </div>
+            )}
+            footer={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                {timeLabel}
+                {!item.pending && <Actions.Copy data-testid="answer-copy" text={item.text} />}
+              </div>
+            }
+            footerPlacement="outer-start"
+          />
         );
       }
       case 'activity':
@@ -1522,51 +1838,28 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               maxWidth: '80%',
             }}
           >
-            <div
+            {/* X's Bubble.System (Ant Design X experiment): centred, its own
+                size and shape; the glass tinted with the theme's purple. No
+                maxWidth here — the wrapper above caps the row's width against
+                the transcript column; see the comment there. */}
+            <Bubble.System
               data-testid="activity-bubble"
-              style={{
-                ...bubbleBase,
-                // No maxWidth here — the wrapper above caps the row's width
-                // against the transcript column; see the comment there.
-                alignSelf: 'center',
-                background: token.purple1,
-                border: `1px solid ${token.purple3}`,
-                color: token.colorTextSecondary,
-                fontSize: 12,
-                borderRadius: item.system ? USER_BUBBLE_RADIUS : 14,
-              }}
-            >
-              {item.text}
-            </div>
+              classNames={{ content: GLASS_SYSTEM }}
+              styles={{ content: BUBBLE_TEXT }}
+              content={item.text}
+            />
             {renderTimeLabel(item.timestamp, renderedAt, token)}
           </div>
         );
       case 'thinking': {
-        // Reasoning trace — task-gated (thinkingVerbosity) and styled close to a
-        // reply (left-aligned like the assistant), but secondary: dimmed, italic,
-        // with a subtle left rule and a small "Reasoning" caption. Deliberately
-        // NOT the centered lavender System-message style.
+        // Reasoning trace, task-gated (thinkingVerbosity): an X Think (Ant
+        // Design X experiment), expanded, collapsible, left-aligned like the
+        // assistant.
         if (thinkingVerbosity === 'hidden') return null;
         return (
-          <div
-            key={item.seq}
-            data-testid="thinking"
-            style={{
-              alignSelf: 'flex-start',
-              maxWidth: '80%',
-              padding: '2px 10px',
-              borderLeft: `2px solid ${token.colorBorder}`,
-              color: token.colorTextTertiary,
-              fontStyle: 'italic',
-              whiteSpace: 'pre-wrap',
-              overflowWrap: 'anywhere',
-            }}
-          >
-            <div style={{ fontSize: 11, fontStyle: 'normal', opacity: 0.7, marginBottom: 2 }}>
-              Reasoning
-            </div>
-            {item.text}
-          </div>
+          <Think key={item.seq} data-testid="thinking" title="Reasoning" defaultExpanded style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
+            <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.text}</div>
+          </Think>
         );
       }
       case 'tool': {
@@ -1583,35 +1876,9 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             : renderBackgroundRunning(item, elapsed, token);
         }
 
-        let summary = toolSummary(item.input);
-        if (failed && item.result) summary = item.result.split('\n')[0].slice(0, 160);
-        else if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
-        const glyph = !finished ? '⟳' : stopped ? '⏹' : failed ? '✗' : '✓';
-        const open = toolOpen.has(item.seq) ? toolOpen.get(item.seq)! : toolVerbosity === 'verbose';
-        return (
-          <div key={item.seq} data-testid="tool-call" data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
-               style={{ color: failed ? token.colorError : token.colorTextTertiary, fontSize: 12 }}>
-            <div
-              style={{ fontFamily: 'monospace', cursor: 'pointer' }}
-              onClick={() => toggleTool(item.seq)}
-            >
-              {!finished && !stopped ? <SlotSpinner localKey={`optio:tool:${item.callId ?? item.seq}`} /> : glyph}{' '}
-              <strong>{item.name}</strong>{summary ? `: ${summary}` : ''}
-              {item.background && finished && item.result ? ` · ${item.result}` : ''}
-              {elapsed ? <span data-testid="tool-elapsed">{` · ${elapsed}`}</span> : null}
-              <span style={{ marginLeft: 6 }}>{open ? '▾' : '▸'}</span>
-            </div>
-            {open ? renderDetail(item.input, item.preview, token) : null}
-            {open && item.result ? (
-              <div
-                data-testid="tool-result"
-                style={{ fontFamily: 'monospace', fontSize: 12, color: token.colorTextSecondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginTop: 4 }}
-              >
-                {item.result}
-              </div>
-            ) : null}
-          </div>
-        );
+        // Every other level: rendered as part of a ThoughtChain by
+        // renderTranscript, never through here.
+        return null;
       }
       case 'question':
         return (
@@ -1635,10 +1902,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               gap: 6,
             }}
           >
+            {/* The input as X code blocks, like an expanded tool row; its
+                description (left out there) heads the card instead. */}
             <div>
               Permission requested: <strong>{item.toolName}</strong>
+              {inputDescription(item.input) ? ` · ${inputDescription(item.input)}` : ''}
             </div>
-            {renderDetail(item.input, item.preview, token)}
+            {renderToolInput(item.input, item.preview)}
             <div style={{ display: 'flex', gap: 8 }}>
               <Button
                 size="small"
@@ -1680,69 +1950,30 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           renderTimeLabel(item.timestamp, renderedAt, token),
         );
       case 'closed':
-        return (
-          <div
-            key={item.seq}
-            style={{
-              alignSelf: 'stretch',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              color: token.colorTextTertiary,
-            }}
-          >
-            <div style={{ flex: 1, borderTop: `1px solid ${token.colorBorderSecondary}` }} />
-            <span>conversation ended{item.reason ? ` (${item.reason})` : ''}</span>
-            <div style={{ flex: 1, borderTop: `1px solid ${token.colorBorderSecondary}` }} />
-          </div>
-        );
+        return renderDivider(`closed-${item.seq}`, undefined, `conversation ended${item.reason ? ` (${item.reason})` : ''}`, 'solid');
       case 'resumed':
-        // Resume band (owner request 2026-10-08): the session was captured
+        // Resume marker (owner request 2026-10-08): the session was captured
         // here and resumed later.
-        return renderBand(`resumed-${item.seq}`, 'resume-band', 'Session has been saved and resumed.',
-          { fill: token.colorFillSecondary, text: token.colorTextTertiary });
+        return renderDivider(`resumed-${item.seq}`, 'resume-band', 'Session has been saved and resumed.', 'solid');
       case 'compacting':
       case 'compacted':
-        // Compaction bands (owner request 2026-10-08), around the summary:
-        // the agent's context is being compacted, then has been. The System
-        // bubble's colours (the activity row above): its fill, and its border
-        // along the zig-zag edges.
+        // Compaction markers (owner request 2026-10-08), around the summary.
         return item.kind === 'compacting'
-          ? renderBand(`compacting-${item.seq}`, 'compaction-start-band', 'Context is being compacted.',
-            { fill: token.purple1, edge: token.purple3, text: token.colorTextSecondary })
-          : renderBand(`compacted-${item.seq}`, 'compaction-end-band', 'Context has been compacted.',
-            { fill: token.purple1, edge: token.purple3, text: token.colorTextSecondary });
+          ? renderDivider(`compacting-${item.seq}`, 'compaction-start-band', 'Context is being compacted.', 'dashed')
+          : renderDivider(`compacted-${item.seq}`, 'compaction-end-band', 'Context has been compacted.', 'dashed');
       case 'summary':
         return <CompactSummaryRow key={item.seq} item={item} now={renderedAt} token={token} />;
     }
   }
 
-  // A resume or compaction band. Width and zig-zag edges come from the
-  // mount-installed classes: the band paints `edge` (none: the fill colour),
-  // its inset fill paints `fill`. The padding keeps the label clear of the
-  // 6px teeth. Keyed apart from the row that may draw it (a resume notice, a
-  // compaction summary), which carries the same seq.
-  function renderBand(
-    key: string, testId: string, label: string, colors: { fill: string; edge?: string; text: string },
-  ) {
+  // A marker across the transcript (conversation ended, resumed, compacted):
+  // an X Bubble.Divider (Ant Design X experiment), its text in the middle.
+  // Keyed apart from the row that may draw it (a resume notice, a compaction
+  // summary), which carries the same seq.
+  function renderDivider(key: string, testId: string | undefined, label: string, variant: 'solid' | 'dashed') {
     return (
-      <div
-        key={key}
-        data-testid={testId}
-        className="optio-cc-band"
-        style={{
-          alignSelf: 'stretch',
-          marginTop: 8,
-          marginBottom: 8,
-          padding: '14px 12px',
-          background: colors.edge ?? colors.fill,
-          color: colors.text,
-          fontSize: 12,
-          textAlign: 'center',
-        }}
-      >
-        <div data-testid="band-fill" className="optio-cc-band-fill" style={{ background: colors.fill }} />
-        <span className="optio-cc-band-label">{label}</span>
+      <div key={key} data-testid={testId} style={{ alignSelf: 'stretch' }}>
+        <Bubble.Divider content={label} dividerProps={{ variant, plain: true }} />
       </div>
     );
   }
@@ -1758,13 +1989,20 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
 
   return (
     <FileDownloadContext.Provider value={fileDownload ? onFileDownload : null}>
+      <XProvider bubble={{ classNames: { content: dark ? GLASS_MODE.dark : GLASS_MODE.light } }}>
       {/* Paint our own root surface from a bg token — the widget owns its
           background (don't rely on an inherited host surface), or dark mode
           shows the light host page behind transparent divs. colorText sets a
-          themed default for any inherited-color text inside. */}
-      <div style={{
+          themed default for any inherited-color text inside. colorBgContainer,
+          not colorBgLayout: X's templates put the chat on it, and its filled
+          bubbles (colorFillContent) are drawn to stand out against it. */}
+      <div ref={rootRef} style={{
         display: 'flex', flexDirection: 'column', width: '100%', height: '100%',
-        background: token.colorBgLayout, color: token.colorText,
+        background: token.colorBgContainer, color: token.colorText,
+        // Theme colours for the bubbles' glass (ensureGlassStyle): the accent
+        // tints user bubbles, the preset purple System rows.
+        ['--optio-x-accent' as string]: token.colorPrimary,
+        ['--optio-x-system' as string]: token.purple,
       }}>
         <div
           data-testid="conversation-split"
@@ -1829,29 +2067,15 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }}
           >
             {/* Items are kept in conversation order by the reducer; render in
-                array order. Keyed by transcriptKeys (kind and seq): one event
-                can yield several rows, so seq alone repeats. */}
-            {transcriptKeys(state.items).map((key, i) => (
-              <Fragment key={key}>{renderItem(state.items[i])}</Fragment>
-            ))}
+                array order. Keyed by transcriptKeys (kind and seq) inside
+                renderTranscript: one event can yield several rows, so seq
+                alone repeats. */}
+            {/* The agent task's welcome card, first in the transcript. */}
+            {welcome && <WelcomeCard welcome={welcome} />}
+            {renderTranscript(state.items)}
             {/* The process died (or the conversation was closed engine-side):
                 append the ended divider after the transcript. */}
-            {closed && (
-              <div
-                data-testid="conversation-closed"
-                style={{
-                  alignSelf: 'stretch',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  color: token.colorTextTertiary,
-                }}
-              >
-                <div style={{ flex: 1, borderTop: `1px solid ${token.colorBorderSecondary}` }} />
-                <span>{props.closedLabel ?? 'conversation ended'}</span>
-                <div style={{ flex: 1, borderTop: `1px solid ${token.colorBorderSecondary}` }} />
-              </div>
-            )}
+            {closed && renderDivider('conversation-closed', 'conversation-closed', props.closedLabel ?? 'conversation ended', 'solid')}
           </div>
           {/* The working indicator stays a SIBLING of the observed content node —
               an animated <Spin> inside contentRef re-triggers the ResizeObserver
@@ -1869,26 +2093,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             </div>
           )}
         </div>
-        {attachments.length > 0 && (
-          <div data-testid="attach-chips" style={{ maxWidth: wide ? '100%' : 880, margin: '0 auto', width: '100%', display: 'flex', flexWrap: 'wrap', gap: 4, padding: '4px 8px' }}>
-            {attachments.map((a, i) => (
-              <span
-                key={i}
-                style={{
-                  fontSize: 12,
-                  padding: '2px 6px',
-                  border: `1px solid ${token.colorBorderSecondary}`,
-                  borderRadius: 4,
-                }}
-              >
-                {a.filename}
-                <a style={{ marginLeft: 6 }} onClick={() => setAttachments(attachments.filter((_, j) => j !== i))}>
-                  ×
-                </a>
-              </span>
-            ))}
-          </div>
-        )}
         <div style={{ borderTop: `1px solid ${token.colorBorderSecondary}`, padding: 8 }}>
           {/* Cap the composer to the reading column (honor the wide toggle) so
               it aligns with the messages; the bar/border stays full-width. */}
@@ -1907,13 +2111,29 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               style={{ marginBottom: 4 }}
             />
           )}
-          {/* Row 1: the message input (full width). */}
-          <Input.TextArea
-            data-testid="conversation-input-box"
-            className="optio-cc-flash"
+          {/* Ant Design X experiment (owner-approved 2026-10-12): the composer is
+              an X Sender. Our textarea fills its input slot (SenderTextArea),
+              today's toolbar is its footer, attached files show in its header,
+              and its own send button is off (suffix={false}): our keys and
+              buttons carry send / send when ready / interrupt and send. */}
+          <Sender
+            ref={inputRef}
+            components={{ input: SenderTextArea }}
+            classNames={{ input: 'optio-cc-flash' }}
+            // See-through and unpadded (owner, 2026-10-12): a host theme that
+            // fills inputs (daeo-style) made it a box of its own inside the
+            // Sender, its text flush left (X zeroes the inline padding) and set
+            // low. The Sender's padding alone frames the text.
+            styles={{ input: { backgroundColor: 'transparent', paddingTop: 0, paddingBottom: 0 } }}
             value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={onKeyDown}
+            onChange={(value) => setText(value)}
+            // Our keys only (Enter, Cmd/Ctrl-Enter, Esc): returning false keeps
+            // X's own Enter-submits out of it.
+            onKeyDown={(e) => {
+              onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>);
+              return false;
+            }}
+            onPasteFile={showFileUpload ? (files) => attachFiles(Array.from(files)) : undefined}
             placeholder={
               steerable
                 ? 'Message agent…  (Enter: send when ready, ⌘/Ctrl+Enter: interrupt and send, Shift+Enter: newline)'
@@ -1921,99 +2141,136 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }
             autoSize={{ minRows: 2, maxRows: 8 }}
             disabled={inputClosed}
-            ref={inputRef}
-          />
-          {/* Row 2: a single-height toolbar — model + attach on the left,
-              Send/Interrupt pushed right. All size="small" so heights match. */}
-          <div ref={toolbarRef} data-testid="session-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {props.controls && props.onControlChange ? (
-              <SessionControls
-                controls={props.controls}
-                disabled={props.busy || props.state.closed}
-                onChange={props.onControlChange}
-              />
-            ) : null}
-            <div style={{ flex: 1 }} />
-            {showFileUpload && (
-              <>
-                <input
-                  data-testid="file-input"
-                  type="file"
-                  multiple
-                  style={{ display: 'none' }}
-                  ref={fileInputRef}
-                  onChange={(e) => {
-                    const picked = Array.from(e.target.files ?? []).map(toAttachment);
-                    const next = [...attachments, ...picked];
-                    if (!withinCap(next, maxUploadBytes)) {
-                      setError('File too large.');
-                      return;
-                    }
-                    setAttachments(next);
-                    e.target.value = '';
-                  }}
-                />
-                <Tooltip title="Attach files">
-                  <Button
-                    size="small"
-                    data-testid="attach-button"
+            suffix={false}
+            header={uploads.length > 0 ? (
+              // X Attachments' list (a card per file: icon by extension, size,
+              // a remove button; its own button to add more), shown while
+              // there are files: empty, X would show its upload placeholder.
+              <Sender.Header title="Attachments" open closable={false}>
+                <div data-testid="attach-chips">
+                  <Attachments
+                    items={uploads}
+                    beforeUpload={() => false}
+                    onChange={({ fileList }) => takeUploads(fileList)}
+                    multiple
                     disabled={closed}
-                    onClick={() => fileInputRef.current?.click()}
+                  />
+                </div>
+              </Sender.Header>
+            ) : undefined}
+            footer={
+              /* Sender's footer: a single-height toolbar — model + attach on the left,
+                  Send/Interrupt pushed right. All size="small" so heights match. */
+              <div ref={toolbarRef} data-testid="session-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {props.controls && props.onControlChange ? (
+                  <>
+                    <span className="optio-cc-inline-controls">
+                      <SessionControls
+                        controls={props.controls}
+                        disabled={props.busy || props.state.closed}
+                        onChange={props.onControlChange}
+                      />
+                    </span>
+                    {/* When even the compact toolbar is too wide (optio-cc-collapsed),
+                        the controls collapse into this button, which opens them,
+                        labelled, above the composer. */}
+                    <span className="optio-cc-settings-button">
+                      <Popover
+                        trigger="click"
+                        placement="topLeft"
+                        rootClassName="optio-cc-settings-popover"
+                        content={
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+                            <SessionControls
+                              controls={props.controls}
+                              disabled={props.busy || props.state.closed}
+                              onChange={props.onControlChange}
+                            />
+                          </div>
+                        }
+                      >
+                        <Button size="small" aria-label="Session settings" icon={<SettingsIcon />}>
+                          Settings
+                        </Button>
+                      </Popover>
+                    </span>
+                  </>
+                ) : null}
+                {/* The actions: one group, pushed right. minWidth 0 lets it shrink
+                    like the flat row did (the send slot gives way first). */}
+                <div className="optio-cc-toolbar-actions" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 'auto', minWidth: 0 }}>
+                  {showFileUpload && (
+                    // X Attachments around the paperclip: its click opens X's file
+                    // picker, and files dragged anywhere onto the conversation land
+                    // in its drop area.
+                    <Attachments
+                      items={uploads}
+                      beforeUpload={() => false}
+                      onChange={({ fileList }) => takeUploads(fileList)}
+                      multiple
+                      disabled={closed}
+                      getDropContainer={() => rootRef.current}
+                      placeholder={{ title: 'Drop files here' }}
+                    >
+                      <Tooltip title="Attach files">
+                        <Button size="small" data-testid="attach-button" disabled={closed}>
+                          📎
+                        </Button>
+                      </Tooltip>
+                    </Attachments>
+                  )}
+                  {/* Fix 10: always the one vultus multi-action button, never a
+                      separate plain Send button — idle shows only 'Send'; busy and
+                      steerable shows [Send when ready | Interrupt and send]. An
+                      engine without onSteer (steerable stays false even while
+                      busy) keeps showing plain 'Send' behaviour. Visibility
+                      toggles which actions CombinedActionButton renders — with one
+                      visible it renders a plain button, so idle and a non-steering
+                      engine look identical to before. keepOriginalDefault keeps
+                      the main half on 'Send when ready' after the menu action
+                      fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
+                      the footprint so it never resizes across any of that; the red
+                      Interrupt beside it stops and sends nothing. Each
+                      action's `icon` (plane / clock / bolt) plus iconPlacement="end"
+                      puts that icon on the right of the label; align="end" right-
+                      aligns every state's label within the fixed width, on the
+                      main half and — since iconPlacement="end" also reaches
+                      each open-list row — the row's own icon (after its
+                      label) too. */}
+                  <span
+                    data-testid="conversation-send-combined"
+                    className="optio-cc-send-btn"
+                    style={{ width: SEND_BUTTON_WIDTH }}
                   >
-                    📎
-                  </Button>
-                </Tooltip>
-              </>
-            )}
-            {/* Fix 10: always the one vultus multi-action button, never a
-                separate plain Send button — idle shows only 'Send'; busy and
-                steerable shows [Send when ready | Interrupt and send]. An
-                engine without onSteer (steerable stays false even while
-                busy) keeps showing plain 'Send' behaviour. Visibility
-                toggles which actions CombinedActionButton renders — with one
-                visible it renders a plain button, so idle and a non-steering
-                engine look identical to before. keepOriginalDefault keeps
-                the main half on 'Send when ready' after the menu action
-                fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
-                the footprint so it never resizes across any of that; the red
-                Interrupt beside it stops and sends nothing. Each
-                action's `icon` (plane / clock / bolt) plus iconPlacement="end"
-                puts that icon on the right of the label; align="end" right-
-                aligns every state's label within the fixed width, on the
-                main half and — since iconPlacement="end" also reaches
-                each open-list row — the row's own icon (after its
-                label) too. */}
-            <span
-              data-testid="conversation-send-combined"
-              className="optio-cc-send-btn"
-              style={{ width: SEND_BUTTON_WIDTH }}
-            >
-              <CombinedActionButton
-                size="small"
-                keepOriginalDefault
-                iconPlacement="end"
-                align="end"
-                actions={[
-                  barAction('send', 'Send', 'primary', sending || !text || inputClosed, () => void submit('send'), steerable, <SendPlaneIcon />),
-                  barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable, <SendWhenReadyClockIcon />),
-                  barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer'), !steerable, <InterruptAndSendBoltIcon />),
-                ]}
-              />
-            </span>
-            {/* Fix 18 (owner addition): Interrupt is now a vultus action
-                (danger ActionStatus above) instead of a plain antd Button —
-                it renders the same red button, but its own `pending` state
-                drives ActionButton's antd `loading` spinner rather than
-                swapping the label. Fix 20: the action's `icon` (a stop
-                square) occupies the same slot antd's spinner takes over
-                while pending, so the button's width no longer needs to be
-                reserved — this wrapper only keeps the stable test id. Fix
-                22: iconPlacement="end" puts that icon on the right of the
-                label, matching every other send-bar action. */}
-            <span data-testid="conversation-interrupt">
-              <ActionButton action={interruptAction} size="small" iconPlacement="end" />
-            </span>
-          </div>
+                    <CombinedActionButton
+                      size="small"
+                      keepOriginalDefault
+                      iconPlacement="end"
+                      align="end"
+                      actions={[
+                        barAction('send', 'Send', 'primary', sending || !text || inputClosed, () => void submit('send'), steerable, <SendPlaneIcon />),
+                        barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable, <SendWhenReadyClockIcon />),
+                        barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer'), !steerable, <InterruptAndSendBoltIcon />),
+                      ]}
+                    />
+                  </span>
+                  {/* Fix 18 (owner addition): Interrupt is now a vultus action
+                      (danger ActionStatus above) instead of a plain antd Button —
+                      it renders the same red button, but its own `pending` state
+                      drives ActionButton's antd `loading` spinner rather than
+                      swapping the label. Fix 20: the action's `icon` (a stop
+                      square) occupies the same slot antd's spinner takes over
+                      while pending, so the button's width no longer needs to be
+                      reserved — this wrapper only keeps the stable test id. Fix
+                      22: iconPlacement="end" puts that icon on the right of the
+                      label, matching every other send-bar action. */}
+                  <span data-testid="conversation-interrupt">
+                    <ActionButton action={interruptAction} size="small" iconPlacement="end" />
+                  </span>
+                </div>
+              </div>
+            }
+          />
           </>)}
           </div>
         </div>
@@ -2096,78 +2353,17 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             >
               Task list
             </span>
-            {props.todos.map((todo) => {
-              const { failed, label } = taskRowLabel(todo.text);
-              const description = todo.description?.trim() ? todo.description : undefined;
-              const rowStyle = {
-                color: todo.status === 'cancelled'
-                  ? token.colorTextTertiary
-                  : token.colorText,
-                textDecoration: todo.status === 'cancelled' ? 'line-through' : undefined,
-              };
-              const rowBody = (
-                <>
-                  {todo.status === 'in_progress' && !failed ? (
-                    <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: 6 }}>
-                      <SlotSpinner localKey={`optio:todo:${todo.id}`} />
-                    </span>
-                  ) : (
-                    <span
-                      data-testid="conversation-todo-mark"
-                      style={{
-                        color: failed
-                          ? token.colorError
-                          : todo.status === 'completed'
-                            ? token.colorSuccess
-                            : undefined,
-                      }}
-                    >
-                      {failed ? '×' : todo.status === 'completed' ? '✓' : '·'}
-                    </span>
-                  )}
-                  {todo.status === 'in_progress' && !failed ? null : ' '}
-                  {label}
-                </>
-              );
-              if (!description) {
-                return (
-                  <div key={todo.id}>
-                    <div data-testid="conversation-todo" data-status={todo.status} style={rowStyle}>
-                      {rowBody}
-                    </div>
-                  </div>
-                );
-              }
-              const selected = detailOpen && todo.id === selectedTodoId;
-              return (
-                <button
-                  key={todo.id}
-                  type="button"
-                  data-testid="conversation-todo"
-                  data-status={todo.status}
-                  onClick={() => setSelectedTodoId(todo.id)}
-                  style={{
-                    ...rowStyle,
-                    display: 'block',
-                    width: '100%',
-                    padding: '1px 4px',
-                    border: 'none',
-                    borderRadius: 4,
-                    background: selected ? token.colorPrimaryBg : 'transparent',
-                    textAlign: 'left',
-                    font: 'inherit',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {rowBody}
-                  <Tooltip title="Click for details" mouseEnterDelay={0}>
-                    <span style={{ display: 'inline-flex', verticalAlign: 'text-bottom' }}>
-                      <TaskInfoIcon color={token.colorTextSecondary} />
-                    </span>
-                  </Tooltip>
-                </button>
-              );
-            })}
+            {/* Ant Design X experiment (owner-approved 2026-10-12): the task list
+                is one X ThoughtChain, like the tool calls: a node per task,
+                linked by X's line, with X's status icons. X draws that line
+                beside a node's body, below its title row; a task node is
+                title-only, so each gets room below its title, and the chain no
+                gap, so the line runs into the next task's icon. */}
+            <ThoughtChain
+              data-testid="conversation-todos-chain"
+              items={props.todos.map(todoChainItem)}
+              styles={{ root: { gap: 0 }, item: { paddingBottom: 10 } }}
+            />
             </div>
           </div>
           <div
@@ -2236,6 +2432,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         )}
         </div>
       </div>
+      </XProvider>
     </FileDownloadContext.Provider>
   );
 }
