@@ -9,6 +9,7 @@ import { CursorView } from './cursor/CursorView.js';
 import { KimiCodeView } from './kimicode/KimiCodeView.js';
 import { AntigravityView } from './antigravity/AntigravityView.js';
 import { SuspendedConversationWidget } from './SuspendedConversationWidget.js';
+import { ConversationWidenessContext, type ConversationWideness } from './wideness.js';
 
 const THEME_KEY = 'optio-conversation:theme';
 
@@ -17,12 +18,24 @@ export interface ConversationWidgetProps extends WidgetProps {
    *  ConfigProvider with a persisted light/dark preference and renders the
    *  ☀/🌙 toggle. When false/absent, the view inherits the host theme. */
   ownTheme?: boolean;
+  /** The conversation's reading width: 'wide' (always the full width),
+   *  'narrow' (always the capped reading column; the default) or 'switch'
+   *  (the Wide switch in the conversation's header). */
+  wideness?: ConversationWideness;
 }
 
 /** Engine-neutral conversation widget: the task declares its wire protocol
  *  via widgetData.protocol; each view speaks that protocol natively through
  *  the widget proxy. */
-export function ConversationWidget({ ownTheme, ...props }: ConversationWidgetProps) {
+export function ConversationWidget({ ownTheme, wideness = 'narrow', ...props }: ConversationWidgetProps) {
+  return (
+    <ConversationWidenessContext.Provider value={wideness}>
+      <ConversationWidgetBody ownTheme={ownTheme} {...props} />
+    </ConversationWidenessContext.Provider>
+  );
+}
+
+function ConversationWidgetBody({ ownTheme, ...props }: Omit<ConversationWidgetProps, 'wideness'>) {
   const protocol = (props.process as any)?.widgetData?.protocol ?? 'claudecode';
 
   const dispatchedView = (extra: { themeMode?: 'light' | 'dark'; onToggleTheme?: () => void }) => {
@@ -83,13 +96,22 @@ function ThemedSuspendedConversation(props: WidgetProps) {
  *  task's saved conversation, read-only).
  *  Pass `{ ownTheme: true }` when the HOST has no theme of its own and wants the
  *  widget to own a light/dark toggle (standalone / a host without its own
- *  ConfigProvider). Default: inherit the host theme. */
-export function registerConversationWidget(opts?: { ownTheme?: boolean }): void {
+ *  ConfigProvider). Default: inherit the host theme. `wideness` sets the
+ *  conversation's reading width ('wide' | 'narrow' | 'switch', see
+ *  wideness.ts; default 'narrow'), for the suspended variant too. */
+export function registerConversationWidget(
+  opts?: { ownTheme?: boolean; wideness?: ConversationWideness },
+): void {
+  const wideness = opts?.wideness ?? 'narrow';
   const Widget = (props: WidgetProps) => (
-    <ConversationWidget ownTheme={opts?.ownTheme} {...props} />
+    <ConversationWidget ownTheme={opts?.ownTheme} wideness={wideness} {...props} />
   );
-  registerWidget('conversation', Widget, {
-    suspended: opts?.ownTheme ? ThemedSuspendedConversation : SuspendedConversationWidget,
-  });
+  const Suspended = opts?.ownTheme ? ThemedSuspendedConversation : SuspendedConversationWidget;
+  const SuspendedWidget = (props: WidgetProps) => (
+    <ConversationWidenessContext.Provider value={wideness}>
+      <Suspended {...props} />
+    </ConversationWidenessContext.Provider>
+  );
+  registerWidget('conversation', Widget, { suspended: SuspendedWidget });
   console.info('[optio-conversation-ui] conversation widget registered');
 }

@@ -29,7 +29,16 @@ registerConversationWidget();
 // or, when the host has no antd ConfigProvider of its own and you want the
 // widget to own a light/dark toggle:
 registerConversationWidget({ ownTheme: true });
+// the conversation's reading width: 'narrow' (the default), 'wide', or
+// 'switch' (a Wide switch in the conversation's header):
+registerConversationWidget({ wideness: 'switch' });
 ```
+
+`wideness` sets how wide the conversation reads, live and suspended: `'narrow'` (the default)
+always caps the transcript and composer at the 880px reading column, `'wide'` always uses the
+full width, and `'switch'` shows a Wide switch in the conversation's header that toggles
+between them. `ConversationWidget` takes it as a prop of the same name; a view rendered on its
+own reads it from `ConversationWidenessContext`, or takes a `wideness` prop.
 
 It registers for `ui_widget = "conversation"`. Each task carries its engine in `widgetData.protocol` (`"claudecode"` or `"opencode"` — injected automatically by `optio-claudecode` / `optio-opencode`), and the widget dispatches to the matching view. You do **not** specify the engine at registration.
 
@@ -113,6 +122,7 @@ the input and its toolbar), and `onSend` may resolve `{ error }` to show its own
 - File upload (📎) and one-click file download (agent emits `[name](optio-file:relpath)`), when the task enables `show_file_upload` / `file_download`.
 - Markdown rendering with GFM, LaTeX math (KaTeX), Mermaid diagrams, and themed code blocks.
 - Optional opt-in light/dark theming (`ownTheme`).
+- The reading width set by the host (`wideness`: narrow by default, wide, or a Wide switch).
 - Resume band (owner request 2026-10-08): where a session was saved and resumed, a band with zig-zag top and bottom edges spans the whole transcript area (not just the reading column), labelled "Session has been saved and resumed.". The `System: you have been resumed` row stays, right after it. claudecode draws it at the listener's `x-optio-resumed` marker; the ACP engines (grok, cursor, kimicode) have no marker and draw it from the resume notice itself. Verified against real claudecode and grok sessions only.
 - Compaction bands (claudecode, owner request 2026-10-08): two of the same band per context compaction, in the `System:` bubble's colours (its fill, and its border along the zig-zag edges): "Context is being compacted." at the CLI's `system/compact_boundary`, then the summary Claude continues from (a synthetic user event starting "This session is being continued from a previous conversation") as a lavender row that shows its first line and expands to the whole summary on click, then "Context has been compacted.". A summary with no boundary before it draws both bands itself. The closing band absorbs a `/compact` command's own replay echoes (`<local-command-stdout>Compacted …` and `<command-name>/compact</command-name>…`), which otherwise render as user bubbles. Verified against a real `/compact` capture (`claudecode-compact-manual.jsonl`); an automatic compaction has the same boundary and summary, without the echoes.
 
@@ -166,7 +176,8 @@ See `src/AnswerBlock.tsx` for the authoritative list.
 
 ## Exports
 
-- `registerConversationWidget(opts?)`, `ConversationWidget` — the widget + its registration.
+- `registerConversationWidget(opts?)`, `ConversationWidget` — the widget + its registration (`opts`: `ownTheme`, `wideness`).
+- `ConversationWideness`, `ConversationWidenessContext` — the reading width (`'wide' | 'narrow' | 'switch'`) and the context ConversationWidget provides it through.
 - `SuspendedConversationWidget`, `ClaudeCodeReplayView` (+ `ClaudeCodeReplayViewProps`) — the view of a suspended conversation, whose composer resumes it (see [Suspended conversations](#suspended-conversations)).
 - `AnswerBlock` — the standalone markdown/answer renderer.
 - `reduceClaudecodeEvent`, `reduceOpencodeEvent`, `historyToChatItems`, `initialChatState`, `ChatItem`, `ChatState` — the engine-neutral chat model and per-engine reducers, for embedding outside the default widget.

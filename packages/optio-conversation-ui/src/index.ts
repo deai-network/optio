@@ -1,4 +1,6 @@
 export { ConversationWidget, registerConversationWidget } from './ConversationWidget.js';
+export { ConversationWidenessContext } from './wideness.js';
+export type { ConversationWideness } from './wideness.js';
 export { SuspendedConversationWidget } from './SuspendedConversationWidget.js';
 export { ClaudeCodeReplayView } from './claudecode/ClaudeCodeReplayView.js';
 export type { ClaudeCodeReplayViewProps } from './claudecode/ClaudeCodeReplayView.js';
