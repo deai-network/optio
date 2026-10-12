@@ -900,44 +900,35 @@ describe('ConversationView steering', () => {
     expect(document.getElementById('optio-cc-interrupted-style')).not.toBeNull();
   });
 
-  // Resume band (owner request 2026-10-08): where the session was captured
-  // and resumed, a full-width band with zig-zag top and bottom edges.
-  it('a resumed item renders as a full-width zig-zag band labelled "Session has been saved and resumed."', () => {
+  // Resume marker (owner request 2026-10-08): where the session was captured
+  // and resumed. Since the X switch an X Bubble.Divider, solid (owner-approved
+  // 2026-10-12; it replaced the zig-zag band).
+  it('a resumed item renders as a solid X divider labelled "Session has been saved and resumed."', () => {
     renderView(makeProps({ state: makeState([
       { kind: 'assistant', text: 'before', pending: false, seq: 1, msgId: 'm1' },
       { kind: 'resumed', seq: 2 },
     ]) }));
-    const band = screen.getByTestId('resume-band');
-    expect(band.textContent).toBe('Session has been saved and resumed.');
-    expect(band.className).toContain('optio-cc-band');
-    // Full width of the transcript area, not the 880px reading column: the
-    // class sizes it against the scroll container (a size container), padding
-    // included.
-    const css = document.getElementById('optio-cc-band-style')?.textContent ?? '';
-    expect(css).toContain('width: calc(100cqw + 16px)');
-    expect(css).toContain('margin-left: calc(50% - 50cqw - 8px)');
+    const marker = screen.getByTestId('resume-band');
+    expect(marker.textContent).toBe('Session has been saved and resumed.');
+    const divider = marker.querySelector('.ant-bubble-divider .ant-divider');
+    expect(divider).not.toBeNull();
+    expect(divider!.classList.contains('ant-divider-dashed')).toBe(false);
+    // The zig-zag band and its stylesheet are gone.
+    expect(document.getElementById('optio-cc-band-style')).toBeNull();
   });
 
-  // Compaction bands (owner request 2026-10-08): two per compaction, around
-  // the summary, the same band as for a resume, in the System bubble's
-  // colours: its fill, and its border colour along the zig-zag edges (the
-  // outer layer, showing around the fill inset inside it).
-  // Since the X switch the System row is X's Bubble.System in the glass tinted
-  // with the theme's preset purple (published on the view root as
-  // --optio-x-system); the bands paint that preset's light shades: purple1
-  // as the fill, purple3 along the zig-zag edges.
-  it('compacting and compacted items render as bands in the System bubble colours, with their own labels', () => {
+  // Compaction markers (owner request 2026-10-08): two per compaction, around
+  // the summary. Since the X switch they are X Bubble.Dividers, dashed
+  // (owner-approved 2026-10-12), and the System row is X's Bubble.System in
+  // the glass tinted with the theme's preset purple (published on the view
+  // root as --optio-x-system).
+  it('compacting and compacted items render as dashed X dividers with their own labels', () => {
     renderView(makeProps({ state: makeState([
       { kind: 'activity', text: 'System: x', seq: 1, system: true },
       { kind: 'compacting', seq: 2 },
       { kind: 'compacted', seq: 3 },
     ]) }));
     const token = theme.getDesignToken();
-    const asCss = (color: string) => {
-      const probe = document.createElement('div');
-      probe.style.background = color;
-      return probe.style.background;
-    };
     const bubble = screen.getByTestId('activity-bubble');
     expect(bubble.querySelector('.ant-bubble-content')?.classList.contains('optio-x-glass-system')).toBe(true);
     const root = bubble.closest('[style*="--optio-x-system"]') as HTMLElement;
@@ -946,38 +937,24 @@ describe('ConversationView steering', () => {
     const end = screen.getByTestId('compaction-end-band');
     expect(start.textContent).toBe('Context is being compacted.');
     expect(end.textContent).toBe('Context has been compacted.');
-    for (const band of [start, end]) {
-      expect(band.className).toContain('optio-cc-band');
-      expect(band.style.background).toBe(asCss(token.purple3));
-      expect(within(band).getByTestId('band-fill').style.background).toBe(asCss(token.purple1));
+    for (const marker of [start, end]) {
+      expect(marker.querySelector('.ant-bubble-divider .ant-divider')?.classList.contains('ant-divider-dashed')).toBe(true);
     }
-    const css = document.getElementById('optio-cc-band-style')?.textContent ?? '';
-    expect(css).toContain('.optio-cc-band-fill');
   });
 
-  it('replaces band CSS an earlier version of the widget left in the page (hot reload)', () => {
-    document.getElementById('optio-cc-band-style')?.remove();
-    const stale = document.createElement('style');
-    stale.id = 'optio-cc-band-style';
-    stale.textContent = '.optio-cc-band { mask: none; }';
-    document.head.appendChild(stale);
-    renderView(makeProps({ state: makeState([{ kind: 'compacted', seq: 1 }]) }));
-    expect(document.querySelectorAll('#optio-cc-band-style')).toHaveLength(1);
-    expect(document.getElementById('optio-cc-band-style')?.textContent).toContain('.optio-cc-band-fill');
-  });
-
-  // The compaction summary (owner ruling 2026-10-08): kept, as a System-style
-  // row showing its first line, expanding on click.
-  it('a compaction summary shows its first line, and the whole summary on click', () => {
-    const text = 'This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n1. Primary Request and Intent: analyze the source';
+  // The compaction summary (owner ruling 2026-10-08): kept, since the X switch
+  // as an X Think titled with its first line, collapsed (owner-approved
+  // 2026-10-12).
+  it('a compaction summary is a collapsed X Think titled with its first line; the rest shows on click', async () => {
+    const first = 'This session is being continued from a previous conversation that ran out of context.';
+    const text = `${first}\n\nSummary:\n1. Primary Request and Intent: analyze the source`;
     renderView(makeProps({ state: makeState([{ kind: 'summary', text, seq: 1 }]) }));
     const row = screen.getByTestId('compaction-summary');
-    expect(row.textContent).toContain('This session is being continued from a previous conversation that ran out of context.');
+    expect(row.classList.contains('ant-think')).toBe(true);
+    expect(row.textContent).toContain(first);
     expect(row.textContent).not.toContain('Primary Request');
-    fireEvent.click(within(row).getByText('Show summary'));
-    expect(screen.getByTestId('compaction-summary').textContent).toContain('Primary Request and Intent');
-    fireEvent.click(within(screen.getByTestId('compaction-summary')).getByText('Hide summary'));
-    expect(screen.getByTestId('compaction-summary').textContent).not.toContain('Primary Request');
+    fireEvent.click(within(row).getByText(first));
+    await waitFor(() => expect(screen.getByTestId('compaction-summary').textContent).toContain('Primary Request and Intent'));
   });
 
   it('a muted activity row renders as a plain muted line', () => {
