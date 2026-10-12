@@ -191,6 +191,12 @@ describe('ConversationWidget', () => {
     expect(screen.getByText('Checking the VPN before the harness run.')).toBeTruthy();
   });
 
+  it('reasoning renders as a thinking row with thinkingVerbosity visible', () => {
+    render(<ConversationWidget {...makeProps({ process: { _id: 'p1', name: 'n', widgetData: { thinkingVerbosity: 'visible' }, status: { state: 'running' } } })} />);
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: 'Weighing wc -l against a loop.', signature: 's' }] } });
+    expect(screen.getByTestId('thinking').textContent).toContain('Weighing wc -l against a loop.');
+  });
+
   it('description-only keeps one row per call and marks finished calls', () => {
     render(<ConversationWidget {...propsV('description-only')} />);
     fire({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } });

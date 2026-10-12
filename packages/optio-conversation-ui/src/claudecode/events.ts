@@ -45,9 +45,16 @@ type ActivityItem = Extract<ChatItem, { kind: 'activity' }>;
 // Text a content block contributes to the reply bubble: a text block's text,
 // or the narration a text-bearing thinking block carries. Since CLI 2.1.267
 // the model writes its between-tool narration as such "thinking updates"; the
-// real reasoning arrives as a separate thinking block with empty text.
-function blockText(block: any): string | null {
+// real reasoning arrives as a separate thinking block with empty text. With
+// `thinkingRows` (see ReduceOptions) thinking text is reasoning instead, never
+// part of the reply.
+function blockText(block: any, thinkingRows = false): string | null {
   if (block?.type === 'text' && typeof block.text === 'string') return block.text;
+  return thinkingRows ? null : thinkingText(block);
+}
+
+// A thinking block's text, if it carries any.
+function thinkingText(block: any): string | null {
   if (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim() !== '') {
     return block.thinking;
   }
@@ -653,7 +660,18 @@ function undoInterrupt(items: ChatItem[], interrupt: { rowSeq: number; itemSeqs:
   });
 }
 
-export function reduceEvent(state: ChatState, ev: any, seq: number, now: number = Date.now()): ChatState {
+export interface ReduceOptions {
+  // The task's thinkingVerbosity is "visible": optio-claudecode then launches
+  // claude with --thinking-display summarized, so a text-bearing thinking
+  // block is the model's reasoning, not narration. It becomes a 'thinking'
+  // row (which the view shows), and thinking_delta no longer streams into the
+  // reply bubble.
+  thinkingRows?: boolean;
+}
+
+export function reduceEvent(
+  state: ChatState, ev: any, seq: number, now: number = Date.now(), opts: ReduceOptions = {},
+): ChatState {
   // Sniff the runtime model and fold it into the model control. Claude Code
   // reports the model at top level on `system`/`init` (fires immediately at
   // launch) and on each assistant `message.model`. The stream uses the
@@ -1232,7 +1250,8 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           : undefined;
       let items = state.items;
       for (const block of blocks) {
-        const text = blockText(block);
+        const text = blockText(block, opts.thinkingRows);
+        const reasoning = opts.thinkingRows ? thinkingText(block) : null;
         if (text !== null) {
           const freshStart = marker !== undefined
             ? marker
@@ -1253,6 +1272,13 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
             items = applied.items;
             if (applied.opened && marker !== undefined) state = { ...state, pendingMessageStart: undefined };
           }
+        } else if (reasoning !== null) {
+          // Reasoning: a row of its own, in front of the interrupt row while
+          // an interrupted turn still sends it (like a tool row).
+          const row: ChatItem = { kind: 'thinking', text: reasoning, seq };
+          items = state.interrupt
+            ? insertBeforeRow(items, state.interrupt.rowSeq, [row])
+            : appendItems(items, [row]);
         } else if (block?.type === 'tool_use') {
           // A persistent row per call; its tool_result (a later user event)
           // finishes it. A call the interrupted turn still announces is
@@ -1294,6 +1320,9 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // carry neither.
       const d = ev.event?.delta;
       const isThinking = d?.type === 'thinking_delta';
+      // Reasoning (thinkingRows) shows as a row from its final thinking block;
+      // it never streams into the reply.
+      if (isThinking && opts.thinkingRows) return state;
       const delta = isThinking ? d.thinking : d?.text;
       if (typeof delta !== 'string' || delta === '') return state;
       // Fix 12: this message's resolved START (see the `assistant` case for

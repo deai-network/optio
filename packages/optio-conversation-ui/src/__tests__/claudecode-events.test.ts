@@ -1115,3 +1115,47 @@ describe('context compaction (compact_boundary)', () => {
     expect(s.items.map((i) => i.kind)).toEqual(['resumed', 'compacting']);
   });
 });
+
+describe('reasoning rows (thinkingVerbosity visible)', () => {
+  // With thinkingVerbosity "visible" optio launches claude with
+  // --thinking-display summarized: a text-bearing thinking block is then the
+  // model's reasoning, not narration, and gets its own 'thinking' row.
+  const shown = { thinkingRows: true };
+  const runShown = (events: any[]): ChatState =>
+    events.reduce((s, ev, i) => reduceEvent(s, ev, i + 1, undefined, shown), initialChatState);
+
+  it('a text-bearing thinking block becomes a thinking row, not a bubble', () => {
+    const s = runShown([user('q'), thinking('Weighing wc -l against a loop.', 'm1')]);
+    expect(ofKind(s, 'thinking').map((t) => t.text)).toEqual(['Weighing wc -l against a loop.']);
+    expect(ofKind(s, 'assistant')).toEqual([]);
+  });
+
+  it('thinking_delta does not stream into a bubble', () => {
+    const s = runShown([messageStart('m1'), thinkingDelta('Weighing'), thinkingDelta(' it.')]);
+    expect(ofKind(s, 'assistant')).toEqual([]);
+  });
+
+  it('reasoning, then the reply: a row and a bubble, in that order', () => {
+    const s = runShown([
+      messageStart('m1'), thinkingDelta('Weighing it.'), thinking('Weighing it.', 'm1'),
+      delta('Done.'), assistantText('Done.', 'm1'),
+    ]);
+    expect(s.items.map((i) => i.kind)).toEqual(['thinking', 'assistant']);
+    expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(['Done.']);
+  });
+
+  it('an empty thinking block still adds nothing', () => {
+    expect(runShown([thinking('', 'm1')]).items).toEqual([]);
+  });
+
+  it('reasoning the interrupted turn still sends goes in front of its interrupt row', () => {
+    const s = runShown([
+      user('q'), messageStart('m1'), delta('Hel'),
+      { type: 'x-optio-interrupt', by: 'user' },
+      thinking('Weighing it.', 'm1'),
+    ]);
+    const kinds = s.items.map((i) => i.kind);
+    expect(kinds).toContain('activity');
+    expect(kinds.indexOf('thinking')).toBe(kinds.lastIndexOf('activity') - 1);
+  });
+});

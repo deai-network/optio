@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useMemo, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
 import { SpinnerScope } from 'vultus-antd';
 import type { ChatState, SessionControl } from '../chat.js';
@@ -15,8 +15,10 @@ interface ChatAction {
   seq: number;
 }
 
-function chatReducer(state: ChatState, action: ChatAction): ChatState {
-  return reduceEvent(state, action.ev, action.seq);
+// thinkingRows: see ReduceOptions (the task's thinkingVerbosity is "visible").
+function chatReducer(thinkingRows: boolean) {
+  return (state: ChatState, action: ChatAction): ChatState =>
+    reduceEvent(state, action.ev, action.seq, undefined, { thinkingRows });
 }
 
 export function ClaudeCodeView(props: WidgetProps) {
@@ -26,7 +28,8 @@ export function ClaudeCodeView(props: WidgetProps) {
     'hidden' | 'visible';
   const initialControls = ((props.process.widgetData as any)?.controls ?? []) as SessionControl[];
   const showSessionControls = Boolean((props.process.widgetData as any)?.showSessionControls);
-  const [state, dispatch] = useReducer(chatReducer, { ...initialChatState, controls: initialControls });
+  const reducer = useMemo(() => chatReducer(thinkingVerbosity === 'visible'), [thinkingVerbosity]);
+  const [state, dispatch] = useReducer(reducer, { ...initialChatState, controls: initialControls });
   const localSeqRef = useRef(0);
   const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
   const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
