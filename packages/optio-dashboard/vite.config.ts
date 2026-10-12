@@ -53,6 +53,10 @@ export default defineConfig({
     ] : [],
   },
   root: path.resolve(__dirname, 'src/app'),
+  // Static assets (e.g. the demo tasks' welcome icons) live in the package's
+  // public/, not under the app root; the build copies them to dist/public,
+  // which the server serves.
+  publicDir: path.resolve(__dirname, 'public'),
   build: {
     outDir: path.resolve(__dirname, 'dist/public'),
     emptyOutDir: true,
