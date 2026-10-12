@@ -4,6 +4,7 @@ import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
 import { useProcessWidget } from './ProcessWidget.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
+import { LaunchControls } from './LaunchControls.js';
 
 export interface ProcessDetailViewProps {
   processId: string | null | undefined;
@@ -37,7 +38,7 @@ export function ProcessDetailView({
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
   const { launch, cancel, resurrect } = useProcessActions();
-  const widget = useProcessWidget(tree);
+  const widgetResult = useProcessWidget(tree);
   const { Spinner } = useVultusComponents();
   const spinnerKey = useSpinnerKey(`optio:process:${processId}:detail`);
 
@@ -82,7 +83,8 @@ export function ProcessDetailView({
     );
   }
 
-  if (widget) {
+  if (widgetResult) {
+    const { widget, mode } = widgetResult;
     return (
       <div
         data-testid="optio-widget-layout"
@@ -91,6 +93,14 @@ export function ProcessDetailView({
         {showLogs && (
           <div style={{ flex: '0 0 20%', minHeight: 0, overflow: 'hidden' }}>
             <ProcessLogPanel logs={logs} tree={tree} fillParent />
+          </div>
+        )}
+        {mode === 'suspended' && !readOnly && (
+          <div
+            data-testid="optio-widget-suspended-actions"
+            style={{ flex: '0 0 auto', display: 'flex', justifyContent: 'flex-end', padding: '4px 8px' }}
+          >
+            <LaunchControls process={tree} onLaunch={(id, opts) => launch(id, opts)} />
           </div>
         )}
         <div style={{ flex: '1 1 auto', minHeight: 0 }}>

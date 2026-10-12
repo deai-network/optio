@@ -11,8 +11,9 @@ vi.mock('../hooks/useProcessStream.js', () => ({
 
 const mockLaunch = vi.fn();
 const mockCancel = vi.fn();
+const mockResurrect = vi.fn();
 vi.mock('../hooks/useProcessActions.js', () => ({
-  useProcessActions: () => ({ launch: mockLaunch, cancel: mockCancel }),
+  useProcessActions: () => ({ launch: mockLaunch, cancel: mockCancel, resurrect: mockResurrect }),
 }));
 
 // Mock context hooks — these live in useOptioContext.ts (imported by useProcessStream).
@@ -38,6 +39,7 @@ describe('ProcessDetailView', () => {
     mockProcessStream.mockReset();
     mockLaunch.mockReset();
     mockCancel.mockReset();
+    mockResurrect.mockReset();
     mockBaseUrl.mockReturnValue('http://host');
     mockPrefix.mockReturnValue('optio');
     mockDatabase.mockReturnValue('mydb');
@@ -341,6 +343,85 @@ describe('ProcessDetailView', () => {
     render(<ProcessDetailView processId="abc" />);
     expect(screen.queryByTestId('my-widget')).toBeNull();
     expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
+  });
+
+  describe('suspended processes', () => {
+    function suspendedTree(overrides: Record<string, unknown> = {}) {
+      return {
+        _id: 'abc', name: 'P', status: { state: 'cancelled' },
+        supportsResume: true, hasSavedState: true,
+        progress: { percent: null }, cancellable: false,
+        depth: 0, order: 0, parentId: null,
+        uiWidget: 'my-widget',
+        widgetData: {},
+        children: [],
+        ...overrides,
+      };
+    }
+
+    it('shows the suspended widget variant and a Resume control', () => {
+      registerWidget(
+        'my-widget',
+        () => <div data-testid="my-widget">live</div>,
+        { suspended: (props) => <div data-testid="suspended-widget">suspended:{props.process._id}</div> },
+      );
+      mockProcessStream.mockReturnValue({ tree: suspendedTree(), logs: [], connected: true });
+      const { container } = render(<ProcessDetailView processId="abc" />);
+      expect(screen.getByTestId('suspended-widget').textContent).toBe('suspended:abc');
+      expect(screen.queryByTestId('my-widget')).toBeNull();
+      // Resume control (LaunchControls primary button for a resumable process).
+      expect(container.querySelector('.anticon-play-circle')).not.toBeNull();
+    });
+
+    it('Resume calls launch with resume: true', () => {
+      registerWidget(
+        'my-widget',
+        () => <div data-testid="my-widget">live</div>,
+        { suspended: () => <div data-testid="suspended-widget">suspended</div> },
+      );
+      mockProcessStream.mockReturnValue({ tree: suspendedTree(), logs: [], connected: true });
+      const { container } = render(<ProcessDetailView processId="abc" />);
+      const button = container.querySelector('.anticon-play-circle')!.closest('button')!;
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true });
+    });
+
+    it('hides the Resume control when readOnly is true', () => {
+      registerWidget(
+        'my-widget',
+        () => <div data-testid="my-widget">live</div>,
+        { suspended: () => <div data-testid="suspended-widget">suspended</div> },
+      );
+      mockProcessStream.mockReturnValue({ tree: suspendedTree(), logs: [], connected: true });
+      const { container } = render(<ProcessDetailView processId="abc" readOnly />);
+      expect(screen.getByTestId('suspended-widget')).toBeTruthy();
+      expect(screen.queryByTestId('optio-widget-suspended-actions')).toBeNull();
+      expect(container.querySelector('.anticon-play-circle')).toBeNull();
+    });
+
+    it('falls back to default tree+log when suspended but no suspended variant is registered', () => {
+      registerWidget('my-widget', () => <div data-testid="my-widget">live</div>);
+      mockProcessStream.mockReturnValue({ tree: suspendedTree(), logs: [], connected: true });
+      render(<ProcessDetailView processId="abc" />);
+      expect(screen.queryByTestId('my-widget')).toBeNull();
+      expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
+    });
+
+    it('live behaviour is unchanged when the process is actually live (not suspended)', () => {
+      registerWidget(
+        'my-widget',
+        () => <div data-testid="my-widget">live</div>,
+        { suspended: () => <div data-testid="suspended-widget">suspended</div> },
+      );
+      mockProcessStream.mockReturnValue({
+        tree: suspendedTree({ status: { state: 'running' } }),
+        logs: [],
+        connected: true,
+      });
+      render(<ProcessDetailView processId="abc" />);
+      expect(screen.getByTestId('my-widget')).toBeTruthy();
+      expect(screen.queryByTestId('suspended-widget')).toBeNull();
+    });
   });
 
 });

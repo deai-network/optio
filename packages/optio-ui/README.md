@@ -91,6 +91,7 @@ need a custom namespace to avoid collection name collisions in a shared database
 | `useProcessTree` | Polls the tree endpoint for a process; returns the tree body or `null` |
 | `useProcessTreeLog` | Polls the tree log endpoint for a process; returns an array of log entries |
 | `useProcessActions` | Returns imperative action functions: `launch`, `cancel`, `dismiss`, `resurrect`, `resync`, `resyncClean` |
+| `useProcessConversation` | Reads a suspended process's saved conversation record (`GET /processes/:id/conversation`); returns the ts-rest react-query result (`data.body` is `{ events, capturedAt }` on 200; non-2xx responses surface as `error`). Never retries a 4xx. |
 | `useProcessStream` | Opens an SSE connection to a single process tree stream; returns live `{ processes, tree, rootProcess, logs, connected }` |
 | `useProcessListStream` | Opens a module-level singleton SSE connection with optional metadata filtering; returns `{ processes, connected }`. Only one filter active at a time. |
 

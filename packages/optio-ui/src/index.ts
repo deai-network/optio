@@ -37,6 +37,7 @@ export { WithFilteredProcesses, ProcessFilters, FilteredProcessList, useProcessF
 export { useInstances, useInstanceDiscovery, type OptioInstance } from './hooks/useInstanceDiscovery.js';
 export { useProcessActions } from './hooks/useProcessActions.js';
 export { useProcessList, useProcess, useProcesses, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
+export { useProcessConversation } from './hooks/useProcessConversation.js';
 export { useProcessStream } from './hooks/useProcessStream.js';
 export { useProcessListStream } from './hooks/useProcessListStream.js';
 export { usePrefixes, usePrefixDiscovery } from './hooks/usePrefixDiscovery.js';
@@ -46,8 +47,8 @@ export type { FilterGroup } from './components/ProcessFilter.js';
 export type { ProcessTreeNode } from './hooks/useProcessStream.js';
 
 // Widgets
-export { registerWidget } from './widgets/registry.js';
-export type { WidgetProps, WidgetComponent } from './widgets/registry.js';
+export { registerWidget, getSuspendedWidget } from './widgets/registry.js';
+export type { WidgetProps, WidgetComponent, RegisterWidgetOptions } from './widgets/registry.js';
 export { IframeWidget } from './widgets/IframeWidget.js';
 export { IframeInputWidget } from './widgets/IframeInputWidget.js';
 
@@ -55,7 +56,7 @@ export { IframeInputWidget } from './widgets/IframeInputWidget.js';
 export { ProcessDetailView } from './components/ProcessDetailView.js';
 export type { ProcessDetailViewProps } from './components/ProcessDetailView.js';
 export { ProcessWidget, useProcessWidget } from './components/ProcessWidget.js';
-export type { ProcessWidgetProps } from './components/ProcessWidget.js';
+export type { ProcessWidgetProps, UseProcessWidgetResult } from './components/ProcessWidget.js';
 
 // Process state predicates
 export {
@@ -72,5 +73,6 @@ export {
   isResumable,
   isResurrectable,
   isResurrecting,
+  isSuspended,
 } from './process-state.js';
 export type { ProcessStateLike } from './process-state.js';

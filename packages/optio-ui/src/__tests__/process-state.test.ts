@@ -13,6 +13,7 @@ import {
   isResumable,
   isResurrectable,
   isResurrecting,
+  isSuspended,
 } from '../process-state.js';
 
 describe('isWidgetLiveState', () => {
@@ -231,5 +232,46 @@ describe('isResurrecting', () => {
     expect(isResurrecting({ status: { state: 'failed' } })).toBe(false);
     expect(isResurrecting(null)).toBe(false);
     expect(isResurrecting(undefined)).toBe(false);
+  });
+});
+
+describe('isSuspended', () => {
+  it('true only when cancelled AND supportsResume AND hasSavedState', () => {
+    expect(isSuspended({
+      status: { state: 'cancelled' }, supportsResume: true, hasSavedState: true,
+    })).toBe(true);
+  });
+
+  it.each(['running', 'scheduled', 'cancel_requested', 'cancelling', 'idle', 'done', 'failed'])(
+    'false for state=%s even with both flags true (only cancelled qualifies)',
+    (state) => {
+      expect(isSuspended({
+        status: { state }, supportsResume: true, hasSavedState: true,
+      })).toBe(false);
+    },
+  );
+
+  it('false when cancelled but supportsResume is false or missing', () => {
+    expect(isSuspended({ status: { state: 'cancelled' }, supportsResume: false, hasSavedState: true })).toBe(false);
+    expect(isSuspended({ status: { state: 'cancelled' }, hasSavedState: true })).toBe(false);
+  });
+
+  it('false when cancelled but hasSavedState is false or missing', () => {
+    expect(isSuspended({ status: { state: 'cancelled' }, supportsResume: true, hasSavedState: false })).toBe(false);
+    expect(isSuspended({ status: { state: 'cancelled' }, supportsResume: true })).toBe(false);
+  });
+
+  it('false for null/undefined/empty process', () => {
+    expect(isSuspended(null)).toBe(false);
+    expect(isSuspended(undefined)).toBe(false);
+    expect(isSuspended({})).toBe(false);
+  });
+
+  it('truthy non-boolean values do not count as true', () => {
+    expect(isSuspended({
+      status: { state: 'cancelled' },
+      supportsResume: 1 as unknown as boolean,
+      hasSavedState: 1 as unknown as boolean,
+    })).toBe(false);
   });
 });

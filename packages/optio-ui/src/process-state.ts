@@ -28,6 +28,11 @@
  *                  (cancel already in flight, re-request is a no-op) and all
  *                  terminal states. Mirrors optio-core's authoritative
  *                  CANCELLABLE_STATES in state_machine.py.
+ *   - suspended:  cancelled AND supportsResume AND hasSavedState — a task
+ *                 whose saved conversation can be read while it is not
+ *                 running. Suspended ⊂ terminal ⊂ launchable. Not every
+ *                 `cancelled` process is suspended (a plain cancel without
+ *                 saved state is just terminal).
  *
  * `idle` is launchable but not terminal (never run yet).
  * Terminal ⊂ launchable.
@@ -107,4 +112,13 @@ export function isResurrectable(process: ProcessStateLike | null | undefined): b
     && !isResurrecting(process)
     && process?.supportsResurrect === true
     && process?.hasUnsavedWork === true;
+}
+
+/** A cancelled task with a resumable, saved conversation: read-only view is
+ *  available without launching anything. Not every `cancelled` process
+ *  qualifies — a plain cancel without saved state is just terminal. */
+export function isSuspended(process: ProcessStateLike | null | undefined): boolean {
+  return process?.status?.state === 'cancelled'
+    && process?.supportsResume === true
+    && process?.hasSavedState === true;
 }

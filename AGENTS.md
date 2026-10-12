@@ -1155,11 +1155,14 @@ interface ProcessDetailViewProps {
 
 Self-fetching detail panel (uses `useProcessStream` internally). Renders a placeholder when
 `processId` is falsy, a loading state while the SSE stream connects, a named widget when
-`tree.uiWidget` is a registered name, or the default `ProcessTreeView` + `ProcessLogPanel`
-layout otherwise. Warns to `console.warn` and falls back to default when `uiWidget` is set
-but no matching widget is registered. The default layout wires `ProcessTreeView`'s `onLaunch`,
-`onResurrect` and `onCancel` to `useProcessActions()` itself (none when `readOnly`), so the host
-passes no action callbacks to it.
+`tree.uiWidget` is a registered name for the process's mode (live or suspended — see
+`useProcessWidget` below), or the default `ProcessTreeView` + `ProcessLogPanel` layout
+otherwise. Warns to `console.warn` and falls back to default when `uiWidget` is set but no
+live widget is registered; falls back silently (no warning) when the process `isSuspended`
+and no suspended variant is registered. In suspended mode, also renders a `LaunchControls`
+(Resume) row above the widget unless `readOnly`. The default layout wires `ProcessTreeView`'s
+`onLaunch`, `onResurrect` and `onCancel` to `useProcessActions()` itself (none when
+`readOnly`), so the host passes no action callbacks to it.
 
 ---
 
@@ -1176,15 +1179,35 @@ interface WidgetProps {
 
 type WidgetComponent = ComponentType<WidgetProps>;
 
-function registerWidget(name: string, component: WidgetComponent): void
+interface RegisterWidgetOptions {
+  suspended?: WidgetComponent;   // shown instead of `component` while the process isSuspended
+}
+
+function registerWidget(name: string, component: WidgetComponent, options?: RegisterWidgetOptions): void
+function getSuspendedWidget(name: string): WidgetComponent | undefined
 ```
 
 Call `registerWidget` at module load time to make a widget available to `ProcessDetailView`.
+`options.suspended` registers a second component shown while the process `isSuspended`
+(cancelled, `supportsResume`, `hasSavedState`) rather than widget-live; same `WidgetProps`
+either way. Omitting `options` (or `options.suspended`) leaves any suspended variant already
+registered for that name untouched — every pre-existing two-argument call site keeps working
+unchanged. `useProcessWidget` (below) is what actually dispatches between the two maps; its
+`mode: 'live' | 'suspended'` tells the caller which one it got.
 
 **Built-in `'iframe'` widget** — registered automatically when anything from `optio-ui` is
 imported. Reads `process.widgetData` for config (`iframeSrc`, `localStorageOverrides`,
 `sandbox`, `allow`, `title`). Sets localStorage entries on mount and removes them on
-unmount. Shows a dismissible "Session ended." banner on terminal states.
+unmount. Shows a dismissible "Session ended." banner on terminal states. Has no suspended
+variant, so a suspended process using it falls back to the default tree/log layout.
+
+**`useProcessWidget(tree)`** (`packages/optio-ui/src/components/ProcessWidget.tsx`) — the
+layout-free primitive `ProcessDetailView` consumes: returns
+`{ widget: ReactNode; mode: 'live' | 'suspended' } | null`. `null` when `tree` or
+`tree.uiWidget` is missing, when the process is neither widget-live nor suspended, when
+`tree.widgetData` hasn't arrived, when the database is unknown, or when no component is
+registered for the applicable mode. `widget` is the registered component invoked with the
+same `WidgetProps` in both modes.
 
 ---
 
@@ -1211,6 +1234,25 @@ useProcessActions(options?: ProcessActionsOptions): {
 ```
 
 Note: `processId` arguments are MongoDB `_id` strings (ObjectId hex), not `processId` strings.
+
+**`useProcessConversation(processId, opts?)`**
+
+```typescript
+useProcessConversation(
+  processId: string,
+  opts?: { enabled?: boolean },
+): UseQueryResult  // ts-rest react-query result, unmodified
+```
+
+Reads a suspended process's saved conversation record: `GET /processes/:id/conversation`
+(`api.processes.getConversation.useQuery`), proxied by optio-api from the engine's
+conversation archive. A 200 appears as `data` (`data.body` is
+`{ events: unknown[]; capturedAt: string | null }`); any non-2xx (401/403/404/409/500/503) is
+thrown by ts-rest and surfaces as `error` (`error.status`; `error.body` is
+`{ reason, message }` except for 401, which is `{ message }`). Never retries a 4xx (transient
+errors get up to 2). Query key includes the process's current `status.stoppedAt` (read
+internally via `useProcess`) alongside the id, so a resume-then-resuspend cycle gets a fresh
+cache entry instead of momentarily showing the previous suspend's conversation.
 
 **`useProcessList(options?)`**
 

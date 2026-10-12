@@ -54,7 +54,10 @@ Do:
   `isResumable(process)`, `isResurrectable(process)` (launchable AND not
   resurrecting AND `supportsResurrect === true` AND `hasUnsavedWork === true`),
   `isResurrecting(process)` (`resurrecting === true`: a resurrect is saving the
-  unsaved work while the state stays as it was).
+  unsaved work while the state stays as it was), `isSuspended(process)`
+  (`status.state === 'cancelled'` AND `supportsResume === true` AND
+  `hasSavedState === true`: a cancelled task whose saved conversation can be
+  read without launching it).
 - If you genuinely need a new state-derived concept (e.g. "show widget UI" —
   which is *almost* `isActive` but excludes `scheduled`), add a named
   predicate to `process-state.ts` rather than spelling out the set at the
@@ -360,10 +363,15 @@ Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branch
 
 - **No processId** — renders a centred "Select a process" placeholder.
 - **No tree yet** (stream not yet received) — renders a "Loading…" placeholder (preceded by the app's lent Spinner, if any — see "Spinner slot").
-- **`tree.uiWidget` is set and registered** — renders the named widget component, passing
-  `{ process: tree, apiBaseUrl, widgetProxyUrl, prefix }`.
-- **`tree.uiWidget` is set but unregistered** — warns to `console.warn` and falls back to
-  the default tree+log view.
+- **`tree.uiWidget` is set and registered for the process's mode** — renders the named widget
+  component (live or suspended variant, per `useProcessWidget`'s `mode`), passing
+  `{ process: tree, apiBaseUrl, widgetProxyUrl, prefix, database }`. In suspended mode, also
+  renders a `LaunchControls` (Resume) row above the widget unless `readOnly` is set.
+- **`tree.uiWidget` is set but unregistered for the live mode** — warns to `console.warn` and
+  falls back to the default tree+log view.
+- **`tree.uiWidget` is set, the process `isSuspended`, but no suspended variant is
+  registered** — falls back to the default tree+log view, silently (no warning — this is the
+  normal case for a widget that doesn't support a read-only suspended view yet).
 - **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set) + `ProcessLogPanel`.
 
 `widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${process._id}/`
@@ -376,7 +384,11 @@ Exported from `optio-ui`.
 ### ProcessWidget / useProcessWidget
 
 ```ts
-function useProcessWidget(tree: ProcessTreeNode | null | undefined): ReactNode | null
+interface UseProcessWidgetResult {
+  widget: ReactNode;
+  mode: 'live' | 'suspended';
+}
+function useProcessWidget(tree: ProcessTreeNode | null | undefined): UseProcessWidgetResult | null
 
 interface ProcessWidgetProps {
   tree: ProcessTreeNode | null | undefined;
@@ -387,22 +399,29 @@ function ProcessWidget({ tree }: ProcessWidgetProps): ReactNode  // null when no
 Layout-free widget primitive (`packages/optio-ui/src/components/ProcessWidget.tsx`).
 The hook owns:
 
-- Readiness gate: `tree.uiWidget` set, state is widget-live (`isWidgetLive`), `tree.widgetData != null`.
-- Registry lookup via `getWidget(uiWidget)`. If unregistered → emits `console.warn` and returns `null`.
+- Readiness gate: `tree.uiWidget` set, and either state is widget-live (`isWidgetLive`) or the
+  process `isSuspended`; `tree.widgetData != null`.
+- Registry lookup: `getWidget(uiWidget)` while live, `getSuspendedWidget(uiWidget)` while
+  suspended. Live + unregistered → emits `console.warn` and returns `null`. Suspended +
+  unregistered → returns `null` silently (no warning — a widget with no suspended variant,
+  e.g. the built-in `iframe` widget, is expected to have nothing to show here).
 - Database check (from `OptioProvider` / instance discovery). If unknown → emits `console.warn` and returns `null` (widget URLs need the database segment).
-- `widgetProxyUrl` build: `${baseUrl}/api/widget/${database}/${prefix}/${tree._id}/` (trailing slash load-bearing).
+- `widgetProxyUrl` build: `${baseUrl}/api/widget/${database}/${prefix}/${tree._id}/` (trailing slash load-bearing). Built the same way for both modes, whether or not the suspended variant actually uses the proxy.
 
-What the hook does **not** own: layout. It returns the bare widget element (the registered component invoked with `{ process, apiBaseUrl, widgetProxyUrl, prefix, database }`) or `null`. The caller decides what to render around it (log strip, tabs, full-bleed, collapsible drawer, etc.).
+What the hook does **not** own: layout. It returns `{ widget, mode }` — the registered component invoked with `{ process, apiBaseUrl, widgetProxyUrl, prefix, database }` (same props in both modes) plus which mode produced it — or `null` when nothing should render. The caller decides what to render around it (log strip, tabs, full-bleed, collapsible drawer, Resume control, etc.).
 
 Typical usage:
 ```tsx
-const widget = useProcessWidget(tree);
-return widget
-  ? <MyWidgetLayout>{widget}</MyWidgetLayout>
+const result = useProcessWidget(tree);
+return result
+  ? <MyWidgetLayout>{result.widget}</MyWidgetLayout>
   : <MyFallback />;
 ```
 
-`ProcessDetailView` consumes the hook internally and wraps the widget in a log-strip-on-top + widget-fill layout. Other consumers (e.g. an external app's process detail page) are free to choose their own layout.
+`ProcessDetailView` consumes the hook internally: both modes get the log-strip-on-top +
+widget-fill layout; suspended mode additionally shows a `LaunchControls` (Resume) row above
+the widget, unless `readOnly`. Other consumers (e.g. an external app's process detail page)
+are free to choose their own layout.
 
 ---
 
@@ -421,11 +440,25 @@ interface WidgetProps {
 
 type WidgetComponent = ComponentType<WidgetProps>;
 
-function registerWidget(name: string, component: WidgetComponent): void
+interface RegisterWidgetOptions {
+  suspended?: WidgetComponent;
+}
+
+function registerWidget(name: string, component: WidgetComponent, options?: RegisterWidgetOptions): void
+function getSuspendedWidget(name: string): WidgetComponent | undefined
 ```
 
 `registerWidget` adds a named component to the module-level widget registry. Call this at
 module load time (before any `ProcessDetailView` renders). Exported from `optio-ui`.
+
+`options.suspended` registers a second component under the same name, shown instead of the
+live one while the process `isSuspended` (same `WidgetProps`, no extra fields). It lives in a
+separate map (`getSuspendedWidget`, not exported from the package root — consumed internally
+by `useProcessWidget`); a plain two-argument `registerWidget(name, component)` call leaves
+any suspended variant already registered for that name untouched, so every existing call site
+keeps working unchanged. A widget with no suspended variant (e.g. the built-in `iframe`
+widget) simply isn't shown while suspended — `ProcessDetailView` falls back to the default
+tree/log layout, exactly as it does for any other terminal state today.
 
 ### Built-in 'iframe' widget
 
@@ -471,6 +504,40 @@ All mutations invalidate the `['processes']` query key on success.
 `onResyncSuccess(clean)` is called after a successful resync with the `clean` flag value.
 `launch` sends `body: { resume: true }` when `opts.resume` is true; empty body otherwise.
 `resurrect` POSTs `/processes/:id/resurrect` with `body: { sessionId: getSessionId() }`.
+
+---
+
+### useProcessConversation
+
+```ts
+function useProcessConversation(
+  processId: string,
+  opts?: { enabled?: boolean },
+): UseQueryResult<{ status: 200; body: { events: unknown[]; capturedAt: string | null } }, unknown>
+```
+
+Reads a suspended process's saved conversation record via
+`api.processes.getConversation.useQuery` (`GET /processes/:id/conversation`, proxied by
+optio-api from the engine's conversation archive — see root AGENTS.md "optio-core:
+conversation archive listener" and `packages/optio-api/AGENTS.md`). Returns the raw ts-rest
+react-query result, unmodified:
+
+- a 200 appears as `data` (`data.body` is `{ events, capturedAt }`);
+- any non-2xx (401/403/404/409/500/503) is thrown by ts-rest and surfaces as `error`
+  (`error.status` is the HTTP status; `error.body` is `{ reason, message }` for every status
+  except 401, which is `{ message }` only).
+
+`opts.enabled` (default `true`) gates the query, ANDed with `!!processId`.
+
+Never retries a 4xx (`error.status` 400–499) — the process's state won't change because the
+read is repeated. Transient errors (network, 5xx) get up to 2 retries.
+
+The query key is `['process-conversation', database, prefix, processId, statusTimestamp]`,
+where `statusTimestamp` is the process's current `status.stoppedAt` (read internally via
+`useProcess(processId)`). This is the timestamp a suspend (a cancel with saved state) sets, so
+a resume-then-resuspend cycle gets a fresh cache entry — without it, remounting after a second
+suspend would briefly (or indefinitely, if the component never actually unmounts) show the
+first suspend's cached conversation while the new one loads.
 
 ---
 

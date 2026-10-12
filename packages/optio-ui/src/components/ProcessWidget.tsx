@@ -1,24 +1,38 @@
 import type { ReactNode } from 'react';
 import { useOptioBaseUrl, useOptioPrefix, useOptioDatabase } from '../context/useOptioContext.js';
-import { getWidget } from '../widgets/registry.js';
-import { isWidgetLive } from '../process-state.js';
+import { getWidget, getSuspendedWidget } from '../widgets/registry.js';
+import { isWidgetLive, isSuspended } from '../process-state.js';
 import type { ProcessTreeNode } from '../hooks/useProcessStream.js';
 
+export interface UseProcessWidgetResult {
+  widget: ReactNode;
+  /** `'live'` while the task is running and its live widget is shown;
+   *  `'suspended'` while the task is suspended and its suspended variant is
+   *  shown (same `WidgetProps` either way). */
+  mode: 'live' | 'suspended';
+}
+
 /**
- * Returns the rendered widget element for a process tree, or `null` if no
- * widget should be shown right now. Layout is the caller's problem — this
- * hook only handles the readiness gate, registry lookup, and proxy-URL build.
+ * Returns the rendered widget for a process tree, or `null` if no widget
+ * should be shown right now. Layout is the caller's problem — this hook only
+ * handles the readiness gate, registry lookup, and proxy-URL build.
  *
  * Returns `null` when:
  *   - tree is missing,
  *   - tree.uiWidget is not set,
- *   - state is not widget-live (running | cancel_requested | cancelling),
+ *   - state is neither widget-live (running | cancel_requested | cancelling)
+ *     nor suspended (`isSuspended`),
  *   - widgetData hasn't arrived yet (the worker hasn't called
  *     `set_widget_data` — task is typically still doing pre-widget setup),
- *   - the widget name is not registered (also emits console.warn),
+ *   - the widget name has no component registered for the applicable mode
+ *     (live: emits console.warn; suspended: silently falls back — a widget
+ *     with no suspended variant, e.g. the iframe widget, behaves exactly as
+ *     it did for any other terminal state),
  *   - the database is unknown (also emits console.warn — widget URLs need it).
  */
-export function useProcessWidget(tree: ProcessTreeNode | null | undefined): ReactNode | null {
+export function useProcessWidget(
+  tree: ProcessTreeNode | null | undefined,
+): UseProcessWidgetResult | null {
   const baseUrl = useOptioBaseUrl();
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
@@ -28,14 +42,18 @@ export function useProcessWidget(tree: ProcessTreeNode | null | undefined): Reac
   const widgetName = (tree as any).uiWidget as string | undefined;
   if (!widgetName) return null;
 
-  if (!isWidgetLive(tree as any)) return null;
+  const live = isWidgetLive(tree as any);
+  const suspended = !live && isSuspended(tree as any);
+  if (!live && !suspended) return null;
 
   const widgetDataReady = (tree as any).widgetData != null;
   if (!widgetDataReady) return null;
 
-  const Widget = getWidget(widgetName);
+  const Widget = live ? getWidget(widgetName) : getSuspendedWidget(widgetName);
   if (!Widget) {
-    console.warn(`[optio-ui] No widget registered under name "${widgetName}"; falling back to default rendering.`);
+    if (live) {
+      console.warn(`[optio-ui] No widget registered under name "${widgetName}"; falling back to default rendering.`);
+    }
     return null;
   }
 
@@ -51,15 +69,18 @@ export function useProcessWidget(tree: ProcessTreeNode | null | undefined): Reac
   const widgetProxyUrl =
     `${baseUrl}/api/widget/${encodeURIComponent(database)}/${encodeURIComponent(prefix)}/${tree._id}/`;
 
-  return (
-    <Widget
-      process={tree as any}
-      apiBaseUrl={baseUrl}
-      widgetProxyUrl={widgetProxyUrl}
-      prefix={prefix}
-      database={database}
-    />
-  );
+  return {
+    mode: live ? 'live' : 'suspended',
+    widget: (
+      <Widget
+        process={tree as any}
+        apiBaseUrl={baseUrl}
+        widgetProxyUrl={widgetProxyUrl}
+        prefix={prefix}
+        database={database}
+      />
+    ),
+  };
 }
 
 export interface ProcessWidgetProps {
@@ -72,5 +93,5 @@ export interface ProcessWidgetProps {
  * the surrounding layout — log strip, tabs, full-bleed, whatever.
  */
 export function ProcessWidget({ tree }: ProcessWidgetProps): ReactNode {
-  return useProcessWidget(tree);
+  return useProcessWidget(tree)?.widget ?? null;
 }
