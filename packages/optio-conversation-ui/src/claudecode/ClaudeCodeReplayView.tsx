@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { WidgetProps } from 'optio-ui';
 import { SpinnerScope } from 'vultus-antd';
 import type { ChatState, SessionControl } from '../chat.js';
-import { initialChatState, reduceEvent } from './events.js';
+import { initialChatState, reduceEvent, type ReduceOptions } from './events.js';
 import { ConversationView } from '../ConversationView.js';
 import { todosFromWidgetData } from '../todosFromWidgetData.js';
 import { NativeSpinner } from '../spinners/NativeSpinner.js';
@@ -35,19 +35,20 @@ const noop = (): void => {};
 // `now` (durations of rows without a wire time) stay put across re-renders.
 // Then close it as a suspended session at maxSeq + 1: the reducer stops what
 // was still running (tool rows, background jobs, an in-flight answer) and sets
-// `closed`, which disables the composer.
-function foldRecord(events: unknown[], seed: ChatState, now: number): ChatState {
+// `closed`, which disables the composer. `opts` are the live view's reducer
+// options (thinkingRows), so the replay shows what the live view showed.
+function foldRecord(events: unknown[], seed: ChatState, now: number, opts: ReduceOptions): ChatState {
   let state = seed;
   let maxSeq = 0;
   for (const entry of Array.isArray(events) ? events : []) {
     if (!Array.isArray(entry) || entry.length < 2) continue;
     const seq = Number(entry[0]);
     if (!Number.isFinite(seq)) continue;
-    state = reduceEvent(state, entry[1], seq, now);
+    state = reduceEvent(state, entry[1], seq, now, opts);
     if (seq > maxSeq) maxSeq = seq;
   }
   const closeSeq = maxSeq + 1;
-  state = reduceEvent(state, { type: 'x-optio-closed', reason: 'suspended' }, closeSeq, now);
+  state = reduceEvent(state, { type: 'x-optio-closed', reason: 'suspended' }, closeSeq, now, opts);
   // The closing event also appends its own "conversation ended (suspended)"
   // row; the closedLabel divider already says it, so drop that row.
   return { ...state, items: state.items.filter((i) => !(i.kind === 'closed' && i.seq === closeSeq)) };
@@ -77,12 +78,13 @@ export function ClaudeCodeReplayView({
   const now = Number.isFinite(captured) ? captured : mountedAt;
 
   // Seeded like ClaudeCodeView's reducer: `{...initialChatState, controls}`
-  // from widgetData. Re-folded only when the record (events array) changes;
-  // `now` changes only with it.
+  // from widgetData. Re-folded only when the record (events array) or the
+  // thinking verbosity changes; `now` changes only with the record.
+  const thinkingRows = thinkingVerbosity === 'visible';
   const state = useMemo(
-    () => foldRecord(events, { ...initialChatState, controls: initialControls }, now),
+    () => foldRecord(events, { ...initialChatState, controls: initialControls }, now, { thinkingRows }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [events, now],
+    [events, now, thinkingRows],
   );
 
   // The same state-derived props as ClaudeCodeView. No send, steer, interrupt,

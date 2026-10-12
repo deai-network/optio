@@ -228,6 +228,24 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
     expect(screen.getByText('Listing them now.')).toBeTruthy();
   });
 
+  it('folds reasoning into thinking rows when widgetData has thinkingVerbosity visible, as the live view does', () => {
+    const thought: unknown[] = [
+      [1, { type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: 'Weighing wc -l against a loop.', signature: 's' }] } }],
+    ];
+    useProcessConversation.mockReturnValue(loaded(thought));
+    const hidden = render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
+    expect(reduceSpy.mock.calls.map((c) => c[4])).toEqual([{ thinkingRows: false }, { thinkingRows: false }]);
+    expect(screen.queryByTestId('thinking')).toBeNull();
+    hidden.unmount();
+    reduceSpy.mockClear();
+
+    render(wrap(<SuspendedConversationWidget {...widgetProps({
+      widgetData: { protocol: 'claudecode', thinkingVerbosity: 'visible' },
+    })} />));
+    expect(reduceSpy.mock.calls.map((c) => c[4])).toEqual([{ thinkingRows: true }, { thinkingRows: true }]);
+    expect(screen.getByTestId('thinking').textContent).toContain('Weighing wc -l against a loop.');
+  });
+
   it('offers no upload, download or session controls even when widgetData enables them', () => {
     useProcessConversation.mockReturnValue(loaded(RECORD));
     render(wrap(<SuspendedConversationWidget {...widgetProps({
