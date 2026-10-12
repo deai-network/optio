@@ -13,6 +13,7 @@ import { transcriptKeys } from './transcriptKeys.js';
 import { ConversationWidenessContext, type ConversationWideness } from './wideness.js';
 import { ConversationWelcomeContext, type ConversationWelcome } from './welcome.js';
 import { resolveText, useLanguage } from './text.js';
+import { ConversationSetBusyContext } from './busy.js';
 import { AnswerBlock } from './AnswerBlock.js';
 import { AnswerFiles, FILE_LINK_CLASS } from './FileCards.js';
 import { SlotSpinner } from './spinners/SlotSpinner.js';
@@ -1231,6 +1232,12 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const welcome = props.welcome !== undefined ? props.welcome : welcomeFromWidget;
   const widenessFromWidget = useContext(ConversationWidenessContext);
   const wideness = props.wideness ?? widenessFromWidget;
+  // The agent's busy / idle state for the host (see busy.ts): on every
+  // change, and idle when the view goes away.
+  const setBusy = useContext(ConversationSetBusyContext);
+  const working = props.busy && !props.closed;
+  useEffect(() => { setBusy?.(working); }, [setBusy, working]);
+  useEffect(() => () => setBusy?.(false), [setBusy]);
   const [wideChosen, setWide] = useState(false);
   const wide = wideness === 'wide' || (wideness === 'switch' && wideChosen);
   // The task sidebar starts open. The chevron collapses the column itself.
