@@ -9,6 +9,7 @@ import pytest
 import pytest_asyncio
 from bson import ObjectId
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth
 from optio_opencode.session import run_opencode_session
@@ -16,6 +17,9 @@ from optio_opencode.types import OpencodeTaskConfig
 
 
 FAKE_OPENCODE = os.path.join(os.path.dirname(__file__), "fake_opencode.py")
+
+_POLL_RULE = "At the start of every new incoming user message"
+_NOTICE_RULE = f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}` message on your input channel"
 
 # Each test here spawns a real fake-opencode server subprocess and polls it for
 # streamed events; the timing is fragile under *any* concurrent machine load
@@ -192,6 +196,26 @@ async def test_happy_path(ctx_and_captures, _supply_scenario):
     p, text = received[0]
     assert p == "out.txt"
     assert text == "hello 42 blue"
+
+
+async def test_fresh_agents_md_waits_for_the_resume_notice(ctx_and_captures, _supply_scenario):
+    """Every resume is announced with the System: resume notice (both
+    modes), so the planted AGENTS.md tells opencode to wait for it rather
+    than read resume.log before each message."""
+    import dataclasses
+    ctx, cap, _ = ctx_and_captures
+    _supply_scenario["name"] = "happy"
+    observed: dict[str, str] = {}
+
+    async def capture(hook_ctx):
+        observed["agents_md"] = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
+
+    cfg = dataclasses.replace(_config("happy"), before_execute=capture)
+    await run_opencode_session(ctx, cfg)
+
+    assert "## Resumes" in observed["agents_md"]
+    assert _POLL_RULE not in observed["agents_md"]
+    assert _NOTICE_RULE in observed["agents_md"]
 
 
 async def test_status_percent_is_reported(ctx_and_captures, _supply_scenario):
@@ -518,6 +542,7 @@ async def test_maybe_refresh_on_resume_unchanged_content_skips_write(tmp_workdir
         config.consumer_instructions,
         workdir_exclude=config.workdir_exclude,
         supports_resume=config.supports_resume,
+        check_resume_log_every_message=False,   # as the fresh start writes it
     )
     await host.write_text("AGENTS.md", expected)
     mtime_before = os.path.getmtime(os.path.join(host.workdir, "AGENTS.md"))
@@ -562,6 +587,7 @@ async def test_maybe_refresh_on_resume_conversation_defaults_match_fresh(tmp_wor
         supports_resume=config.supports_resume,
         host_protocol=config.host_protocol,
         omit_task_framing=True,
+        check_resume_log_every_message=False,
     )
     await host.write_text("AGENTS.md", expected)
 
@@ -619,6 +645,10 @@ async def test_maybe_refresh_on_resume_changed_content_writes(tmp_workdir):
         content = f.read()
     assert "new task" in content
     assert "old task" not in content
+    # Every resume sends the System: resume notice, so the refreshed file
+    # says to wait for it rather than read resume.log before each message.
+    assert _POLL_RULE not in content
+    assert _NOTICE_RULE in content
 
 
 async def test_maybe_refresh_on_resume_hook_raises_keeps_existing(tmp_workdir):

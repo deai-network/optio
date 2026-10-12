@@ -424,6 +424,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 supports_resume=config.supports_resume,
                 fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                 file_download=config.file_download,
+                # Every resume sends the System: resume notice.
+                check_resume_log_every_message=False,
             ),
         )
         # Resume-refresh (P2): on resume, run on_resume_refresh and rewrite
@@ -467,8 +469,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # PUSH resume awareness: a System: notice appended after --continue
             # so the resumed TUI session gets a "you have been resumed" turn
             # (mutually exclusive with the fresh-launch kickoff above). Parity
-            # with claudecode/opencode/grok; resume.log stays the pull-based
-            # backstop.
+            # with claudecode/opencode/grok. AGENTS.md tells cursor to wait for
+            # this notice, not to poll resume.log.
             *host_actions.build_resume_notice_args(resuming=resuming),
         ]
         launch_env = {
@@ -794,8 +796,9 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         # Kickoff prompt as the first turn (headless: no positional prompt
         # path). On resume, push a System: resume notice instead so the resumed
         # session notices promptly (parity with claudecode/opencode/grok;
-        # resume.log stays the pull-based backstop). The System: convention is
-        # always taught in the prompt, so no host_protocol gate is needed here.
+        # AGENTS.md says to wait for it, not to poll resume.log). The System:
+        # convention is always taught in the prompt, so no host_protocol gate
+        # is needed here.
         if config.auto_start and not resuming:
             await conversation.send(host_actions.AUTO_START_PROMPT)
         elif resuming:
@@ -1116,6 +1119,8 @@ async def _maybe_refresh_on_resume(
         supports_resume=new_config.supports_resume,
         fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
+        # Every resume sends the System: resume notice.
+        check_resume_log_every_message=False,
     )
     try:
         existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)

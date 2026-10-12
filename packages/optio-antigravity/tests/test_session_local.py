@@ -14,10 +14,14 @@ import pathlib
 
 import pytest
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_antigravity import (
     AntigravityTaskConfig,
     create_antigravity_task,
 )
+
+_POLL_RULE = "At the start of every new incoming user message"
+_NOTICE_RULE = f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}` message on your input channel"
 
 
 @pytest.mark.asyncio
@@ -110,3 +114,38 @@ async def test_local_error_raises(
     )
     with pytest.raises(RuntimeError):
         await task.execute(ctx)
+
+
+@pytest.mark.asyncio
+async def test_local_agents_md_waits_for_the_resume_notice(
+    shim_install_dir: pathlib.Path,
+    ctx_and_captures,
+    monkeypatch,
+):
+    """Every resume is announced with the System: resume notice, so the
+    planted AGENTS.md tells agy to wait for it rather than read
+    resume.log before each message."""
+    ctx, *_ = ctx_and_captures
+    monkeypatch.setenv("FAKE_AGY_SCENARIO", "happy")
+    observed: dict[str, str] = {}
+
+    async def capture(hook_ctx):
+        observed["agents_md"] = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
+
+    task = create_antigravity_task(
+        process_id="antigravity-local-resume-notice",
+        name="n",
+        config=AntigravityTaskConfig(
+            consumer_instructions="do the thing",
+            install_dir=str(shim_install_dir),
+            ttyd_install_dir=str(shim_install_dir),
+            fs_isolation=False,
+            supports_resume=True,
+            before_execute=capture,
+        ),
+    )
+    await task.execute(ctx)
+
+    assert "## Resumes" in observed["agents_md"]
+    assert _POLL_RULE not in observed["agents_md"]
+    assert _NOTICE_RULE in observed["agents_md"]

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from optio_agents import get_protocol
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_codex.prompt import compose_agents_md
 from optio_codex.types import CodexTaskConfig
@@ -271,6 +271,7 @@ async def test_maybe_refresh_identity_unchanged_is_noop():
         supports_resume=cfg.supports_resume,
         file_download=cfg.file_download,
         fs_isolation_dirs=fs_isolation_dirs(cfg, workdir),
+        check_resume_log_every_message=False,   # as the fresh start writes it
     )
     host, hook, written = _resume_fakes(existing, workdir=workdir)
 
@@ -301,6 +302,10 @@ async def test_maybe_refresh_mutating_hook_rewrites_agents_md():
     refreshed = await _maybe_refresh_on_resume(host, hook, cfg, protocol)
     assert refreshed == ["AGENTS.md"]
     assert "UPDATED INSTRUCTIONS" in written["AGENTS.md"]
+    # Every resume sends the System: resume notice, so the refreshed file
+    # says to wait for it rather than read resume.log before each message.
+    assert "At the start of every new incoming user message" not in written["AGENTS.md"]
+    assert f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}` message on your input channel" in written["AGENTS.md"]
 
 
 async def test_maybe_refresh_none_hook_is_noop():

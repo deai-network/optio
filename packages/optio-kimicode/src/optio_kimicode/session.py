@@ -394,6 +394,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                     supports_resume=config.supports_resume,
                     fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                     file_download=config.file_download,
+                    # Every resume sends the System: resume notice.
+                    check_resume_log_every_message=False,
                 ),
             )
 
@@ -783,8 +785,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
 
         # Kickoff prompt as the first ACP turn (headless: no positional prompt
         # path). On resume, PUSH the resume notice instead so the rehydrated
-        # session notices promptly (resume.log stays the pull-based backstop) —
-        # parity with the iframe REST push already shipped.
+        # session notices promptly (AGENTS.md says to wait for it, not to poll
+        # resume.log) — parity with the iframe REST push already shipped.
         if config.auto_start and not resuming:
             await conversation.send(AUTO_START_PROMPT)
         elif resuming and config.supports_resume:
@@ -1239,6 +1241,8 @@ async def _maybe_refresh_on_resume(
         supports_resume=new_config.supports_resume,
         fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
+        # Every resume sends the System: resume notice.
+        check_resume_log_every_message=False,
     )
     try:
         existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)

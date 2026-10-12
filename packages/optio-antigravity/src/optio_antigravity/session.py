@@ -287,6 +287,8 @@ async def run_antigravity_session(
                     supports_resume=config.supports_resume,
                     fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                     file_download=config.file_download,
+                    # Every resume sends the System: resume notice.
+                    check_resume_log_every_message=False,
                 ),
             )
         if config.supports_resume:
@@ -332,8 +334,8 @@ async def run_antigravity_session(
             ),
             # PUSH resume awareness: a System: notice appended after --continue so
             # the resumed TUI session gets a "you have been resumed" turn (mutually
-            # exclusive with the fresh-launch kickoff above). resume.log stays the
-            # pull-based backstop.
+            # exclusive with the fresh-launch kickoff above). AGENTS.md tells agy
+            # to wait for this notice, not to poll resume.log.
             *host_actions.build_resume_notice_args(resuming=resuming),
         ]
         launch_env = {
@@ -599,7 +601,7 @@ async def run_antigravity_session(
 
         # Kickoff prompt as the first turn (unattended runs). On resume, push a
         # System: resume notice instead so the resumed conversation notices
-        # promptly (resume.log stays the pull-based backstop).
+        # promptly (AGENTS.md says to wait for it, not to poll resume.log).
         if config.auto_start and not resuming:
             await conversation.send(host_actions.AUTO_START_PROMPT)
         elif resuming:
@@ -901,6 +903,8 @@ async def _maybe_refresh_on_resume(
         supports_resume=new_config.supports_resume,
         fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
+        # Every resume sends the System: resume notice.
+        check_resume_log_every_message=False,
     )
     try:
         existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)

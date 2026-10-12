@@ -360,6 +360,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     omit_task_framing=omit_task_framing,
                     fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                     file_download=config.file_download,
+                    # Every resume sends the System: resume notice.
+                    check_resume_log_every_message=False,
                 ),
             )
             if resolved_seed_id is not None:
@@ -1092,6 +1094,8 @@ async def _maybe_refresh_on_resume(
         omit_task_framing=omit_task_framing,
         fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
+        # Every resume sends the System: resume notice.
+        check_resume_log_every_message=False,
     )
     try:
         existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)

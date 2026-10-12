@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from optio_agents import get_protocol
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents.fs_grants import fs_isolation_dirs
 
 from optio_kimicode.prompt import compose_agents_md
@@ -53,6 +53,7 @@ def _agents_md_for(cfg: KimiCodeTaskConfig) -> str:
         supports_resume=cfg.supports_resume,
         fs_isolation_dirs=fs_isolation_dirs(cfg, "/tmp/fake-wd"),
         file_download=cfg.file_download,
+        check_resume_log_every_message=False,   # as the fresh start writes it
     )
 
 
@@ -122,3 +123,15 @@ async def test_refresh_threads_session_docs():
     assert await _maybe_refresh_on_resume(host, hook, cfg, protocol) == ["AGENTS.md"]
     (text,) = host.writes.values()
     assert "CLIENT_MESSAGE:" in text and "`/tmp/fake-wd`" in text
+
+
+async def test_refresh_waits_for_the_resume_notice():
+    """Every resume sends the System: resume notice, so the refreshed
+    AGENTS.md says to wait for it rather than read resume.log before each
+    message."""
+    cfg = KimiCodeTaskConfig(consumer_instructions="do the task", delivery_type="audit")
+    host, hook = _FakeHost(), _FakeHookCtx(existing="stale")
+    assert await _maybe_refresh_on_resume(host, hook, cfg, PROTOCOL) == ["AGENTS.md"]
+    text = host.writes["AGENTS.md"]
+    assert "At the start of every new incoming user message" not in text
+    assert f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}` message on your input channel" in text

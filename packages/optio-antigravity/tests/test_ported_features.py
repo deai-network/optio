@@ -21,7 +21,7 @@ import contextlib
 
 import pytest
 
-from optio_agents import get_protocol
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents.fs_grants import fs_isolation_dirs
 
 from optio_antigravity import session as agy_session
@@ -183,6 +183,7 @@ def _rendered(config: AntigravityTaskConfig) -> str:
         supports_resume=config.supports_resume,
         fs_isolation_dirs=fs_isolation_dirs(config, "/tmp/fake-wd"),
         file_download=config.file_download,
+        check_resume_log_every_message=False,   # as the fresh start writes it
     )
 
 
@@ -203,6 +204,10 @@ async def test_resume_refresh_rewrites_when_changed():
     refreshed = await agy_session._maybe_refresh_on_resume(host, hook_ctx, config, PROTOCOL)
     assert refreshed == ["AGENTS.md"]
     assert host.written["AGENTS.md"] == _rendered(config)
+    # Every resume sends the System: resume notice, so the refreshed file
+    # says to wait for it rather than read resume.log before each message.
+    assert "At the start of every new incoming user message" not in host.written["AGENTS.md"]
+    assert f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}` message on your input channel" in host.written["AGENTS.md"]
 
 
 async def test_resume_refresh_disabled_returns_empty():

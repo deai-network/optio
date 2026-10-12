@@ -330,24 +330,29 @@ composer owns the intro, the keyword-protocol docs, the resume section, the
 `System:` explainer, the task framing, the downloads note and the sandbox note.
 At both places the session writes the file (fresh start and
 `_maybe_refresh_on_resume`, which takes the session's `protocol`), pass
-`documentation=protocol.documentation if config.host_protocol else None` and
+`documentation=protocol.documentation if config.host_protocol else None`,
 `fs_isolation_dirs=fs_isolation_dirs(config, host.workdir)`
-(`optio_agents.fs_grants`). A guard test in optio-agents-all fails if your
-`prompt.py` contains shared prompt text.
+(`optio_agents.fs_grants`) and, once every resume sends the notice below,
+`check_resume_log_every_message=False`. A guard test in optio-agents-all
+fails if your `prompt.py` contains shared prompt text.
 
 **Resume awareness has two halves — ship BOTH.** Shipping only one is a silent
 parity gap.
-1. **Pull** — document the `resume.log` protocol in the memory file so the agent
-   can detect a relaunch itself (each session start appends a line; the agent
-   re-reads on a new turn).
+1. **Pull** — document the `resume.log` protocol in the memory file (each
+   session start appends a line; a `REFRESHED:` suffix names the files the
+   harness rewrote). With `check_resume_log_every_message=False` the agent
+   reads it when the notice below arrives; the default (`True`) has it read
+   the file at the start of every user message, which the agent then does on
+   nearly every turn. Every shipped wrapper passes `False`.
 2. **Push** — on *every* resume, send the agent a `System: you have been resumed`
    message (`RESUME_NOTICE`, prefixed with `SYSTEM_MESSAGE_PREFIX`) as its first
    turn, so it notices immediately instead of waiting to re-check `resume.log`.
    The push is per-launch-mode: a trailing positional after the agent's
    continue/resume flag for a **TUI/iframe** launch (`agent --continue '<notice>'`),
    the first stdin/API message for a **conversation** launch. Send it in every
-   surface; gate it only if the agent isn't taught the `System:` convention in
-   that mode.
+   surface, whatever `host_protocol` says: the composer teaches the `System:`
+   convention in both protocol modes (the keyword docs, else
+   `_SYSTEM_PREFIX_EXPLAINER`).
 
 **Reference.** `optio-agents/…/prompt.py` (`AgentPromptProfile`,
 `compose_instructions_file`), `optio-agents/…/protocol/prompt.py`

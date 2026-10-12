@@ -9,10 +9,14 @@ import shutil
 
 import pytest
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_codex import (
     CodexTaskConfig,
     create_codex_task,
 )
+
+_POLL_RULE = "At the start of every new incoming user message"
+_NOTICE_RULE = f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}` message on your input channel"
 
 
 @pytest.mark.asyncio
@@ -61,6 +65,10 @@ async def test_local_happy_path_done_in_optio_log(
     assert observed["per_task_codex"] is True
     assert observed["resume_log"].count("\n") == 1  # exactly one launch line
     assert "## Resumes" in observed["agents_md"]
+    # Every resume sends the System: resume notice (both modes), so the
+    # agent waits for it instead of reading resume.log before each message.
+    assert _POLL_RULE not in observed["agents_md"]
+    assert _NOTICE_RULE in observed["agents_md"]
     assert captures.widget_upstream
     assert captures.widget_data
 

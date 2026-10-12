@@ -3,7 +3,7 @@ note, so it matches the fresh-start composition."""
 
 import dataclasses
 
-from optio_agents import get_protocol
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 
 from optio_cursor.session import _maybe_refresh_on_resume
 from optio_cursor.types import CursorTaskConfig
@@ -36,3 +36,19 @@ async def test_refresh_threads_docs_and_sandbox_note():
     assert "UPDATED" in text
     assert "CLIENT_MESSAGE:" in text            # the session's docs, not defaults
     assert "`/tmp/fake-wd`" in text             # sandbox note (fs_isolation default on)
+
+
+async def test_refresh_waits_for_the_resume_notice():
+    """Every resume sends the System: resume notice, so the refreshed
+    AGENTS.md says to wait for it rather than read resume.log before each
+    message."""
+    cfg = CursorTaskConfig(
+        consumer_instructions="original", delivery_type="audit",
+        on_resume_refresh=lambda c: dataclasses.replace(c, consumer_instructions="UPDATED"),
+    )
+    host = _FakeHost()
+    protocol = get_protocol(browser="redirect")
+    assert await _maybe_refresh_on_resume(host, _FakeHookCtx(), cfg, protocol) == ["AGENTS.md"]
+    (_, text), = host.writes
+    assert "At the start of every new incoming user message" not in text
+    assert f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}` message on your input channel" in text

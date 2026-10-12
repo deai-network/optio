@@ -309,6 +309,8 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                     supports_resume=config.supports_resume,
                     file_download=config.file_download,
                     fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
+                    # Every resume sends the System: resume notice.
+                    check_resume_log_every_message=False,
                 ),
             )
         else:
@@ -364,8 +366,8 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             # PUSH resume awareness (Gap 1): a System: notice positional appended
             # after `resume <id>` + flags so the resumed TUI session gets a "you
             # have been resumed" turn (mutually exclusive with the fresh-launch
-            # kickoff above). Parity with claudecode/opencode/grok; resume.log
-            # stays the pull-based backstop.
+            # kickoff above). Parity with claudecode/opencode/grok. AGENTS.md
+            # tells codex to wait for this notice, not to poll resume.log.
             *host_actions.build_resume_notice_args(resuming=resuming),
         ]
         launch_env = {
@@ -623,7 +625,8 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         # Kickoff prompt as the first turn (headless: no positional prompt
         # path). Suppressed on resume — re-kicking would duplicate the task.
         # On resume, PUSH a System: resume notice instead so the resumed thread
-        # notices promptly (parity; resume.log stays the pull-based backstop).
+        # notices promptly (parity; AGENTS.md says to wait for it, not to
+        # poll resume.log).
         if config.auto_start and not resuming:
             await conversation.send(host_actions.AUTO_START_PROMPT)
         elif resuming:
@@ -918,6 +921,8 @@ async def _maybe_refresh_on_resume(
         supports_resume=new_config.supports_resume,
         file_download=new_config.file_download,
         fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
+        # Every resume sends the System: resume notice.
+        check_resume_log_every_message=False,
     )
     try:
         existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)

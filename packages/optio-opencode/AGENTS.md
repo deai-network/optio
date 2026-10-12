@@ -136,10 +136,13 @@ your hooks against `HookContextProtocol`.
 
 When `supports_resume=True` (default), the framework writes
 `<workdir>/resume.log` with one ISO 8601 timestamp per session start
-(fresh launch and every resume). The agent's prompt — composed by
-`compose_agents_md` — includes a section instructing the agent to
-read `./resume.log` at the start of every new user message and treat
-new lines as resume signals. The exact `workdir_exclude` patterns
+(fresh launch and every resume). Every resume also posts
+`System: you have been resumed` (`RESUME_NOTICE`) to the session, in
+both modes, so the agent's prompt — composed by `compose_agents_md`
+with `check_resume_log_every_message=False`, at fresh start and in the
+on-resume refresh — tells the agent to read `./resume.log` when that
+notice arrives (for its `REFRESHED:` suffix), not at the start of every
+user message. The exact `workdir_exclude` patterns
 configured for the task are inlined into the prompt so the agent's
 mental model matches what the snapshot mechanism actually preserves.
 
