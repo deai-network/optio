@@ -55,6 +55,13 @@ function selected(id: string): string | null {
   return on ? on.closest('label')!.textContent : null;
 }
 
+// A choice's description in its segment's tooltip: alone, or after the lead
+// newer vultus-antd puts before it ("Switch to:" on another choice, "Current
+// state:" on the current one).
+function described(text: string): RegExp {
+  return new RegExp(`(^|: )${text}$`);
+}
+
 function captions(): (string | null)[] {
   return Array.from(document.querySelectorAll('.optio-cc-control-label')).map((l) => l.textContent);
 }
@@ -86,7 +93,7 @@ describe('custom controls in the session toolbar', () => {
   it("an option's description is its tooltip", async () => {
     render(<ConversationView {...base()} />);
     fireEvent.mouseEnter(screen.getByText('Fast').parentElement!);
-    await waitFor(() => expect(screen.getByText('Quick answers')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(described('Quick answers'))).toBeTruthy());
   });
 
   it('the segmented control is named by its label and described by its description', () => {
@@ -244,14 +251,14 @@ describe('custom control texts follow the UI language', () => {
     render(<ConfigProvider locale={huHU}><ConversationView {...base()} /></ConfigProvider>);
     expect(captions()).toEqual(['Modell']);
     fireEvent.mouseEnter(screen.getByText('Fast').parentElement!);
-    await waitFor(() => expect(screen.getByText('Gyors válaszok')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(described('Gyors válaszok'))).toBeTruthy());
   });
 
   it('a language with no entry falls back to en (fr)', async () => {
     render(<ConfigProvider locale={frFR}><ConversationView {...base()} /></ConfigProvider>);
     expect(captions()).toEqual(['Model']);
     fireEvent.mouseEnter(screen.getByText('Fast').parentElement!);
-    await waitFor(() => expect(screen.getByText('Quick answers')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(described('Quick answers'))).toBeTruthy());
   });
 
   it('no locale: en', () => {
@@ -264,7 +271,7 @@ describe('custom control texts follow the UI language', () => {
     expect(screen.getByText('Fast')).toBeTruthy();
     expect(screen.getByText('Extensive')).toBeTruthy();
     fireEvent.mouseEnter(screen.getByText('Extensive').parentElement!);
-    await waitFor(() => expect(screen.getByText('Thorough answers')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(described('Thorough answers'))).toBeTruthy());
   });
 });
 

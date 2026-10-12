@@ -89,10 +89,12 @@ def test_unsupported_configs_refuse_custom_controls(cls):
 
 
 def test_claudecode_config_accepts_custom_controls():
-    assert _make(ClaudeCodeTaskConfig, custom_controls=[_SPEED]).custom_controls == [_SPEED]
+    # Claude Code shows them in its conversation widget only.
+    widget = {"mode": "conversation", "conversation_ui": True, "permission_mode": "dontAsk"}
+    assert _make(ClaudeCodeTaskConfig, custom_controls=[_SPEED], **widget).custom_controls == [_SPEED]
     # A malformed list is still refused on the supporting engine.
     with pytest.raises(ValueError, match="duplicate control id 'speed'"):
-        _make(ClaudeCodeTaskConfig, custom_controls=[_SPEED, _SPEED])
+        _make(ClaudeCodeTaskConfig, custom_controls=[_SPEED, _SPEED], **widget)
 
 
 def test_known_values_match_the_supporting_engine():
