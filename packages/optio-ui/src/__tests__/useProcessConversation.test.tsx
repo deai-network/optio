@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query';
 import { OptioProvider } from '../context/OptioProvider.js';
-import { useProcessConversation } from '../hooks/useProcessConversation.js';
+import { conversationRetry, conversationRetryDelay, useProcessConversation } from '../hooks/useProcessConversation.js';
 
 // Avoid network calls during instance discovery — return a stable instance.
 vi.mock('../hooks/useInstanceDiscovery.js', () => ({
@@ -88,6 +88,59 @@ describe('useProcessConversation', () => {
     expect(conversationCalls).toBe(1);
     expect((result.current.error as any)?.status).toBe(409);
     expect((result.current.error as any)?.body).toEqual({ reason: 'not-suspended', message: 'nope' });
+  });
+
+  it('a 503 (the engine is restarting) keeps being retried until the record comes', async () => {
+    // A host page that is open while the engine restarts reads the record of
+    // the suspend that restart caused while the engine's archive is still
+    // down. Three tries over ~3 s (the old policy) are not enough: the read
+    // must outlast the restart, not settle on an error.
+    let conversationCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (isConversationUrl(url)) {
+        conversationCalls += 1;
+        if (conversationCalls <= 4) {
+          return new Response(
+            JSON.stringify({ reason: 'unavailable', message: 'No engine conversation archive is reachable.' }),
+            { status: 503, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response(
+          JSON.stringify({ events: [[1, { type: 'x' }]], capturedAt: '2026-10-12T00:00:00Z' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return processResponse();
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { result } = renderHook(() => useProcessConversation('p1'), { wrapper: wrap });
+      // 1 + 2 + 4 + 8 s of backoff before the fifth try.
+      for (let i = 0; i < 20 && !result.current.isSuccess; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      }
+      expect(result.current.isError).toBe(false);
+      expect(result.current.isSuccess).toBe(true);
+      expect(conversationCalls).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the retry policy: 503 with a long backoff, other 5xx briefly, 4xx never', () => {
+    const err = (status: number) => ({ status });
+    // 503: the engine (its conversation archive) is not reachable -- e.g. it
+    // is restarting. Retried six times: 1, 2, 4, 8, 15, 15 s (~45 s).
+    expect([0, 1, 2, 3, 4, 5].map((n) => conversationRetry(n, err(503)))).toEqual([true, true, true, true, true, true]);
+    expect(conversationRetry(6, err(503))).toBe(false);
+    expect([0, 1, 2, 3, 4, 5].map((n) => conversationRetryDelay(n, err(503)))).toEqual([1000, 2000, 4000, 8000, 15000, 15000]);
+    // Other transient failures (500, a network error): two retries, as before.
+    expect([0, 1, 2].map((n) => conversationRetry(n, err(500)))).toEqual([true, true, false]);
+    expect([0, 1, 2].map((n) => conversationRetry(n, new TypeError('fetch failed')))).toEqual([true, true, false]);
+    // 4xx: never.
+    expect(conversationRetry(0, err(404))).toBe(false);
+    expect(conversationRetry(0, err(409))).toBe(false);
   });
 
   it('does not fetch anything when enabled is false (neither conversation nor process doc)', async () => {
