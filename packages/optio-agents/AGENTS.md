@@ -116,6 +116,20 @@ stay top-level on each config — callers write `fs_isolation=` /
   `/control` endpoint may change: `[]` while the bar is off, else the
   allowlist.
 
+## Localized text (`optio_agents.text`)
+
+* `Text = str | Mapping[str, str]` — a plain string, or a map of language code
+  (`"en"`, `"hu"`, `"de"`, ...) to a non-empty string. Configuration keeps it
+  unresolved and publishes it as is (a map as a plain dict); the viewer picks
+  the language.
+* `check_text(value, *, what)` — returns a non-empty string as is, or a
+  non-empty map with non-empty string keys and values as a plain dict copy;
+  anything else raises `ValueError` naming `what`.
+* `resolve_text(text, language)` — a string as is; from a map, the language's
+  entry, else `"en"`, else the first entry.
+
+All three are exported from `optio_agents`.
+
 ## Session controls (`optio_agents.session_controls`)
 
 * `SessionControl` / `ControlOption` — one engine-neutral live control and a
