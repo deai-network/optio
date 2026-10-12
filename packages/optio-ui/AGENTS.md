@@ -535,7 +535,7 @@ All mutations invalidate the `['processes']` query key on success.
 ```ts
 function useProcessConversation(
   processId: string,
-  opts?: { enabled?: boolean },
+  opts?: { enabled?: boolean; stoppedAt?: string | null },
 ): UseQueryResult<{ status: 200; body: { events: unknown[]; capturedAt: string | null } }, unknown>
 ```
 
@@ -543,24 +543,35 @@ Reads a suspended process's saved conversation record via
 `api.processes.getConversation.useQuery` (`GET /processes/:id/conversation`, proxied by
 optio-api from the engine's conversation archive — see root AGENTS.md "optio-core:
 conversation archive listener" and `packages/optio-api/AGENTS.md`). Returns the raw ts-rest
-react-query result, unmodified:
+react-query result, unmodified (the return type is loose — `any`, since `OptioClient` is
+`any`-typed — but correct in shape at runtime, as described below):
 
 - a 200 appears as `data` (`data.body` is `{ events, capturedAt }`);
 - any non-2xx (401/403/404/409/500/503) is thrown by ts-rest and surfaces as `error`
   (`error.status` is the HTTP status; `error.body` is `{ reason, message }` for every status
   except 401, which is `{ message }` only).
 
-`opts.enabled` (default `true`) gates the query, ANDed with `!!processId`.
+`opts.enabled` (default `true`) gates the query, ANDed with `!!processId`. When `false`,
+**nothing** fetches — neither the conversation nor the process doc described below.
 
 Never retries a 4xx (`error.status` 400–499) — the process's state won't change because the
 read is repeated. Transient errors (network, 5xx) get up to 2 retries.
 
 The query key is `['process-conversation', database, prefix, processId, statusTimestamp]`,
-where `statusTimestamp` is the process's current `status.stoppedAt` (read internally via
-`useProcess(processId)`). This is the timestamp a suspend (a cancel with saved state) sets, so
-a resume-then-resuspend cycle gets a fresh cache entry — without it, remounting after a second
-suspend would briefly (or indefinitely, if the component never actually unmounts) show the
-first suspend's cached conversation while the new one loads.
+where `statusTimestamp` is the process's current `status.stoppedAt`. This is the timestamp a
+suspend (a cancel with saved state) sets, so a resume-then-resuspend cycle gets a fresh cache
+entry — without it, remounting after a second suspend would briefly (or indefinitely, if the
+component never actually unmounts) show the first suspend's cached conversation while the new
+one loads.
+
+`statusTimestamp` comes from one of two places:
+- **`opts.stoppedAt`**, when the caller supplies it (even explicitly `null`) — the hook then
+  does **not** fetch or poll the process document at all. Use this when the caller already has
+  the process doc (e.g. a suspended widget gets `process.status.stoppedAt` on its own
+  `WidgetProps.process`), to avoid a redundant `GET /processes/:id` plus its 5 s poll running
+  for every mounted suspended widget just to re-derive a value already in hand.
+- an internal `useProcess(processId)` call, when `opts.stoppedAt` is omitted — the pre-existing
+  default behaviour, for callers that don't already have the process doc.
 
 ---
 

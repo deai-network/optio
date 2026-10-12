@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { renderHook, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { OptioProvider } from '../context/OptioProvider.js';
 import { useProcessConversation } from '../hooks/useProcessConversation.js';
@@ -90,7 +90,7 @@ describe('useProcessConversation', () => {
     expect((result.current.error as any)?.body).toEqual({ reason: 'not-suspended', message: 'nope' });
   });
 
-  it('does not fetch when enabled is false', async () => {
+  it('does not fetch anything when enabled is false (neither conversation nor process doc)', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (isConversationUrl(url)) {
@@ -100,11 +100,84 @@ describe('useProcessConversation', () => {
     });
 
     renderHook(() => useProcessConversation('p1', { enabled: false }), { wrapper: wrap });
-    // Let the (unrelated) process-doc fetch settle inside act() before asserting.
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const conversationCalls = fetchMock.mock.calls.filter(
-      (c) => isConversationUrl(String(c[0])),
-    );
-    expect(conversationCalls.length).toBe(0);
+    // Nothing should fetch at all — give any (incorrect) async fetch a chance
+    // to fire before asserting zero calls.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe('opts.stoppedAt', () => {
+    it('when provided, skips the process-doc fetch entirely', async () => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (isConversationUrl(url)) {
+          return new Response(
+            JSON.stringify({ events: [], capturedAt: null }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        // Should never be hit — fail loudly if it is.
+        throw new Error(`unexpected process-doc fetch: ${url}`);
+      });
+
+      const { result } = renderHook(
+        () => useProcessConversation('p1', { stoppedAt: '2026-10-12T00:00:00Z' }),
+        { wrapper: wrap },
+      );
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+      const processDocCalls = fetchMock.mock.calls.filter((c) => !isConversationUrl(String(c[0])));
+      expect(processDocCalls.length).toBe(0);
+      const conversationCalls = fetchMock.mock.calls.filter((c) => isConversationUrl(String(c[0])));
+      expect(conversationCalls.length).toBe(1);
+    });
+
+    it('a changed stoppedAt refetches the conversation (distinct cache key)', async () => {
+      let conversationCalls = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (isConversationUrl(url)) {
+          conversationCalls += 1;
+          return new Response(
+            JSON.stringify({ events: [[conversationCalls, {}]], capturedAt: null }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        throw new Error(`unexpected process-doc fetch: ${url}`);
+      });
+
+      const { result, rerender } = renderHook(
+        ({ stoppedAt }: { stoppedAt: string | null }) =>
+          useProcessConversation('p1', { stoppedAt }),
+        { wrapper: wrap, initialProps: { stoppedAt: '2026-10-12T00:00:00Z' } },
+      );
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      expect(conversationCalls).toBe(1);
+
+      // Resume-then-resuspend: a new stoppedAt is a new cache key, so the
+      // conversation is refetched instead of showing the first suspend's
+      // cached result.
+      rerender({ stoppedAt: '2026-10-12T01:00:00Z' });
+      await waitFor(() => expect(conversationCalls).toBe(2));
+    });
+
+    it('null is a valid stoppedAt (still skips the process-doc fetch)', async () => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (isConversationUrl(url)) {
+          return new Response(JSON.stringify({ events: [], capturedAt: null }), { status: 200 });
+        }
+        throw new Error(`unexpected process-doc fetch: ${url}`);
+      });
+
+      const { result } = renderHook(
+        () => useProcessConversation('p1', { stoppedAt: null }),
+        { wrapper: wrap },
+      );
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      expect(fetchMock.mock.calls.every((c) => isConversationUrl(String(c[0])))).toBe(true);
+    });
   });
 });

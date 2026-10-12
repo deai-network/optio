@@ -1249,8 +1249,9 @@ Note: `processId` arguments are MongoDB `_id` strings (ObjectId hex), not `proce
 ```typescript
 useProcessConversation(
   processId: string,
-  opts?: { enabled?: boolean },
-): UseQueryResult  // ts-rest react-query result, unmodified
+  opts?: { enabled?: boolean; stoppedAt?: string | null },
+): UseQueryResult  // ts-rest react-query result, unmodified (loosely typed `any` — OptioClient
+                    // is `any`-typed — but correct in shape at runtime)
 ```
 
 Reads a suspended process's saved conversation record: `GET /processes/:id/conversation`
@@ -1259,9 +1260,15 @@ conversation archive. A 200 appears as `data` (`data.body` is
 `{ events: unknown[]; capturedAt: string | null }`); any non-2xx (401/403/404/409/500/503) is
 thrown by ts-rest and surfaces as `error` (`error.status`; `error.body` is
 `{ reason, message }` except for 401, which is `{ message }`). Never retries a 4xx (transient
-errors get up to 2). Query key includes the process's current `status.stoppedAt` (read
-internally via `useProcess`) alongside the id, so a resume-then-resuspend cycle gets a fresh
-cache entry instead of momentarily showing the previous suspend's conversation.
+errors get up to 2). `opts.enabled: false` fetches nothing at all (neither the conversation nor
+the process doc below).
+
+Query key includes the process's current `status.stoppedAt` alongside the id, so a
+resume-then-resuspend cycle gets a fresh cache entry instead of momentarily showing the
+previous suspend's conversation. Pass `opts.stoppedAt` (even `null`) when the caller already
+has it — e.g. a suspended widget's own `process.status.stoppedAt` — to skip this hook's
+internal `useProcess(processId)` fetch and 5 s poll entirely; omit it to fall back to that
+internal lookup.
 
 **`useProcessList(options?)`**
 
