@@ -43,14 +43,16 @@ conversation as it stood at the suspend, read-only. No agent host starts.
 
 - **Its one request** is optio-ui's `useProcessConversation(process._id, { stoppedAt })`
   (`GET /processes/:id/conversation`, proxied by optio-api from the engine's conversation
-  archive). There is no EventSource and nothing else goes over the network.
+  archive). It runs once per suspend: a window refocus does not refetch the record. There is
+  no EventSource and nothing else goes over the network.
 - **claudecode** (`widgetData.protocol`, which survives the suspend): `ClaudeCodeReplayView`
   folds the saved record through the claudecode reducer with one fixed clock (the record's
   `capturedAt`, else the mount time). It then closes the session as suspended, which stops any
   row still running. The view is `ConversationView`, closed, under the divider "Suspended —
-  resume to continue". It has no send, interrupt, permission, upload, download or control
-  handlers. The tool verbosity, controls seed and todos come from `widgetData`, as in the live
-  view.
+  resume to continue". The view passes no-op handlers: send, interrupt, permission and download
+  do nothing, and it offers no upload and no control inputs. A permission request the record
+  left unanswered still shows its Approve and Deny buttons, but they are inert. The tool
+  verbosity, controls seed and todos come from `widgetData`, as in the live view.
 - **Other protocols** show "Resume to view this conversation." and make no request; only
   claudecode keeps a record so far.
 - **Loading** shows the lent spinner (`optio:process:<id>:archive`, see below) and "Loading…".
@@ -58,11 +60,14 @@ conversation as it stood at the suspend, read-only. No agent host starts.
   - `no-conversation` / `no-conversation-support`: "No saved conversation to show; resume to
     continue it.";
   - `not-suspended`: nothing (the process just resumed, and the live widget takes over);
-  - anything else: the message and a Retry.
+  - anything else: the message and a Retry, which spins while it refetches.
 
-With `{ ownTheme: true }` the suspended variant gets the same light/dark toggle. An app that
-mounts the widget directly can render `SuspendedConversationWidget` (it takes `WidgetProps`)
-or `ClaudeCodeReplayView` (`{ process, widgetData, events, capturedAt }`).
+The note, error and loading states paint the theme's layout background and text colour, as
+`ConversationView` does. With `{ ownTheme: true }` the suspended variant gets the same
+light/dark toggle, so they follow a dark choice too.
+
+An app that mounts the widget directly can render `SuspendedConversationWidget` (it takes
+`WidgetProps`) or `ClaudeCodeReplayView` (`{ process, widgetData, events, capturedAt }`).
 
 `ConversationView` takes an optional `closedLabel` for that divider; without it the divider
 reads "conversation ended", as before.

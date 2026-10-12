@@ -1,4 +1,5 @@
-import { Alert, Button, Typography } from 'antd';
+import type { ReactNode } from 'react';
+import { Alert, Button, Typography, theme } from 'antd';
 import { useProcessConversation, type WidgetProps } from 'optio-ui';
 import { useSpinnerKey, useVultusComponents } from 'vultus-antd';
 import { ClaudeCodeReplayView } from './claudecode/ClaudeCodeReplayView.js';
@@ -13,11 +14,30 @@ const OTHER_PROTOCOL_NOTE = 'Resume to view this conversation.';
 const NO_RECORD_NOTE = 'No saved conversation to show; resume to continue it.';
 const LOAD_FAILED = 'Could not load the saved conversation.';
 
+// The states other than the replay (note, error, loading) paint their own
+// surface from the theme tokens, as ConversationView does: under the
+// registration's ownTheme ConfigProvider (dark included) nothing else paints
+// one, and they would otherwise sit on the host's page colour.
+function Surface({ testId, children }: { testId: string; children: ReactNode }) {
+  const { token } = theme.useToken();
+  return (
+    <div
+      data-testid={testId}
+      style={{
+        width: '100%', height: '100%', boxSizing: 'border-box', padding: 16,
+        background: token.colorBgLayout, color: token.colorText,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 function Note({ text }: { text: string }) {
   return (
-    <div data-testid="optio-conversation-suspended-note" style={{ padding: 16 }}>
+    <Surface testId="optio-conversation-suspended-note">
       <Typography.Text type="secondary">{text}</Typography.Text>
-    </div>
+    </Surface>
   );
 }
 
@@ -74,27 +94,30 @@ export function SuspendedConversationWidget(props: WidgetProps) {
       (typeof error?.message === 'string' && error.message) ||
       LOAD_FAILED;
     return (
-      <div data-testid="optio-conversation-suspended-error" style={{ padding: 16 }}>
+      <Surface testId="optio-conversation-suspended-error">
         <Alert
           type="error"
           showIcon
           title={message}
           action={
-            <Button size="small" onClick={() => void conversation.refetch()}>
+            // Spins (and ignores clicks) while a refetch runs.
+            <Button size="small" loading={Boolean(conversation.isFetching)} onClick={() => void conversation.refetch()}>
               Retry
             </Button>
           }
         />
-      </div>
+      </Surface>
     );
   }
 
   return (
-    <div data-testid="optio-widget-loading">
-      {Spinner && (
-        <span style={{ marginInlineEnd: 8 }}><Spinner spinnerKey={spinnerKey} size="small" /></span>
-      )}
-      Loading…
-    </div>
+    <Surface testId="optio-conversation-suspended-loading">
+      <div data-testid="optio-widget-loading">
+        {Spinner && (
+          <span style={{ marginInlineEnd: 8 }}><Spinner spinnerKey={spinnerKey} size="small" /></span>
+        )}
+        Loading…
+      </div>
+    </Surface>
   );
 }

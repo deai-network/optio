@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { ConfigProvider } from 'antd';
+import { ConfigProvider, theme } from 'antd';
 import type { ReactNode } from 'react';
 import { VultusProvider, type SpinnerProps } from 'vultus-antd';
 import { getSuspendedWidget } from 'optio-ui';
@@ -250,6 +250,21 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
     expect(screen.getByTestId('resume-band').textContent).toBe('Session has been saved and resumed.');
   });
 
+  it('a leftover permission card stays visible but inert: Approve and Deny send nothing', () => {
+    const parked: unknown[] = [
+      RECORD[0],
+      [2, { type: 'control_request', request_id: 'req-9', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'rm -rf /tmp/x' } } }],
+    ];
+    useProcessConversation.mockReturnValue(loaded(parked));
+    render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
+    expect(screen.getByTestId('permission-card')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('permission-approve'));
+    fireEvent.click(screen.getByTestId('permission-deny'));
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(RecordingEventSource.instances).toHaveLength(0);
+    expect(screen.getByTestId('permission-card')).toBeTruthy();
+  });
+
   it('defaults to the claudecode replay when widgetData has no protocol', () => {
     useProcessConversation.mockReturnValue(loaded(RECORD));
     render(wrap(<SuspendedConversationWidget {...widgetProps({ widgetData: {} })} />));
@@ -293,6 +308,18 @@ describe('SuspendedConversationWidget: other protocols and the error states', ()
     expect(refetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('Retry shows progress while the refetch runs and ignores clicks', () => {
+    useProcessConversation.mockReturnValue({
+      ...failed(500, { reason: 'read-failed', message: 'Could not read the conversation record.' }),
+      isFetching: true,
+    });
+    render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
+    const retry = screen.getByRole('button', { name: /Retry/ });
+    expect(retry.classList.contains('ant-btn-loading')).toBe(true);
+    fireEvent.click(retry);
+    expect(refetch).not.toHaveBeenCalled();
   });
 
   it('a 503 and a 401 (message only) show their message with Retry', () => {
@@ -407,6 +434,57 @@ describe('registerConversationWidget', () => {
     render(wrap(<Suspended {...widgetProps()} />));
     expect(screen.getByText('List the files')).toBeTruthy();
     expect(screen.queryByTestId('theme-toggle')).toBeNull();
+  });
+
+  describe('non-replay states paint their own surface', () => {
+    // jsdom normalises colours on assignment; compare like with like.
+    const css = (color: string) => {
+      const el = document.createElement('div');
+      el.style.background = color;
+      return el.style.background;
+    };
+    const darkLayout = css(theme.getDesignToken({ algorithm: theme.darkAlgorithm }).colorBgLayout);
+    const lightLayout = css(theme.getDesignToken().colorBgLayout);
+    const darkText = (() => {
+      const el = document.createElement('div');
+      el.style.color = theme.getDesignToken({ algorithm: theme.darkAlgorithm }).colorText;
+      return el.style.color;
+    })();
+
+    beforeEach(() => {
+      vi.spyOn(console, 'info').mockImplementation(() => {});
+      localStorage.setItem('optio-conversation:theme', 'dark');
+    });
+    afterEach(() => {
+      localStorage.removeItem('optio-conversation:theme');
+    });
+
+    it('the tokens under test differ between light and dark', () => {
+      expect(darkLayout).not.toBe(lightLayout);
+    });
+
+    it.each([
+      ['the other-protocol note', 'optio-conversation-suspended-note', { widgetData: { protocol: 'grok' } }, pending()],
+      ['the no-record note', 'optio-conversation-suspended-note', {}, failed(404, { reason: 'no-conversation', message: 'x' })],
+      ['the error with Retry', 'optio-conversation-suspended-error', {}, failed(500, { reason: 'read-failed', message: 'boom' })],
+      ['loading', 'optio-conversation-suspended-loading', {}, pending()],
+    ])('ownTheme dark: %s sits on the dark layout surface', (_name, testId, over, result) => {
+      registerConversationWidget({ ownTheme: true });
+      const Suspended = getSuspendedWidget('conversation')!;
+      useProcessConversation.mockReturnValue(result);
+      render(<Suspended {...widgetProps(over)} />);
+      const surface = screen.getByTestId(testId);
+      expect(surface.style.background).toBe(darkLayout);
+      expect(surface.style.color).toBe(darkText);
+    });
+
+    it('without ownTheme: the host theme\'s (light) layout surface', () => {
+      registerConversationWidget();
+      const Suspended = getSuspendedWidget('conversation')!;
+      useProcessConversation.mockReturnValue(pending());
+      render(wrap(<Suspended {...widgetProps({ widgetData: { protocol: 'grok' } })} />));
+      expect(screen.getByTestId('optio-conversation-suspended-note').style.background).toBe(lightLayout);
+    });
   });
 
   it('with ownTheme, the suspended variant owns the light/dark toggle too', () => {
