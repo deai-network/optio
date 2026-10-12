@@ -8,6 +8,11 @@ import { GrokView } from '../grok/GrokView.js';
 import { CursorView } from '../cursor/CursorView.js';
 import { CodexView } from '../codex/CodexView.js';
 
+// The paperclip's file input: X Attachments' picker, inside the button's antd
+// Upload (its drop area holds a second, separate file input).
+const pickerInput = () =>
+  screen.getByTestId('attach-button').closest('.ant-upload')!.querySelector('input[type="file"]') as HTMLInputElement;
+
 // Shared EventSource stub: every view opens one on mount for its event stream;
 // the upload tests don't drive any events, so a no-op that records the last
 // instance is enough (mirrors the model-widget harnesses).
@@ -95,14 +100,14 @@ describe('attach control gating', () => {
     installFetch({ calls: [] });
     render(<ClaudeCodeView {...makeProps({})} />);
     expect(screen.queryByTestId('attach-button')).toBeNull();
-    expect(screen.queryByTestId('file-input')).toBeNull();
+    expect(document.querySelector('input[type="file"]')).toBeNull();
   });
 
   it('ClaudeCodeView shows the attach control when showFileUpload is true', () => {
     installFetch({ calls: [] });
     render(<ClaudeCodeView {...makeProps({ showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
     expect(screen.getByTestId('attach-button')).toBeTruthy();
-    expect(screen.getByTestId('file-input')).toBeTruthy();
+    expect(pickerInput()).toBeTruthy();
   });
 
   it('OpencodeView hides the attach control when showFileUpload is absent/false', async () => {
@@ -110,14 +115,14 @@ describe('attach control gating', () => {
     render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd' })} />);
     await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
     expect(screen.queryByTestId('attach-button')).toBeNull();
-    expect(screen.queryByTestId('file-input')).toBeNull();
+    expect(document.querySelector('input[type="file"]')).toBeNull();
   });
 
   it('OpencodeView shows the attach control when showFileUpload is true', async () => {
     installFetch({ calls: [] });
     render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd', showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
     await waitFor(() => expect(screen.getByTestId('attach-button')).toBeTruthy());
-    expect(screen.getByTestId('file-input')).toBeTruthy();
+    expect(pickerInput()).toBeTruthy();
   });
 });
 
@@ -144,7 +149,7 @@ describe.each(SEND_VIEWS)('%s upload via the generic route', (_name, View) => {
     render(<View {...makeProps({ showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
     await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
 
-    const input = screen.getByTestId('file-input') as HTMLInputElement;
+    const input = pickerInput();
     fireEvent.change(input, { target: { files: [makePng('pic.png')] } });
     await waitFor(() => expect(screen.getByTestId('attach-chips')).toBeTruthy());
 
@@ -187,7 +192,7 @@ describe('OpencodeView upload via the generic route', () => {
     render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd', showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
     await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
 
-    const input = screen.getByTestId('file-input') as HTMLInputElement;
+    const input = pickerInput();
     fireEvent.change(input, { target: { files: [makePng('pic.png')] } });
     await waitFor(() => expect(screen.getByTestId('attach-chips')).toBeTruthy());
 
@@ -233,7 +238,7 @@ describe('a failed upload surfaces an error row', () => {
     render(<ClaudeCodeView {...makeProps({ showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
     await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
 
-    const input = screen.getByTestId('file-input') as HTMLInputElement;
+    const input = pickerInput();
     fireEvent.change(input, { target: { files: [makePng('pic.png')] } });
     await waitFor(() => expect(screen.getByTestId('attach-chips')).toBeTruthy());
 

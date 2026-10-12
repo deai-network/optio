@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ConversationWidget } from '../ConversationWidget.js';
 
+// The paperclip's file input: X Attachments' picker, inside the button's antd
+// Upload (its drop area holds a second, separate file input).
+const pickerInput = () =>
+  screen.getByTestId('attach-button').closest('.ant-upload')!.querySelector('input[type="file"]') as HTMLInputElement;
+
 // CursorView parity (Stage 7): file upload (System: reference) funnels through
 // the shared ConversationView, driven by cursor's ACP wire over the listener
 // SSE — the same mechanism GrokView uses (headless cursor has no inline
@@ -81,7 +86,7 @@ describe('CursorView (Stage 7 parity)', () => {
     vi.stubGlobal('fetch', fetchMock as any);
     render(<ConversationWidget {...makeProps({ protocol: 'cursor' })} />);
     expect(screen.queryByTestId('attach-button')).toBeNull();
-    expect(screen.queryByTestId('file-input')).toBeNull();
+    expect(document.querySelector('input[type="file"]')).toBeNull();
   });
 
   it('shows the attach control when showFileUpload is true', () => {
@@ -89,7 +94,7 @@ describe('CursorView (Stage 7 parity)', () => {
     vi.stubGlobal('fetch', fetchMock as any);
     render(<ConversationWidget {...makeProps({ protocol: 'cursor', showFileUpload: true, maxUploadBytes: 1000 })} />);
     expect(screen.getByTestId('attach-button')).toBeTruthy();
-    expect(screen.getByTestId('file-input')).toBeTruthy();
+    expect(pickerInput()).toBeTruthy();
   });
 
   it('upload POSTs the generic route (FormData) then attaches a System: reference to the next prompt', async () => {
@@ -102,7 +107,7 @@ describe('CursorView (Stage 7 parity)', () => {
     vi.stubGlobal('fetch', fetchMock as any);
     render(<ConversationWidget {...makeProps({ protocol: 'cursor', showFileUpload: true, maxUploadBytes: 1000, uploadUrl: '/api/widget-upload/db/gm/p1' })} />);
 
-    const fileInput = screen.getByTestId('file-input') as HTMLInputElement;
+    const fileInput = pickerInput();
     const file = new File([new Uint8Array([104, 105])], 'note.txt', { type: 'text/plain' });
     await act(async () => {
       fireEvent.change(fileInput, { target: { files: [file] } });

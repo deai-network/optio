@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ConversationWidget } from '../ConversationWidget.js';
 
+// The paperclip's file input: X Attachments' picker, inside the button's antd
+// Upload (its drop area holds a second, separate file input).
+const pickerInput = () =>
+  screen.getByTestId('attach-button').closest('.ant-upload')!.querySelector('input[type="file"]') as HTMLInputElement;
+
 // CodexView parity (Stage 7): the model picker, file upload (System:
 // reference), file download, and tool-verbosity all funnel through the shared
 // ConversationView, driven by codex's app-server wire over the listener SSE.
@@ -70,7 +75,7 @@ describe('CodexView (Stages 6-7 parity)', () => {
     vi.stubGlobal('fetch', fetchMock as any);
     render(<ConversationWidget {...makeProps({ protocol: 'codex', showFileUpload: true, maxUploadBytes: 1000, uploadUrl: '/api/widget-upload/db/gm/p1' })} />);
 
-    const fileInput = screen.getByTestId('file-input') as HTMLInputElement;
+    const fileInput = pickerInput();
     const file = new File([new Uint8Array([104, 105])], 'note.txt', { type: 'text/plain' });
     await act(async () => {
       fireEvent.change(fileInput, { target: { files: [file] } });

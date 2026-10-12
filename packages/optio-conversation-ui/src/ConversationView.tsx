@@ -1,13 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, Fragment } from 'react';
 import { Alert, Button, Input, Spin, Switch, Tooltip, theme } from 'antd';
-import type { GlobalToken } from 'antd';
+import type { GlobalToken, UploadFile } from 'antd';
 import {
   ActionButton, BoolSwitch, CombinedActionButton, OneOfSegmented, OneOfSelect, OneOfSlider,
   denyWithReason, useBoolField, useOneOfField, useSpinnerKey, useVultusComponents, type ActionStatus,
 } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
-import { Actions, Bubble, Think, ThoughtChain, XProvider } from '@ant-design/x';
+import { Actions, Attachments, Bubble, Think, ThoughtChain, XProvider } from '@ant-design/x';
 import type { ThoughtChainItemType } from '@ant-design/x';
 import { transcriptKeys } from './transcriptKeys.js';
 import { AnswerBlock } from './AnswerBlock.js';
@@ -1127,7 +1127,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const [sending, setSending] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Ant Design X experiment (owner-approved 2026-10-12): the files to send are
+  // X Attachments' upload list (antd UploadFile, the File in originFileObj);
+  // `attachments` is what onSend / onSteer get, as before.
+  const [uploads, setUploads] = useState<UploadFile[]>([]);
+  const attachments = uploads.map((u) => toAttachment(u.originFileObj as File));
   const [wide, setWide] = useState(false);
   // The task sidebar starts open. The chevron collapses the column itself.
   const [todosOpen, setTodosOpen] = useState(true);
@@ -1161,7 +1165,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     return () => clearInterval(timer);
   }, [counting]);
   const inputRef = useRef<TextAreaRef>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const pasteSeq = useRef(0);
   // The session controls' labels hide (optio-cc-compact) when the toolbar
   // would overflow with them: measured without the class and put back if
   // needed, before paint, on every resize and controls change.
@@ -1326,6 +1331,35 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // happen to catch everything, which is why this was latent) left
   // `sending` stuck true forever (the send bar, every Send now link and the
   // error Alert dead until remount) plus an unhandled promise rejection.
+  // Every change of the files to send (picked, dropped, pasted, removed): each
+  // file must be within the cap, otherwise nothing changes and the error line
+  // says so.
+  function takeUploads(next: UploadFile[]) {
+    if (!withinCap(next.map((u) => toAttachment(u.originFileObj as File)), maxUploadBytes)) {
+      setError('File too large.');
+      return;
+    }
+    setUploads(next);
+  }
+
+  // A file pasted into the message box is attached (text pastes as text).
+  function pasteFiles(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length === 0 || !showFileUpload || closed) return;
+    e.preventDefault();
+    takeUploads([
+      ...uploads,
+      ...files.map((file): UploadFile => ({
+        uid: `optio-paste-${++pasteSeq.current}`,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        originFileObj: file as UploadFile['originFileObj'],
+        status: 'done',
+      })),
+    ]);
+  }
+
   async function submit(kind: 'send' | 'steer') {
     const body = text;
     if (!body || sending || sendingNowRef.current || submittingRef.current || inputClosed) return;
@@ -1339,7 +1373,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       const ok = await deliver(body, attachments);
       if (ok === true) {
         setText('');
-        setAttachments([]);
+        setUploads([]);
       } else {
         setError(ok && typeof ok === 'object' ? ok.error : 'Send failed — retry.');
       }
@@ -1792,7 +1826,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           themed default for any inherited-color text inside. colorBgContainer,
           not colorBgLayout: X's templates put the chat on it, and its filled
           bubbles (colorFillContent) are drawn to stand out against it. */}
-      <div style={{
+      <div ref={rootRef} style={{
         display: 'flex', flexDirection: 'column', width: '100%', height: '100%',
         background: token.colorBgContainer, color: token.colorText,
         // Theme colours for the bubbles' glass (ensureGlassStyle): the accent
@@ -1881,24 +1915,18 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             </div>
           )}
         </div>
-        {attachments.length > 0 && (
-          <div data-testid="attach-chips" style={{ maxWidth: wide ? '100%' : 880, margin: '0 auto', width: '100%', display: 'flex', flexWrap: 'wrap', gap: 4, padding: '4px 8px' }}>
-            {attachments.map((a, i) => (
-              <span
-                key={i}
-                style={{
-                  fontSize: 12,
-                  padding: '2px 6px',
-                  border: `1px solid ${token.colorBorderSecondary}`,
-                  borderRadius: 4,
-                }}
-              >
-                {a.filename}
-                <a style={{ marginLeft: 6 }} onClick={() => setAttachments(attachments.filter((_, j) => j !== i))}>
-                  ×
-                </a>
-              </span>
-            ))}
+        {uploads.length > 0 && (
+          // X Attachments' list: a card per file (icon by extension, size, a
+          // remove button) and its own button to add more. Mounted only while
+          // there are files: empty, X would show its upload placeholder.
+          <div data-testid="attach-chips" style={{ maxWidth: wide ? '100%' : 880, margin: '0 auto', width: '100%', padding: '4px 8px' }}>
+            <Attachments
+              items={uploads}
+              beforeUpload={() => false}
+              onChange={({ fileList }) => takeUploads(fileList)}
+              multiple
+              disabled={closed}
+            />
           </div>
         )}
         <div style={{ borderTop: `1px solid ${token.colorBorderSecondary}`, padding: 8 }}>
@@ -1926,6 +1954,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={pasteFiles}
             placeholder={
               steerable
                 ? 'Message agent…  (Enter: send when ready, ⌘/Ctrl+Enter: interrupt and send, Shift+Enter: newline)'
@@ -1947,35 +1976,24 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             ) : null}
             <div style={{ flex: 1 }} />
             {showFileUpload && (
-              <>
-                <input
-                  data-testid="file-input"
-                  type="file"
-                  multiple
-                  style={{ display: 'none' }}
-                  ref={fileInputRef}
-                  onChange={(e) => {
-                    const picked = Array.from(e.target.files ?? []).map(toAttachment);
-                    const next = [...attachments, ...picked];
-                    if (!withinCap(next, maxUploadBytes)) {
-                      setError('File too large.');
-                      return;
-                    }
-                    setAttachments(next);
-                    e.target.value = '';
-                  }}
-                />
+              // X Attachments around the paperclip: its click opens X's file
+              // picker, and files dragged anywhere onto the conversation land
+              // in its drop area.
+              <Attachments
+                items={uploads}
+                beforeUpload={() => false}
+                onChange={({ fileList }) => takeUploads(fileList)}
+                multiple
+                disabled={closed}
+                getDropContainer={() => rootRef.current}
+                placeholder={{ title: 'Drop files here' }}
+              >
                 <Tooltip title="Attach files">
-                  <Button
-                    size="small"
-                    data-testid="attach-button"
-                    disabled={closed}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
+                  <Button size="small" data-testid="attach-button" disabled={closed}>
                     📎
                   </Button>
                 </Tooltip>
-              </>
+              </Attachments>
             )}
             {/* Fix 10: always the one vultus multi-action button, never a
                 separate plain Send button — idle shows only 'Send'; busy and
