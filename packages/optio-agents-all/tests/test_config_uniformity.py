@@ -1,13 +1,14 @@
 """Uniformity guard: the shared config surface must be identical across all 7
-engines. Every ``AgentTaskConfig`` union member inherits the blob-crypto and
-claustrum field sets from the ``optio_agents.config_types`` mixins, so the
-guard is structural (subclass checks) plus behavioral (validation + fallback
-behave the same on each concrete config class)."""
+engines. Every ``AgentTaskConfig`` union member inherits the blob-crypto,
+claustrum, session-controls and welcome field sets from the
+``optio_agents.config_types`` mixins, so the guard is structural (subclass
+checks) plus behavioral (validation + fallback behave the same on each
+concrete config class)."""
 from typing import get_args
 
 import pytest
 
-from optio_agents import BlobCryptoConfigMixin
+from optio_agents import BlobCryptoConfigMixin, WelcomeCard, WelcomeConfigMixin
 from optio_agents.config_types import ClaustrumConfigMixin, SessionControlsConfigMixin
 
 import optio_agents_all as aa
@@ -43,6 +44,7 @@ def test_union_members_inherit_shared_mixins(cls):
     assert issubclass(cls, BlobCryptoConfigMixin)
     assert issubclass(cls, ClaustrumConfigMixin)
     assert issubclass(cls, SessionControlsConfigMixin)
+    assert issubclass(cls, WelcomeConfigMixin)
 
 
 @pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)
@@ -50,6 +52,21 @@ def test_session_controls_allowlist_needs_the_bar_on_every_engine(cls):
     # The allowlist narrows show_session_controls; alone it is a config error.
     with pytest.raises(ValueError, match="session_controls"):
         _make(cls, session_controls=["model"])
+
+
+@pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)
+def test_welcome_card_widget_data_on_every_engine(cls):
+    assert _make(cls).welcome_widget_data is None
+    cfg = _make(cls, welcome=WelcomeCard(title="Hi", description="**x**", icon="img/a.png"))
+    assert cfg.welcome_widget_data == {
+        "title": "Hi", "description": "**x**", "icon": "/img/a.png", "minHeight": None,
+    }
+
+
+@pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)
+def test_welcome_must_be_a_card_on_every_engine(cls):
+    with pytest.raises(ValueError, match="welcome"):
+        _make(cls, welcome="nope")
 
 
 @pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)

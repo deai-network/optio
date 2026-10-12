@@ -175,6 +175,8 @@ def conversation_widget_data(config: "OpencodeTaskConfig", *, session_id: str, d
         "directory": directory,
         "toolVerbosity": config.tool_verbosity,
         "thinkingVerbosity": config.thinking_verbosity,
+        # The welcome card atop the transcript (None: no card).
+        "welcome": config.welcome_widget_data,
         "showSessionControls": config.show_session_controls,
         # The session_controls allowlist (None: every control). opencode's
         # control snapshots are built client-side (OpencodeView, from the live

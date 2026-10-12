@@ -22,6 +22,7 @@ from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
     SessionControlsConfigMixin,
+    WelcomeConfigMixin,
 )
 from optio_agents.protocol.session import (
     DeliverableCallback,
@@ -102,7 +103,10 @@ _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 
 @dataclass(frozen=True, kw_only=True)
-class KimiCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
+class KimiCodeTaskConfig(
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    WelcomeConfigMixin,
+):
     """Configuration for one optio-kimicode task instance.
 
     Stage 0 covers iframe (``kimi web``) mode on the local host. Resume,
@@ -289,6 +293,7 @@ class KimiCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionCon
         self._validate_claustrum()
         self._validate_blob_crypto()
         self._validate_session_controls()
+        self._validate_welcome()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

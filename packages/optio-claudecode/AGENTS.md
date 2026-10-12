@@ -335,6 +335,13 @@ when the hook returns, and when it raises `NothingToResurrect`.
   relaunch keeps the running mode. Every snapshot is narrowed by the
   allowlist, and the listener's /control refuses an id outside
   `settable_controls` (403 `not-allowed`; all of them while the bar is off).
+* `WelcomeConfigMixin` — `welcome: WelcomeCard | None = None`: the card the
+  conversation widget shows atop the transcript (title, markdown
+  description, both plain strings or language maps; icon URL relative to the
+  web app root; `min_height` in CSS pixels). The conversation UI publishes
+  `config.welcome_widget_data` (`{title, description, icon, minHeight}`,
+  texts unresolved, or None) as widgetData `welcome`, next to
+  `thinkingVerbosity`; the iframe widget ignores it.
 * The model select lists what the running CLI answers to the stream-json
   control request `initialize` (`ClaudeCodeConversation.initialize`, whose
   answer is not fanned out to on_event; `models.fetch_cli_models`), asked once

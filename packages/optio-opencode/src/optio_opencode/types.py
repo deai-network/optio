@@ -22,6 +22,7 @@ from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
     SessionControlsConfigMixin,
+    WelcomeConfigMixin,
 )
 from optio_agents.protocol.session import (
     CallerMessageCallback,
@@ -77,7 +78,10 @@ def _identity_resume_refresh(config: "OpencodeTaskConfig") -> "OpencodeTaskConfi
 
 
 @dataclass(frozen=True, kw_only=True)
-class OpencodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
+class OpencodeTaskConfig(
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    WelcomeConfigMixin,
+):
     """Configuration for one optio-opencode task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
@@ -243,6 +247,7 @@ class OpencodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionCon
         self._validate_claustrum()
         self._validate_blob_crypto()
         self._validate_session_controls()
+        self._validate_welcome()
         if self.mode not in ("iframe", "conversation"):
             raise ValueError(
                 f"OpencodeTaskConfig.mode={self.mode!r} is not one of "

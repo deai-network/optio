@@ -30,6 +30,7 @@ import pytest
 
 from optio_core.lifecycle import Optio
 
+from optio_agents import WelcomeCard
 from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task
 from optio_claudecode import host_actions
 from optio_claudecode.transcript import slugify_workdir
@@ -289,6 +290,7 @@ async def test_conversation_ui_session_lifecycle(
             "protocol": "claudecode",
             "toolVerbosity": "description-only",
             "thinkingVerbosity": "hidden",
+            "welcome": None,
             "showSessionControls": False,
             "nativeSpinner": False,
             "controls": [
@@ -564,6 +566,41 @@ async def test_a_pinned_full_model_id_launches_and_shows_selected(
         }
         await conv.close()
         await _wait_terminal(optio, "cc-conv-pin")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_a_configured_welcome_card_is_published_in_the_widget_data(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+):
+    """config.welcome reaches widgetData's welcome key, its icon rooted at
+    the web app."""
+    optio = await _make_optio(mongo_db, "ccui-welcome")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-welcome", name="Welcome card",
+            config=_ui_config(
+                shim_install_dir, claude_cache_dir,
+                # A language-map title (published unresolved) and a minimum height.
+                welcome=WelcomeCard(
+                    title={"en": "Hello", "hu": "Szia"}, description="Try **this**.",
+                    icon="img/w.png", min_height=200,
+                ),
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result("cc-conv-welcome", session_id=None, timeout=60)
+        proc = await _wait_widget_data(optio, "cc-conv-welcome")
+        assert proc["widgetData"]["welcome"] == {
+            "title": {"en": "Hello", "hu": "Szia"}, "description": "Try **this**.",
+            "icon": "/img/w.png", "minHeight": 200,
+        }
+        await conv.close()
+        await _wait_terminal(optio, "cc-conv-welcome")
     finally:
         await optio.shutdown(grace_seconds=1.0)
 

@@ -21,6 +21,7 @@ from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
     SessionControlsConfigMixin,
+    WelcomeConfigMixin,
 )
 from optio_agents.protocol.session import (
     CallerMessageCallback,
@@ -68,7 +69,10 @@ def _identity_resume_refresh(config: "CursorTaskConfig") -> "CursorTaskConfig":
 
 
 @dataclass(frozen=True, kw_only=True)
-class CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
+class CursorTaskConfig(
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    WelcomeConfigMixin,
+):
     """Configuration for one optio-cursor task instance (Stage 0).
 
     Stage 0 covers iframe/ttyd mode on the local host. Resume, seeds,
@@ -254,6 +258,7 @@ class CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionContr
         # allowlist, only together with show_session_controls) — see
         # SessionControlsConfigMixin.
         self._validate_session_controls()
+        self._validate_welcome()
         if self.sandbox is not None and self.sandbox not in _VALID_SANDBOX_MODES:
             raise ValueError(
                 f"CursorTaskConfig.sandbox={self.sandbox!r} "

@@ -20,6 +20,7 @@ import pytest
 
 from optio_core.lifecycle import Optio
 
+from optio_agents import WelcomeCard
 from optio_codex import CodexTaskConfig, create_codex_task
 
 
@@ -261,6 +262,11 @@ async def test_conversation_ui_publishes_widget(shim_install_dir, task_root, mon
             config=_conversation_config(
                 shim_install_dir, conversation_ui=True,
                 show_session_controls=True, tool_verbosity="verbose",
+                # A language-map title (published unresolved) and a minimum height.
+                welcome=WelcomeCard(
+                    title={"en": "Hello", "hu": "Szia"}, description="Try **this**.",
+                    icon="img/w.png", min_height=200,
+                ),
             ),
         )
         assert task.ui_widget == "conversation"
@@ -287,6 +293,11 @@ async def test_conversation_ui_publishes_widget(shim_install_dir, task_root, mon
         assert wd.get("toolVerbosity") == "verbose"
         assert wd.get("showSessionControls") is True
         assert wd.get("nativeSpinner") is False
+        # The welcome card, its icon rooted at the web app.
+        assert wd.get("welcome") == {
+            "title": {"en": "Hello", "hu": "Szia"}, "description": "Try **this**.",
+            "icon": "/img/w.png", "minHeight": 200,
+        }
         # The model picker is now the generic id="model" SessionControl.
         controls = wd.get("controls", [])
         model_ctrl = next((c for c in controls if c.get("id") == "model"), None)
