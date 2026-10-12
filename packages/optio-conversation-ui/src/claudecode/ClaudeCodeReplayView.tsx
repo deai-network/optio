@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Modal } from 'antd';
 import type { WidgetProps } from 'optio-ui';
 import { SpinnerScope } from 'vultus-antd';
 import type { ChatState, SessionControl } from '../chat.js';
@@ -6,11 +7,16 @@ import { initialChatState, reduceEvent, type ReduceOptions } from './events.js';
 import { ConversationView } from '../ConversationView.js';
 import { todosFromWidgetData } from '../todosFromWidgetData.js';
 import { NativeSpinner } from '../spinners/NativeSpinner.js';
+import { dismissResumeSend, startResumeSend, useResumeSend } from './resumeAndSend.js';
+import { ResumeSendNotice } from './ResumeSendNotice.js';
 
 // Read-only replay of a suspended claudecode task's saved conversation record
 // (docs/2026-10-12-suspended-conversation-view-design.md, section 5). It folds
 // the record through the same reducer ClaudeCodeView uses live and renders the
 // same ConversationView, closed, with no transport: no EventSource, no POSTs.
+// Given the widget's API and proxy URLs, its composer stays usable: Send asks
+// to resume the session, then resumes it and sends the message once it is
+// live (resumeAndSend.ts). Without them the view is read-only.
 
 export interface ClaudeCodeReplayViewProps {
   process: WidgetProps['process'];
@@ -21,12 +27,21 @@ export interface ClaudeCodeReplayViewProps {
   events: unknown[];
   // When the record was captured (ISO, with offset), or null.
   capturedAt: string | null;
+  // WidgetProps' URLs and instance: sending resumes the session through them.
+  // Without apiBaseUrl / prefix / widgetProxyUrl the composer stays disabled.
+  apiBaseUrl?: string;
+  database?: string;
+  prefix?: string;
+  widgetProxyUrl?: string;
   // theming (only set by ConversationWidget's registration when ownTheme):
   themeMode?: 'light' | 'dark';
   onToggleTheme?: () => void;
 }
 
 const SUSPENDED_CLOSED_LABEL = 'Suspended — resume to continue';
+const CONFIRM_TITLE = 'Resume the session?';
+const CONFIRM_TEXT = 'This session is currently suspended. Sending this message will resume it. Is this what you want?';
+const CONFIRM_OK = 'Resume and send';
 
 const noSend = async (): Promise<boolean> => false;
 const noop = (): void => {};
@@ -59,6 +74,10 @@ export function ClaudeCodeReplayView({
   widgetData,
   events,
   capturedAt,
+  apiBaseUrl,
+  database,
+  prefix,
+  widgetProxyUrl,
   themeMode,
   onToggleTheme,
 }: ClaudeCodeReplayViewProps) {
@@ -87,11 +106,36 @@ export function ClaudeCodeReplayView({
     [events, now, thinkingRows],
   );
 
-  // The same state-derived props as ClaudeCodeView. No send, steer, interrupt,
+  // Sending resumes the session (when the widget's URLs are known).
+  const [modal, modalHolder] = Modal.useModal();
+  const pending = useResumeSend(process._id);
+  const canResume = apiBaseUrl !== undefined && Boolean(prefix) && Boolean(widgetProxyUrl);
+  const confirmSend = (): Promise<boolean> =>
+    new Promise((resolve) => {
+      modal.confirm({
+        title: CONFIRM_TITLE,
+        content: CONFIRM_TEXT,
+        okText: CONFIRM_OK,
+        cancelText: 'Cancel',
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+  const sendByResuming = async (text: string): Promise<boolean | { error: string }> => {
+    dismissResumeSend(process._id);
+    const outcome = await startResumeSend(
+      { processId: process._id, apiBaseUrl: apiBaseUrl!, database, prefix: prefix!, widgetProxyUrl: widgetProxyUrl! },
+      text,
+    );
+    return outcome.ok ? true : { error: outcome.message };
+  };
+
+  // The same state-derived props as ClaudeCodeView. No steer, interrupt,
   // permission, download or control-change handlers: the session controls get
   // their values (for labels) but, without onControlChange, render no inputs.
   return (
     <SpinnerScope name={`optio:process:${process._id}`}>
+      {modalHolder}
       <ConversationView
         todos={todosFromWidgetData(widgetData)}
         state={state}
@@ -104,7 +148,13 @@ export function ClaudeCodeReplayView({
         maxUploadBytes={maxUploadBytes}
         fileDownload={false}
         nativeSpinner={nativeSpinner ? <NativeSpinner engine="claudecode" /> : undefined}
-        onSend={noSend}
+        onSend={canResume ? sendByResuming : noSend}
+        // A send still waiting for the resume locks the composer; a failed one
+        // puts its text back (draft), with the reason in the notice.
+        composeWhenClosed={canResume && pending?.phase !== 'resuming'}
+        confirmSend={confirmSend}
+        draft={pending?.phase === 'failed' ? pending.text : undefined}
+        notice={<ResumeSendNotice processId={process._id} state={pending} />}
         onInterrupt={noop}
         onPermission={noop}
         onFileDownload={noop}

@@ -448,6 +448,75 @@ describe('ConversationView send', () => {
     fireEvent.click(screen.getByTestId('conversation-error').querySelector('.ant-alert-close-icon') as HTMLElement);
     await waitFor(() => expect(screen.queryByTestId('conversation-error')).toBeNull());
   });
+
+  it('onSend resolving {error} shows that message and keeps the text', async () => {
+    renderView(makeProps({ onSend: vi.fn(async () => ({ error: 'Process is already running' })) }));
+    fireEvent.change(screen.getByTestId('conversation-input-box'), { target: { value: 'kept' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(screen.getByTestId('conversation-error').textContent).toContain('Process is already running'));
+    expect((screen.getByTestId('conversation-input-box') as HTMLTextAreaElement).value).toBe('kept');
+  });
+});
+
+describe('ConversationView sending through a resume (the suspended replay)', () => {
+  const closedState = () => makeState([], { closed: true });
+  const box = () => screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+
+  it('closed: the input and Send are disabled, as before', () => {
+    renderView(makeProps({ closed: true, state: closedState() }));
+    expect(box().disabled).toBe(true);
+  });
+
+  it('composeWhenClosed: the input and Send work while the transcript stays closed', async () => {
+    const onSend = vi.fn(async () => true);
+    renderView(makeProps({ closed: true, state: closedState(), composeWhenClosed: true, onSend }));
+    expect(box().disabled).toBe(false);
+    expect(screen.getByTestId('conversation-closed')).toBeTruthy();
+    fireEvent.change(box(), { target: { value: 'wake up' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('wake up', []));
+  });
+
+  it('confirmSend false: nothing is sent, the text stays, no error', async () => {
+    const onSend = vi.fn(async () => true);
+    const confirmSend = vi.fn(async () => false);
+    renderView(makeProps({ closed: true, state: closedState(), composeWhenClosed: true, confirmSend, onSend }));
+    fireEvent.change(box(), { target: { value: 'not yet' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(confirmSend).toHaveBeenCalledWith('not yet'));
+    await waitFor(() => expect(box().disabled).toBe(false));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(box().value).toBe('not yet');
+    expect(screen.queryByTestId('conversation-error')).toBeNull();
+  });
+
+  it('confirmSend true: onSend follows, and Send stays locked while the question is open', async () => {
+    let answer: (v: boolean) => void = () => {};
+    const confirmSend = vi.fn(() => new Promise<boolean>((resolve) => { answer = resolve; }));
+    const onSend = vi.fn(async () => true);
+    renderView(makeProps({ closed: true, state: closedState(), composeWhenClosed: true, confirmSend, onSend }));
+    fireEvent.change(box(), { target: { value: 'go' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    fireEvent.keyDown(box(), { key: 'Enter' });
+    await waitFor(() => expect(confirmSend).toHaveBeenCalledTimes(1));
+    await act(async () => answer(true));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(box().value).toBe(''));
+  });
+
+  it('draft: seeds the input, and a new draft replaces the text', () => {
+    const { rerender } = render(
+      <ConfigProvider><ConversationView {...makeProps({ draft: 'first try' })} /></ConfigProvider>,
+    );
+    expect(box().value).toBe('first try');
+    rerender(<ConfigProvider><ConversationView {...makeProps({ draft: 'second try' })} /></ConfigProvider>);
+    expect(box().value).toBe('second try');
+  });
+
+  it('notice: rendered above the input', () => {
+    renderView(makeProps({ notice: <div data-testid="the-notice">waiting</div> }));
+    expect(screen.getByTestId('the-notice').textContent).toBe('waiting');
+  });
 });
 
 describe('ConversationView session controls slot', () => {

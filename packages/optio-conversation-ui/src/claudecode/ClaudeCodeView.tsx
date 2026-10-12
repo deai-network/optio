@@ -9,6 +9,8 @@ import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
 import { todosFromWidgetData } from '../todosFromWidgetData.js';
 import { NativeSpinner } from '../spinners/NativeSpinner.js';
+import { dismissResumeSend, useResumeSend } from './resumeAndSend.js';
+import { ResumeSendNotice } from './ResumeSendNotice.js';
 
 interface ChatAction {
   ev: unknown;
@@ -136,6 +138,10 @@ export function ClaudeCodeView(props: WidgetProps) {
     }
   }
 
+  // A message sent from the suspended replay waits here for the resumed
+  // session (resumeAndSend.ts); one that could not be sent comes back.
+  const resumeSend = useResumeSend(props.process._id);
+
   return (
     <SpinnerScope name={`optio:process:${props.process._id}`}>
       <ConversationView
@@ -150,6 +156,7 @@ export function ClaudeCodeView(props: WidgetProps) {
         fileDownload={fileDownload}
         nativeSpinner={nativeSpinner ? <NativeSpinner engine="claudecode" /> : undefined}
         onSend={async (body, attachments) => {
+          dismissResumeSend(props.process._id);
           // Send (idle) or Send when ready (busy): the listener answers
           // {id, queued}; queued means Claude holds it until the next tool result.
           const prompt = await preparePrompt(body, attachments);
@@ -191,6 +198,8 @@ export function ClaudeCodeView(props: WidgetProps) {
           dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current });
           void post('control', { id, value });
         }}
+        notice={<ResumeSendNotice processId={props.process._id} state={resumeSend} />}
+        draft={resumeSend?.phase === 'failed' ? resumeSend.text : undefined}
         themeMode={(props as any).themeMode}
         onToggleTheme={(props as any).onToggleTheme}
       />

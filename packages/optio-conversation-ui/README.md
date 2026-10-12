@@ -33,26 +33,38 @@ registerConversationWidget({ ownTheme: true });
 
 It registers for `ui_widget = "conversation"`. Each task carries its engine in `widgetData.protocol` (`"claudecode"` or `"opencode"` — injected automatically by `optio-claudecode` / `optio-opencode`), and the widget dispatches to the matching view. You do **not** specify the engine at registration.
 
-## Suspended conversations (read-only)
+## Suspended conversations
 
 `registerConversationWidget()` also registers `SuspendedConversationWidget` as the widget's
 suspended variant (optio-ui's `registerWidget(name, component, { suspended })`). optio-ui
 renders it instead of the live widget while a process is suspended (cancelled, with
 `supportsResume` and `hasSavedState`); its process page keeps a Resume control. It shows the
-conversation as it stood at the suspend, read-only. No agent host starts.
+conversation as it stood at the suspend. Reading it starts no agent host; sending a message
+resumes the session (claudecode, below).
 
 - **Its one request** is optio-ui's `useProcessConversation(process._id, { stoppedAt })`
   (`GET /processes/:id/conversation`, proxied by optio-api from the engine's conversation
   archive). It runs once per suspend: a window refocus does not refetch the record. There is
-  no EventSource and nothing else goes over the network.
+  no EventSource, and nothing else goes over the network until the user sends a message.
 - **claudecode** (`widgetData.protocol`, which survives the suspend): `ClaudeCodeReplayView`
   folds the saved record through the claudecode reducer with one fixed clock (the record's
   `capturedAt`, else the mount time). It then closes the session as suspended, which stops any
   row still running. The view is `ConversationView`, closed, under the divider "Suspended —
-  resume to continue". The view passes no-op handlers: send, interrupt, permission and download
-  do nothing, and it offers no upload and no control inputs. A permission request the record
-  left unanswered still shows its Approve and Deny buttons, but they are inert. The tool
-  verbosity, controls seed and todos come from `widgetData`, as in the live view.
+  resume to continue". Interrupt, permission and download do nothing, and it offers no upload
+  and no control inputs. A permission request the record left unanswered still shows its
+  Approve and Deny buttons, but they are inert. The tool verbosity, controls seed and todos
+  come from `widgetData`, as in the live view.
+- **Sending resumes the session** (claudecode). The input and Send stay usable. Send asks
+  "Resume the session?"; on "Resume and send" the view resumes the process (`POST
+  /processes/:id/launch` with `resume: true`) and the message waits, in browser memory only,
+  until the session is live; then it goes to the listener's `/send`, like a live send. The
+  waiting runs outside the component (`resumeAndSend.ts`), so it survives the swap to the live
+  view and navigation within the app, but not a page reload. The message never travels with
+  the resume request, which crosses the engine's Redis RPC. While it waits, the replay and the
+  live view show "Resuming the session; your message will be sent once it is ready." A refused
+  resume shows its reason and keeps the text. A message that cannot be sent afterwards (the
+  session stopped, the conversation closed, no session within 10 minutes) comes back into the
+  input with the reason. A send that may have reached the listener is never repeated.
 - **Other protocols** show "Resume to view this conversation." and make no request; only
   claudecode keeps a record so far.
 - **Loading** shows the lent spinner (`optio:process:<id>:archive`, see below) and "Loading…".
@@ -67,10 +79,14 @@ The note, error and loading states paint the theme's layout background and text 
 light/dark toggle, so they follow a dark choice too.
 
 An app that mounts the widget directly can render `SuspendedConversationWidget` (it takes
-`WidgetProps`) or `ClaudeCodeReplayView` (`{ process, widgetData, events, capturedAt }`).
+`WidgetProps`) or `ClaudeCodeReplayView` (`{ process, widgetData, events, capturedAt }`, plus
+`apiBaseUrl`, `database`, `prefix` and `widgetProxyUrl` to send by resuming; without them it is
+read-only).
 
 `ConversationView` takes an optional `closedLabel` for that divider; without it the divider
-reads "conversation ended", as before.
+reads "conversation ended", as before. For sending through a resume it also takes
+`composeWhenClosed`, `confirmSend`, `draft` and `notice`, and `onSend` may resolve `{ error }`
+to show its own message.
 
 ## Features
 

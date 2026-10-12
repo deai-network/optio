@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { ConfigProvider, theme } from 'antd';
 import type { ReactNode } from 'react';
 import { VultusProvider, type SpinnerProps } from 'vultus-antd';
@@ -9,6 +9,7 @@ import { ClaudeCodeReplayView } from '../claudecode/ClaudeCodeReplayView.js';
 import { ConversationView, type ConversationViewProps } from '../ConversationView.js';
 import { registerConversationWidget } from '../ConversationWidget.js';
 import { reduceEvent } from '../claudecode/events.js';
+import { resetResumeSends, startResumeSend } from '../claudecode/resumeAndSend.js';
 import type { ChatItem, ChatState } from '../chat.js';
 
 // The read-only view of a suspended conversation task
@@ -93,6 +94,7 @@ class RecordingEventSource {
 let fetchSpy: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   useProcessConversation.mockReset();
+  resetResumeSends();
   reduceSpy.mockClear();
   refetch.mockReset();
   RecordingEventSource.instances = [];
@@ -145,8 +147,8 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
     // One divider: the closing event's own "conversation ended (suspended)" row is not shown.
     expect(screen.queryByText(/conversation ended/)).toBeNull();
 
-    // The composer and the send button are disabled.
-    expect((screen.getByTestId('conversation-input-box') as HTMLTextAreaElement).disabled).toBe(true);
+    // The composer takes text (sending resumes the session); Send waits for text.
+    expect((screen.getByTestId('conversation-input-box') as HTMLTextAreaElement).disabled).toBe(false);
     const send = within(screen.getByTestId('conversation-send-combined')).getByRole('button');
     expect((send as HTMLButtonElement).disabled).toBe(true);
   });
@@ -287,6 +289,88 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
     useProcessConversation.mockReturnValue(loaded(RECORD));
     render(wrap(<SuspendedConversationWidget {...widgetProps({ widgetData: {} })} />));
     expect(screen.getByText('List the files')).toBeTruthy();
+  });
+});
+
+describe('SuspendedConversationWidget: sending resumes the session', () => {
+  const box = () => screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+  const LAUNCH = '/api/processes/p1/launch?database=db&prefix=gm';
+  const GET = '/api/processes/p1?database=db&prefix=gm';
+  const jsonResp = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+  // launch answers `launch`; the process then stays in `state`.
+  const api = (launch: Response, state = 'scheduled') =>
+    vi.fn(async (url: string) => (url === LAUNCH ? launch : url === GET ? jsonResp(200, { status: { state } }) : jsonResp(404, {})));
+  const typeAndSend = (text: string) => {
+    fireEvent.change(box(), { target: { value: text } });
+    fireEvent.click(within(screen.getByTestId('conversation-send-combined')).getByRole('button'));
+  };
+
+  it('Send asks first; Cancel sends nothing and keeps the text', async () => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
+    typeAndSend('carry on');
+    const cancel = await screen.findByRole('button', { name: 'Cancel' });
+    expect(document.querySelector('.ant-modal-confirm-title')?.textContent).toBe('Resume the session?');
+    expect(document.querySelector('.ant-modal-confirm-content')?.textContent).toBe(
+      'This session is currently suspended. Sending this message will resume it. Is this what you want?',
+    );
+    fireEvent.click(cancel);
+    await waitFor(() => expect(box().disabled).toBe(false));
+    expect(box().value).toBe('carry on');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('conversation-error')).toBeNull();
+  });
+
+  it('Resume and send: resumes the process, clears the input and shows the message waiting', async () => {
+    const f = api(jsonResp(200, { _id: 'p1' }));
+    vi.stubGlobal('fetch', f);
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
+    typeAndSend('carry on');
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume and send' }));
+    await waitFor(() => expect(f.mock.calls.some((c) => c[0] === LAUNCH)).toBe(true));
+    const launch = f.mock.calls.find((c) => c[0] === LAUNCH) as unknown as [string, RequestInit];
+    expect(JSON.parse(String(launch[1].body))).toMatchObject({ resume: true });
+    await waitFor(() => expect(screen.getByTestId('optio-resume-send-pending')).toBeTruthy());
+    expect(box().value).toBe('');
+    // Locked while the message waits: no second resume from here.
+    expect(box().disabled).toBe(true);
+  });
+
+  it('a refused resume shows its message and keeps the text', async () => {
+    vi.stubGlobal('fetch', api(jsonResp(409, { reason: 'already-running', message: 'Process is already running' })));
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
+    typeAndSend('carry on');
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume and send' }));
+    await waitFor(() => expect(screen.getByTestId('conversation-error').textContent).toContain('Process is already running'));
+    expect(box().value).toBe('carry on');
+    expect(screen.queryByTestId('optio-resume-send-pending')).toBeNull();
+  });
+
+  it('a message that could not be sent comes back into the input, with the reason', async () => {
+    vi.stubGlobal('fetch', api(jsonResp(200, {}), 'failed'));
+    await startResumeSend(
+      { processId: 'p1', apiBaseUrl: '', database: 'db', prefix: 'gm', widgetProxyUrl: '/api/widget/db/gm/p1/' },
+      'try again later',
+      { pollMs: 0, timeoutMs: 2000, graceMs: 0 },
+    );
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
+    await waitFor(() => expect(screen.getByTestId('optio-resume-send-failed').textContent).toContain(
+      'Your message was not sent: The session stopped before the message could be sent.',
+    ));
+    expect(box().value).toBe('try again later');
+    expect(box().disabled).toBe(false);
+    fireEvent.click(screen.getByTestId('optio-resume-send-failed').querySelector('.ant-alert-close-icon') as HTMLElement);
+    await waitFor(() => expect(screen.queryByTestId('optio-resume-send-failed')).toBeNull());
+  });
+
+  it('mounted without the widget URLs, the replay stays read-only', () => {
+    render(wrap(
+      <ClaudeCodeReplayView process={process() as any} widgetData={{ protocol: 'claudecode' }} events={RECORD} capturedAt={CAPTURED_AT} />,
+    ));
+    expect(box().disabled).toBe(true);
   });
 });
 

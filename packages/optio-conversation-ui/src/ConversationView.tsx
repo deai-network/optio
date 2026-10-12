@@ -92,7 +92,19 @@ export interface ConversationViewProps {
   // A Spinner the app lends through vultus-core's slot wins over it (key
   // optio:working; see SlotSpinner).
   nativeSpinner?: React.ReactNode;
-  onSend: (text: string, attachments: Attachment[]) => Promise<boolean>; // returns ok
+  // Resolves true when sent. false, or a rejection, shows 'Send failed —
+  // retry.'; `{error}` shows that message instead. Either way the text stays.
+  onSend: (text: string, attachments: Attachment[]) => Promise<boolean | { error: string }>;
+  // The suspended replay (ClaudeCodeReplayView): the transcript stays closed,
+  // but the input and Send stay usable, because sending resumes the session.
+  composeWhenClosed?: boolean;
+  // Asked before onSend; false keeps the text and sends nothing, no error.
+  confirmSend?: (text: string) => Promise<boolean>;
+  // Put into the input when it changes to a non-empty value: a message that
+  // could not be delivered comes back to be sent again.
+  draft?: string;
+  // A line above the input (e.g. a message waiting for the session to resume).
+  notice?: React.ReactNode;
   // Resolves whether the request reached the listener (Fix 6, manual-test
   // finding 1): the Interrupt button shows a pending state while in flight
   // and 'Interrupt failed — retry.' through the same error slot the input
@@ -1059,7 +1071,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     onFileDownload,
   } = props;
 
-  const [text, setText] = useState('');
+  const [text, setText] = useState(props.draft ?? '');
+  useEffect(() => {
+    if (props.draft) setText(props.draft);
+  }, [props.draft]);
+  // Whether the input takes text: not after the conversation closed, unless
+  // the view sends through a resume (composeWhenClosed).
+  const inputClosed = closed && !props.composeWhenClosed;
   const [sending, setSending] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1271,19 +1289,20 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // error Alert dead until remount) plus an unhandled promise rejection.
   async function submit(kind: 'send' | 'steer') {
     const body = text;
-    if (!body || sending || sendingNowRef.current || submittingRef.current || closed) return;
+    if (!body || sending || sendingNowRef.current || submittingRef.current || inputClosed) return;
     const deliver = kind === 'steer' ? props.onSteer : onSend;
     if (!deliver) return;
     submittingRef.current = true;
     setSending(true);
     setError(null);
     try {
+      if (props.confirmSend && !(await props.confirmSend(body))) return;
       const ok = await deliver(body, attachments);
-      if (ok) {
+      if (ok === true) {
         setText('');
         setAttachments([]);
       } else {
-        setError('Send failed — retry.');
+        setError(ok && typeof ok === 'object' ? ok.error : 'Send failed — retry.');
       }
     } catch {
       // A rejected deliver() is still "send failed", not an unhandled
@@ -1855,6 +1874,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             maxWidth: wide ? '100%' : 880, margin: '0 auto', width: '100%',
             display: 'flex', flexDirection: 'column', gap: 8,
           }}>
+          {props.notice}
           {error && (
             <Alert
               type="error"
@@ -1877,7 +1897,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 : 'Message agent…  (Enter to send, Shift+Enter for newline)'
             }
             autoSize={{ minRows: 2, maxRows: 8 }}
-            disabled={closed}
+            disabled={inputClosed}
             ref={inputRef}
           />
           {/* Row 2: a single-height toolbar — model + attach on the left,
@@ -1951,7 +1971,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 iconPlacement="end"
                 align="end"
                 actions={[
-                  barAction('send', 'Send', 'primary', sending || !text || closed, () => void submit('send'), steerable, <SendPlaneIcon />),
+                  barAction('send', 'Send', 'primary', sending || !text || inputClosed, () => void submit('send'), steerable, <SendPlaneIcon />),
                   barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable, <SendWhenReadyClockIcon />),
                   barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer'), !steerable, <InterruptAndSendBoltIcon />),
                 ]}

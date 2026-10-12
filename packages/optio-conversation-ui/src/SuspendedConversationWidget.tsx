@@ -8,7 +8,8 @@ import { ClaudeCodeReplayView } from './claudecode/ClaudeCodeReplayView.js';
 // (docs/2026-10-12-suspended-conversation-view-design.md, section 5): optio-ui
 // renders it instead of ConversationWidget while the process is suspended
 // (cancelled with saved state). It reads the conversation as it stood at the
-// suspend, read-only, through optio-api's getConversation — its only request.
+// suspend, through optio-api's getConversation — its only request until the
+// user sends a message, which resumes the session (ClaudeCodeReplayView).
 
 const OTHER_PROTOCOL_NOTE = 'Resume to view this conversation.';
 const NO_RECORD_NOTE = 'No saved conversation to show; resume to continue it.';
@@ -77,6 +78,10 @@ export function SuspendedConversationWidget(props: WidgetProps) {
         widgetData={widgetData}
         events={body.events}
         capturedAt={typeof body.capturedAt === 'string' ? body.capturedAt : null}
+        apiBaseUrl={props.apiBaseUrl}
+        database={props.database}
+        prefix={props.prefix}
+        widgetProxyUrl={props.widgetProxyUrl}
         themeMode={(props as any).themeMode}
         onToggleTheme={(props as any).onToggleTheme}
       />

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ConversationWidget } from '../ConversationWidget.js';
+import { resetResumeSends, startResumeSend } from '../claudecode/resumeAndSend.js';
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -428,5 +429,43 @@ describe('ConversationWidget', () => {
     expect(screen.getByTestId('activity-muted').textContent).toBe('⏹ Interrupted by you');
     expect(screen.queryByTestId('conversation-error-item')).toBeNull();
     expect(screen.queryByText('[Request interrupted by user]')).toBeNull();
+  });
+});
+
+describe('ConversationWidget: a message sent from the suspended replay', () => {
+  // resumeAndSend.ts: the replay resumed the session; the live view that
+  // replaces it shows the message waiting, or brings it back when it failed.
+  const TARGET = { processId: 'p1', apiBaseUrl: '', database: 'db', prefix: 'gm', widgetProxyUrl: '/api/widget/db/gm/p1/' };
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+
+  beforeEach(() => {
+    resetResumeSends();
+    MockEventSource.reset();
+    (globalThis as any).EventSource = MockEventSource as any;
+  });
+
+  it('shows the message waiting while the session comes up', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.includes('/launch') ? json(200, {}) : json(200, { status: { state: 'scheduled' } }))));
+    await startResumeSend(TARGET, 'queued', { pollMs: 20, timeoutMs: 5000, graceMs: 0 });
+    render(<ConversationWidget {...makeProps()} />);
+    expect(screen.getByTestId('optio-resume-send-pending').textContent).toContain('your message will be sent once it is ready');
+  });
+
+  it('a message that could not be sent comes back into the input; a new send clears the notice', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/launch')) return json(200, {});
+      if (url.startsWith('/api/processes/')) return json(200, { status: { state: 'running' } });
+      return url.endsWith('/send') && fetchMock.mock.calls.filter((c) => c[0] === url).length === 1
+        ? json(409, { ok: false, reason: 'closed' })
+        : json(200, { ok: true, id: 'q2', queued: false });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await startResumeSend(TARGET, 'please retry me', { pollMs: 0, timeoutMs: 5000, graceMs: 0 });
+    render(<ConversationWidget {...makeProps()} />);
+    await waitFor(() => expect(screen.getByTestId('optio-resume-send-failed')).toBeTruthy());
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    expect(box.value).toBe('please retry me');
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(screen.queryByTestId('optio-resume-send-failed')).toBeNull());
   });
 });

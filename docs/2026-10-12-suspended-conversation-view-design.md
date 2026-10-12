@@ -180,3 +180,21 @@ launch. A snapshot whose conversation blob is missing (a dangling reference) is 
   - `closedLabel` defaults unchanged.
 - **Live:** on the test stack (DB copy `excavator_turks`), a suspended test2 analyzer conversation shows
   its history read-only, and Resume opens it live.
+
+## Follow-up: sending resumes the session (owner, 2026-10-12)
+
+The replay's composer stays usable. Send asks "This session is currently suspended. Sending this
+message will resume it. Is this what you want?"; on confirm the browser resumes the process (the
+launch route with `resume: true`) and sends the message to the listener's `/send` once the session
+is live. Upload and session controls stay hidden.
+
+- **Browser-side on purpose:** the resume request crosses the engine's Redis RPC, so the message
+  must not travel with it (no conversation content in Redis).
+- **The wait** (`optio-conversation-ui/src/claudecode/resumeAndSend.ts`) does not depend on a
+  mounted component: it polls the process document, and posts once the process is widget-live,
+  retrying only the proxy's "not registered yet" answers (404, 502, 503, 504). A send that may have
+  reached the listener is never repeated. A page reload before the send loses the message.
+- **Failures** bring the text back into the input with the reason: a refused resume at once; a
+  session that stops, a closed conversation, or no live session within 10 minutes afterwards.
+- **Both views** show the waiting message ("Resuming the session; your message will be sent once it
+  is ready."), since the live view replaces the replay while it waits.
