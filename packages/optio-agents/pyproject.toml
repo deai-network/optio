@@ -25,7 +25,7 @@ classifiers = [
     "Framework :: AsyncIO",
 ]
 dependencies = [
-    "optio-core>=0.5,<0.6",
+    "optio-core>=0.6,<0.7",
     "optio-host>=0.3,<0.4",
 ]
 
