@@ -37,8 +37,10 @@ registerConversationWidget({ wideness: 'switch' });
 `wideness` sets how wide the conversation reads, live and suspended: `'narrow'` (the default)
 always caps the transcript and composer at the 880px reading column, `'wide'` always uses the
 full width, and `'switch'` shows a Wide switch in the conversation's header that toggles
-between them. `ConversationWidget` takes it as a prop of the same name; a view rendered on its
-own reads it from `ConversationWidenessContext`, or takes a `wideness` prop.
+between them. `ConversationWidget` takes it as a prop of the same name. Registered or rendered
+without one, the widget follows `ConversationWidenessContext` from the host, so a host can
+change the width live by providing that context (`'narrow'` when it provides none); a view
+rendered on its own reads the same context, or takes a `wideness` prop.
 
 It registers for `ui_widget = "conversation"`. Each task carries its engine in `widgetData.protocol` (`"claudecode"` or `"opencode"` — injected automatically by `optio-claudecode` / `optio-opencode`), and the widget dispatches to the matching view. You do **not** specify the engine at registration.
 
