@@ -1,5 +1,8 @@
+import type { ReactNode } from 'react';
+import { Spin } from 'antd';
 import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import { useProcessStream } from '../hooks/useProcessStream.js';
+import { isActive } from '../process-state.js';
 import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
 import { useProcessWidgetState } from './ProcessWidget.js';
@@ -28,12 +31,29 @@ export interface ProcessDetailViewProps {
    * readiness states are still rendered. Defaults to true (logs shown).
    */
   showLogs?: boolean;
+  /**
+   * When true, the phase before the process's widget is available is
+   * hidden: until the widget shows, a big spinner (the app's lent Spinner,
+   * else antd's) takes the place of the "Loading…" line and of the process
+   * view (tree and logs) of a scheduled or running process. For embeds that
+   * show a process as its widget only, e.g. a chat. A process that ends
+   * without its widget shows the process view, as without it; not-found and
+   * stream errors show as without it. Defaults to false.
+   */
+  waitForWidget?: boolean;
+  /**
+   * Shown instead of the big spinner while waiting for the widget. Passing
+   * it implies `waitForWidget`.
+   */
+  widgetPlaceholder?: ReactNode;
 }
 
 export function ProcessDetailView({
   processId,
   readOnly = false,
   showLogs = true,
+  waitForWidget = false,
+  widgetPlaceholder,
 }: ProcessDetailViewProps) {
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
@@ -43,6 +63,21 @@ export function ProcessDetailView({
   const widgetResult = useProcessWidgetState(tree, { readOnly });
   const { Spinner } = useVultusComponents();
   const spinnerKey = useSpinnerKey(`optio:process:${processId}:detail`);
+  const waiting = waitForWidget || widgetPlaceholder !== undefined;
+  // What stands in for the widget until it is available.
+  const waitingView = () => (
+    <div
+      data-testid="optio-detail-waiting"
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: '100%', height: '100%', minHeight: 200,
+      }}
+    >
+      {widgetPlaceholder !== undefined
+        ? widgetPlaceholder
+        : Spinner ? <Spinner spinnerKey={spinnerKey} size="large" /> : <Spin size="large" />}
+    </div>
+  );
 
   if (!processId) {
     return (
@@ -75,6 +110,7 @@ export function ProcessDetailView({
   }
 
   if (!tree) {
+    if (waiting) return waitingView();
     return (
       <div data-testid="optio-detail-loading">
         {Spinner && (
@@ -115,6 +151,9 @@ export function ProcessDetailView({
       </div>
     );
   }
+
+  // No widget yet: a scheduled or running process will show one soon.
+  if (waiting && isActive(tree)) return waitingView();
 
   return (
     <div data-testid="optio-detail-default">

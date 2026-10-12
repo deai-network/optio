@@ -497,4 +497,71 @@ describe('ProcessDetailView', () => {
     });
   });
 
+  // waitForWidget / widgetPlaceholder (owner request 2026-10-12): an embed
+  // that only wants the process's widget hides the phase before it is
+  // available, the process view, behind a big spinner or its own placeholder.
+  describe('waiting for the widget', () => {
+    const tree = (state: string, widgetData: unknown = null) => ({
+      _id: 'abc', name: 'P', status: { state },
+      progress: { percent: null }, cancellable: true,
+      depth: 0, order: 0, parentId: null, children: [],
+      uiWidget: 'my-widget', widgetData,
+    });
+    const stream = (t: unknown) => mockProcessStream.mockReturnValue({ tree: t, logs: [], connected: true });
+    beforeEach(() => {
+      registerWidget('my-widget', () => <div data-testid="my-widget" />);
+    });
+
+    it('shows the big spinner instead of the loading line before the process arrives', () => {
+      mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: false });
+      render(<ProcessDetailView processId="abc" waitForWidget />);
+      expect(screen.getByTestId('optio-detail-waiting')).toBeTruthy();
+      expect(screen.queryByTestId('optio-detail-loading')).toBeNull();
+    });
+
+    it('shows it instead of the process view while the process is scheduled or runs without its widget', () => {
+      for (const state of ['scheduled', 'running']) {
+        stream(tree(state));
+        render(<ProcessDetailView processId="abc" waitForWidget />);
+        expect(screen.getByTestId('optio-detail-waiting')).toBeTruthy();
+        expect(screen.queryByTestId('optio-detail-default')).toBeNull();
+        cleanup();
+      }
+    });
+
+    it('shows the widget once it is available', () => {
+      stream(tree('running', {}));
+      render(<ProcessDetailView processId="abc" waitForWidget showLogs={false} />);
+      expect(screen.getByTestId('my-widget')).toBeTruthy();
+      expect(screen.queryByTestId('optio-detail-waiting')).toBeNull();
+    });
+
+    it('shows a placeholder instead of the spinner, which needs no flag of its own', () => {
+      stream(tree('running'));
+      render(<ProcessDetailView processId="abc" widgetPlaceholder={<div data-testid="placeholder">Starting…</div>} />);
+      expect(within(screen.getByTestId('optio-detail-waiting')).getByTestId('placeholder')).toBeTruthy();
+      expect(screen.queryByTestId('optio-detail-default')).toBeNull();
+    });
+
+    it('falls back to the process view once the process ended without its widget', () => {
+      for (const state of ['failed', 'done']) {
+        stream(tree(state));
+        render(<ProcessDetailView processId="abc" waitForWidget />);
+        expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
+        expect(screen.queryByTestId('optio-detail-waiting')).toBeNull();
+        cleanup();
+      }
+    });
+
+    it('still says when the process is missing or cannot be read', () => {
+      mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: true, processNotFound: true });
+      render(<ProcessDetailView processId="abc" waitForWidget />);
+      expect(screen.getByTestId('optio-detail-not-found')).toBeTruthy();
+      cleanup();
+      mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: false, error: new Error('boom') });
+      render(<ProcessDetailView processId="abc" waitForWidget />);
+      expect(screen.getByTestId('optio-detail-error')).toBeTruthy();
+    });
+  });
+
 });
