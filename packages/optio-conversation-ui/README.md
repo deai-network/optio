@@ -33,6 +33,40 @@ registerConversationWidget({ ownTheme: true });
 
 It registers for `ui_widget = "conversation"`. Each task carries its engine in `widgetData.protocol` (`"claudecode"` or `"opencode"` — injected automatically by `optio-claudecode` / `optio-opencode`), and the widget dispatches to the matching view. You do **not** specify the engine at registration.
 
+## Suspended conversations (read-only)
+
+`registerConversationWidget()` also registers `SuspendedConversationWidget` as the widget's
+suspended variant (optio-ui's `registerWidget(name, component, { suspended })`). optio-ui
+renders it instead of the live widget while a process is suspended (cancelled, with
+`supportsResume` and `hasSavedState`); its process page keeps a Resume control. It shows the
+conversation as it stood at the suspend, read-only. No agent host starts.
+
+- **Its one request** is optio-ui's `useProcessConversation(process._id, { stoppedAt })`
+  (`GET /processes/:id/conversation`, proxied by optio-api from the engine's conversation
+  archive). There is no EventSource and nothing else goes over the network.
+- **claudecode** (`widgetData.protocol`, which survives the suspend): `ClaudeCodeReplayView`
+  folds the saved record through the claudecode reducer with one fixed clock (the record's
+  `capturedAt`, else the mount time). It then closes the session as suspended, which stops any
+  row still running. The view is `ConversationView`, closed, under the divider "Suspended —
+  resume to continue". It has no send, interrupt, permission, upload, download or control
+  handlers. The tool verbosity, controls seed and todos come from `widgetData`, as in the live
+  view.
+- **Other protocols** show "Resume to view this conversation." and make no request; only
+  claudecode keeps a record so far.
+- **Loading** shows the lent spinner (`optio:process:<id>:archive`, see below) and "Loading…".
+- **Errors:**
+  - `no-conversation` / `no-conversation-support`: "No saved conversation to show; resume to
+    continue it.";
+  - `not-suspended`: nothing (the process just resumed, and the live widget takes over);
+  - anything else: the message and a Retry.
+
+With `{ ownTheme: true }` the suspended variant gets the same light/dark toggle. An app that
+mounts the widget directly can render `SuspendedConversationWidget` (it takes `WidgetProps`)
+or `ClaudeCodeReplayView` (`{ process, widgetData, events, capturedAt }`).
+
+`ConversationView` takes an optional `closedLabel` for that divider; without it the divider
+reads "conversation ended", as before.
+
 ## Features
 
 - Streamed chat transcript (replay + live) with optimistic local echo.
@@ -72,6 +106,7 @@ size `'small'`, in place of antd's spinners:
 | The "working…" indicator while the agent works | `optio:working` |
 | An in-progress step in the task list | `optio:todo:<todo id>` |
 | The opencode view before "Loading…" (no session yet) | `optio:process:<id>:widget` |
+| A suspended conversation before "Loading…" (its saved record on the way) | `optio:process:<id>:archive` |
 
 The lent spinner wins over the agent-brand spinner a task enables with its
 `native_spinner` option: with a lent spinner, the "working…" indicator always shows it.
@@ -81,8 +116,8 @@ name="optio:process:<id>">` (`<id>` is the process `_id`), so every key inside c
 prefix: `optio:process:<id>/optio:working`, and likewise the vultus buttons and fields inside
 (send bar, Interrupt, session controls), e.g. the pending Interrupt button's
 `optio:process:<id>/vultus:action:interrupt`. A page showing several conversations keeps the
-keys unique. The opencode "Loading…" key sits outside that scope and names the process
-itself. Without a lent spinner nothing changes.
+keys unique. The opencode and suspended-conversation "Loading…" keys sit outside that scope
+and name the process itself. Without a lent spinner nothing changes.
 
 ## Consumer requirements
 
@@ -98,6 +133,7 @@ See `src/AnswerBlock.tsx` for the authoritative list.
 ## Exports
 
 - `registerConversationWidget(opts?)`, `ConversationWidget` — the widget + its registration.
+- `SuspendedConversationWidget`, `ClaudeCodeReplayView` (+ `ClaudeCodeReplayViewProps`) — the read-only view of a suspended conversation (see [Suspended conversations](#suspended-conversations-read-only)).
 - `AnswerBlock` — the standalone markdown/answer renderer.
 - `reduceClaudecodeEvent`, `reduceOpencodeEvent`, `historyToChatItems`, `initialChatState`, `ChatItem`, `ChatState` — the engine-neutral chat model and per-engine reducers, for embedding outside the default widget.
   - Tool items (`kind: 'tool'`) may carry `callId` (the call's wire id), `result` (its output, trimmed), `startedAt` / `endedAt` (epoch ms; the view shows a live elapsed counter until `endedAt` is set), `background` (a backgrounded shell command) and `taskId` (its background task id). All are optional and set by the claudecode reducer only.

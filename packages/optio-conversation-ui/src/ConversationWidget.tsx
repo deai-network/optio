@@ -8,6 +8,7 @@ import { CodexView } from './codex/CodexView.js';
 import { CursorView } from './cursor/CursorView.js';
 import { KimiCodeView } from './kimicode/KimiCodeView.js';
 import { AntigravityView } from './antigravity/AntigravityView.js';
+import { SuspendedConversationWidget } from './SuspendedConversationWidget.js';
 
 const THEME_KEY = 'optio-conversation:theme';
 
@@ -68,7 +69,18 @@ function ThemedConversation({
   );
 }
 
-/** Register the conversation widget for the `conversation` ui-widget protocol.
+/** The suspended variant under the same own light/dark toggle as the live one. */
+function ThemedSuspendedConversation(props: WidgetProps) {
+  return (
+    <ThemedConversation
+      dispatchedView={(extra) => <SuspendedConversationWidget {...({ ...props, ...extra } as WidgetProps)} />}
+    />
+  );
+}
+
+/** Register the conversation widget for the `conversation` ui-widget protocol,
+ *  with SuspendedConversationWidget as its suspended variant (a suspended
+ *  task's saved conversation, read-only).
  *  Pass `{ ownTheme: true }` when the HOST has no theme of its own and wants the
  *  widget to own a light/dark toggle (standalone / a host without its own
  *  ConfigProvider). Default: inherit the host theme. */
@@ -76,6 +88,8 @@ export function registerConversationWidget(opts?: { ownTheme?: boolean }): void 
   const Widget = (props: WidgetProps) => (
     <ConversationWidget ownTheme={opts?.ownTheme} {...props} />
   );
-  registerWidget('conversation', Widget);
+  registerWidget('conversation', Widget, {
+    suspended: opts?.ownTheme ? ThemedSuspendedConversation : SuspendedConversationWidget,
+  });
   console.info('[optio-conversation-ui] conversation widget registered');
 }

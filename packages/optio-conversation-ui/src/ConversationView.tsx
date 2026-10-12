@@ -65,6 +65,10 @@ function TaskInfoIcon({ color }: { color: string }) {
 export interface ConversationViewProps {
   state: ChatState;
   closed: boolean;
+  // The text of the divider shown after the transcript while `closed`.
+  // Absent: "conversation ended". A suspended task's read-only replay passes
+  // "Suspended — resume to continue".
+  closedLabel?: string;
   busy: boolean;
   // 'silent' → no tool rows. 'description-while-active' → one line WHILE the
   // tool runs, hidden once finished (used by analysis tasks). At both, a
@@ -1803,7 +1807,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 }}
               >
                 <div style={{ flex: 1, borderTop: `1px solid ${token.colorBorderSecondary}` }} />
-                <span>conversation ended</span>
+                <span>{props.closedLabel ?? 'conversation ended'}</span>
                 <div style={{ flex: 1, borderTop: `1px solid ${token.colorBorderSecondary}` }} />
               </div>
             )}

@@ -1,0 +1,115 @@
+import { useMemo, useState } from 'react';
+import type { WidgetProps } from 'optio-ui';
+import { SpinnerScope } from 'vultus-antd';
+import type { ChatState, SessionControl } from '../chat.js';
+import { initialChatState, reduceEvent } from './events.js';
+import { ConversationView } from '../ConversationView.js';
+import { todosFromWidgetData } from '../todosFromWidgetData.js';
+import { NativeSpinner } from '../spinners/NativeSpinner.js';
+
+// Read-only replay of a suspended claudecode task's saved conversation record
+// (docs/2026-10-12-suspended-conversation-view-design.md, section 5). It folds
+// the record through the same reducer ClaudeCodeView uses live and renders the
+// same ConversationView, closed, with no transport: no EventSource, no POSTs.
+
+export interface ClaudeCodeReplayViewProps {
+  process: WidgetProps['process'];
+  // The process's widgetData (it survives the suspend): the same settings the
+  // live view reads.
+  widgetData: unknown;
+  // The record's `[seq, event]` pairs, as optio-api's getConversation returns them.
+  events: unknown[];
+  // When the record was captured (ISO, with offset), or null.
+  capturedAt: string | null;
+  // theming (only set by ConversationWidget's registration when ownTheme):
+  themeMode?: 'light' | 'dark';
+  onToggleTheme?: () => void;
+}
+
+const SUSPENDED_CLOSED_LABEL = 'Suspended — resume to continue';
+
+const noSend = async (): Promise<boolean> => false;
+const noop = (): void => {};
+
+// Fold the record with one fixed clock, so the times the reducer derives from
+// `now` (durations of rows without a wire time) stay put across re-renders.
+// Then close it as a suspended session at maxSeq + 1: the reducer stops what
+// was still running (tool rows, background jobs, an in-flight answer) and sets
+// `closed`, which disables the composer.
+function foldRecord(events: unknown[], seed: ChatState, now: number): ChatState {
+  let state = seed;
+  let maxSeq = 0;
+  for (const entry of Array.isArray(events) ? events : []) {
+    if (!Array.isArray(entry) || entry.length < 2) continue;
+    const seq = Number(entry[0]);
+    if (!Number.isFinite(seq)) continue;
+    state = reduceEvent(state, entry[1], seq, now);
+    if (seq > maxSeq) maxSeq = seq;
+  }
+  const closeSeq = maxSeq + 1;
+  state = reduceEvent(state, { type: 'x-optio-closed', reason: 'suspended' }, closeSeq, now);
+  // The closing event also appends its own "conversation ended (suspended)"
+  // row; the closedLabel divider already says it, so drop that row.
+  return { ...state, items: state.items.filter((i) => !(i.kind === 'closed' && i.seq === closeSeq)) };
+}
+
+export function ClaudeCodeReplayView({
+  process,
+  widgetData,
+  events,
+  capturedAt,
+  themeMode,
+  onToggleTheme,
+}: ClaudeCodeReplayViewProps) {
+  // The same widgetData reads as ClaudeCodeView, minus the transport ones.
+  const toolVerbosity = ((widgetData as any)?.toolVerbosity ?? 'description-only') as
+    'silent' | 'description-while-active' | 'description-only' | 'verbose';
+  const thinkingVerbosity = ((widgetData as any)?.thinkingVerbosity ?? 'hidden') as
+    'hidden' | 'visible';
+  const initialControls = ((widgetData as any)?.controls ?? []) as SessionControl[];
+  const showSessionControls = Boolean((widgetData as any)?.showSessionControls);
+  const maxUploadBytes = Number((widgetData as any)?.maxUploadBytes ?? 10_000_000);
+  const nativeSpinner = Boolean((widgetData as any)?.nativeSpinner);
+
+  // capturedAt, else one clock read at mount.
+  const [mountedAt] = useState(() => Date.now());
+  const captured = capturedAt ? Date.parse(capturedAt) : NaN;
+  const now = Number.isFinite(captured) ? captured : mountedAt;
+
+  // Seeded like ClaudeCodeView's reducer: `{...initialChatState, controls}`
+  // from widgetData. Re-folded only when the record (events array) changes;
+  // `now` changes only with it.
+  const state = useMemo(
+    () => foldRecord(events, { ...initialChatState, controls: initialControls }, now),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [events, now],
+  );
+
+  // The same state-derived props as ClaudeCodeView. No send, steer, interrupt,
+  // permission, download or control-change handlers: the session controls get
+  // their values (for labels) but, without onControlChange, render no inputs.
+  return (
+    <SpinnerScope name={`optio:process:${process._id}`}>
+      <ConversationView
+        todos={todosFromWidgetData(widgetData)}
+        state={state}
+        closed={state.closed}
+        closedLabel={SUSPENDED_CLOSED_LABEL}
+        busy={state.busy}
+        toolVerbosity={toolVerbosity}
+        thinkingVerbosity={thinkingVerbosity}
+        showFileUpload={false}
+        maxUploadBytes={maxUploadBytes}
+        fileDownload={false}
+        nativeSpinner={nativeSpinner ? <NativeSpinner engine="claudecode" /> : undefined}
+        onSend={noSend}
+        onInterrupt={noop}
+        onPermission={noop}
+        onFileDownload={noop}
+        controls={showSessionControls ? state.controls : undefined}
+        themeMode={themeMode}
+        onToggleTheme={onToggleTheme}
+      />
+    </SpinnerScope>
+  );
+}

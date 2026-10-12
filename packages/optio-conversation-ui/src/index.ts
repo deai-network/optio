@@ -1,4 +1,7 @@
 export { ConversationWidget, registerConversationWidget } from './ConversationWidget.js';
+export { SuspendedConversationWidget } from './SuspendedConversationWidget.js';
+export { ClaudeCodeReplayView } from './claudecode/ClaudeCodeReplayView.js';
+export type { ClaudeCodeReplayViewProps } from './claudecode/ClaudeCodeReplayView.js';
 export { reduceEvent as reduceClaudecodeEvent } from './claudecode/events.js';
 export { reduceOpencodeEvent, historyToChatItems } from './opencode/events.js';
 export { reduceAcpEvent } from './acp/events.js';
