@@ -37,6 +37,17 @@ describe('X Sender', () => {
     expect(document.querySelectorAll('[data-testid="conversation-input-box"]')).toHaveLength(1);
   });
 
+  // Owner, 2026-10-12: the textarea showed as a box of its own (daeo fills
+  // inputs; X sets no inline padding), text flush left and set low. It is
+  // see-through and unpadded: the Sender's own padding frames the text alike on
+  // every side.
+  it('the textarea is see-through and unpadded, framed by the Sender alone', () => {
+    view();
+    expect(box().style.backgroundColor).toBe('transparent');
+    expect(box().style.paddingTop).toBe('0px');
+    expect(box().style.paddingBottom).toBe('0px');
+  });
+
   it('attached files show in its header', async () => {
     view();
     const picker = screen.getByTestId('attach-button').closest('.ant-upload')!.querySelector('input[type="file"]')!;

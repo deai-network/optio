@@ -2113,6 +2113,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             ref={inputRef}
             components={{ input: SenderTextArea }}
             classNames={{ input: 'optio-cc-flash' }}
+            // See-through and unpadded (owner, 2026-10-12): a host theme that
+            // fills inputs (daeo-style) made it a box of its own inside the
+            // Sender, its text flush left (X zeroes the inline padding) and set
+            // low. The Sender's padding alone frames the text.
+            styles={{ input: { backgroundColor: 'transparent', paddingTop: 0, paddingBottom: 0 } }}
             value={text}
             onChange={(value) => setText(value)}
             // Our keys only (Enter, Cmd/Ctrl-Enter, Esc): returning false keeps
