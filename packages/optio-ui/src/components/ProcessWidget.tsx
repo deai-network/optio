@@ -4,7 +4,7 @@ import { getWidget, getSuspendedWidget } from '../widgets/registry.js';
 import { isWidgetLive, isSuspended } from '../process-state.js';
 import type { ProcessTreeNode } from '../hooks/useProcessStream.js';
 
-export interface UseProcessWidgetResult {
+export interface UseProcessWidgetStateResult {
   widget: ReactNode;
   /** `'live'` while the task is running and its live widget is shown;
    *  `'suspended'` while the task is suspended and its suspended variant is
@@ -13,9 +13,10 @@ export interface UseProcessWidgetResult {
 }
 
 /**
- * Returns the rendered widget for a process tree, or `null` if no widget
- * should be shown right now. Layout is the caller's problem — this hook only
- * handles the readiness gate, registry lookup, and proxy-URL build.
+ * Returns the rendered widget for a process tree, plus which mode produced it,
+ * or `null` if no widget should be shown right now. Layout is the caller's
+ * problem — this hook only handles the readiness gate, registry lookup, and
+ * proxy-URL build.
  *
  * Returns `null` when:
  *   - tree is missing,
@@ -29,10 +30,15 @@ export interface UseProcessWidgetResult {
  *     with no suspended variant, e.g. the iframe widget, behaves exactly as
  *     it did for any other terminal state),
  *   - the database is unknown (also emits console.warn — widget URLs need it).
+ *
+ * Use this (rather than `useProcessWidget`) when the caller needs to know
+ * which mode produced the element — e.g. `ProcessDetailView` renders a Resume
+ * control only in `'suspended'` mode. Callers that only need the element
+ * itself should use `useProcessWidget`, which delegates here.
  */
-export function useProcessWidget(
+export function useProcessWidgetState(
   tree: ProcessTreeNode | null | undefined,
-): UseProcessWidgetResult | null {
+): UseProcessWidgetStateResult | null {
   const baseUrl = useOptioBaseUrl();
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
@@ -83,6 +89,23 @@ export function useProcessWidget(
   };
 }
 
+/**
+ * Backward-compatible shape: returns the widget element directly (`ReactNode
+ * | null`), exactly as before suspended-widget support was added. Delegates
+ * to `useProcessWidgetState` and unwraps `.widget` — so existing callers that
+ * render `useProcessWidget(tree)` directly (e.g. Excavator's
+ * `ProcessDetailPage`) now also get the suspended variant for free, with no
+ * code change on their side, and no risk of a `{widget, mode}` object
+ * reaching React's child-rendering path (which would throw "Objects are not
+ * valid as a React child").
+ *
+ * Use `useProcessWidgetState` instead when the caller needs to know which
+ * mode produced the element.
+ */
+export function useProcessWidget(tree: ProcessTreeNode | null | undefined): ReactNode | null {
+  return useProcessWidgetState(tree)?.widget ?? null;
+}
+
 export interface ProcessWidgetProps {
   tree: ProcessTreeNode | null | undefined;
 }
@@ -93,5 +116,5 @@ export interface ProcessWidgetProps {
  * the surrounding layout — log strip, tabs, full-bleed, whatever.
  */
 export function ProcessWidget({ tree }: ProcessWidgetProps): ReactNode {
-  return useProcessWidget(tree)?.widget ?? null;
+  return useProcessWidget(tree);
 }

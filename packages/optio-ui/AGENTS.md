@@ -364,7 +364,7 @@ Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branch
 - **No processId** — renders a centred "Select a process" placeholder.
 - **No tree yet** (stream not yet received) — renders a "Loading…" placeholder (preceded by the app's lent Spinner, if any — see "Spinner slot").
 - **`tree.uiWidget` is set and registered for the process's mode** — renders the named widget
-  component (live or suspended variant, per `useProcessWidget`'s `mode`), passing
+  component (live or suspended variant, per `useProcessWidgetState`'s `mode`), passing
   `{ process: tree, apiBaseUrl, widgetProxyUrl, prefix, database }`. In suspended mode, also
   renders a `LaunchControls` (Resume) row above the widget unless `readOnly` is set.
 - **`tree.uiWidget` is set but unregistered for the live mode** — warns to `console.warn` and
@@ -381,14 +381,16 @@ Exported from `optio-ui`.
 
 ---
 
-### ProcessWidget / useProcessWidget
+### ProcessWidget / useProcessWidget / useProcessWidgetState
 
 ```ts
-interface UseProcessWidgetResult {
+function useProcessWidget(tree: ProcessTreeNode | null | undefined): ReactNode | null
+
+interface UseProcessWidgetStateResult {
   widget: ReactNode;
   mode: 'live' | 'suspended';
 }
-function useProcessWidget(tree: ProcessTreeNode | null | undefined): UseProcessWidgetResult | null
+function useProcessWidgetState(tree: ProcessTreeNode | null | undefined): UseProcessWidgetStateResult | null
 
 interface ProcessWidgetProps {
   tree: ProcessTreeNode | null | undefined;
@@ -396,8 +398,18 @@ interface ProcessWidgetProps {
 function ProcessWidget({ tree }: ProcessWidgetProps): ReactNode  // null when not ready
 ```
 
-Layout-free widget primitive (`packages/optio-ui/src/components/ProcessWidget.tsx`).
-The hook owns:
+Layout-free widget primitives (`packages/optio-ui/src/components/ProcessWidget.tsx`).
+**`useProcessWidget`'s shape is unchanged** from before suspended-widget support existed —
+still `ReactNode | null`, nothing else — it now simply also yields the suspended variant
+while the process is suspended (same readiness gate as below), so existing callers that render
+its result directly (e.g. an external app's `const widget = useProcessWidget(tree); ...{widget}`)
+get the suspended view for free, with no code change and no risk of a non-element value
+reaching React's child-rendering path. `useProcessWidgetState` is a new, separate export for
+callers that need to know *which* mode produced the element — `ProcessWidget` → `WidgetProps`
+mapping is otherwise identical between the two. `useProcessWidget` is implemented as
+`useProcessWidgetState(tree)?.widget ?? null`.
+
+`useProcessWidgetState` owns:
 
 - Readiness gate: `tree.uiWidget` set, and either state is widget-live (`isWidgetLive`) or the
   process `isSuspended`; `tree.widgetData != null`.
@@ -408,20 +420,30 @@ The hook owns:
 - Database check (from `OptioProvider` / instance discovery). If unknown → emits `console.warn` and returns `null` (widget URLs need the database segment).
 - `widgetProxyUrl` build: `${baseUrl}/api/widget/${database}/${prefix}/${tree._id}/` (trailing slash load-bearing). Built the same way for both modes, whether or not the suspended variant actually uses the proxy.
 
-What the hook does **not** own: layout. It returns `{ widget, mode }` — the registered component invoked with `{ process, apiBaseUrl, widgetProxyUrl, prefix, database }` (same props in both modes) plus which mode produced it — or `null` when nothing should render. The caller decides what to render around it (log strip, tabs, full-bleed, collapsible drawer, Resume control, etc.).
+What neither hook owns: layout. `useProcessWidgetState` returns `{ widget, mode }` — the
+registered component invoked with `{ process, apiBaseUrl, widgetProxyUrl, prefix, database }`
+(same props in both modes) plus which mode produced it — or `null` when nothing should render.
+The caller decides what to render around it (log strip, tabs, full-bleed, collapsible drawer,
+Resume control, etc.).
 
-Typical usage:
+Typical usage — caller needs the mode (e.g. to show a Resume control only when suspended):
 ```tsx
-const result = useProcessWidget(tree);
+const result = useProcessWidgetState(tree);
 return result
-  ? <MyWidgetLayout>{result.widget}</MyWidgetLayout>
+  ? <MyWidgetLayout mode={result.mode}>{result.widget}</MyWidgetLayout>
   : <MyFallback />;
 ```
 
-`ProcessDetailView` consumes the hook internally: both modes get the log-strip-on-top +
-widget-fill layout; suspended mode additionally shows a `LaunchControls` (Resume) row above
-the widget, unless `readOnly`. Other consumers (e.g. an external app's process detail page)
-are free to choose their own layout.
+Typical usage — caller only needs the element, exactly as before suspended widgets existed:
+```tsx
+const widget = useProcessWidget(tree);
+return widget ? <MyWidgetLayout>{widget}</MyWidgetLayout> : <MyFallback />;
+```
+
+`ProcessDetailView` consumes `useProcessWidgetState` internally: both modes get the
+log-strip-on-top + widget-fill layout; suspended mode additionally shows a `LaunchControls`
+(Resume) row above the widget, unless `readOnly`. Other consumers (e.g. an external app's
+process detail page) are free to choose their own layout.
 
 ---
 
@@ -454,7 +476,8 @@ module load time (before any `ProcessDetailView` renders). Exported from `optio-
 `options.suspended` registers a second component under the same name, shown instead of the
 live one while the process `isSuspended` (same `WidgetProps`, no extra fields). It lives in a
 separate map (`getSuspendedWidget`, not exported from the package root — consumed internally
-by `useProcessWidget`); a plain two-argument `registerWidget(name, component)` call leaves
+by `useProcessWidgetState`, which both `useProcessWidget` and `ProcessDetailView` go through);
+a plain two-argument `registerWidget(name, component)` call leaves
 any suspended variant already registered for that name untouched, so every existing call site
 keeps working unchanged. A widget with no suspended variant (e.g. the built-in `iframe`
 widget) simply isn't shown while suspended — `ProcessDetailView` falls back to the default

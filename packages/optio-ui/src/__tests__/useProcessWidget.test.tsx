@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, render, cleanup } from '@testing-library/react';
+import { isValidElement } from 'react';
+import { renderHook, render, screen, cleanup } from '@testing-library/react';
 import { registerWidget, _clearWidgetRegistry } from '../widgets/registry.js';
 
 const mockBaseUrl = vi.fn(() => 'http://host');
@@ -12,7 +13,7 @@ vi.mock('../context/useOptioContext.js', () => ({
   useOptioDatabase: () => mockDatabase(),
 }));
 
-const { useProcessWidget } = await import('../components/ProcessWidget.js');
+const { useProcessWidget, useProcessWidgetState } = await import('../components/ProcessWidget.js');
 
 function baseTree(overrides: Record<string, unknown> = {}) {
   return {
@@ -31,30 +32,43 @@ function baseTree(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-describe('useProcessWidget', () => {
-  beforeEach(() => {
-    _clearWidgetRegistry();
-    mockBaseUrl.mockReturnValue('http://host');
-    mockPrefix.mockReturnValue('optio');
-    mockDatabase.mockReturnValue('mydb');
+function suspendedTree(overrides: Record<string, unknown> = {}) {
+  return baseTree({
+    status: { state: 'cancelled' },
+    supportsResume: true,
+    hasSavedState: true,
+    ...overrides,
   });
+}
 
-  afterEach(() => {
-    cleanup();
-  });
+beforeEach(() => {
+  _clearWidgetRegistry();
+  mockBaseUrl.mockReturnValue('http://host');
+  mockPrefix.mockReturnValue('optio');
+  mockDatabase.mockReturnValue('mydb');
+});
 
+afterEach(() => {
+  cleanup();
+});
+
+// `useProcessWidgetState` carries the full gating logic (live vs. suspended,
+// registry lookup, proxy-URL build) plus the `mode` discriminator that lets
+// ProcessDetailView decide whether to show the Resume control. These tests
+// exercise that logic directly.
+describe('useProcessWidgetState', () => {
   it('returns mode "live" and the live component while widget-live', () => {
     const Live = () => <div data-testid="live">live</div>;
     const Suspended = () => <div data-testid="suspended">suspended</div>;
     registerWidget('my-widget', Live, { suspended: Suspended });
 
-    const { result } = renderHook(() => useProcessWidget(baseTree({ status: { state: 'running' } })));
+    const { result } = renderHook(() => useProcessWidgetState(baseTree({ status: { state: 'running' } })));
     expect(result.current?.mode).toBe('live');
   });
 
   it('returns null for live behaviour unchanged: unregistered widget warns and falls back', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { result } = renderHook(() => useProcessWidget(baseTree({ uiWidget: 'nope' })));
+    const { result } = renderHook(() => useProcessWidgetState(baseTree({ uiWidget: 'nope' })));
     expect(result.current).toBeNull();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
@@ -66,27 +80,18 @@ describe('useProcessWidget', () => {
       const Live = () => <div>live</div>;
       const Suspended = () => <div>suspended</div>;
       registerWidget('my-widget', Live, { suspended: Suspended });
-      const { result } = renderHook(() => useProcessWidget(baseTree({ status: { state } })));
+      const { result } = renderHook(() => useProcessWidgetState(baseTree({ status: { state } })));
       expect(result.current).toBeNull();
     },
   );
 
   describe('suspended processes', () => {
-    function suspendedTree(overrides: Record<string, unknown> = {}) {
-      return baseTree({
-        status: { state: 'cancelled' },
-        supportsResume: true,
-        hasSavedState: true,
-        ...overrides,
-      });
-    }
-
     it('returns mode "suspended" and the suspended variant when registered', () => {
       const Live = () => <div data-testid="live">live</div>;
       const Suspended = (props: any) => <div data-testid="suspended">suspended:{props.process._id}</div>;
       registerWidget('my-widget', Live, { suspended: Suspended });
 
-      const { result } = renderHook(() => useProcessWidget(suspendedTree()));
+      const { result } = renderHook(() => useProcessWidgetState(suspendedTree()));
       expect(result.current?.mode).toBe('suspended');
     });
 
@@ -96,7 +101,7 @@ describe('useProcessWidget', () => {
       registerWidget('my-widget', () => null, { suspended: Suspended });
 
       function Host() {
-        const result = useProcessWidget(suspendedTree());
+        const result = useProcessWidgetState(suspendedTree());
         return <>{result?.widget}</>;
       }
       render(<Host />);
@@ -115,14 +120,14 @@ describe('useProcessWidget', () => {
       // back to the default tree/log rendering, same as any other terminal
       // state today.
       registerWidget('my-widget', () => <div>live only</div>);
-      const { result } = renderHook(() => useProcessWidget(suspendedTree()));
+      const { result } = renderHook(() => useProcessWidgetState(suspendedTree()));
       expect(result.current).toBeNull();
     });
 
     it('does not warn when suspended with no variant registered (silent fallback)', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       registerWidget('my-widget', () => <div>live only</div>);
-      renderHook(() => useProcessWidget(suspendedTree()));
+      renderHook(() => useProcessWidgetState(suspendedTree()));
       expect(warn).not.toHaveBeenCalled();
       warn.mockRestore();
     });
@@ -130,7 +135,7 @@ describe('useProcessWidget', () => {
     it('returns null when widgetData has not arrived yet', () => {
       const Suspended = () => <div>suspended</div>;
       registerWidget('my-widget', () => null, { suspended: Suspended });
-      const { result } = renderHook(() => useProcessWidget(suspendedTree({ widgetData: undefined })));
+      const { result } = renderHook(() => useProcessWidgetState(suspendedTree({ widgetData: undefined })));
       expect(result.current).toBeNull();
     });
 
@@ -138,7 +143,7 @@ describe('useProcessWidget', () => {
       const Suspended = () => <div>suspended</div>;
       registerWidget('my-widget', () => null, { suspended: Suspended });
       const { result } = renderHook(() =>
-        useProcessWidget(suspendedTree({ hasSavedState: false })));
+        useProcessWidgetState(suspendedTree({ hasSavedState: false })));
       expect(result.current).toBeNull();
     });
 
@@ -146,7 +151,7 @@ describe('useProcessWidget', () => {
       const Suspended = () => <div>suspended</div>;
       registerWidget('my-widget', () => null, { suspended: Suspended });
       const { result } = renderHook(() =>
-        useProcessWidget(suspendedTree({ supportsResume: false })));
+        useProcessWidgetState(suspendedTree({ supportsResume: false })));
       expect(result.current).toBeNull();
     });
   });
@@ -157,14 +162,14 @@ describe('useProcessWidget', () => {
       (state) => {
         const Live = () => <div data-testid="live">live</div>;
         registerWidget('my-widget', Live);
-        const { result } = renderHook(() => useProcessWidget(baseTree({ status: { state } })));
+        const { result } = renderHook(() => useProcessWidgetState(baseTree({ status: { state } })));
         expect(result.current?.mode).toBe('live');
       },
     );
 
     it('still returns null while widgetData has not arrived', () => {
       registerWidget('my-widget', () => <div>live</div>);
-      const { result } = renderHook(() => useProcessWidget(baseTree({ widgetData: undefined })));
+      const { result } = renderHook(() => useProcessWidgetState(baseTree({ widgetData: undefined })));
       expect(result.current).toBeNull();
     });
 
@@ -172,10 +177,73 @@ describe('useProcessWidget', () => {
       mockDatabase.mockReturnValue(undefined);
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       registerWidget('my-widget', () => <div>live</div>);
-      const { result } = renderHook(() => useProcessWidget(baseTree()));
+      const { result } = renderHook(() => useProcessWidgetState(baseTree()));
       expect(result.current).toBeNull();
       expect(warn).toHaveBeenCalled();
       warn.mockRestore();
     });
+  });
+});
+
+// `useProcessWidget` is the pre-existing, backward-compatible entry point:
+// callers that render its result directly (e.g. Excavator's
+// ProcessDetailPage: `const widget = useProcessWidget(tree); ...{widget}`)
+// must keep getting a plain renderable node, never a `{ widget, mode }`
+// object — that would throw "Objects are not valid as a React child" and
+// break their types. It now also returns the suspended variant, with zero
+// change required on the caller's side.
+describe('useProcessWidget (backward-compatible: ReactNode | null, not an object)', () => {
+  it('returns a renderable element directly (not a {widget, mode} object) in live mode', () => {
+    const Live = () => <div data-testid="live">live</div>;
+    registerWidget('my-widget', Live);
+
+    const { result } = renderHook(() => useProcessWidget(baseTree()));
+    expect(isValidElement(result.current)).toBe(true);
+    expect(result.current).not.toHaveProperty('mode');
+  });
+
+  it('returns a renderable element directly (not a {widget, mode} object) in suspended mode', () => {
+    const Suspended = () => <div data-testid="suspended">suspended</div>;
+    registerWidget('my-widget', () => null, { suspended: Suspended });
+
+    const { result } = renderHook(() => useProcessWidget(suspendedTree()));
+    expect(isValidElement(result.current)).toBe(true);
+    expect(result.current).not.toHaveProperty('mode');
+  });
+
+  it('renders the live widget directly when rendered by a host component', () => {
+    registerWidget('my-widget', () => <div data-testid="live">live content</div>);
+    function Host() {
+      return <>{useProcessWidget(baseTree())}</>;
+    }
+    render(<Host />);
+    expect(screen.getByTestId('live')).toBeTruthy();
+  });
+
+  it('renders the suspended widget directly when rendered by a host component (Excavator-style call site)', () => {
+    registerWidget('my-widget', () => <div data-testid="live">live content</div>, {
+      suspended: () => <div data-testid="suspended">suspended content</div>,
+    });
+    function Host() {
+      // Mirrors Excavator's own ProcessDetailPage: `const widget =
+      // useProcessWidget(tree)`, then rendering `widget` directly.
+      const widget = useProcessWidget(suspendedTree());
+      return <>{widget}</>;
+    }
+    render(<Host />);
+    expect(screen.getByTestId('suspended')).toBeTruthy();
+    expect(screen.queryByTestId('live')).toBeNull();
+  });
+
+  it('returns null (not an object) when nothing should render', () => {
+    registerWidget('my-widget', () => <div>live</div>);
+    const { result } = renderHook(() => useProcessWidget(baseTree({ status: { state: 'done' } })));
+    expect(result.current).toBeNull();
+  });
+
+  it('returns null when suspended with no suspended variant registered', () => {
+    registerWidget('my-widget', () => <div>live only</div>);
+    const { result } = renderHook(() => useProcessWidget(suspendedTree()));
+    expect(result.current).toBeNull();
   });
 });

@@ -1156,7 +1156,7 @@ interface ProcessDetailViewProps {
 Self-fetching detail panel (uses `useProcessStream` internally). Renders a placeholder when
 `processId` is falsy, a loading state while the SSE stream connects, a named widget when
 `tree.uiWidget` is a registered name for the process's mode (live or suspended — see
-`useProcessWidget` below), or the default `ProcessTreeView` + `ProcessLogPanel` layout
+`useProcessWidgetState` below), or the default `ProcessTreeView` + `ProcessLogPanel` layout
 otherwise. Warns to `console.warn` and falls back to default when `uiWidget` is set but no
 live widget is registered; falls back silently (no warning) when the process `isSuspended`
 and no suspended variant is registered. In suspended mode, also renders a `LaunchControls`
@@ -1192,8 +1192,8 @@ Call `registerWidget` at module load time to make a widget available to `Process
 (cancelled, `supportsResume`, `hasSavedState`) rather than widget-live; same `WidgetProps`
 either way. Omitting `options` (or `options.suspended`) leaves any suspended variant already
 registered for that name untouched — every pre-existing two-argument call site keeps working
-unchanged. `useProcessWidget` (below) is what actually dispatches between the two maps; its
-`mode: 'live' | 'suspended'` tells the caller which one it got.
+unchanged. `useProcessWidgetState` (below) is what actually dispatches between the two maps;
+its `mode: 'live' | 'suspended'` tells the caller which one it got.
 
 **Built-in `'iframe'` widget** — registered automatically when anything from `optio-ui` is
 imported. Reads `process.widgetData` for config (`iframeSrc`, `localStorageOverrides`,
@@ -1201,13 +1201,22 @@ imported. Reads `process.widgetData` for config (`iframeSrc`, `localStorageOverr
 unmount. Shows a dismissible "Session ended." banner on terminal states. Has no suspended
 variant, so a suspended process using it falls back to the default tree/log layout.
 
-**`useProcessWidget(tree)`** (`packages/optio-ui/src/components/ProcessWidget.tsx`) — the
-layout-free primitive `ProcessDetailView` consumes: returns
-`{ widget: ReactNode; mode: 'live' | 'suspended' } | null`. `null` when `tree` or
-`tree.uiWidget` is missing, when the process is neither widget-live nor suspended, when
-`tree.widgetData` hasn't arrived, when the database is unknown, or when no component is
-registered for the applicable mode. `widget` is the registered component invoked with the
-same `WidgetProps` in both modes.
+**`useProcessWidget(tree)`** (`packages/optio-ui/src/components/ProcessWidget.tsx`) —
+**unchanged in shape**: still `ReactNode | null`, exactly as before suspended-widget support
+existed. It now also yields the suspended variant while the process `isSuspended` (same
+readiness gate as `useProcessWidgetState` below), so an existing caller that renders its result
+directly — e.g. `const widget = useProcessWidget(tree); ...{widget}` — gets the suspended view
+automatically, with no code change and no risk of a non-element value (a `{widget, mode}`
+object would throw "Objects are not valid as a React child") reaching its render tree.
+Implemented as `useProcessWidgetState(tree)?.widget ?? null`.
+
+**`useProcessWidgetState(tree)`** — the layout-free primitive, for callers that need to know
+*which* mode produced the element (`ProcessDetailView` uses it to decide whether to show a
+Resume control). Returns `{ widget: ReactNode; mode: 'live' | 'suspended' } | null`. `null`
+when `tree` or `tree.uiWidget` is missing, when the process is neither widget-live nor
+suspended, when `tree.widgetData` hasn't arrived, when the database is unknown, or when no
+component is registered for the applicable mode. `widget` is the registered component invoked
+with the same `WidgetProps` in both modes.
 
 ---
 

@@ -2,7 +2,7 @@ import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import { useProcessStream } from '../hooks/useProcessStream.js';
 import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
-import { useProcessWidget } from './ProcessWidget.js';
+import { useProcessWidgetState } from './ProcessWidget.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
 import { LaunchControls } from './LaunchControls.js';
 
@@ -38,7 +38,7 @@ export function ProcessDetailView({
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
   const { launch, cancel, resurrect } = useProcessActions();
-  const widgetResult = useProcessWidget(tree);
+  const widgetResult = useProcessWidgetState(tree);
   const { Spinner } = useVultusComponents();
   const spinnerKey = useSpinnerKey(`optio:process:${processId}:detail`);
 
