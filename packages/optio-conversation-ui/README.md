@@ -49,8 +49,8 @@ resumes the session (claudecode, below).
 - **claudecode** (`widgetData.protocol`, which survives the suspend): `ClaudeCodeReplayView`
   folds the saved record through the claudecode reducer with one fixed clock (the record's
   `capturedAt`, else the mount time). It then closes the session as suspended, which stops any
-  row still running. The view is `ConversationView`, closed, under the divider "Suspended —
-  resume to continue". Interrupt, permission and download do nothing, and it offers no upload
+  row still running. The view is `ConversationView`, closed, under the divider "Session has
+  been saved". Interrupt, permission and download do nothing, and it offers no upload
   and no control inputs. A permission request the record left unanswered still shows its
   Approve and Deny buttons, but they are inert. The tool verbosity, controls seed and todos
   come from `widgetData`, as in the live view.
@@ -64,7 +64,14 @@ resumes the session (claudecode, below).
   live view show "Resuming the session; your message will be sent once it is ready." A refused
   resume shows its reason and keeps the text. A message that cannot be sent afterwards (the
   session stopped, the conversation closed, no session within 10 minutes) comes back into the
-  input with the reason. A send that may have reached the listener is never repeated.
+  input with the reason, below anything already typed; when no view of the process is
+  mounted (the page shows no widget for a failed process), an antd notification carries the
+  reason and the text instead. A send that broke off may have arrived, so it is never repeated
+  and is reported as "may not have been sent". The listener holds the message until the
+  session has written its "you have been resumed" notice, so it always comes after it. A
+  process with unsaved work (`isResurrectable`) gets the discard warning in the question and a
+  danger "Discard and send". Under `WidgetProps.readOnly` the composer stays disabled. While
+  the message waits, the live view holds a second send.
 - **Other protocols** show "Resume to view this conversation." and make no request; only
   claudecode keeps a record so far.
 - **Loading** shows the lent spinner (`optio:process:<id>:archive`, see below) and "Loading…".
@@ -154,7 +161,7 @@ See `src/AnswerBlock.tsx` for the authoritative list.
 ## Exports
 
 - `registerConversationWidget(opts?)`, `ConversationWidget` — the widget + its registration.
-- `SuspendedConversationWidget`, `ClaudeCodeReplayView` (+ `ClaudeCodeReplayViewProps`) — the read-only view of a suspended conversation (see [Suspended conversations](#suspended-conversations-read-only)).
+- `SuspendedConversationWidget`, `ClaudeCodeReplayView` (+ `ClaudeCodeReplayViewProps`) — the view of a suspended conversation, whose composer resumes it (see [Suspended conversations](#suspended-conversations)).
 - `AnswerBlock` — the standalone markdown/answer renderer.
 - `reduceClaudecodeEvent`, `reduceOpencodeEvent`, `historyToChatItems`, `initialChatState`, `ChatItem`, `ChatState` — the engine-neutral chat model and per-engine reducers, for embedding outside the default widget.
   - Tool items (`kind: 'tool'`) may carry `callId` (the call's wire id), `result` (its output, trimmed), `startedAt` / `endedAt` (epoch ms; the view shows a live elapsed counter until `endedAt` is set), `background` (a backgrounded shell command) and `taskId` (its background task id). All are optional and set by the claudecode reducer only.

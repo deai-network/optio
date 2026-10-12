@@ -747,3 +747,87 @@ async def test_requeue_undelivered_after_the_conversation_closed_sends_nothing(c
     with caplog.at_level(logging.WARNING, logger="optio_claudecode.conversation_listener"):
         assert await lst.requeue_undelivered() == []
     assert conv.sent == [] and "re-queued" in caplog.text
+
+
+# --- held input: the session's opening messages go first ------------------
+
+async def _wait_until(pred, timeout: float = 60.0) -> None:
+    """Poll until pred() holds (a hang ceiling, not a timing assumption)."""
+    import time
+    end = time.monotonic() + timeout
+    while not pred():
+        if time.monotonic() > end:
+            raise AssertionError("condition not reached")
+        await asyncio.sleep(0.01)
+
+
+@pytest.fixture
+async def held_listener():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", hold_input=True)
+    port = await lst.start("127.0.0.1")
+    yield conv, lst, f"http://127.0.0.1:{port}"
+    await lst.stop()
+
+
+async def test_hold_input_delivers_an_early_send_after_the_opening_message(held_listener):
+    conv, lst, url = held_listener
+    async with aiohttp.ClientSession() as s:
+        early = asyncio.create_task(s.post(f"{url}/send", json={"text": "early"}, headers=_auth("pw")))
+        await _wait_until(lambda: lst._waiting_for_input == 1)
+        assert conv.sent == []
+        # The session writes its opening message, then opens the input.
+        await conv.send("System: you have been resumed")
+        lst.open_input()
+        r = await asyncio.wait_for(early, 60)
+        assert r.status == 200
+        assert conv.sent == ["System: you have been resumed", "early"]
+        # Open from now on: a later send goes straight through.
+        r = await s.post(f"{url}/send", json={"text": "later"}, headers=_auth("pw"))
+        assert r.status == 200 and conv.sent[-1] == "later"
+
+
+async def test_hold_input_holds_steer_too(held_listener):
+    conv, lst, url = held_listener
+    async with aiohttp.ClientSession() as s:
+        early = asyncio.create_task(s.post(f"{url}/steer", json={"text": "now"}, headers=_auth("pw")))
+        await _wait_until(lambda: lst._waiting_for_input == 1)
+        assert conv.sent == [] and conv.interrupts == 0
+        await conv.send("opening")
+        lst.open_input()
+        r = await asyncio.wait_for(early, 60)
+        assert r.status == 200
+        assert conv.sent == ["opening", "now"]
+
+
+async def test_hold_input_keeps_the_order_of_several_early_sends(held_listener):
+    conv, lst, url = held_listener
+    async with aiohttp.ClientSession() as s:
+        first = asyncio.create_task(s.post(f"{url}/send", json={"text": "one"}, headers=_auth("pw")))
+        await _wait_until(lambda: lst._waiting_for_input == 1)
+        second = asyncio.create_task(s.post(f"{url}/send", json={"text": "two"}, headers=_auth("pw")))
+        await _wait_until(lambda: lst._waiting_for_input == 2)
+        lst.open_input()
+        await asyncio.wait_for(asyncio.gather(first, second), 60)
+        # The second arrived while the first was being written (not busy in
+        # the fake), so both go out, in arrival order.
+        assert conv.sent == ["one", "two"]
+
+
+async def test_a_send_held_when_the_listener_stops_gets_closed(held_listener):
+    conv, lst, url = held_listener
+    async with aiohttp.ClientSession() as s:
+        early = asyncio.create_task(s.post(f"{url}/send", json={"text": "early"}, headers=_auth("pw")))
+        await _wait_until(lambda: lst._waiting_for_input == 1)
+        await lst.stop()
+        r = await asyncio.wait_for(early, 60)
+        assert r.status == 409
+        assert conv.sent == []
+
+
+async def test_without_hold_input_a_send_goes_straight_through(listener):
+    conv, lst, url = listener
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(f"{url}/send", json={"text": "hi"}, headers=_auth("pw"))
+        assert r.status == 200 and conv.sent == ["hi"]
+    lst.open_input()  # harmless when already open

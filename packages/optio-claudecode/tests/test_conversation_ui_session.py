@@ -864,3 +864,104 @@ async def test_without_the_cli_list_the_picker_offers_the_aliases_and_a_relaunch
         await _wait_terminal(optio, "cc-conv-fallback")
     finally:
         await optio.shutdown(grace_seconds=1.0)
+
+
+# --- the session's opening messages go before the viewer's ----------------
+
+def _record_input_opening(monkeypatch) -> list[list[str]]:
+    """What optio had written to claude's stdin each time a conversation
+    listener opened its input (ConversationListener.open_input)."""
+    from optio_claudecode.conversation import ClaudeCodeConversation
+    from optio_claudecode.conversation_listener import ConversationListener
+
+    sent: list[str] = []
+    seen_at_open: list[list[str]] = []
+    orig_send = ClaudeCodeConversation.send
+    orig_open = ConversationListener.open_input
+
+    async def recording_send(self, text, *, uuid=None):
+        sent.append(text)
+        return await orig_send(self, text, uuid=uuid)
+
+    def recording_open(self):
+        seen_at_open.append(list(sent))
+        return orig_open(self)
+
+    monkeypatch.setattr(ClaudeCodeConversation, "send", recording_send)
+    monkeypatch.setattr(ConversationListener, "open_input", recording_open)
+    return seen_at_open
+
+
+async def _wait_for(pred, timeout: float = 60.0) -> None:
+    end = _time.monotonic() + timeout
+    while not pred():
+        if _time.monotonic() > end:
+            raise AssertionError("condition not reached")
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_conversation_opens_its_input_after_the_resume_notice(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+    monkeypatch,
+):
+    """A message the viewer sends while the resumed session is still starting
+    (the suspended replay posts the moment the listener is reachable) must not
+    reach claude before the "you have been resumed" notice: the listener holds
+    input until the session has written it."""
+    from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+
+    seen_at_open = _record_input_opening(monkeypatch)
+    optio = await _make_optio(mongo_db, "ccui-open-resume")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-open", name="Input opens after the notice",
+            config=_ui_config(
+                shim_install_dir, claude_cache_dir,
+                supports_resume=True, credentials_json={"token": "test"},
+                before_execute=_plant_transcript_on("claude-opus-4-6"),
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result("cc-conv-open", session_id=None, timeout=60)
+        await _wait_for(lambda: len(seen_at_open) == 1)
+        await conv.close()
+        await _wait_terminal(optio, "cc-conv-open")
+
+        conv2 = await optio.launch_and_await_result(
+            "cc-conv-open", resume=True, session_id=None, timeout=60,
+        )
+        await _wait_for(lambda: len(seen_at_open) == 2)
+        assert f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}" in seen_at_open[1]
+        await conv2.close()
+        await _wait_terminal(optio, "cc-conv-open")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_an_auto_started_conversation_opens_its_input_after_the_kickoff(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+    monkeypatch,
+):
+    seen_at_open = _record_input_opening(monkeypatch)
+    optio = await _make_optio(mongo_db, "ccui-open-kickoff")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-kickoff", name="Input opens after the kickoff",
+            config=_ui_config(shim_install_dir, claude_cache_dir, auto_start=True),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result("cc-conv-kickoff", session_id=None, timeout=60)
+        await _wait_for(lambda: len(seen_at_open) == 1)
+        assert seen_at_open[0] == [host_actions.AUTO_START_PROMPT]
+        await conv.close()
+        await _wait_terminal(optio, "cc-conv-kickoff")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)

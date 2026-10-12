@@ -365,7 +365,9 @@ Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branch
 - **No tree yet** (stream not yet received) — renders a "Loading…" placeholder (preceded by the app's lent Spinner, if any — see "Spinner slot").
 - **`tree.uiWidget` is set and registered for the process's mode** — renders the named widget
   component (live or suspended variant, per `useProcessWidgetState`'s `mode`), passing
-  `{ process: tree, apiBaseUrl, widgetProxyUrl, prefix, database }`. In suspended mode, also
+  `{ process: tree, apiBaseUrl, widgetProxyUrl, prefix, database }`, plus `readOnly: true`
+  when the `readOnly` prop is set (so a widget does not launch or resume the process
+  itself). In suspended mode, also
   renders a `LaunchControls` (Resume) row above the widget unless `readOnly` is set, with
   `onLaunch` and `onResurrect` wired as in the default layout (a process left with
   `hasUnsavedWork` gets Resurrect, and Resume asks before it discards the unsaved work).
@@ -386,13 +388,16 @@ Exported from `optio-ui`.
 ### ProcessWidget / useProcessWidget / useProcessWidgetState
 
 ```ts
-function useProcessWidget(tree: ProcessTreeNode | null | undefined): ReactNode | null
+interface UseProcessWidgetOptions {
+  readOnly?: boolean;  // passed to the widget as WidgetProps.readOnly
+}
+function useProcessWidget(tree: ProcessTreeNode | null | undefined, options?: UseProcessWidgetOptions): ReactNode | null
 
 interface UseProcessWidgetStateResult {
   widget: ReactNode;
   mode: 'live' | 'suspended';
 }
-function useProcessWidgetState(tree: ProcessTreeNode | null | undefined): UseProcessWidgetStateResult | null
+function useProcessWidgetState(tree: ProcessTreeNode | null | undefined, options?: UseProcessWidgetOptions): UseProcessWidgetStateResult | null
 
 interface ProcessWidgetProps {
   tree: ProcessTreeNode | null | undefined;
@@ -409,7 +414,9 @@ get the suspended view for free, with no code change and no risk of a non-elemen
 reaching React's child-rendering path. `useProcessWidgetState` is a new, separate export for
 callers that need to know *which* mode produced the element — `ProcessWidget` → `WidgetProps`
 mapping is otherwise identical between the two. `useProcessWidget` is implemented as
-`useProcessWidgetState(tree)?.widget ?? null`.
+`useProcessWidgetState(tree, options)?.widget ?? null`. `options.readOnly` adds
+`readOnly: true` to the widget's props (absent otherwise); `ProcessDetailView` passes its own
+`readOnly`.
 
 `useProcessWidgetState` owns:
 
@@ -460,6 +467,7 @@ interface WidgetProps {
   widgetProxyUrl: string;  // ${apiBaseUrl}/api/widget/${process._id}/ — trailing slash is load-bearing
   prefix: string;          // process namespace prefix
   database?: string;       // optional database discriminator
+  readOnly?: boolean;      // the host shows the process read-only: do not launch or resume it
 }
 
 type WidgetComponent = ComponentType<WidgetProps>;

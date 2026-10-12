@@ -511,6 +511,14 @@ When `True`:
   `ctx.set_widget_upstream(url, inner_auth)` with a per-task random
   basic-auth credential, and calls `ctx.set_widget_data({})`. The
   listener is shut down in the session teardown bracket.
+* The listener is reachable from `set_widget_upstream` on, but holds its
+  input (`ConversationListener(..., hold_input=True)`): `POST /send` and
+  `POST /steer` wait until the session has written its opening messages
+  (the kickoff prompt, or the "you have been resumed" notice and
+  `requeue_undelivered()`) and calls `listener.open_input()`. A message sent
+  while the session starts (the suspended replay posts the moment the
+  listener is reachable) so reaches Claude after them, in arrival order. A
+  request still held when the listener stops answers 409 closed.
 
 Endpoints (reached through the optio-api widget proxy, which injects
 the inner basic-auth credential; GET = viewer role, POST = operator):

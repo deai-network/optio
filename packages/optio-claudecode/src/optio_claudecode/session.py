@@ -759,6 +759,9 @@ async def run_claudecode_session(
                 # Reasoning gets its own rows: a cut-off reply's partial keeps
                 # only its text.
                 show_thinking=config.thinking_verbosity == "visible",
+                # Reachable as soon as it starts, but the opening messages
+                # below go first: input opens after them (open_input).
+                hold_input=True,
             )
             listener_port = await conv_listener.start(bind_addr)
             await ctx.set_widget_upstream(
@@ -843,6 +846,10 @@ async def run_claudecode_session(
         # turn). A no-op on a fresh start: nothing was restored.
         if conv_listener is not None:
             await conv_listener.requeue_undelivered()
+            # Only now may a viewer's message reach claude: one sent while the
+            # session was starting (the suspended replay posts the moment the
+            # listener is reachable) goes after the opening messages.
+            conv_listener.open_input()
 
         if resolved_seed_id is not None:
             cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(

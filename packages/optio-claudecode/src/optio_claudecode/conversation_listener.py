@@ -106,8 +106,22 @@ class ConversationListener:
         clock: "Callable[[], float]" = _wall_clock_ms,
         allowed_controls: "list[str] | None" = None,
         show_thinking: bool = False,
+        hold_input: bool = False,
     ) -> None:
         self._conversation = conversation
+        # The session's opening messages (the kickoff prompt, the resume
+        # notice, what a previous run left undelivered) must reach claude
+        # before anything a viewer sends, though the listener is reachable
+        # earlier. With hold_input, /send and /steer wait until the session
+        # calls open_input(); stop() releases them (they then answer closed).
+        self._input_open = asyncio.Event()
+        if not hold_input:
+            self._input_open.set()
+        # Requests waiting for open_input() (tests observe it), and whether
+        # stop() released them: they were never delivered, so they answer
+        # closed rather than reaching a session that is ending.
+        self._waiting_for_input = 0
+        self._input_stopped = False
         # The task's session_controls allowlist (None: every control): /control
         # refuses any other id, so a control hidden from the widget cannot be
         # set by posting here directly.
@@ -170,6 +184,22 @@ class ConversationListener:
         # events come back through conversation.emit_event -> _on_event, so
         # they are buffered and persisted like native events.
         self._steering = steering if steering is not None else make_steering(conversation)
+
+    def open_input(self) -> None:
+        """The session has written its opening messages: deliver the held
+        sends (in arrival order) and take new ones as they come."""
+        self._input_open.set()
+
+    async def _await_input_open(self) -> None:
+        if self._input_open.is_set():
+            return
+        self._waiting_for_input += 1
+        try:
+            await self._input_open.wait()
+        finally:
+            self._waiting_for_input -= 1
+        if self._input_stopped:
+            raise ConversationClosed("listener stopped before input opened")
 
     def export_buffer(self) -> "list[list]":
         """Serializable snapshot of the replay buffer ([[seq, event], …]) for
@@ -445,6 +475,7 @@ class ConversationListener:
         if not isinstance(text, str) or not text:
             return web.json_response({"ok": False, "reason": "bad-text"}, status=400)
         try:
+            await self._await_input_open()
             outcome = await self._steering.send_when_ready(text)
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
@@ -464,6 +495,7 @@ class ConversationListener:
         if up_to is not None and not isinstance(up_to, str):
             return web.json_response({"ok": False, "reason": "bad-upTo"}, status=400)
         try:
+            await self._await_input_open()
             qid = await self._steering.interrupt_and_send(text, up_to=up_to)
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
@@ -575,6 +607,10 @@ class ConversationListener:
         self._unsubscribe = lambda: None
         unsubscribe()
         self._steering.close()
+        # Held sends answer 409 closed.
+        if not self._input_open.is_set():
+            self._input_stopped = True
+            self._input_open.set()
         for fut in self._pending_permissions.values():
             if not fut.done():
                 fut.set_result(PermissionDecision(

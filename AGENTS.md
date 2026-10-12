@@ -667,7 +667,9 @@ it), the 15 s bounded wait after an interrupt, and the synthetic events
 A wrapper's conversation listener exposes it as `POST /send` (send when
 ready, returns `{id, queued}`), `POST /steer` (interrupt and send; empty
 text = send what is queued; `upTo` = the queued id Send now was clicked on)
-and `POST /interrupt`; stage 1 wires Claude Code
+and `POST /interrupt`; Claude Code's listener holds `/send` and `/steer` until the session
+has written its opening messages (kickoff prompt, resume notice, re-queued messages), so a
+message sent while it starts goes after them; stage 1 wires Claude Code
 (`packages/optio-claudecode/AGENTS.md`), including a uuid on every CLI stdin
 message (the steering id, for messages Steering sends) and a trailing blank
 line on a busy native-queue send. `Steering.reset_transport()` (Fix 25)
@@ -1190,6 +1192,7 @@ interface WidgetProps {
   widgetProxyUrl: string;  // ${apiBaseUrl}/api/widget/${process._id}/ — trailing slash load-bearing
   prefix: string;
   database?: string;
+  readOnly?: boolean;      // the host shows the process read-only (ProcessDetailView readOnly): do not launch or resume it
 }
 
 type WidgetComponent = ComponentType<WidgetProps>;
@@ -1216,16 +1219,17 @@ imported. Reads `process.widgetData` for config (`iframeSrc`, `localStorageOverr
 unmount. Shows a dismissible "Session ended." banner on terminal states. Has no suspended
 variant, so a suspended process using it falls back to the default tree/log layout.
 
-**`useProcessWidget(tree)`** (`packages/optio-ui/src/components/ProcessWidget.tsx`) —
+**`useProcessWidget(tree, options?)`** (`packages/optio-ui/src/components/ProcessWidget.tsx`) —
 **unchanged in shape**: still `ReactNode | null`, exactly as before suspended-widget support
 existed. It now also yields the suspended variant while the process `isSuspended` (same
 readiness gate as `useProcessWidgetState` below), so an existing caller that renders its result
 directly — e.g. `const widget = useProcessWidget(tree); ...{widget}` — gets the suspended view
 automatically, with no code change and no risk of a non-element value (a `{widget, mode}`
 object would throw "Objects are not valid as a React child") reaching its render tree.
-Implemented as `useProcessWidgetState(tree)?.widget ?? null`.
+Implemented as `useProcessWidgetState(tree, options)?.widget ?? null`. `options.readOnly`
+(`ProcessDetailView` passes its own) reaches the widget as `WidgetProps.readOnly`.
 
-**`useProcessWidgetState(tree)`** — the layout-free primitive, for callers that need to know
+**`useProcessWidgetState(tree, options?)`** — the layout-free primitive, for callers that need to know
 *which* mode produced the element (`ProcessDetailView` uses it to decide whether to show a
 Resume control). Returns `{ widget: ReactNode; mode: 'live' | 'suspended' } | null`. `null`
 when `tree` or `tree.uiWidget` is missing, when the process is neither widget-live nor
