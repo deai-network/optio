@@ -252,6 +252,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                             "attach a file, or ask for a file and download it from the reply."
                         ),
                         icon="/welcome/optio.png",
+                        min_height=200,
                     ),
                     show_session_controls=True,
                     show_file_upload=True,
