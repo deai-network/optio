@@ -98,13 +98,30 @@ type ActivityItem = Extract<ChatItem, { kind: 'activity' }>;
 
 // Text a content block contributes to the reply bubble: a text block's text,
 // or the narration a text-bearing thinking block carries. Since CLI 2.1.267
-// the model writes its between-tool narration as such "thinking updates"; the
-// real reasoning arrives as a separate thinking block with empty text. With
-// `thinkingRows` (see ReduceOptions) thinking text is reasoning instead, never
-// part of the reply.
-function blockText(block: any, thinkingRows = false): string | null {
+// the model writes its between-tool narration as such "thinking updates", and
+// the frame lists them in `narration_block_indexes` (indexes into
+// message.content; CLI 2.1.296: "treat unlisted thinking blocks as ordinary
+// thinking"). Any other thinking block is reasoning, never part of the reply:
+// empty unless the launch asked for its text (thinkingVerbosity "visible"),
+// which a turn recorded then still carries when the task is hidden again.
+// With `thinkingRows` (see ReduceOptions) thinking text is a reasoning row.
+function blockText(block: any, narration: boolean, thinkingRows = false): string | null {
   if (block?.type === 'text' && typeof block.text === 'string') return block.text;
-  return thinkingRows ? null : thinkingText(block);
+  return thinkingRows || !narration ? null : thinkingText(block);
+}
+
+// The indexes of a frame's narration thinking blocks (narration_block_indexes).
+function narrationIndexes(ev: any): Set<number> {
+  const listed = ev?.narration_block_indexes;
+  return new Set(Array.isArray(listed) ? listed.filter((i: unknown) => Number.isInteger(i)) : []);
+}
+
+// A stream event of a response whose request asked for the reasoning text:
+// the CLI stamps the request's thinking display on the stream_event wrapper
+// (2.1.296: message_start, a thinking block's content_block_start, and its
+// thinking_delta). Its thinking deltas cannot be told apart from narration.
+function displaysReasoning(ev: any): boolean {
+  return typeof ev?.thinking_display === 'string' && ev.thinking_display !== 'omitted';
 }
 
 // A thinking block's text, if it carries any.
@@ -1333,8 +1350,9 @@ export function reduceEvent(
           ? state.pendingMessageStart.ts
           : undefined;
       let items = state.items;
-      for (const block of blocks) {
-        const text = blockText(block, opts.thinkingRows);
+      const narration = narrationIndexes(ev);
+      for (const [index, block] of blocks.entries()) {
+        const text = blockText(block, narration.has(index), opts.thinkingRows);
         const reasoning = opts.thinkingRows ? thinkingText(block) : null;
         if (text !== null) {
           const freshStart = marker !== undefined
@@ -1405,8 +1423,11 @@ export function reduceEvent(
       const d = ev.event?.delta;
       const isThinking = d?.type === 'thinking_delta';
       // Reasoning (thinkingRows) shows as a row from its final thinking block;
-      // it never streams into the reply.
-      if (isThinking && opts.thinkingRows) return state;
+      // it never streams into the reply. Nor does any thinking delta of a
+      // response that carries reasoning text: its narration joins the reply
+      // from the final thinking block, where narration_block_indexes tells
+      // the two apart.
+      if (isThinking && (opts.thinkingRows || displaysReasoning(ev))) return state;
       const delta = isThinking ? d.thinking : d?.text;
       if (typeof delta !== 'string' || delta === '') return state;
       // Fix 12: this message's resolved START (see the `assistant` case for

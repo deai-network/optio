@@ -217,8 +217,17 @@ describe('ConversationWidget', () => {
   it('narration from a thinking block renders as a reply even with thinkingVerbosity hidden', () => {
     render(<ConversationWidget {...makeProps({ process: { _id: 'p1', name: 'n', widgetData: { thinkingVerbosity: 'hidden' }, status: { state: 'running' } } })} />);
     fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: '', signature: 's' }] } });
-    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: 'Checking the VPN before the harness run.', signature: 's' }] } });
+    fire({ type: 'assistant', narration_block_indexes: [0], message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: 'Checking the VPN before the harness run.', signature: 's' }] } });
     expect(screen.getByText('Checking the VPN before the harness run.')).toBeTruthy();
+  });
+
+  it('reasoning recorded with summarized thinking stays hidden with thinkingVerbosity hidden', () => {
+    render(<ConversationWidget {...makeProps({ process: { _id: 'p1', name: 'n', widgetData: { thinkingVerbosity: 'hidden' }, status: { state: 'running' } } })} />);
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: 'Weighing a metadata filter over a date sort.', signature: 's' }] } });
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: 'The last call was on 2 September.' }] } });
+    expect(screen.getByText('The last call was on 2 September.')).toBeTruthy();
+    expect(screen.queryByText(/Weighing a metadata filter/)).toBeNull();
+    expect(screen.queryByTestId('thinking')).toBeNull();
   });
 
   it('reasoning renders as a thinking row with thinkingVerbosity visible', () => {

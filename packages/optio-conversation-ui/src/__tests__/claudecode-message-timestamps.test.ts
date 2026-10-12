@@ -324,9 +324,11 @@ describe('claudecode message timestamps: synthetic events', () => {
   // the message's own first (thinking) block > the previous wire event > none.
   describe('Fix 12: start/end fallback chain', () => {
     const messageStart = (id: string, ts: number) => ({ type: 'x-optio-message-start', id, ts });
+    // A narration block: the frame lists it in narration_block_indexes.
     const thinkingText = (text: string, msgId: string, timestamp: string) => ({
       type: 'assistant',
       timestamp,
+      narration_block_indexes: [0],
       message: { role: 'assistant', id: msgId, content: [{ type: 'thinking', thinking: text }] },
     });
 
