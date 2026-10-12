@@ -164,9 +164,10 @@ class WelcomeCard:
     language. ``icon`` is a URL relative to the web app root: a value that
     neither starts with "/" nor contains "://" is published with a leading
     "/" ("img/a.png" -> "/img/a.png"); "/x.png" and absolute URLs
-    ("https://...") are published as given. ``min_height`` is the card's
-    minimum height in CSS pixels (a positive int; None: the content's
-    height)."""
+    ("https://...") are published as given. ``min_height`` is the icon's
+    minimum height in CSS pixels (a positive int; None: the text's height).
+    The icon fills the card's height either way: as tall as the text beside
+    it, and at least ``min_height``; without an icon it has no effect."""
     title: Text
     description: Text | None = None
     icon: str | None = None
