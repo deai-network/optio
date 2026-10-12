@@ -270,12 +270,12 @@ describe('ConversationWidget', () => {
     expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Lean-verify all 15 · 12s');
   });
 
-  it('tool verbosity description-while-active: every call is a collapsed row', () => {
+  it('tool verbosity description-while-active: only the running call has a row; the finished background job its muted line', () => {
     render(<ConversationWidget {...propsV('description-while-active')} />);
     fireSession();
-    expect(statuses()).toEqual(['done', 'done', 'running']);
-    expect(screen.getAllByTestId('tool-call')[2].textContent).toContain('/x');
-    expect(screen.queryByTestId('background-finished')).toBeNull();
+    expect(statuses()).toEqual(['running']);
+    expect(screen.getAllByTestId('tool-call')[0].textContent).toContain('/x');
+    expect(screen.getByTestId('background-finished').textContent).toContain('Lean-verify all 15');
     expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 

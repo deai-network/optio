@@ -702,7 +702,7 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
     expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Bash · 9s');
   });
 
-  it('description-while-active keeps finished rows collapsed, including a background job', () => {
+  it('description-while-active shows only the running call; a finished background job keeps its muted line', () => {
     const state = makeState([
       { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status: 'done', startedAt: 0, endedAt: 1000 },
       { kind: 'tool', name: 'Bash', input: { command: './harness.sh' }, seq: 2, status: 'done', background: true, result: 'Lean-verify all 15', startedAt: 0, endedAt: 372_000 },
@@ -710,10 +710,9 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
     ]);
     renderView(makeProps({ state, toolVerbosity: 'description-while-active' }));
     const rows = screen.getAllByTestId('tool-call');
-    expect(rows).toHaveLength(3);
-    expect(rows[2].textContent).toContain('/x');
-    expect(rows[1].textContent).toContain('Lean-verify all 15');
-    expect(screen.queryByTestId('background-finished')).toBeNull();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('/x');
+    expect(screen.getByTestId('background-finished').textContent).toContain('Lean-verify all 15');
     expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 });

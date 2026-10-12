@@ -1572,7 +1572,12 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       run = [];
     };
     items.forEach((item, i) => {
-      if (item.kind === 'tool' && toolVerbosity !== 'silent') {
+      // description-while-active shows a tool only while it runs: a finished
+      // one leaves the chain (renderItem gives a finished background job its
+      // muted outcome line, as at silent, and nothing else).
+      const hidden = item.kind === 'tool' && toolVerbosity === 'description-while-active'
+        && toolLifecycle(item).finished;
+      if (item.kind === 'tool' && toolVerbosity !== 'silent' && !hidden) {
         run.push(item);
         return;
       }
@@ -1886,9 +1891,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         const stopped = item.status === 'stopped';
         const elapsed =
           item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
-        // Silent is unchanged: no ordinary tool row. A background job still
-        // leaves its muted line, including while it is running.
-        if (toolVerbosity === 'silent') {
+        // Silent: no ordinary tool row. A background job still leaves its
+        // muted line, including while it is running. description-while-active
+        // sends only its finished tools here (renderTranscript): the same, a
+        // finished background job's line and nothing else.
+        if (toolVerbosity === 'silent' || toolVerbosity === 'description-while-active') {
           if (!item.background) return null;
           return finished
             ? renderBackgroundLine(item, failed, elapsed, token)
