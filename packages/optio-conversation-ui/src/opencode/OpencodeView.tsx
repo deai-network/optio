@@ -397,6 +397,7 @@ function OpencodeChat(
         closed={closed}
         busy={busy}
         toolVerbosity={toolVerbosity}
+        hideEmptyRuns={props.hideEmptyRuns}
         thinkingVerbosity={thinkingVerbosity}
         showFileUpload={showFileUpload}
         maxUploadBytes={maxUploadBytes}

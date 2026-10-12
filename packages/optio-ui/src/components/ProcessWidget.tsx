@@ -42,6 +42,8 @@ export interface UseProcessWidgetStateResult {
 export interface UseProcessWidgetOptions {
   /** Passed to the widget as `WidgetProps.readOnly`. */
   readOnly?: boolean;
+  /** Passed to the widget as `WidgetProps.hideEmptyRuns`. */
+  hideEmptyRuns?: boolean;
 }
 
 export function useProcessWidgetState(
@@ -110,6 +112,7 @@ export function useProcessWidgetState(
         prefix={prefix}
         database={database}
         {...(options?.readOnly ? { readOnly: true } : {})}
+        {...(options?.hideEmptyRuns ? { hideEmptyRuns: true } : {})}
       />
     ),
   };

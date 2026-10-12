@@ -39,6 +39,9 @@ export interface ClaudeCodeReplayViewProps {
   // WidgetProps.readOnly: the host shows the process read-only, so the
   // composer must not resume it.
   readOnly?: boolean;
+  // WidgetProps.hideEmptyRuns: leave out the runs a resume added where nothing
+  // happened, the last one included (see ConversationView).
+  hideEmptyRuns?: boolean;
   // The session is resuming (optio-ui keeps this view on screen until the
   // live one is ready): the input gives way to a spinner panel.
   resuming?: boolean;
@@ -92,6 +95,7 @@ export function ClaudeCodeReplayView({
   prefix,
   widgetProxyUrl,
   readOnly,
+  hideEmptyRuns,
   resuming,
   themeMode,
   onToggleTheme,
@@ -173,6 +177,7 @@ export function ClaudeCodeReplayView({
         closedLabel={SUSPENDED_CLOSED_LABEL}
         busy={state.busy}
         toolVerbosity={toolVerbosity}
+        hideEmptyRuns={hideEmptyRuns}
         thinkingVerbosity={thinkingVerbosity}
         showFileUpload={false}
         maxUploadBytes={maxUploadBytes}

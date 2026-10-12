@@ -12,6 +12,7 @@ import type { ThoughtChainItemType } from '@ant-design/x';
 import { transcriptKeys } from './transcriptKeys.js';
 import { ConversationWidenessContext, type ConversationWideness } from './wideness.js';
 import { ConversationWelcomeContext, type ConversationWelcome } from './welcome.js';
+import { withoutEmptyRuns } from './runs.js';
 import { resolveText, useLanguage } from './text.js';
 import { ConversationSetBusyContext } from './busy.js';
 import { AnswerBlock } from './AnswerBlock.js';
@@ -95,6 +96,11 @@ export interface ConversationViewProps {
   // → a persistent one-line row (⟳/✓/✗/⏹). 'verbose' → the line plus the args/
   // result detail; a finished tool collapses to the line (click to expand).
   toolVerbosity: 'silent' | 'description-while-active' | 'description-only' | 'verbose';
+  // The host's choice (owner request 2026-10-12; WidgetProps.hideEmptyRuns):
+  // leave out the runs a resume added where nothing happened (see runs.ts).
+  // The current run shows while the conversation is open; once `closed` (the
+  // suspended replay), an empty last run is left out too. Absent: every run.
+  hideEmptyRuns?: boolean;
   // Reasoning/thinking traces (e.g. grok's agent_thought_chunk). 'hidden' → not
   // rendered; 'visible' → shown in a distinct reasoning style. Task-level, set
   // by the engine via widgetData — the view never decides visibility itself.
@@ -2108,7 +2114,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 alone repeats. */}
             {/* The agent task's welcome card, first in the transcript. */}
             {welcome && <WelcomeCard welcome={welcome} />}
-            {renderTranscript(state.items)}
+            {renderTranscript(props.hideEmptyRuns ? withoutEmptyRuns(state.items, !closed) : state.items)}
             {/* The process died (or the conversation was closed engine-side):
                 append the ended divider after the transcript. */}
             {closed && renderDivider('conversation-closed', 'conversation-closed', props.closedLabel ?? 'conversation ended', 'solid')}

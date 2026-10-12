@@ -90,6 +90,7 @@ export function SuspendedConversationWidget(props: WidgetProps) {
         prefix={props.prefix}
         widgetProxyUrl={props.widgetProxyUrl}
         readOnly={(props as { readOnly?: boolean }).readOnly}
+        hideEmptyRuns={props.hideEmptyRuns}
         resuming={resuming}
         themeMode={(props as any).themeMode}
         onToggleTheme={(props as any).onToggleTheme}

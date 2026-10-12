@@ -127,6 +127,22 @@ describe('useProcessWidgetState', () => {
       expect(captured.readOnly).toBe(true);
     });
 
+    it('adds hideEmptyRuns to WidgetProps only when the caller asks for it, live and suspended alike', () => {
+      const captured: Record<string, any> = {};
+      registerWidget('my-widget', (props: any) => { captured.live = props; return null; }, {
+        suspended: (props: any) => { captured.suspended = props; return null; },
+      });
+      function Host({ tree, hide }: { tree: any; hide?: boolean }) {
+        return <>{useProcessWidget(tree, hide ? { hideEmptyRuns: true } : undefined)}</>;
+      }
+      const { rerender } = render(<Host tree={baseTree()} />);
+      expect('hideEmptyRuns' in captured.live).toBe(false);
+      rerender(<Host tree={baseTree()} hide />);
+      expect(captured.live.hideEmptyRuns).toBe(true);
+      render(<Host tree={suspendedTree({ _id: 'def' })} hide />);
+      expect(captured.suspended.hideEmptyRuns).toBe(true);
+    });
+
     it('returns null when suspended but no suspended variant is registered (Review Focus 5)', () => {
       // Only a live component registered — e.g. the iframe widget, which has
       // no suspended variant. A suspended process with this widget falls
