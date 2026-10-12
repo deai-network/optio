@@ -942,6 +942,138 @@ async def test_read_hook_none_without_record(mongo_db, ctx_and_captures):
     assert await S._read_conversation(ro_ctx, decrypt=_decrypt) is None
 
 
+def _wrong_key(_b: bytes) -> bytes:
+    raise ValueError("SECRET-CONTENT: wrong key")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload,decrypt", [
+    (_encrypt(json.dumps(_ENTRIES).encode()), _wrong_key),
+    (_encrypt(b"not json SECRET-CONTENT"), _decrypt),
+    (_encrypt(b"\xff\xfe SECRET-CONTENT"), _decrypt),
+    (_encrypt(b'{"a": "SECRET-CONTENT"}'), _decrypt),
+    (_encrypt(b'[["x", {}], [1, "SECRET-CONTENT"], [2]]'), _decrypt),
+], ids=["wrong-key", "not-json", "not-utf8", "not-a-list", "no-valid-entry"])
+async def test_read_hook_raises_on_an_unreadable_record(
+    mongo_db, ctx_and_captures, caplog, payload, decrypt,
+):
+    """Unlike a resume (which starts empty), a suspended-view read of a record
+    that exists but cannot be decrypted or parsed raises, so the archive
+    listener answers 500 read-failed rather than 404 no-conversation. Neither
+    the exception nor any log line carries the record's content."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _snapshot_with_record(mongo_db, ctx, payload)
+    caplog.set_level(logging.DEBUG)
+
+    with pytest.raises(S.UnreadableConversationRecord) as info:
+        await S._read_conversation(ReadOnlyProcessContext(ctx), decrypt=decrypt)
+
+    assert "SECRET-CONTENT" not in str(info.value)
+    # The underlying error (whose message could quote the record) is not chained.
+    assert info.value.__cause__ is None
+    assert info.value.__context__ is None or info.value.__suppress_context__
+    assert "SECRET-CONTENT" not in caplog.text
+    assert ctx.process_id in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_read_hook_raises_when_the_record_cannot_be_fetched(
+    mongo_db, ctx_and_captures, monkeypatch,
+):
+    """A record naming a blob that is gone, or a Mongo error: raised, not None."""
+    import gridfs.errors
+    from pymongo.errors import AutoReconnect
+    ctx, _cap, _flag = ctx_and_captures
+    ro_ctx = ReadOnlyProcessContext(ctx)
+    conv_id = await _snapshot_with_record(mongo_db, ctx, _encrypt(json.dumps(_ENTRIES).encode()))
+    await ctx.delete_blob(conv_id)
+    with pytest.raises(gridfs.errors.NoFile):
+        await S._read_conversation(ro_ctx, decrypt=_decrypt)
+
+    async def _down(*_a, **_kw):
+        raise AutoReconnect("mongo down")
+    monkeypatch.setattr(S, "load_latest_snapshot", _down)
+    with pytest.raises(AutoReconnect):
+        await S._read_conversation(ro_ctx, decrypt=_decrypt)
+    # A resume stays lenient: the buffer just starts empty.
+    assert await S._load_conversation_buffer(ctx, decrypt=_decrypt) is None
+
+
+@pytest.mark.asyncio
+async def test_read_hook_parses_off_the_event_loop(mongo_db, ctx_and_captures, monkeypatch):
+    """Decrypt, json.loads and filtering run in a worker thread, for the
+    suspended-view read and for a resume alike."""
+    import threading
+    ctx, _cap, _flag = ctx_and_captures
+    await _snapshot_with_record(mongo_db, ctx, _encrypt(json.dumps(_ENTRIES).encode()))
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def _decrypt_spy(b: bytes) -> bytes:
+        seen.append(threading.get_ident())
+        return _decrypt(b)
+    real_loads = json.loads
+
+    def _loads_spy(*a, **kw):
+        seen.append(threading.get_ident())
+        return real_loads(*a, **kw)
+    monkeypatch.setattr(S.json, "loads", _loads_spy)
+
+    out = await S._read_conversation(ReadOnlyProcessContext(ctx), decrypt=_decrypt_spy)
+    assert out["events"] == [[1, _ENTRIES[0][1]], [2, _ENTRIES[1][1]]]
+    assert await S._load_conversation_buffer(ctx, decrypt=_decrypt_spy) == [
+        (1, _ENTRIES[0][1]), (2, _ENTRIES[1][1]),
+    ]
+    assert len(seen) == 4 and loop_thread not in seen
+
+
+@pytest.mark.asyncio
+async def test_archive_listener_answers_read_failed_for_a_wrong_key(mongo_db, ctx_and_captures):
+    """Through the engine's listener: the task's hook with a wrong key gives
+    500 read-failed (the UI shows the message and Retry); no record at all
+    still gives 404 no-conversation."""
+    import base64
+
+    import aiohttp
+    from optio_core.conversation_archive import ConversationArchiveListener
+    ctx, _cap, _flag = ctx_and_captures
+    task = create_claudecode_task(
+        "p", "P", ClaudeCodeTaskConfig(
+            consumer_instructions="x", fs_isolation=False,
+            mode="conversation", conversation_ui=True,
+            permission_mode="bypassPermissions",
+            session_blob_encrypt=_encrypt, session_blob_decrypt=_wrong_key,
+        ),
+    )
+    await mongo_db["test_processes"].update_one(
+        {"_id": ctx._process_oid},
+        {"$set": {"status.state": "cancelled", "supportsResume": True, "hasSavedState": True}},
+    )
+    listener = ConversationArchiveListener(
+        db=mongo_db, prefix="test", resolve_task={"p": task}.get,
+        make_context=lambda _doc: ctx,
+    )
+    await listener.start()
+
+    async def _get() -> tuple[int, dict]:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                f"{listener.url}conversation/{ctx._process_oid}",
+                headers={"Authorization": "Basic " + base64.b64encode(
+                    f"optio:{listener.password}".encode()).decode()},
+            ) as r:
+                return r.status, await r.json()
+    try:
+        assert await _get() == (404, {
+            "reason": "no-conversation", "message": "No saved conversation record.",
+        })
+        await _snapshot_with_record(mongo_db, ctx, _encrypt(json.dumps(_ENTRIES).encode()))
+        status, body = await _get()
+    finally:
+        await listener.stop()
+    assert (status, body["reason"]) == (500, "read-failed")
+
+
 # --- the teardown (real engine, fake claude) -----------------------------------
 
 

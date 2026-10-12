@@ -1374,19 +1374,30 @@ async def _restore_workdir_snapshot(
     await host.remove_file(f"{host.workdir.rstrip('/')}/{_CONV_BUFFER_FILE}")
 
 
+async def _latest_conversation_record(
+    ctx: ProcessContext,
+) -> "tuple[dict | None, bytes | None]":
+    """The latest snapshot and the stored bytes of its conversation record,
+    still under the task's cipher (not decrypted here). The bytes are None
+    when there is no snapshot or the snapshot has no record. A Mongo or
+    GridFS error (a record naming a blob that is gone included) raises."""
+    snapshot = await load_latest_snapshot(
+        ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+    )
+    blob_id = snapshot.get("conversationBlobId") if snapshot is not None else None
+    if blob_id is None:
+        return snapshot, None
+    return snapshot, await _read_blob_bytes(ctx, blob_id)
+
+
 async def _latest_conversation_bytes(ctx: ProcessContext) -> bytes | None:
     """The stored bytes of the latest snapshot's conversation record, still
     under the task's cipher (not decrypted here), or None: no snapshot, a
     snapshot without a record, or a record that cannot be read (logged; never
     raises)."""
     try:
-        snapshot = await load_latest_snapshot(
-            ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
-        )
-        blob_id = snapshot.get("conversationBlobId") if snapshot is not None else None
-        if blob_id is None:
-            return None
-        return await _read_blob_bytes(ctx, blob_id)
+        _snapshot, raw = await _latest_conversation_record(ctx)
+        return raw
     except Exception:  # noqa: BLE001
         _LOG.warning("conversation record could not be read", exc_info=True)
         return None
@@ -1404,6 +1415,48 @@ async def _carry_conversation_forward(ctx: ProcessContext) -> ObjectId | None:
     return await _store_conversation_blob(ctx, raw, encrypt=None)
 
 
+class UnreadableConversationRecord(Exception):
+    """A conversation record exists but cannot be decrypted, is not UTF-8
+    JSON, or is not a list of ``[seq, event]`` entries. The message names the
+    failure only, never the record's content, and the underlying error is not
+    chained (a cipher's or decoder's message could quote it)."""
+
+
+def _parse_conversation_record(
+    raw: bytes, decrypt: "Callable[[bytes], bytes] | None",
+) -> "list[tuple[int, dict]]":
+    """Decrypt a stored conversation record through ``decrypt`` (the task's
+    ``session_blob_decrypt``; None: stored plaintext), parse it and keep its
+    ``(seq, event)`` entries, minus any terminal close marker. CPU-bound
+    (callers run it in ``asyncio.to_thread``). An empty list is a record with
+    nothing in it. Raises UnreadableConversationRecord."""
+    try:
+        plain = decrypt(raw) if decrypt is not None else raw
+    except Exception as exc:  # noqa: BLE001
+        # The type only: the message of a cipher error is not kept.
+        raise UnreadableConversationRecord(
+            f"could not be decrypted ({type(exc).__name__})",
+        ) from None
+    try:
+        data = json.loads(plain.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        raise UnreadableConversationRecord("is not valid JSON") from None
+    out: list[tuple[int, dict]] = []
+    valid = 0
+    for entry in data if isinstance(data, list) else []:
+        if (isinstance(entry, list) and len(entry) == 2
+                and isinstance(entry[0], int) and isinstance(entry[1], dict)):
+            valid += 1
+            # Defensive: drop any terminal close marker a pre-fix buffer may
+            # carry, so it never replays the prior run's close on resume.
+            if entry[1].get("type") == "x-optio-closed":
+                continue
+            out.append((entry[0], entry[1]))
+    if not isinstance(data, list) or (data and not valid):
+        raise UnreadableConversationRecord("is not a list of [seq, event] entries")
+    return out
+
+
 async def _load_conversation_buffer(
     ctx: ProcessContext, *, decrypt: "Callable[[bytes], bytes] | None",
 ) -> "list[tuple[int, dict]] | None":
@@ -1418,36 +1471,13 @@ async def _load_conversation_buffer(
     if raw is None:
         return None
     try:
-        plain = decrypt(raw) if decrypt is not None else raw
-    except Exception as exc:  # noqa: BLE001
-        # The type only: the message of a cipher error is not logged.
+        out = await asyncio.to_thread(_parse_conversation_record, raw, decrypt)
+    except UnreadableConversationRecord as exc:
+        # The id and the failure only: the record's content is the conversation.
         _LOG.warning(
-            "conversation record could not be decrypted (%s); starting empty",
-            type(exc).__name__,
+            "conversation record of process %s %s; starting empty", ctx.process_id, exc,
         )
         return None
-    try:
-        data = json.loads(plain.decode("utf-8"))
-    except Exception:  # noqa: BLE001
-        _LOG.warning("conversation record is not valid JSON; starting empty")
-        return None
-    out: list[tuple[int, dict]] = []
-    valid = 0
-    for entry in data if isinstance(data, list) else []:
-        if (isinstance(entry, list) and len(entry) == 2
-                and isinstance(entry[0], int) and isinstance(entry[1], dict)):
-            valid += 1
-            # Defensive: drop any terminal close marker a pre-fix buffer may
-            # carry, so it never replays the prior run's close on resume.
-            if entry[1].get("type") == "x-optio-closed":
-                continue
-            out.append((entry[0], entry[1]))
-    if not isinstance(data, list) or (data and not valid):
-        # The id only: the record's content is the conversation.
-        _LOG.warning(
-            "conversation record of process %s is not a list of [seq, event] "
-            "entries; starting empty", ctx.process_id,
-        )
     return out or None
 
 
@@ -1456,21 +1486,33 @@ async def _read_conversation(
 ) -> dict | None:
     """The ``TaskInstance.read_conversation`` hook (set only when
     ``conversation_ui``): the suspended process's saved conversation record,
-    read through the same decrypt/parse/filter as a resume
-    (``_load_conversation_buffer``). Returns ``{"events": [[seq, event],
-    ...], "capturedAt": <iso or None>}``, or None when there is no record.
+    decrypted, parsed and filtered like a resume's buffer
+    (``_parse_conversation_record``), but strict. Returns ``{"events":
+    [[seq, event], ...], "capturedAt": <iso or None>}``, or None when there
+    is no record (or it holds no entries). A record that cannot be read,
+    decrypted or parsed raises (UnreadableConversationRecord, or the Mongo /
+    GridFS error), so the engine's archive listener answers 500 read-failed
+    instead of 404 no-conversation.
 
     ``ctx`` may be the engine's read-only context (process_id, _db, _prefix,
     load_blob only) — this function and everything it calls touch nothing
     else.
     """
-    events = await _load_conversation_buffer(ctx, decrypt=decrypt)
-    if events is None:
+    snapshot, raw = await _latest_conversation_record(ctx)
+    if raw is None:
         return None
-    snapshot = await load_latest_snapshot(
-        ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
-    )
-    captured_at = snapshot["capturedAt"] if snapshot is not None else None
+
+    def _parse() -> "list[list]":
+        return [[seq, event] for seq, event in _parse_conversation_record(raw, decrypt)]
+    try:
+        events = await asyncio.to_thread(_parse)
+    except UnreadableConversationRecord as exc:
+        # The id and the failure only: the record's content is the conversation.
+        _LOG.warning("conversation record of process %s %s", ctx.process_id, exc)
+        raise
+    if not events:
+        return None
+    captured_at = snapshot["capturedAt"]
     if captured_at is not None:
         # Mongo (pymongo/motor) decodes to a naive datetime that is UTC; a
         # naive isoformat() carries no offset, and the UI's `new Date(...)`
@@ -1480,7 +1522,7 @@ async def _read_conversation(
             else captured_at.astimezone(timezone.utc)
         )
     return {
-        "events": [[seq, event] for seq, event in events],
+        "events": events,
         "capturedAt": captured_at.isoformat() if captured_at is not None else None,
     }
 

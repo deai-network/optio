@@ -670,7 +670,14 @@ Replay-buffer semantics:
   `TaskInstance.read_conversation` only when `conversation_ui`), backs the
   read-only suspended-process view for the engine's conversation archive
   listener, which gives it a read-only context (process_id, _db, _prefix,
-  load_blob only).
+  load_blob only). That read is strict: no snapshot or no record gives
+  None (404 `no-conversation`), but a record that cannot be decrypted, is
+  not UTF-8 JSON or is not a list of entries raises
+  `session.UnreadableConversationRecord` (its message names the failure,
+  never the content), and a Mongo / GridFS error (a blob gone included)
+  raises as is, so the listener answers 500 `read-failed`. Both readers
+  share `session._parse_conversation_record` (decrypt + `json.loads` +
+  filtering), run in `asyncio.to_thread`; the GridFS read stays async.
   The workdir restore (`_restore_workdir_snapshot`) deletes a top-level
   `.optio-conversation-buffer.json` a pre-fix snapshot may carry, unread.
   When a resumed run re-primes the listener from the buffer,
