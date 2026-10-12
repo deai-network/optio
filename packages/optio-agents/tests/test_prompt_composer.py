@@ -2,6 +2,7 @@
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents.prompt import (
+    _todo_note,
     BASE_PROMPT_POST,
     DEFAULT_CONVERSATION_INSTRUCTIONS,
     AgentPromptProfile,
@@ -161,6 +162,14 @@ def test_todo_note_names_the_profile_tool_and_sits_before_the_task():
     assert out.index("`(failed)`") < out.index(details)
     assert out.index("## Task") < out.index(note) < out.index("So:") < out.index("do X")
     assert "TODO list" not in _c()
+
+
+def test_todo_note_asks_for_a_record_even_without_a_plan():
+    # Owner, 2026-10-13: the list is kept as a record of the steps taken,
+    # also by an agent that plans only a step or two ahead.
+    note = _todo_note("TodoWrite")
+    assert note.startswith("Also use a TODO list to describe your progress, via the `TodoWrite` tool. "
+                           "Even if you don't have a grand plan and you just make it up as you go, based on the results of each step, please maintain a task list as a record of what you did, even if it only goes 1-2 steps into the future. ")
 
 
 def test_todo_note_uses_a_multi_tool_phrase_verbatim():

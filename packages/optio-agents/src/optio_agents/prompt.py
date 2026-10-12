@@ -71,6 +71,9 @@ def _todo_note(tool: str) -> str:
     via = tool if "," in tool else f"the `{tool}` tool"
     return (
         f"Also use a TODO list to describe your progress, via {via}. "
+        "Even if you don't have a grand plan and you just make it up as you go, "
+        "based on the results of each step, please maintain a task list as a "
+        "record of what you did, even if it only goes 1-2 steps into the future. "
         "Express a failed step (an experiment that did not work, for example) "
         "by adding a completed item with `(failed)` appended to the end of its label. "
         "If your relevant tools support task details or descriptions, then also use "
