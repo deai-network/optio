@@ -14,8 +14,10 @@ Errors are JSON {"reason": <code>, "message": <text>}:
   409 not-suspended            not cancelled + supportsResume + hasSavedState
   404 no-conversation-support  no registered task, or no read_conversation hook
   404 no-conversation          the hook returned None (no record)
-  500 read-failed              the hook raised or returned something unusable,
-                               or anything else in the request failed (e.g.
+  500 read-failed              the hook raised, returned something unusable or
+                               ran longer than READ_TIMEOUT_S (60 s, counted
+                               once it has a read slot; it is cancelled), or
+                               anything else in the request failed (e.g.
                                MongoDB); a middleware turns every uncaught
                                exception into this JSON reply
 Unknown routes and methods keep aiohttp's own 404 / 405.
@@ -61,6 +63,10 @@ ENDPOINT_ID = "conversationArchive"
 SHUTDOWN_TIMEOUT_S = 2.0
 # Concurrent read hooks (each holds a decrypted record in memory).
 READ_CONCURRENCY = 4
+# A hook that runs longer is cancelled and the read answered 500 read-failed,
+# so a hung hook cannot hold a read slot forever. Counted from when the hook
+# gets its slot (waiting for a slot is not counted).
+READ_TIMEOUT_S = 60.0
 _OBJECTID_RE = re.compile(r"[0-9a-fA-F]{24}")  # used with fullmatch
 _NO_STORE = {"Cache-Control": "no-store"}
 
@@ -224,21 +230,35 @@ class ConversationArchiveListener:
                 404, "no-conversation-support",
                 "This task does not keep a readable conversation record.",
             )
+        deadline: asyncio.Timeout | None = None
         try:
             # Bounded: each read holds a decrypted record until it is sent.
             async with self._read_slots:
                 ctx = ReadOnlyProcessContext(self._make_context(doc))
-                payload = _payload(await hook(ctx))
+                # Created here, not before the slot: asyncio.timeout fixes its
+                # deadline when created, and a wait for a slot is not counted.
+                deadline = asyncio.timeout(READ_TIMEOUT_S)
+                async with deadline:
+                    result = await hook(ctx)
+                payload = _payload(result)
                 body = (
                     None if payload is None
                     else await asyncio.to_thread(json.dumps, payload)
                 )
         except Exception as exc:  # noqa: BLE001
-            # The exception type only: its message may carry conversation content.
-            logger.error(
-                "conversation archive: reading the record of process %s (%s) failed: %s",
-                id_str, doc["processId"], type(exc).__name__,
-            )
+            if (isinstance(exc, TimeoutError) and deadline is not None
+                    and deadline.expired()):
+                # Our deadline cut the hook off (not a TimeoutError of its own).
+                logger.error(
+                    "conversation archive: reading the record of process %s (%s) "
+                    "failed: timeout", id_str, doc["processId"],
+                )
+            else:
+                # The exception type only: its message may carry conversation content.
+                logger.error(
+                    "conversation archive: reading the record of process %s (%s) failed: %s",
+                    id_str, doc["processId"], type(exc).__name__,
+                )
             return _read_failed()
         if body is None:
             return _error(404, "no-conversation", "No saved conversation record.")

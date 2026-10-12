@@ -1266,29 +1266,31 @@ class Optio:
                 "conversations will not be readable",
             )
 
-        # Start the clamator RPC server (non-blocking; spawns its own tasks)
-        if self.rpc_server is not None and self._owned_rpc_server:
-            await self.rpc_server.start()
-
-        # Start scheduler — must run in the same async context as
-        # Optio.run() so apscheduler's anyio task_group lives inside the
-        # run-loop's scope, not init()'s. Re-sync immediately after start
-        # so cron triggers registered during init() actually reach the
-        # now-live apscheduler instance (the init-time sync_schedules
-        # was a no-op because apscheduler was None at that point).
-        await self._scheduler.start()
-        await self._sync_definitions()
-
-        # Start heartbeat (if Redis is configured)
-        if self._redis:
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-
-        self._supervisor_task = asyncio.create_task(self._supervisor_loop())
-        # One-shot post-boot auto-resume timer. Fires once after
-        # auto_resume_delay_seconds, re-launching stamped+saved processes.
-        self._auto_resume_task = asyncio.create_task(self._auto_resume_timer())
-
+        # From here on the finally below stops the listener (and deletes its
+        # endpoint document) whatever raises, a failing startup step included.
         try:
+            # Start the clamator RPC server (non-blocking; spawns its own tasks)
+            if self.rpc_server is not None and self._owned_rpc_server:
+                await self.rpc_server.start()
+
+            # Start scheduler — must run in the same async context as
+            # Optio.run() so apscheduler's anyio task_group lives inside the
+            # run-loop's scope, not init()'s. Re-sync immediately after start
+            # so cron triggers registered during init() actually reach the
+            # now-live apscheduler instance (the init-time sync_schedules
+            # was a no-op because apscheduler was None at that point).
+            await self._scheduler.start()
+            await self._sync_definitions()
+
+            # Start heartbeat (if Redis is configured)
+            if self._redis:
+                self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+            self._supervisor_task = asyncio.create_task(self._supervisor_loop())
+            # One-shot post-boot auto-resume timer. Fires once after
+            # auto_resume_delay_seconds, re-launching stamped+saved processes.
+            self._auto_resume_task = asyncio.create_task(self._auto_resume_timer())
+
             await self._shutdown_event.wait()
         finally:
             # A signal dispatches shutdown() as a detached task. Wait for its

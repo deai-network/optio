@@ -641,11 +641,16 @@ await listener.stop()    # unpublish (only its own document) + close; idempotent
 
 - **Hook calls:** each read wraps `make_context(proc_doc)` in a `ReadOnlyProcessContext`;
   at most `READ_CONCURRENCY` (4) hooks run at once (each holds a decrypted record), and
-  the response body is serialized off the event loop (`asyncio.to_thread`).
+  the response body is serialized off the event loop (`asyncio.to_thread`). A hook
+  running longer than `READ_TIMEOUT_S` (60 s, counted once it holds a read slot) is
+  cancelled and the read answered 500 `read-failed`, logged with the process id(s) and
+  "timeout" only.
 - **Lifecycle:** `Optio.run()` starts it before the RPC server (resolving tasks through
   the executor's task registry, contexts through `Optio._detached_context`);
   `Optio.shutdown()` stops it right after the RPC server. A failure to start is logged
-  and the engine runs on without it (the proxy then answers 503).
+  and the engine runs on without it (the proxy then answers 503). If a later startup
+  step of `run()` raises (`rpc_server.start()`, the scheduler, `_sync_definitions()`),
+  `run()`'s `finally` still stops it and deletes its endpoint document.
 - **Network:** binds `OPTIO_WIDGET_TUNNEL_BIND` (default `127.0.0.1`) on an ephemeral
   port; advertises `OPTIO_WIDGET_TUNNEL_HOST` (default `127.0.0.1`), as the per-task
   conversation listeners do.
@@ -667,7 +672,7 @@ await listener.stop()    # unpublish (only its own document) + close; idempotent
   | 409 | `not-suspended` | not `cancelled` + `supportsResume` + `hasSavedState` |
   | 404 | `no-conversation-support` | no registered task, or its `read_conversation` is `None` |
   | 404 | `no-conversation` | the hook returned `None` |
-  | 500 | `read-failed` | the hook raised or returned something unusable, or anything else failed (e.g. MongoDB) |
+  | 500 | `read-failed` | the hook raised, returned something unusable or timed out (`READ_TIMEOUT_S`), or anything else failed (e.g. MongoDB) |
 
   A middleware turns any uncaught exception into the JSON `read-failed` reply (never
   aiohttp's plain-text 500); unknown routes and methods keep aiohttp's own 404 / 405. A

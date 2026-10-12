@@ -17,6 +17,7 @@ from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 from pymongo.errors import AutoReconnect
 from yarl import URL
 
+import optio_core.conversation_archive as archive_mod
 import optio_core.lifecycle as lifecycle_mod
 from optio_core.context import ProcessContext
 from optio_core.conversation_archive import (
@@ -439,6 +440,58 @@ async def test_concurrent_reads_are_bounded(mongo_db):
     assert entered == 8 and max_in_flight == READ_CONCURRENCY
 
 
+async def test_hook_timeout_is_read_failed(mongo_db, monkeypatch, caplog):
+    """A hook that never returns is cut off after READ_TIMEOUT_S (60 s; small
+    here): 500 read-failed, logged with the process id and "timeout" only,
+    and the hook is cancelled (its read slot freed)."""
+    assert archive_mod.READ_TIMEOUT_S == 60
+    monkeypatch.setattr(archive_mod, "READ_TIMEOUT_S", 0.05)
+    hook_cancelled = asyncio.Event()
+
+    async def hook(ctx):
+        try:
+            await asyncio.Event().wait()  # never set
+        except asyncio.CancelledError:
+            hook_cancelled.set()
+            raise
+    oid = await _insert_proc(mongo_db, "ca20", process_id="slow-task")
+    listener = await _started(mongo_db, "ca20", {"slow-task": _task("slow-task", hook)})
+    caplog.set_level(logging.DEBUG, logger="optio_core")
+    try:
+        status, body, headers = await _get(listener, oid)
+        await asyncio.wait_for(hook_cancelled.wait(), _HANG)
+    finally:
+        await listener.stop()
+    assert (status, body["reason"]) == (500, "read-failed")
+    assert headers["Cache-Control"] == "no-store"
+    errors = [
+        r for r in caplog.records
+        if r.name == archive_mod.__name__ and r.levelno >= logging.ERROR
+    ]
+    assert len(errors) == 1, [r.getMessage() for r in errors]
+    message = errors[0].getMessage()
+    assert str(oid) in message and "slow-task" in message and "timeout" in message
+    assert not errors[0].exc_info
+
+
+async def test_hooks_own_timeout_error_is_logged_by_type(mongo_db, caplog):
+    """A TimeoutError the hook raises itself (its deadline not reached) is any
+    other error: logged by type, not as the listener's timeout."""
+    async def hook(ctx):
+        raise TimeoutError("SECRET-CONTENT")
+    oid = await _insert_proc(mongo_db, "ca23")
+    listener = await _started(mongo_db, "ca23", {"t1": _task(read_conversation=hook)})
+    caplog.set_level(logging.DEBUG, logger="optio_core")
+    try:
+        status, body, _ = await _get(listener, oid)
+    finally:
+        await listener.stop()
+    assert (status, body["reason"]) == (500, "read-failed")
+    assert "failed: TimeoutError" in caplog.text
+    assert "failed: timeout" not in caplog.text
+    assert "SECRET-CONTENT" not in caplog.text
+
+
 # -- Optio wiring -------------------------------------------------------------
 
 
@@ -582,3 +635,32 @@ async def test_listener_start_failure_does_not_stop_the_engine(mongo_db, monkeyp
         await asyncio.wait_for(runner, _HANG)
     assert await mongo_db["ca16_engine_endpoints"].find_one({"_id": ENDPOINT_ID}) is None
     assert "conversation archive" in caplog.text
+
+
+@pytest.mark.parametrize("failing", ["rpc_server.start", "_sync_definitions"])
+async def test_run_failure_after_listener_start_unpublishes(mongo_db, redis_url, failing):
+    """Anything after the listener's start that raises in run() still stops
+    the listener and deletes its endpoint document."""
+    prefix = "ca21" if failing == "rpc_server.start" else "ca22"
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, redis_url=redis_url)
+    endpoints = mongo_db[f"{prefix}_engine_endpoints"]
+    published_at_failure = []
+
+    async def boom(*args, **kwargs):
+        published_at_failure.append(await endpoints.find_one({"_id": ENDPOINT_ID}))
+        raise RuntimeError("boom")
+    if failing == "rpc_server.start":
+        fw.rpc_server.start = boom
+    else:
+        fw._sync_definitions = boom
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            await asyncio.wait_for(fw.run(), _HANG)
+        # The listener was up when the step failed, and run() took it down
+        # (checked before shutdown(), which would also stop it).
+        assert published_at_failure[0] is not None
+        assert await endpoints.find_one({"_id": ENDPOINT_ID}) is None
+        assert fw._archive_listener is None
+    finally:
+        await fw.shutdown()
