@@ -551,9 +551,9 @@ describe('ConversationView theme toggle', () => {
   });
 
   it('omits the theme toggle when onToggleTheme is absent', () => {
-    renderView(makeProps({}));
+    renderView(makeProps({ wideness: 'switch' }));
     expect(screen.queryByTestId('theme-toggle')).toBeNull();
-    // The wide toggle is always present in the header regardless.
+    // With wideness 'switch' the Wide switch stays in the header regardless.
     expect(screen.getByTestId('wide-toggle')).toBeTruthy();
   });
 });

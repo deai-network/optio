@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
 import {
@@ -8,6 +8,7 @@ import {
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
 import { transcriptKeys } from './transcriptKeys.js';
+import { ConversationWidenessContext, type ConversationWideness } from './wideness.js';
 import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
@@ -64,6 +65,9 @@ function TaskInfoIcon({ color }: { color: string }) {
 // (model / thinking / mode / ...) differ between engines.
 
 export interface ConversationViewProps {
+  // The reading width (see wideness.ts); absent: ConversationWidget's
+  // (ConversationWidenessContext), 'narrow' outside one.
+  wideness?: ConversationWideness;
   state: ChatState;
   closed: boolean;
   // The text of the divider shown after the transcript while `closed`.
@@ -1088,7 +1092,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const [interrupting, setInterrupting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [wide, setWide] = useState(false);
+  const widenessFromWidget = useContext(ConversationWidenessContext);
+  const wideness = props.wideness ?? widenessFromWidget;
+  const [wideChosen, setWide] = useState(false);
+  const wide = wideness === 'wide' || (wideness === 'switch' && wideChosen);
   // The task sidebar starts open. The chevron collapses the column itself.
   const [todosOpen, setTodosOpen] = useState(true);
   // Which described task is shown in the column to the right of the list.
@@ -1770,20 +1777,26 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             minWidth: 0, minHeight: 0,
           }}
         >
+        {/* The Wide switch only when the host lets the operator choose
+            (wideness 'switch'); no header row when there is nothing in it. */}
+        {(wideness === 'switch' || props.onToggleTheme) && (
         <div
           data-testid="conversation-header"
           style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '4px 8px' }}
         >
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: token.colorTextSecondary }}>
-            Wide
-            <Switch size="small" data-testid="wide-toggle" checked={wide} onChange={setWide} />
-          </span>
+          {wideness === 'switch' && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: token.colorTextSecondary }}>
+              Wide
+              <Switch size="small" data-testid="wide-toggle" checked={wideChosen} onChange={setWide} />
+            </span>
+          )}
           {props.onToggleTheme && (
             <Button size="small" data-testid="theme-toggle" onClick={props.onToggleTheme}>
               {props.themeMode === 'dark' ? '☀' : '🌙'}
             </Button>
           )}
         </div>
+        )}
         <div
           ref={scrollRef}
           onScroll={onScroll}
