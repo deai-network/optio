@@ -1051,3 +1051,13 @@ def test_build_claude_flags_model():
     assert build_claude_flags(
         permission_mode=None, allowed_tools=None, disallowed_tools=None,
     ) == []
+
+
+def test_build_claude_flags_show_thinking_asks_for_reasoning_summaries():
+    # In -p mode the CLI omits thinking text unless the display is set
+    # explicitly (CLI 2.1.296); "summarized" returns the model's reasoning.
+    flags = host_actions.build_claude_flags(
+        permission_mode=None, allowed_tools=None, disallowed_tools=None,
+        show_thinking=True,
+    )
+    assert flags == ["--thinking-display", "summarized"]

@@ -567,7 +567,8 @@ Replay-buffer semantics:
   the listener adds `{"type": "x-optio-partial", "id", "text"}` if the
   open block of the message being streamed has text whose final
   `assistant` event never came (the listener accumulates `text_delta` and
-  `thinking_delta` text per block, reset at `message_start` and at each
+  `thinking_delta` text per block, the latter only while the task's
+  `thinking_verbosity` is hidden, reset at `message_start` and at each
   final `assistant` event), and the marker if it was not announced and a
   turn runs (`running` or a `message_start` seen without its
   `result`/`idle`, or `is_pending()`). Both are in `export_buffer()`.
@@ -661,6 +662,12 @@ DONE / ERROR terminate the session.
   renders as ordinary replies; the pin keeps a CLI default change from
   silently dropping that channel. See
   `docs/2026-09-12-claudecode-conversation-rendering-design.md`.
+  With `thinking_verbosity="visible"` the conversation launch also passes
+  `--thinking-display summarized` (`build_claude_flags(show_thinking=True)`):
+  in `-p` mode the CLI omits the thinking text unless the display is set
+  explicitly, so the model's reasoning reaches the stream only then (CLI
+  2.1.296, measured 2026-10-12; narration still arrives as text). The widget
+  then shows text-bearing thinking blocks as reasoning rows, not replies.
   Conversation mode also pins `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`
   (same function): since CLI 2.1.270 the CLI only emits
   `system/session_state_changed` (idle/running) with this set, and

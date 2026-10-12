@@ -1150,6 +1150,7 @@ def build_claude_flags(
     model: str | None = None,
     effort: str | None = None,
     allow_bypass: bool = False,
+    show_thinking: bool = False,
 ) -> list[str]:
     """Translate ClaudeCodeTaskConfig permission knobs to an argv list.
 
@@ -1163,6 +1164,9 @@ def build_claude_flags(
     ``allow_bypass`` emits ``--allow-dangerously-skip-permissions``, which lets
     the running session switch (back) into bypassPermissions: needed when a
     session launched in it is relaunched in another mode.
+    ``show_thinking`` emits ``--thinking-display summarized``: in -p mode the
+    CLI omits the thinking text unless the display is set explicitly, so the
+    model's reasoning reaches the stream only with it (CLI 2.1.296).
     Validation of ``permission_mode`` values lives in
     ``ClaudeCodeTaskConfig.__post_init__``.
     """
@@ -1181,6 +1185,8 @@ def build_claude_flags(
         out += ["--effort", effort]
     if allow_bypass:
         out += ["--allow-dangerously-skip-permissions"]
+    if show_thinking:
+        out += ["--thinking-display", "summarized"]
     return out
 
 
@@ -1251,9 +1257,11 @@ def conversation_launch_env(
         # Since CLI 2.1.267 the model writes its between-tool narration as
         # "thinking updates" (text-bearing thinking blocks); this switch (on by
         # default) requests them. Pinned so a default change cannot silently
-        # drop the narration. Never enable showThinkingSummaries alongside it:
-        # in -p mode that returns no thinking text at all, narration included
-        # (docs/2026-09-12-claudecode-conversation-rendering-design.md).
+        # drop the narration. The showThinkingSummaries setting returned no
+        # thinking text at all in -p mode (CLI 2.1.268, narration included);
+        # reasoning is asked for with --thinking-display instead, only when
+        # thinking_verbosity is "visible" (build_claude_flags show_thinking;
+        # docs/2026-09-12-claudecode-conversation-rendering-design.md).
         "CLAUDE_CODE_THINKING_DISPLAY_UPDATES": "1",
         _EMIT_SESSION_STATE_EVENTS: "1",
         **_CHECKLIST_ENV,

@@ -285,3 +285,24 @@ Written first, in the existing suites.
   cross-link a sibling optio checkout pick the change up after a pull and a build.
 - Existing sessions benefit on their next render: their replay buffers hold the
   raw events.
+
+## Update 2026-10-12: reasoning with --thinking-display (CLI 2.1.296)
+
+The conclusion that reasoning summaries are not obtainable in this mode no
+longer holds. A probe on CLI 2.1.296 (claude-opus-5-5, `-p`, stream-json,
+`CLAUDE_CODE_THINKING_DISPLAY_UPDATES=1`, one run per arm, a prompt with one
+Bash call) gave:
+
+| Launch | Thinking text | Narration |
+|---|---|---|
+| as optio launched it | thinking blocks present, all empty | a `text` block |
+| + `--thinking-display summarized` | one block, 170 characters of reasoning | a `text` block, unchanged |
+
+So with `thinking_verbosity="visible"` optio-claudecode passes
+`--thinking-display summarized`, and `ClaudeCodeView` reduces with
+`{ thinkingRows: true }`: a text-bearing thinking block becomes a `thinking`
+row instead of reply text, and `thinking_delta` no longer streams into the
+bubble. The listener's `x-optio-partial` then leaves `thinking_delta` text
+out. `hidden` is unchanged: no flag, and text-bearing thinking blocks stay
+narration. Decision 3 above applies to `hidden` only; decision 4 still holds
+(the `showThinkingSummaries` setting stays unused).

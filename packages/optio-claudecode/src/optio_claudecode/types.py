@@ -77,8 +77,8 @@ _VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _VALID_TOOL_VERBOSITY = TOOL_VERBOSITIES
 
 # Visibility of reasoning/thinking traces in the conversation widget. Task-level,
-# mirrors ToolVerbosity; the UI never decides. (Claude reasoning is not yet wired
-# to a distinct thinking row, but the option ships for cross-engine parity.)
+# mirrors ToolVerbosity; the UI never decides. ("visible" also launches Claude
+# Code with --thinking-display summarized; see thinking_verbosity below.)
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 
@@ -226,10 +226,12 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionC
     # widgetData; only affects conversation_ui rendering.
     tool_verbosity: ToolVerbosity = "description-only"
     # Whether the conversation widget shows the agent's reasoning/thinking traces.
-    # Default hidden — thinking is noisy; opt in per task. No effect for Claude
-    # Code in conversation mode: its text-bearing thinking blocks are the
-    # between-tool narration and always render as replies, and the real
-    # reasoning is not available in -p mode.
+    # Default hidden — thinking is noisy; opt in per task. Claude Code in
+    # conversation mode: "visible" launches claude with --thinking-display
+    # summarized (in -p mode the CLI omits the thinking text otherwise) and the
+    # widget shows text-bearing thinking blocks as reasoning rows; "hidden"
+    # leaves the display alone, and such blocks are the between-tool narration,
+    # rendered as replies.
     thinking_verbosity: ThinkingVerbosity = "hidden"
     # show_session_controls / session_controls come from
     # SessionControlsConfigMixin. Claude Code's controls: "model" (default

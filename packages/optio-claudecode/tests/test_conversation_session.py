@@ -349,6 +349,47 @@ async def test_conversation_launch_is_claustrum_wrapped(
         await optio.shutdown(grace_seconds=1.0)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verbosity, shown", [("visible", True), ("hidden", False)])
+async def test_conversation_launch_asks_for_thinking_only_when_visible(
+    verbosity, shown, shim_install_dir, claude_cache_dir, task_root, mongo_db, monkeypatch,
+):
+    """thinking_verbosity="visible" launches claude with --thinking-display
+    summarized: in -p mode the CLI omits the thinking text otherwise."""
+    from optio_host.host import LocalHost
+
+    captured: dict = {}
+    orig = LocalHost.launch_subprocess
+    async def _capture(self, cmd, **kw):
+        captured["cmd"] = cmd
+        raise RuntimeError("captured-launch")
+    monkeypatch.setattr(LocalHost, "launch_subprocess", _capture)
+
+    process_id = f"cc-conv-thinking-{verbosity}"
+    optio = await _make_optio(mongo_db, f"ccconvth{verbosity}")
+    try:
+        task = create_claudecode_task(
+            process_id=process_id,
+            name="Conversation thinking display",
+            config=_conversation_config(
+                shim_install_dir, claude_cache_dir, thinking_verbosity=verbosity,
+            ),
+        )
+        await optio.adhoc_define(task)
+        try:
+            await optio.launch_and_await_result(process_id, session_id=None, timeout=60)
+        except Exception:
+            pass
+        await _wait_terminal(optio, process_id)
+
+        cmd = captured.get("cmd", "")
+        assert "--input-format" in cmd, cmd
+        assert ("--thinking-display summarized" in cmd) is shown, cmd
+    finally:
+        monkeypatch.setattr(LocalHost, "launch_subprocess", orig)
+        await optio.shutdown(grace_seconds=1.0)
+
+
 def _session_waiters(conv) -> list:
     """Pending tasks the conversation body's wait loop created on the
     conversation's own events (close / model / effort / init). A waiter that

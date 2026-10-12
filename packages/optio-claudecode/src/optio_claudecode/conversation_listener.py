@@ -105,12 +105,17 @@ class ConversationListener:
         steering: "Steering | None" = None,
         clock: "Callable[[], float]" = _wall_clock_ms,
         allowed_controls: "list[str] | None" = None,
+        show_thinking: bool = False,
     ) -> None:
         self._conversation = conversation
         # The task's session_controls allowlist (None: every control): /control
         # refuses any other id, so a control hidden from the widget cannot be
         # set by posting here directly.
         self._allowed_controls = allowed_controls
+        # thinking_verbosity "visible": claude runs with --thinking-display
+        # summarized, and thinking text is reasoning, which the widget shows in
+        # its own rows; otherwise it is narration, part of the reply.
+        self._show_thinking = show_thinking
         self._password = password
         self._download_reader = download_reader
         self._max_download_bytes = max_download_bytes
@@ -296,11 +301,12 @@ class ConversationListener:
                 if not isinstance(delta, dict):
                     return
                 # A text-bearing thinking block is narration the UI renders
-                # in the bubble too; hidden thinking streams "" and adds
+                # in the bubble too (with show_thinking it is reasoning, in its
+                # own rows, not the reply); hidden thinking streams "" and adds
                 # nothing. tool_use input_json deltas are not text.
                 if delta.get("type") == "text_delta":
                     chunk = delta.get("text")
-                elif delta.get("type") == "thinking_delta":
+                elif delta.get("type") == "thinking_delta" and not self._show_thinking:
                     chunk = delta.get("thinking")
                 else:
                     chunk = None

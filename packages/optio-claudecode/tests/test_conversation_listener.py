@@ -586,6 +586,18 @@ async def test_hidden_thinking_leaves_no_partial_only_the_marker():
     assert _session_events(lst) == [SESSION_END]
 
 
+async def test_shown_reasoning_stays_out_of_the_partial():
+    # thinking_verbosity "visible": thinking text is the model's reasoning (its
+    # own rows in the widget), not narration, so a cut-off reply keeps only
+    # its text.
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1, show_thinking=True)
+    for event in (RUNNING, _message_start("m1"), _delta("Weighing it.", "thinking_delta"), _delta("Hel")):
+        conv.fire(event)
+    conv.fire(CLOSED)
+    assert _session_events(lst)[0] == {"type": "x-optio-partial", "id": "m1", "text": "Hel"}
+
+
 async def test_an_idle_session_end_adds_nothing():
     conv = FakeConversation()
     lst = ConversationListener(conv, password="pw", clock=lambda: 1)

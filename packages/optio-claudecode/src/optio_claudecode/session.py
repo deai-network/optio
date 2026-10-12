@@ -613,6 +613,7 @@ async def run_claudecode_session(
                 model=model,
                 resuming=do_continue,
                 effort=current_effort,
+                show_thinking=config.thinking_verbosity == "visible",
             )
             argv = host_actions.build_conversation_argv(
                 claude_path, claude_flags=claude_flags,
@@ -750,6 +751,9 @@ async def run_claudecode_session(
                 # Only the controls the widget shows may be set: none when the
                 # controls bar is off, else the session_controls allowlist.
                 allowed_controls=config.settable_controls,
+                # Reasoning gets its own rows: a cut-off reply's partial keeps
+                # only its text.
+                show_thinking=config.thinking_verbosity == "visible",
             )
             listener_port = await conv_listener.start(bind_addr)
             await ctx.set_widget_upstream(
