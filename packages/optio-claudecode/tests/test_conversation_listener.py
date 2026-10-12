@@ -346,7 +346,7 @@ async def test_send_returns_id_and_queued_and_buffers_the_queued_event(listener)
     # x-optio-queued event below still carries the ORIGINAL text.
     assert conv.sent == ["hi", "steer\n\n"]
     queued = [e for _, e in lst._buffer if e.get("type") == "x-optio-queued"]
-    assert queued == [{"type": "x-optio-queued", "id": busy["id"], "text": "steer"}]
+    assert queued == [{"type": "x-optio-queued", "id": busy["id"], "text": "steer", "waiting": True}]
 
 
 async def test_steer_interrupts_waits_for_the_turn_end_then_sends():

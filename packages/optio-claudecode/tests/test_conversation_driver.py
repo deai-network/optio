@@ -418,9 +418,9 @@ async def test_steering_writes_one_queued_message_at_a_time_over_the_real_driver
     await steering.settle()
     assert handle.stdin.lines.qsize() == 0
     assert [e for e in events if e.get("type") == "x-optio-queued"] == [
-        {"type": "x-optio-queued", "id": "q1", "text": "one"},
-        {"type": "x-optio-queued", "id": "q2", "text": "two"},
-        {"type": "x-optio-queued", "id": "q3", "text": "three"},
+        {"type": "x-optio-queued", "id": "q1", "text": "one", "waiting": True},
+        {"type": "x-optio-queued", "id": "q2", "text": "two", "waiting": True},
+        {"type": "x-optio-queued", "id": "q3", "text": "three", "waiting": True},
     ]
 
 
@@ -600,7 +600,7 @@ async def test_steering_busy_send_goes_straight_to_claude_as_queued(convo):
     assert sent["message"]["content"][0]["text"] == "steer\n\n"  # blank line: native queue (Fix 13a)
     handle.stdout.eof()
     await reader
-    assert {"type": "x-optio-queued", "id": "q1", "text": "steer"} in events
+    assert {"type": "x-optio-queued", "id": "q1", "text": "steer", "waiting": True} in events
 
 
 @pytest.mark.asyncio

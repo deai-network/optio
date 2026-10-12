@@ -95,6 +95,11 @@ BUSY_SEND_VALUES: tuple[str, ...] = (
 NATIVE_QUEUE: frozenset[str] = frozenset({"joins-next-step", "queues-to-end"})
 
 QUEUED_EVENT = "x-optio-queued"
+# send_when_ready marks its announcement {"waiting": True} when the message
+# waits (the agent is busy, or others are ahead of it): the widget pins it as
+# a queued bubble even before its own stream shows the agent busy, e.g. right
+# after the session's opening messages, whose echo comes later.
+# interrupt_and_send's announcement of its steered text carries no flag.
 TAKEN_EVENT = "x-optio-taken"
 INTERRUPT_EVENT = "x-optio-interrupt"
 # A message a previous run left undelivered, sent again under a new id
@@ -542,7 +547,7 @@ class Steering:
                 if not busy and not self._native_pending and not self._transport_dying:
                     await self._conv.send(text, uuid=qid)
                     return SendOutcome(id=qid, queued=False)
-                self._emit({"type": QUEUED_EVENT, "id": qid, "text": text})
+                self._emit({"type": QUEUED_EVENT, "id": qid, "text": text, "waiting": True})
                 self._native_pending.append((qid, _with_trailing_blank_line(text)))
                 await self._write_next_locked()
                 return SendOutcome(id=qid, queued=True)
@@ -550,7 +555,7 @@ class Steering:
                 await self._conv.send(text, uuid=qid)
                 return SendOutcome(id=qid, queued=False)
             self._held.append((qid, text))
-            self._emit({"type": QUEUED_EVENT, "id": qid, "text": text})
+            self._emit({"type": QUEUED_EVENT, "id": qid, "text": text, **({"waiting": True} if busy else {})})
             if not busy:
                 # The turn already ended and a flush is due: deliver now.
                 await self._deliver([])

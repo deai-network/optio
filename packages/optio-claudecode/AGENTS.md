@@ -571,7 +571,10 @@ Replay-buffer semantics:
 * Steering events (`optio_claudecode.steering`, `busy_send` =
   `joins-next-step` via `BUSY_SEND`): `{"type": "x-optio-queued", "id",
   "text"}` for a Send when ready (or an Interrupt and send's text) that
-  arrived mid-turn, emitted when it is sent, not when it reaches Claude,
+  arrived mid-turn, emitted when it is sent, not when it reaches Claude
+  (a Send when ready that waits adds `"waiting": true`, which makes the
+  widget pin it as queued even before its stream shows Claude busy, e.g.
+  right after the resume notice),
   and `{"type": "x-optio-interrupt", "by": "user"}` before every interrupt
   optio sends while a turn runs. Both enter through `emit_event`, so they
   are buffered, replayed and persisted like native events. `{"type":

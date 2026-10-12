@@ -176,11 +176,12 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     its own task, never inside the wrapper's event dispatch.
   * `await send_when_ready(text) -> SendOutcome(id, queued)` — idle: plain
     send, `conversation.send(text, uuid=id)`. Busy + `NATIVE_QUEUE`: emits
-    `{"type":"x-optio-queued","id","text"}` (ORIGINAL text) and appends the
-    message to the pending list; it is written at once only if nothing is
-    in flight. A send that finds the agent idle while earlier messages are
-    still pending queues behind them instead of overtaking them. Busy
-    otherwise: emits x-optio-queued and holds it in optio's queue; at the
+    `{"type":"x-optio-queued","id","text","waiting":true}` (ORIGINAL text)
+    and appends the message to the pending list; it is written at once only
+    if nothing is in flight. A send that finds the agent idle while earlier
+    messages are still pending queues behind them instead of overtaking them
+    (also `waiting: true`). Busy otherwise: emits x-optio-queued (`waiting:
+    true`) and holds it in optio's queue; at the
     turn end (`is_turn_end(event)`) everything held goes as ONE prompt
     joined by a blank line, announced by one
     `{"type":"x-optio-taken","ids"}`.
@@ -198,7 +199,7 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     the wait, so a live but unresponsive agent cannot hold `Steering` (and
     every later send/steer behind it) forever; on expiry it goes on anyway
     and logs a warning. Non-empty `text` gets its own
-    `{"type":"x-optio-queued","id","text"}` (the same id this call
+    `{"type":"x-optio-queued","id","text"}` (no `waiting`: it arrives after the interrupted turn ended, so the widget must not pin it; the same id this call
     returns), emitted after the interrupt marker (if any), so the reducer
     can dedupe the steer's own local echo against the wire by id. Idle,
     `text` is a plain send (on a native queue, unless earlier messages are

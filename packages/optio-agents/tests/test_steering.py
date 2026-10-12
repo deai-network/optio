@@ -188,7 +188,7 @@ async def test_busy_send_to_a_native_queue_goes_straight_through_as_queued(cap):
     # x-optio-queued keeps the original text; the wire send gets a trailing
     # blank line (Fix 13a) so the agent's own fold does not run it on.
     assert conv.log == [
-        ("event", {"type": QUEUED, "id": "id1", "text": "steer"}),
+        ("event", {"type": QUEUED, "id": "id1", "text": "steer", "waiting": True}),
         ("send", "steer\n\n"),
     ]
     assert s.held_ids == []
@@ -208,7 +208,7 @@ async def test_busy_native_queue_send_gets_the_steering_id_and_a_blank_line(cap)
     outcome = await s.send_when_ready("steer")
     assert conv.uuids == [outcome.id]
     assert conv.sent == ["steer\n\n"]
-    assert conv.log[0] == ("event", {"type": QUEUED, "id": outcome.id, "text": "steer"})
+    assert conv.log[0] == ("event", {"type": QUEUED, "id": outcome.id, "text": "steer", "waiting": True})
 
 
 async def test_busy_native_queue_send_does_not_double_an_existing_blank_line():
@@ -309,7 +309,7 @@ async def test_cuts_in_sends_natively_without_an_optio_interrupt():
     await s.interrupt_and_send("b")
     assert conv.interrupts == 0
     assert conv.log == [
-        ("event", {"type": QUEUED, "id": "id1", "text": "a"}),
+        ("event", {"type": QUEUED, "id": "id1", "text": "a", "waiting": True}),
         ("event", INTERRUPT),
         ("event", {"type": QUEUED, "id": "id2", "text": "b"}),
         ("event", {"type": TAKEN, "ids": ["id1"]}),
@@ -407,9 +407,9 @@ async def test_only_one_native_queue_message_is_in_flight_at_a_time():
     id1, id2, id3 = await _queue_three(s)
     # Every message is announced when it is sent, under the id that is also its uuid ...
     assert events(conv) == [
-        {"type": QUEUED, "id": id1, "text": "one"},
-        {"type": QUEUED, "id": id2, "text": "two"},
-        {"type": QUEUED, "id": id3, "text": "three"},
+        {"type": QUEUED, "id": id1, "text": "one", "waiting": True},
+        {"type": QUEUED, "id": id2, "text": "two", "waiting": True},
+        {"type": QUEUED, "id": id3, "text": "three", "waiting": True},
     ]
     # ... but only the first is written to the agent.
     assert conv.sent == ["one\n\n"] and conv.uuids == [id1]
@@ -1034,3 +1034,31 @@ def test_top_level_exports():
     for name in ("Steering", "SendOutcome", "BusySend", "BusySendDeclaration",
                  "resolve_busy_send", "BUSY_SEND_VALUES", "steering"):
         assert hasattr(optio_agents, name), name
+
+
+async def test_only_a_send_that_waits_is_announced_as_waiting():
+    # The widget pins a waiting announcement as a queued bubble even before
+    # its own stream shows the agent busy; interrupt_and_send's announcement
+    # of its steered text arrives after that turn ended and must not pin.
+    conv = FakeConversation()
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+    await s.send_when_ready("waits")
+    await s.interrupt_and_send("steered")
+    queued = [e for e in events(conv) if e["type"] == QUEUED]
+    assert queued[0] == {"type": QUEUED, "id": "id1", "text": "waits", "waiting": True}
+    assert "waiting" not in queued[1]
+
+
+async def test_an_idle_send_with_held_messages_is_not_announced_as_waiting():
+    # A non-native agent: a send finding the turn over but messages still held
+    # is delivered at once with them, so it does not wait.
+    conv = FakeConversation()
+    conv.pending = True
+    s = make(conv, "unsafe")
+    await s.send_when_ready("first")       # busy: held, waiting
+    conv.pending = False
+    await s.send_when_ready("second")      # idle, behind the held one: delivered now
+    queued = [e for e in events(conv) if e["type"] == QUEUED]
+    assert queued[0].get("waiting") is True
+    assert "waiting" not in queued[1]

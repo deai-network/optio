@@ -1159,3 +1159,49 @@ describe('reasoning rows (thinkingVerbosity visible)', () => {
     expect(kinds.indexOf('thinking')).toBe(kinds.lastIndexOf('activity') - 1);
   });
 });
+
+describe('a message sent while a resumed session starts (waiting announcement)', () => {
+  // The listener holds a viewer's message until the session has written its
+  // "you have been resumed" notice, then announces it queued (waiting: true)
+  // while the widget has seen nothing busy yet: the notice's echo comes later.
+  const textOf = (i: ChatItem) => ('text' in i ? String((i as { text?: unknown }).text ?? '') : '');
+  const at = (s: ChatState, pred: (i: ChatItem) => boolean) => s.items.findIndex(pred);
+  const opening = [
+    user('old question'), assistantText('old answer', 'm0'), result('old answer'),
+    { type: 'x-optio-resumed' },
+    { type: 'x-optio-queued', id: 'u1', text: 'my new message', waiting: true },
+  ];
+
+  it('is pinned as queued even though the widget does not think the agent is busy yet', () => {
+    const s = run(opening);
+    const mine = s.items.find((i) => i.kind === 'user' && i.queueId === 'u1');
+    expect(mine && mine.kind === 'user' && mine.queued).toBe(true);
+  });
+
+  it('ends up after the notice and the reply to it, where Claude took it', () => {
+    const s = run([
+      ...opening,
+      sessionState('running'),
+      user('System: you have been resumed'),
+      messageStart('m1'),
+      assistantText('Picking up where we left off.', 'm1'),
+      { type: 'command_lifecycle', command_uuid: 'u1', state: 'started' },
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'my new message' }] } },
+    ]);
+    const notice = at(s, (i) => textOf(i).includes('you have been resumed'));
+    const reply = at(s, (i) => i.kind === 'assistant' && textOf(i) === 'Picking up where we left off.');
+    const mine = at(s, (i) => i.kind === 'user' && textOf(i) === 'my new message');
+    expect(notice).toBeGreaterThan(-1);
+    expect(notice).toBeLessThan(reply);
+    expect(reply).toBeLessThan(mine);
+    const item = s.items[mine];
+    expect(item.kind === 'user' && item.queued).toBeFalsy();
+  });
+
+  it('without the flag an idle announcement stays a plain bubble (Interrupt and send)', () => {
+    const s = run([{ type: 'x-optio-queued', id: 'u2', text: 'steered' }]);
+    const item = s.items.find((i) => i.kind === 'user' && i.queueId === 'u2');
+    expect(item && item.kind === 'user' && item.queued).toBeFalsy();
+    expect(item && item.kind === 'user' && item.local).toBe(true);
+  });
+});

@@ -1070,8 +1070,11 @@ export function reduceEvent(
       // see addQueued (final-review M3 of fix 8: an interrupt_and_send's own
       // announcement of its steered text arrives after that turn's result
       // already cleared `busy`, so it must not render as a pinned "Queued"
-      // bubble with "Send now").
-      const items = addQueued(state.items, id, text, seq, state.busy);
+      // bubble with "Send now"). `waiting` (send_when_ready: the message
+      // waits) pins it regardless: right after a resume the listener releases
+      // a held message once the notice is written, before the notice's echo
+      // shows the agent busy here.
+      const items = addQueued(state.items, id, text, seq, state.busy || ev.waiting === true);
       return items === state.items ? state : { ...state, items };
     }
 

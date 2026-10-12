@@ -661,7 +661,7 @@ declaration = `unsafe`), and `Steering` implements `send_when_ready`,
 queue, one-at-a-time delivery onto an agent's own queue (Fix 17: at most
 one optio message waits there; the next goes once the agent reports taking
 it), the 15 s bounded wait after an interrupt, and the synthetic events
-`x-optio-queued` / `x-optio-taken` / `x-optio-interrupt` /
+`x-optio-queued` (`waiting: true` when a Send when ready waits) / `x-optio-taken` / `x-optio-interrupt` /
 `x-optio-requeued` (the last for messages a resumed run re-sends, Fix 19:
 `docs/2026-09-15-steering-session-end-design.md`).
 A wrapper's conversation listener exposes it as `POST /send` (send when
