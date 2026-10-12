@@ -2175,7 +2175,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               maxWidth: wide ? '100%' : 880, margin: '0 auto', width: '100%',
               display: 'flex', alignItems: 'center', gap: 8, color: token.colorTextTertiary,
             }}>
-              <SlotSpinner localKey="optio:working" fallback={nativeSpinner} /> working…
+              {/* Large (owner, 2026-10-12): the one sign the agent is at work. */}
+              <SlotSpinner localKey="optio:working" fallback={nativeSpinner} size="large" /> working…
             </div>
           )}
         </div>

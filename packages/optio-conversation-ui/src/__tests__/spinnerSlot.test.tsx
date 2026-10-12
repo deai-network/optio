@@ -168,7 +168,7 @@ describe('working indicator (site 13)', () => {
     render(lent(<ConversationView {...makeProps({ busy: true })} />));
     const indicator = screen.getByText('working…');
     expect(keysIn(indicator)).toEqual(['optio:working']);
-    expect(propsOf('optio:working')).toStrictEqual({ spinnerKey: 'optio:working', size: 'small' });
+    expect(propsOf('optio:working')).toStrictEqual({ spinnerKey: 'optio:working', size: 'large' });
     expect(indicator.querySelector('.ant-spin')).toBeNull();
   });
 
