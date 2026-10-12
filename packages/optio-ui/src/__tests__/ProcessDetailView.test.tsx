@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
-import { render, cleanup, screen } from '@testing-library/react';
+import { describe, it, expect, afterEach, afterAll, beforeAll, vi, beforeEach } from 'vitest';
+import { render, cleanup, screen, fireEvent, within } from '@testing-library/react';
 import React from 'react';
 import { registerWidget, _clearWidgetRegistry } from '../widgets/registry.js';
 
@@ -405,6 +405,66 @@ describe('ProcessDetailView', () => {
       render(<ProcessDetailView processId="abc" />);
       expect(screen.queryByTestId('my-widget')).toBeNull();
       expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
+    });
+
+    // A process whose last capture failed keeps hasUnsavedWork while an older
+    // snapshot leaves hasSavedState set, so it is suspended AND resurrectable.
+    // Both layouts must offer Resurrect, and Resume must ask before it
+    // discards the host's unsaved work.
+    describe.each([
+      ['suspended widget layout', true, 'optio-widget-layout'],
+      ['default layout', false, 'optio-detail-default'],
+    ])('suspended with unsaved work, %s', (_label, withSuspendedVariant, layoutTestId) => {
+      // antd's confirm modal measures the scrollbar via
+      // getComputedStyle(el, '::-webkit-scrollbar'); jsdom logs "Not
+      // implemented" for the pseudo-element, so drop the argument.
+      beforeAll(() => {
+        const real = globalThis.getComputedStyle.bind(globalThis);
+        vi.spyOn(globalThis, 'getComputedStyle').mockImplementation((elt) => real(elt));
+      });
+      afterAll(() => {
+        vi.restoreAllMocks();
+      });
+
+      function renderUnsaved() {
+        if (withSuspendedVariant) {
+          registerWidget(
+            'my-widget',
+            () => <div data-testid="my-widget">live</div>,
+            { suspended: () => <div data-testid="suspended-widget">suspended</div> },
+          );
+        } else {
+          registerWidget('my-widget', () => <div data-testid="my-widget">live</div>);
+        }
+        mockProcessStream.mockReturnValue({
+          tree: suspendedTree({ supportsResurrect: true, hasUnsavedWork: true }),
+          logs: [],
+          connected: true,
+        });
+        render(<ProcessDetailView processId="abc" />);
+        expect(screen.getByTestId(layoutTestId)).toBeTruthy();
+      }
+
+      it('primary button resurrects', () => {
+        renderUnsaved();
+        fireEvent.click(screen.getByRole('button', { name: /resurrect/i }));
+        expect(mockResurrect).toHaveBeenCalledWith('abc');
+        expect(mockLaunch).not.toHaveBeenCalled();
+      });
+
+      it('Resume from last snapshot asks to discard the unsaved work first', async () => {
+        renderUnsaved();
+        // The menu trigger is the Resurrect button's sibling in the split button.
+        const split = screen.getByRole('button', { name: /resurrect/i }).parentElement!;
+        const splitButtons = within(split).getAllByRole('button');
+        fireEvent.click(splitButtons[splitButtons.length - 1]);
+        fireEvent.click(await screen.findByText(/resume from last snapshot/i, {}, { timeout: 60_000 }));
+        expect(mockLaunch).not.toHaveBeenCalled();
+        expect(await screen.findByText(/discards the unsaved work/i, {}, { timeout: 60_000 })).toBeTruthy();
+        fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }, { timeout: 60_000 }));
+        await vi.waitFor(() => expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true }), { timeout: 60_000 });
+        expect(mockResurrect).not.toHaveBeenCalled();
+      });
     });
 
     it('live behaviour is unchanged when the process is actually live (not suspended)', () => {

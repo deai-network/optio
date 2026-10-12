@@ -1160,7 +1160,9 @@ Self-fetching detail panel (uses `useProcessStream` internally). Renders a place
 otherwise. Warns to `console.warn` and falls back to default when `uiWidget` is set but no
 live widget is registered; falls back silently (no warning) when the process `isSuspended`
 and no suspended variant is registered. In suspended mode, also renders a `LaunchControls`
-(Resume) row above the widget unless `readOnly`. The default layout wires `ProcessTreeView`'s
+(Resume) row above the widget unless `readOnly`, wired to `launch` and `resurrect` like the
+default layout (a process left with `hasUnsavedWork` gets Resurrect, and Resume asks before it
+discards the unsaved work). The default layout wires `ProcessTreeView`'s
 `onLaunch`, `onResurrect` and `onCancel` to `useProcessActions()` itself (none when
 `readOnly`), so the host passes no action callbacks to it.
 

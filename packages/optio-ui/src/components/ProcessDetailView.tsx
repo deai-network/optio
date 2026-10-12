@@ -100,7 +100,11 @@ export function ProcessDetailView({
             data-testid="optio-widget-suspended-actions"
             style={{ flex: '0 0 auto', display: 'flex', justifyContent: 'flex-end', padding: '4px 8px' }}
           >
-            <LaunchControls process={tree} onLaunch={(id, opts) => launch(id, opts)} />
+            <LaunchControls
+              process={tree}
+              onLaunch={(id, opts) => launch(id, opts)}
+              onResurrect={(id) => resurrect(id)}
+            />
           </div>
         )}
         <div style={{ flex: '1 1 auto', minHeight: 0 }}>

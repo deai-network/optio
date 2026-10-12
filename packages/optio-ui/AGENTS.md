@@ -366,7 +366,9 @@ Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branch
 - **`tree.uiWidget` is set and registered for the process's mode** — renders the named widget
   component (live or suspended variant, per `useProcessWidgetState`'s `mode`), passing
   `{ process: tree, apiBaseUrl, widgetProxyUrl, prefix, database }`. In suspended mode, also
-  renders a `LaunchControls` (Resume) row above the widget unless `readOnly` is set.
+  renders a `LaunchControls` (Resume) row above the widget unless `readOnly` is set, with
+  `onLaunch` and `onResurrect` wired as in the default layout (a process left with
+  `hasUnsavedWork` gets Resurrect, and Resume asks before it discards the unsaved work).
 - **`tree.uiWidget` is set but unregistered for the live mode** — warns to `console.warn` and
   falls back to the default tree+log view.
 - **`tree.uiWidget` is set, the process `isSuspended`, but no suspended variant is
@@ -442,7 +444,7 @@ return widget ? <MyWidgetLayout>{widget}</MyWidgetLayout> : <MyFallback />;
 
 `ProcessDetailView` consumes `useProcessWidgetState` internally: both modes get the
 log-strip-on-top + widget-fill layout; suspended mode additionally shows a `LaunchControls`
-(Resume) row above the widget, unless `readOnly`. Other consumers (e.g. an external app's
+(Resume, or Resurrect when resurrectable) row above the widget, unless `readOnly`. Other consumers (e.g. an external app's
 process detail page) are free to choose their own layout.
 
 ---
