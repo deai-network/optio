@@ -115,6 +115,23 @@ stay top-level on each config — callers write `fs_isolation=` /
   must be a list of ids and needs the bar on). `settable_controls` is what a
   `/control` endpoint may change: `[]` while the bar is off, else the
   allowlist.
+* `WelcomeConfigMixin` — the conversation widget's welcome card, shown at the
+  top of the transcript: `welcome: WelcomeCard | None = None`.
+  `WelcomeCard(title, description=None, icon=None, min_height=None)`
+  (frozen): `title` and `description` (markdown) are `Text` (see below),
+  checked with `check_text` (a map is stored as a plain dict copy); `title`
+  must also not be blank. `icon` is a URL relative to the web app root — a
+  value with no leading "/" and no "://" gets one (`"img/a.png"` →
+  `"/img/a.png"`), `"/x.png"` and absolute URLs stay as given.
+  `min_height` is the card's minimum height in CSS pixels (a positive int;
+  bool, 0, negatives and non-ints raise `ValueError`). `to_widget_data()`
+  returns `{"title", "description", "icon", "minHeight"}`: texts unresolved
+  (the widget picks the viewer's language), icon normalized, None kept. The
+  mixin's `welcome_widget_data` is that dict or None; every engine publishes
+  it as the conversation widget's `welcome` widgetData key (iframe / TUI
+  widgets ignore it). Engines call `self._validate_welcome()` from
+  `__post_init__` (anything but a `WelcomeCard` or None raises
+  `ValueError`). Both names are exported from `optio_agents`.
 
 ## Localized text (`optio_agents.text`)
 

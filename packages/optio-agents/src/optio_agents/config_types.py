@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal, get_args
 
 from optio_agents.session_controls import validate_session_controls
+from optio_agents.text import Text, check_text
 
 ConversationMode = Literal["iframe", "conversation"]
 # Tool-use reporting level (ascending). "description-while-active" shows a tool's
@@ -150,3 +151,101 @@ class SessionControlsConfigMixin:
             self.session_controls, show_session_controls=self.show_session_controls,
             owner=type(self).__name__,
         )
+
+
+@dataclass(frozen=True)
+class WelcomeCard:
+    """The welcome card the conversation widget shows at the top of the
+    transcript.
+
+    ``title`` (required, not blank) and ``description`` (markdown) are
+    ``Text``: a plain string, or a map of language code to string
+    (``{"en": ..., "hu": ...}``) the widget resolves for the viewer's
+    language. ``icon`` is a URL relative to the web app root: a value that
+    neither starts with "/" nor contains "://" is published with a leading
+    "/" ("img/a.png" -> "/img/a.png"); "/x.png" and absolute URLs
+    ("https://...") are published as given. ``min_height`` is the card's
+    minimum height in CSS pixels (a positive int; None: the content's
+    height)."""
+    title: Text
+    description: Text | None = None
+    icon: str | None = None
+    min_height: int | None = None
+
+    def __post_init__(self) -> None:
+        title = check_text(self.title, what="WelcomeCard.title")
+        if any(not t.strip() for t in _text_values(title)):
+            raise ValueError(f"WelcomeCard.title={title!r} must not be blank.")
+        object.__setattr__(self, "title", title)
+        if self.description is not None:
+            object.__setattr__(
+                self, "description",
+                check_text(self.description, what="WelcomeCard.description"),
+            )
+        if self.icon is not None and (
+            not isinstance(self.icon, str) or not self.icon.strip()
+        ):
+            raise ValueError(
+                f"WelcomeCard.icon={self.icon!r} must be a non-empty URL or None."
+            )
+        if self.min_height is not None and (
+            isinstance(self.min_height, bool)
+            or not isinstance(self.min_height, int)
+            or self.min_height <= 0
+        ):
+            raise ValueError(
+                f"WelcomeCard.min_height={self.min_height!r} must be a positive "
+                "int (CSS pixels) or None."
+            )
+
+    def to_widget_data(self) -> dict:
+        """The card as published in widgetData's ``welcome`` key: the texts
+        unresolved (a string, or a plain dict per language), the icon URL
+        rooted at the web app, ``minHeight`` in CSS pixels (None values stay
+        None)."""
+        icon = self.icon
+        if icon is not None and not icon.startswith("/") and "://" not in icon:
+            icon = "/" + icon
+        return {
+            "title": _copy_text(self.title),
+            "description": _copy_text(self.description),
+            "icon": icon,
+            "minHeight": self.min_height,
+        }
+
+
+def _text_values(text: Text) -> list[str]:
+    """A checked Text's strings: the string itself, or each language's."""
+    return [text] if isinstance(text, str) else list(text.values())
+
+
+def _copy_text(text: Text | None) -> Text | None:
+    """A Text for publishing: a string as is, a language map as a new dict."""
+    return dict(text) if text is not None and not isinstance(text, str) else text
+
+
+@dataclass(frozen=True)
+class WelcomeConfigMixin:
+    """The conversation widget's welcome card, shared by every engine
+    TaskConfig via inheritance. The field stays top-level on each config, so
+    callers write ``welcome=WelcomeCard(...)`` verbatim.
+
+    ``welcome`` (default None: no card) is shown at the top of the
+    conversation transcript. Engines publish ``welcome_widget_data`` as the
+    conversation widget's ``welcome`` widgetData key; the iframe / TUI
+    widgets do not show it."""
+    welcome: WelcomeCard | None = None
+
+    @property
+    def welcome_widget_data(self) -> dict | None:
+        """widgetData's ``welcome`` value: the card's dict, or None."""
+        return self.welcome.to_widget_data() if self.welcome is not None else None
+
+    def _validate_welcome(self) -> None:
+        """Raise if ``welcome`` is set to anything but a WelcomeCard. Call
+        from each engine config's ``__post_init__``."""
+        if self.welcome is not None and not isinstance(self.welcome, WelcomeCard):
+            raise ValueError(
+                f"{type(self).__name__}.welcome={self.welcome!r} must be a "
+                "WelcomeCard or None."
+            )

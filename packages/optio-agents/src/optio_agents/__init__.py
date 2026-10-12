@@ -16,6 +16,8 @@ from optio_agents.config_types import (
     ThinkingVerbosity,
     TOOL_VERBOSITIES,
     ToolVerbosity,
+    WelcomeCard,
+    WelcomeConfigMixin,
 )
 from optio_agents.context import HookContext, HookContextProtocol, SYSTEM_MESSAGE_PREFIX
 from optio_agents.conversation import (
@@ -84,6 +86,8 @@ __all__ = [
     "ThinkingVerbosity",
     "TOOL_VERBOSITIES",
     "ToolVerbosity",
+    "WelcomeCard",
+    "WelcomeConfigMixin",
     "input_listener",
     "tmux_input",
     "serialized",
