@@ -750,6 +750,7 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 | `getTree` | GET | `/processes/:prefix/:id/tree` | `prefix, id` | `maxDepth?: number` | — | `200: ProcessTreeNode`, `404: Error` |
 | `getLog` | GET | `/processes/:prefix/:id/log` | `prefix, id` | `cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |
 | `getTreeLog` | GET | `/processes/:prefix/:id/tree/log` | `prefix, id` | `cursor?, limit, maxDepth?` | — | `200: PaginatedResponse<LogEntry & {processId, processLabel}>`, `404: Error` |
+| `getConversation` | GET | `/processes/:id/conversation` | `id` | `database?, prefix?` | — | `200: { events: unknown[], capturedAt: string \| null }` (a suspended process's saved conversation record, proxied from the engine's conversation archive; `Cache-Control: no-store`), `401: { message }`, `403`/`404`/`409`/`500`/`503`: `{ reason: ConversationFailureReason, message }` |
 | `launch` | POST | `/processes/:prefix/:id/launch` | `prefix, id` | — | `{ resume?: boolean }` (optional; body may be omitted entirely) | `200: Process`, `404: Error`, `409: Error` |
 | `cancel` | POST | `/processes/:prefix/:id/cancel` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
 | `dismiss` | POST | `/processes/:prefix/:id/dismiss` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
@@ -797,11 +798,23 @@ When N projects need the same code — especially interface, contract, or wire-f
 ```typescript
 // Handlers (framework-agnostic)
 export { listProcesses, getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
+         getProcessConversation,
          launchProcess, cancelProcess, dismissProcess, resurrectProcess,
          resyncProcesses } from 'optio-api';
 export type { ListQuery, PaginationQuery, TreeLogQuery,
               LaunchCommandResult, CancelCommandResult, DismissCommandResult,
-              ResurrectCommandResult } from 'optio-api';
+              ResurrectCommandResult, ConversationResult } from 'optio-api';
+
+// Conversation archive proxy (read a suspended process's record; for custom adapters)
+export { resolveConversationArchive, forgetConversationArchive, fetchConversation,
+         CONVERSATION_ARCHIVE_CACHE_TTL_MS, CONVERSATION_ARCHIVE_TIMEOUT_MS,
+         CONVERSATION_ARCHIVE_MAX_BODY_BYTES,
+         type ConversationArchiveEndpoint, type ConversationFetchResult } from 'optio-api';
+
+// Scope helpers (for custom adapters). findActionTarget(col, id): the document a
+// single-process action targets, by _id for a 24-hex id, else by processId (a
+// duplicated processId resolves to the newest document, as the engine does)
+export { findActionTarget } from 'optio-api';
 
 // Layered RPC access
 //   Layer 1 (Transport cache): createOptioTransports / OptioTransports

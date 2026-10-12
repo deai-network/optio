@@ -123,21 +123,21 @@ export const { GET, POST } = createOptioRouteHandlers({ db, redis });
 
 ## REST Endpoints
 
-All adapters mount the same endpoints under `/api/processes/:prefix/...`:
+All adapters mount the same endpoints under `/api/processes/...`; the instance is chosen with the optional `?database=&prefix=` query parameters:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/processes/:prefix` | List processes (cursor pagination, filtering) |
-| GET | `/api/processes/:prefix/:id` | Get single process |
-| GET | `/api/processes/:prefix/:id/tree` | Get process subtree |
-| GET | `/api/processes/:prefix/:id/log` | Get process log |
-| GET | `/api/processes/:prefix/:id/tree/log` | Get merged subtree log |
-| GET | `/api/processes/:prefix/:id/conversation` | Read a suspended process's saved conversation, proxied from the engine's conversation archive (the engine decrypts). 200 `{ events, capturedAt }`; 403/404/409/500/503 with `{reason, message}` per `ConversationFailureReason` (503 `engine-unavailable`: no engine, unreachable, or no answer within 15 s). Gated as the `'widget'` action; always `Cache-Control: no-store`. |
-| POST | `/api/processes/:prefix/:id/launch` | Forward launch to engine. 200 on success; 404/409 with `{reason, message}` per `LaunchFailureReason`. |
-| POST | `/api/processes/:prefix/:id/cancel` | Forward cancel to engine. 200 on success; 404/409 per `CancelFailureReason`. |
-| POST | `/api/processes/:prefix/:id/dismiss` | Forward dismiss to engine. 200 on success; 404/409 per `DismissFailureReason`. |
-| POST | `/api/processes/:prefix/:id/resurrect` | Forward resurrect (save a failed run's unsaved work, then resume) to engine; optional body `{ sessionId?: string \| null }`. 200 on success; 404/409 per `ResurrectFailureReason`. |
-| POST | `/api/processes/:prefix/resync` | 202 Accepted; engine handles resync asynchronously. |
+| GET | `/api/processes?database=&prefix=` | List processes (cursor pagination, filtering) |
+| GET | `/api/processes/:id?database=&prefix=` | Get single process |
+| GET | `/api/processes/:id/tree?database=&prefix=` | Get process subtree |
+| GET | `/api/processes/:id/log?database=&prefix=` | Get process log |
+| GET | `/api/processes/:id/tree/log?database=&prefix=` | Get merged subtree log |
+| GET | `/api/processes/:id/conversation?database=&prefix=` | Read a suspended process's saved conversation, proxied from the engine's conversation archive (the engine decrypts). 200 `{ events, capturedAt }`; 403/404/409/500/503 with `{reason, message}` per `ConversationFailureReason` (503 `engine-unavailable`: no engine, unreachable, no answer within 15 s, or a body over 64 MiB). Gated as the `'widget'` action; always `Cache-Control: no-store`. |
+| POST | `/api/processes/:id/launch?database=&prefix=` | Forward launch to engine. 200 on success; 404/409 with `{reason, message}` per `LaunchFailureReason`. |
+| POST | `/api/processes/:id/cancel?database=&prefix=` | Forward cancel to engine. 200 on success; 404/409 per `CancelFailureReason`. |
+| POST | `/api/processes/:id/dismiss?database=&prefix=` | Forward dismiss to engine. 200 on success; 404/409 per `DismissFailureReason`. |
+| POST | `/api/processes/:id/resurrect?database=&prefix=` | Forward resurrect (save a failed run's unsaved work, then resume) to engine; optional body `{ sessionId?: string \| null }`. 200 on success; 404/409 per `ResurrectFailureReason`. |
+| POST | `/api/processes/resync?database=&prefix=` | 202 Accepted; engine handles resync asynchronously. |
 
 Command endpoints do not validate state in this package. The engine owns all command-acceptance rules; the API translates the engine's discriminated-union result into HTTP status + body. See the architectural rule at the top of `AGENTS.md`.
 

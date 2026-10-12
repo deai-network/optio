@@ -371,13 +371,20 @@ relays (spec `docs/2026-10-12-suspended-conversation-view-design.md` §3):
 - `conversation-archive.ts`: `resolveConversationArchive(db, prefix)` reads the
   endpoint document and caches a found address for 30 s
   (`CONVERSATION_ARCHIVE_CACHE_TTL_MS`), per MongoClient, database name and prefix; an
-  absence is not cached. `fetchConversation` asks with a 15 s timeout
+  absence is not cached, and a `url` that is not an absolute `http:` / `https:` URL
+  counts as no endpoint (null, so 503). `fetchConversation` answers a
+  `processObjectId` that is not 24 hex characters with 404 `not-found` itself (no
+  MongoDB read, no upstream call; defence in depth for custom adapters, since the id
+  becomes part of the upstream path). It asks with a 15 s timeout
   (`CONVERSATION_ARCHIVE_TIMEOUT_MS`, covering the body too) and passes the archive's
   200 / 404 (`not-found`, `no-conversation-support`, `no-conversation`) / 409
-  (`not-suspended`) / 500 (`read-failed`) through. Everything else is 503
-  `engine-unavailable` and drops the cached address
+  (`not-suspended`) / 500 (`read-failed`) through; an error body passes with any
+  string `reason`, so a newer engine's unknown reason reaches the client. Everything
+  else is 503 `engine-unavailable` and drops the cached address
   (`forgetConversationArchive`), so the next request reads MongoDB again: no
-  endpoint document, a connection failure, the timeout, an upstream 401 (an engine
+  endpoint document, a connection failure, the timeout, a body over 64 MiB
+  (`CONVERSATION_ARCHIVE_MAX_BODY_BYTES`; a declared `content-length` is checked
+  first, then bytes are counted while reading), an upstream 401 (an engine
   restarted on the same port publishes a new password), or an answer that is not the
   archive's (wrong status or body shape). Redirects are not followed.
 - Every answer carries `Cache-Control: no-store`; the handler returns it as

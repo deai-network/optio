@@ -5,6 +5,7 @@ import { MongoClient, ObjectId, type Db } from 'mongodb';
 import { getProcessConversation } from '../handlers.js';
 import {
   CONVERSATION_ARCHIVE_CACHE_TTL_MS,
+  CONVERSATION_ARCHIVE_MAX_BODY_BYTES,
   fetchConversation,
   resolveConversationArchive,
 } from '../conversation-archive.js';
@@ -357,6 +358,23 @@ describe('resolveConversationArchive', () => {
     await publish('http://10.0.0.5:4321/', 'pw');
     expect(await resolveConversationArchive(db, prefix)).toEqual({ url: 'http://10.0.0.5:4321/', password: 'pw' });
   });
+
+  it('accepts only http: and https: addresses; anything else is no endpoint (503)', async () => {
+    for (const url of ['file:///etc/passwd', 'ftp://10.0.0.5/', 'data:text/plain,x', 'javascript:alert(1)', 'not a url', '//10.0.0.5:4321/']) {
+      prefixSeq += 1;
+      prefix = `ca${prefixSeq}`;
+      await publish(url, 'pw');
+      expect(await resolveConversationArchive(db, prefix), url).toBeNull();
+      const doc = await seedSuspended();
+      const res = await getProcessConversation(ctx(), query(), doc._id.toHexString());
+      expect(res.status, url).toBe(503);
+      expect(res.body).toMatchObject({ reason: 'engine-unavailable' });
+    }
+    prefixSeq += 1;
+    prefix = `ca${prefixSeq}`;
+    await publish('https://archive.internal:8443/', 'pw');
+    expect(await resolveConversationArchive(db, prefix)).toEqual({ url: 'https://archive.internal:8443/', password: 'pw' });
+  });
 });
 
 describe('fetchConversation', () => {
@@ -376,5 +394,114 @@ describe('fetchConversation', () => {
     upstream.reply(200, RECORD);
     await publish(upstream.url);
     expect((await fetchConversation(db, prefix, doc._id.toHexString())).status).toBe(200);
+  });
+});
+
+describe('fetchConversation guards', () => {
+  it('rejects a processObjectId that is not 24 hex characters, without reading MongoDB or calling upstream', async () => {
+    const upstream = await startUpstream();
+    upstream.reply(200, RECORD);
+    await publish(upstream.url);
+    const findOne = vi.spyOn(db.collection(`${prefix}_engine_endpoints`).constructor.prototype, 'findOne');
+
+    for (const bad of ['', 'abc', `${'a'.repeat(24)}/../x`, '../conversation/x', 'g'.repeat(24), `${'a'.repeat(23)}%0A`, 'a'.repeat(25)]) {
+      const res = await fetchConversation(db, prefix, bad);
+      expect(res, bad).toEqual({ status: 404, body: { reason: 'not-found', message: 'No such process.' } });
+    }
+    expect(findOne).not.toHaveBeenCalled();
+    expect(upstream.requests).toEqual([]);
+
+    const id = new ObjectId().toHexString();
+    expect((await fetchConversation(db, prefix, id.toUpperCase())).status).toBe(200);
+    expect(upstream.requests.map((r) => r.url)).toEqual([`/conversation/${id.toUpperCase()}`]);
+  });
+});
+
+describe('fetchConversation body cap', () => {
+  /** A raw upstream: `handler` writes the whole response itself. */
+  async function rawUpstream(handler: http.RequestListener): Promise<FakeUpstream & { requests: unknown[] }> {
+    const requests: FakeUpstream['requests'] = [];
+    const sockets = new Set<Socket>();
+    const server = http.createServer((req, res) => {
+      requests.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
+      handler(req, res);
+    });
+    server.on('connection', (s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const upstream: FakeUpstream = {
+      url: `http://127.0.0.1:${port}/`,
+      requests,
+      reply() { throw new Error('raw upstream'); },
+      hang() { throw new Error('raw upstream'); },
+      async close() {
+        for (const s of sockets) s.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      },
+    };
+    upstreams.push(upstream);
+    return upstream;
+  }
+
+  /** A record whose JSON is exactly `size` bytes. */
+  function recordOfSize(size: number): string {
+    const skeleton = JSON.stringify({ events: [[1, { t: '' }]], capturedAt: null });
+    const json = JSON.stringify({ events: [[1, { t: 'x'.repeat(size - skeleton.length) }]], capturedAt: null });
+    expect(Buffer.byteLength(json)).toBe(size);
+    return json;
+  }
+
+  it('is 64 MiB', () => {
+    expect(CONVERSATION_ARCHIVE_MAX_BODY_BYTES).toBe(64 * 1024 * 1024);
+  });
+
+  it('a declared content-length over the cap is 503 without waiting for the body, and drops the cache', async () => {
+    const doc = await seedSuspended();
+    const big = await rawUpstream((_req, res) => {
+      // Headers only: the body never comes. Only the content-length check can
+      // answer before the timeout.
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1001' });
+      res.flushHeaders();
+    });
+    await publish(big.url, 'old-pw');
+
+    const res = await fetchConversation(db, prefix, doc._id.toHexString(), { maxBodyBytes: 1000, timeoutMs: 60_000 });
+
+    expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({ reason: 'engine-unavailable', message: expect.stringMatching(/too large/) });
+
+    // The cached address was dropped: the republished one is used at once.
+    const upstream = await startUpstream();
+    upstream.reply(200, RECORD);
+    await publish(upstream.url, 'new-pw');
+    expect((await fetchConversation(db, prefix, doc._id.toHexString(), { maxBodyBytes: 1000 })).status).toBe(200);
+    expect(upstream.requests[0].authorization).toBe(basic('new-pw'));
+  });
+
+  it('a body without content-length is counted while read: over the cap is 503 and drops the cache; at the cap passes', async () => {
+    const doc = await seedSuspended();
+    let size = 1001;
+    const chunked = await rawUpstream((_req, res) => {
+      // No content-length: chunked, two chunks.
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const body = recordOfSize(size);
+      res.write(body.slice(0, 500));
+      res.end(body.slice(500));
+    });
+    await publish(chunked.url, 'pw-a');
+
+    const over = await fetchConversation(db, prefix, doc._id.toHexString(), { maxBodyBytes: 1000 });
+    expect(over.status).toBe(503);
+    expect(over.body).toMatchObject({ reason: 'engine-unavailable', message: expect.stringMatching(/too large/) });
+
+    // Dropped from the cache: the republished password is used at once.
+    size = 1000;
+    await publish(chunked.url, 'pw-b');
+    const at = await fetchConversation(db, prefix, doc._id.toHexString(), { maxBodyBytes: 1000 });
+    expect(at.status).toBe(200);
+    expect(chunked.requests.map((r: any) => r.authorization)).toEqual([basic('pw-a'), basic('pw-b')]);
   });
 });

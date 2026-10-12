@@ -30,6 +30,7 @@ export {
   fetchConversation,
   CONVERSATION_ARCHIVE_CACHE_TTL_MS,
   CONVERSATION_ARCHIVE_TIMEOUT_MS,
+  CONVERSATION_ARCHIVE_MAX_BODY_BYTES,
   type ConversationArchiveEndpoint,
   type ConversationFetchResult,
 } from './conversation-archive.js';
