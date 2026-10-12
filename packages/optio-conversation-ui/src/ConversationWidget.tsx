@@ -10,6 +10,7 @@ import { KimiCodeView } from './kimicode/KimiCodeView.js';
 import { AntigravityView } from './antigravity/AntigravityView.js';
 import { SuspendedConversationWidget } from './SuspendedConversationWidget.js';
 import { ConversationWidenessContext, type ConversationWideness } from './wideness.js';
+import { ConversationWelcomeContext, welcomeOf } from './welcome.js';
 
 const THEME_KEY = 'optio-conversation:theme';
 
@@ -33,7 +34,9 @@ export function ConversationWidget({ ownTheme, wideness, ...props }: Conversatio
   const fromHost = useContext(ConversationWidenessContext);
   return (
     <ConversationWidenessContext.Provider value={wideness ?? fromHost}>
-      <ConversationWidgetBody ownTheme={ownTheme} {...props} />
+      <ConversationWelcomeContext.Provider value={welcomeOf(props.process)}>
+        <ConversationWidgetBody ownTheme={ownTheme} {...props} />
+      </ConversationWelcomeContext.Provider>
     </ConversationWidenessContext.Provider>
   );
 }
@@ -111,11 +114,17 @@ export function registerConversationWidget(
     <ConversationWidget ownTheme={opts?.ownTheme} wideness={wideness} {...props} />
   );
   const Suspended = opts?.ownTheme ? ThemedSuspendedConversation : SuspendedConversationWidget;
-  // Without a registered wideness the suspended variant, like the live one,
-  // follows the host's ConversationWidenessContext.
-  const SuspendedWidget = wideness === undefined ? Suspended : (props: WidgetProps) => (
-    <ConversationWidenessContext.Provider value={wideness}>
+  // The suspended variant shows the task's welcome card too; without a
+  // registered wideness it follows the host's ConversationWidenessContext,
+  // like the live one.
+  const SuspendedWithWelcome = (props: WidgetProps) => (
+    <ConversationWelcomeContext.Provider value={welcomeOf(props.process)}>
       <Suspended {...props} />
+    </ConversationWelcomeContext.Provider>
+  );
+  const SuspendedWidget = wideness === undefined ? SuspendedWithWelcome : (props: WidgetProps) => (
+    <ConversationWidenessContext.Provider value={wideness}>
+      <SuspendedWithWelcome {...props} />
     </ConversationWidenessContext.Provider>
   );
   registerWidget('conversation', Widget, { suspended: SuspendedWidget });

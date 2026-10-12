@@ -7,10 +7,12 @@ import {
 } from 'vultus-antd';
 import type { TextAreaProps, TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
-import { Actions, Attachments, Bubble, Sender, Think, ThoughtChain, XProvider } from '@ant-design/x';
+import { Actions, Attachments, Bubble, Sender, Think, ThoughtChain, Welcome, XProvider } from '@ant-design/x';
 import type { ThoughtChainItemType } from '@ant-design/x';
 import { transcriptKeys } from './transcriptKeys.js';
 import { ConversationWidenessContext, type ConversationWideness } from './wideness.js';
+import { ConversationWelcomeContext, type ConversationWelcome } from './welcome.js';
+import { resolveText, useLanguage } from './text.js';
 import { AnswerBlock } from './AnswerBlock.js';
 import { AnswerFiles, FILE_LINK_CLASS } from './FileCards.js';
 import { SlotSpinner } from './spinners/SlotSpinner.js';
@@ -74,6 +76,9 @@ export interface ConversationViewProps {
   // The reading width (see wideness.ts); absent: ConversationWidget's
   // (ConversationWidenessContext), 'narrow' outside one.
   wideness?: ConversationWideness;
+  // The agent task's welcome card (see welcome.ts); absent: ConversationWidget's
+  // (ConversationWelcomeContext, from the process's widget data).
+  welcome?: ConversationWelcome | null;
   state: ChatState;
   closed: boolean;
   // The text of the divider shown after the transcript while `closed`.
@@ -1127,6 +1132,62 @@ const SenderTextArea = forwardRef<TextAreaRef, TextAreaProps>(function SenderTex
   return <Input.TextArea {...props} ref={ref} data-testid="conversation-input-box" />;
 });
 
+// Ant Design X experiment (owner-approved 2026-10-12): the agent task's welcome
+// card (see welcome.ts). X's Welcome turns only an http(s) string into an
+// image, so the icon (a URL relative to the web app root) is passed as one. Its
+// texts may be language maps (resolved for antd's locale). It wears the agent
+// answers' glass (owner, 2026-10-12) in place of X's flat fill, and their
+// corners (X Bubble's default shape: twice the theme's borderRadius).
+// The icon fills the card's height. X gives it a fixed one (a title line and
+// one description line), and CSS cannot size the icon's width from a height
+// the text beside it decides, so the text (X's content wrapper, the card's
+// last child) is measured. The card top-aligns the text so that it keeps its
+// own height and the icon can shrink with it. The icon keeps its width beside
+// long text (the image's percentage max-width would let flex shrink it), but
+// takes at most a quarter of the card's, or on a narrow card the two would
+// grow each other without end. A minHeight is the icon's own minimum height
+// (the card grows to fit it); the cap is at least that wide, as a fixed
+// height cannot run away.
+function WelcomeCard({ welcome }: { welcome: ConversationWelcome }) {
+  const language = useLanguage();
+  const dark = useDarkTheme();
+  const { token } = theme.useToken();
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [textHeight, setTextHeight] = useState(0);
+  useLayoutEffect(() => {
+    const text = cardRef.current?.lastElementChild;
+    if (!text) return undefined;
+    const measure = () => setTextHeight(text.getBoundingClientRect().height);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(text);
+    return () => observer.disconnect();
+  }, []);
+  const iconHeight = Math.max(textHeight, welcome.minHeight ?? 0);
+  return (
+    <Welcome
+      ref={cardRef}
+      classNames={{ root: dark ? GLASS_MODE.dark : GLASS_MODE.light }}
+      icon={welcome.icon
+        ? <img src={welcome.icon} alt="" style={{ maxWidth: '100%', objectFit: 'contain' }} />
+        : undefined}
+      title={resolveText(welcome.title, language)}
+      description={welcome.description
+        ? <AnswerBlock text={resolveText(welcome.description, language)} />
+        : undefined}
+      styles={{
+        // The glass's edge is an absolutely placed ring.
+        root: { alignItems: 'flex-start', position: 'relative', borderRadius: 2 * token.borderRadius },
+        icon: {
+          flexShrink: 0,
+          maxWidth: welcome.minHeight ? `max(25%, ${welcome.minHeight}px)` : '25%',
+          ...(iconHeight > 0 ? { height: iconHeight } : {}),
+        },
+      }}
+    />
+  );
+}
+
 export function ConversationView(props: ConversationViewProps): React.JSX.Element {
   // The app's lent spinner (vultus-core slot), if any: a running ThoughtChain
   // tool node shows it instead of X's own loading icon.
@@ -1166,6 +1227,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // `attachments` is what onSend / onSteer get, as before.
   const [uploads, setUploads] = useState<UploadFile[]>([]);
   const attachments = uploads.map((u) => toAttachment(u.originFileObj as File));
+  const welcomeFromWidget = useContext(ConversationWelcomeContext);
+  const welcome = props.welcome !== undefined ? props.welcome : welcomeFromWidget;
   const widenessFromWidget = useContext(ConversationWidenessContext);
   const wideness = props.wideness ?? widenessFromWidget;
   const [wideChosen, setWide] = useState(false);
@@ -2000,6 +2063,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 array order. Keyed by transcriptKeys (kind and seq) inside
                 renderTranscript: one event can yield several rows, so seq
                 alone repeats. */}
+            {/* The agent task's welcome card, first in the transcript. */}
+            {welcome && <WelcomeCard welcome={welcome} />}
             {renderTranscript(state.items)}
             {/* The process died (or the conversation was closed engine-side):
                 append the ended divider after the transcript. */}
