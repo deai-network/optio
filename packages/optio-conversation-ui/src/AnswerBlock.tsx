@@ -1,5 +1,5 @@
 import { useContext } from 'react';
-import { Typography, theme } from 'antd';
+import { Typography } from 'antd';
 import { Mermaid } from '@ant-design/x';
 import XMarkdown, { type ComponentProps } from '@ant-design/x-markdown';
 import Latex from '@ant-design/x-markdown/plugins/Latex';
@@ -7,6 +7,7 @@ import '@ant-design/x-markdown/themes/light.css';
 import '@ant-design/x-markdown/themes/dark.css';
 import { CodeBlock } from './CodeBlock.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
+import { useDarkTheme } from './themeMode.js';
 
 // The one public seam for rendering an assistant answer (also the compaction
 // summary and task descriptions): pass the markdown text, get it rendered.
@@ -69,10 +70,10 @@ const COMPONENTS = { code: Code, a: Link };
 /** `pending`: the text is still streaming in (XMarkdown animates it and shows
  *  its tail cursor). */
 export function AnswerBlock({ text, pending = false }: { text: string; pending?: boolean }) {
-  const { theme: antdTheme } = theme.useToken();
+  const dark = useDarkTheme();
   return (
     <XMarkdown
-      className={antdTheme.id === 0 ? 'x-markdown-light' : 'x-markdown-dark'}
+      className={dark ? 'x-markdown-dark' : 'x-markdown-light'}
       paragraphTag="div"
       content={text}
       config={CONFIG}

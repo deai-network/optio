@@ -12,6 +12,7 @@ import type { ThoughtChainItemType } from '@ant-design/x';
 import { transcriptKeys } from './transcriptKeys.js';
 import { AnswerBlock } from './AnswerBlock.js';
 import { CodeBlock } from './CodeBlock.js';
+import { useDarkTheme } from './themeMode.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 import { formatDuration } from './duration.js';
@@ -1102,7 +1103,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // The app's lent spinner (vultus-core slot), if any: a running ThoughtChain
   // tool node shows it instead of X's own loading icon.
   const { Spinner: lentSpinner } = useVultusComponents();
-  const { token, theme: antdTheme } = theme.useToken();
+  const { token } = theme.useToken();
+  const dark = useDarkTheme();
   const {
     state,
     closed,
@@ -1788,7 +1790,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
 
   return (
     <FileDownloadContext.Provider value={fileDownload ? onFileDownload : null}>
-      <XProvider bubble={{ classNames: { content: antdTheme.id === 0 ? GLASS_MODE.light : GLASS_MODE.dark } }}>
+      <XProvider bubble={{ classNames: { content: dark ? GLASS_MODE.dark : GLASS_MODE.light } }}>
       {/* Paint our own root surface from a bg token — the widget owns its
           background (don't rely on an inherited host surface), or dark mode
           shows the light host page behind transparent divs. colorText sets a

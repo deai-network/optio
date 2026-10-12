@@ -1,7 +1,8 @@
 import React, { useContext } from 'react';
 import { Actions, CodeHighlighter } from '@ant-design/x';
-import { ConfigProvider, theme } from 'antd';
+import { ConfigProvider } from 'antd';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { useDarkTheme } from './themeMode.js';
 
 // X's CodeHighlighter, following the antd theme. It paints Prism's oneLight
 // in either theme (its own copy, with the <pre> margin removed); in dark mode
@@ -20,13 +21,13 @@ export function CodeBlock({ lang, title, maxHeight, children }: {
   maxHeight?: number;
   children: string;
 }) {
-  const { theme: antdTheme } = theme.useToken();
+  const dark = useDarkTheme();
   const { getPrefixCls } = useContext(ConfigProvider.ConfigContext);
   const prefixCls = getPrefixCls('codeHighlighter');
   return (
     <CodeHighlighter
       lang={lang}
-      highlightProps={antdTheme.id === 0 ? undefined : { style: ONE_DARK }}
+      highlightProps={dark ? { style: ONE_DARK } : undefined}
       // X's own header markup (its classes), with our title in place of the
       // language name.
       header={title === undefined ? undefined : (
