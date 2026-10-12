@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
 import {
@@ -7,6 +7,7 @@ import {
 } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
+import { transcriptKeys } from './transcriptKeys.js';
 import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
@@ -1815,8 +1816,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }}
           >
             {/* Items are kept in conversation order by the reducer; render in
-                array order (seq is a React key, not a sort key). */}
-            {state.items.map(renderItem)}
+                array order. Keyed by transcriptKeys (kind and seq): one event
+                can yield several rows, so seq alone repeats. */}
+            {transcriptKeys(state.items).map((key, i) => (
+              <Fragment key={key}>{renderItem(state.items[i])}</Fragment>
+            ))}
             {/* The process died (or the conversation was closed engine-side):
                 append the ended divider after the transcript. */}
             {closed && (
