@@ -142,7 +142,9 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
     expect(screen.getByText('List the files')).toBeTruthy();
     expect(screen.getByText('Listing them now.')).toBeTruthy();
     expect(statuses()).toEqual(['done']);
-    expect(screen.getByTestId('tool-call').textContent).toContain('Bash');
+    // The X tool node (Ant Design X experiment): its title is the tool name.
+    const done = screen.getByTestId('tool-call').closest('.ant-thought-chain-node') as HTMLElement;
+    expect(done.querySelector('.ant-thought-chain-node-title')!.textContent).toBe('Bash');
 
     expect(screen.getByTestId('conversation-closed').textContent).toBe('Session has been saved');
     // One divider: the closing event's own "conversation ended (suspended)" row is not shown.
@@ -170,7 +172,9 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
     useProcessConversation.mockReturnValue(loaded(running));
     render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
     expect(statuses()).toEqual(['stopped']);
-    expect(screen.getByTestId('tool-call').textContent).toContain('⏹');
+    // X's abort status icon on the node (the old row's ⏹ glyph).
+    const stopped = screen.getByTestId('tool-call').closest('.ant-thought-chain-node') as HTMLElement;
+    expect(stopped.querySelector('.ant-thought-chain-status-abort')).not.toBeNull();
     // Not busy: no working indicator.
     expect(screen.queryByText('working…')).toBeNull();
   });
