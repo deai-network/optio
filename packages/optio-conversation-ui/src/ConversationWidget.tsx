@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useContext, useState } from 'react';
 import { ConfigProvider, theme as antdTheme } from 'antd';
 import { registerWidget, type WidgetProps } from 'optio-ui';
 import { ClaudeCodeView } from './claudecode/ClaudeCodeView.js';
@@ -19,17 +19,20 @@ export interface ConversationWidgetProps extends WidgetProps {
    *  ☀/🌙 toggle. When false/absent, the view inherits the host theme. */
   ownTheme?: boolean;
   /** The conversation's reading width: 'wide' (always the full width),
-   *  'narrow' (always the capped reading column; the default) or 'switch'
-   *  (the Wide switch in the conversation's header). */
+   *  'narrow' (always the capped reading column) or 'switch' (the Wide switch
+   *  in the conversation's header). Absent: the host's
+   *  ConversationWidenessContext, which it can change live ('narrow' when the
+   *  host sets none). */
   wideness?: ConversationWideness;
 }
 
 /** Engine-neutral conversation widget: the task declares its wire protocol
  *  via widgetData.protocol; each view speaks that protocol natively through
  *  the widget proxy. */
-export function ConversationWidget({ ownTheme, wideness = 'narrow', ...props }: ConversationWidgetProps) {
+export function ConversationWidget({ ownTheme, wideness, ...props }: ConversationWidgetProps) {
+  const fromHost = useContext(ConversationWidenessContext);
   return (
-    <ConversationWidenessContext.Provider value={wideness}>
+    <ConversationWidenessContext.Provider value={wideness ?? fromHost}>
       <ConversationWidgetBody ownTheme={ownTheme} {...props} />
     </ConversationWidenessContext.Provider>
   );
@@ -96,18 +99,21 @@ function ThemedSuspendedConversation(props: WidgetProps) {
  *  task's saved conversation, read-only).
  *  Pass `{ ownTheme: true }` when the HOST has no theme of its own and wants the
  *  widget to own a light/dark toggle (standalone / a host without its own
- *  ConfigProvider). Default: inherit the host theme. `wideness` sets the
+ *  ConfigProvider). Default: inherit the host theme. `wideness` fixes the
  *  conversation's reading width ('wide' | 'narrow' | 'switch', see
- *  wideness.ts; default 'narrow'), for the suspended variant too. */
+ *  wideness.ts), for the suspended variant too; without it the widget follows
+ *  the host's ConversationWidenessContext ('narrow' when none). */
 export function registerConversationWidget(
   opts?: { ownTheme?: boolean; wideness?: ConversationWideness },
 ): void {
-  const wideness = opts?.wideness ?? 'narrow';
+  const wideness = opts?.wideness;
   const Widget = (props: WidgetProps) => (
     <ConversationWidget ownTheme={opts?.ownTheme} wideness={wideness} {...props} />
   );
   const Suspended = opts?.ownTheme ? ThemedSuspendedConversation : SuspendedConversationWidget;
-  const SuspendedWidget = (props: WidgetProps) => (
+  // Without a registered wideness the suspended variant, like the live one,
+  // follows the host's ConversationWidenessContext.
+  const SuspendedWidget = wideness === undefined ? Suspended : (props: WidgetProps) => (
     <ConversationWidenessContext.Provider value={wideness}>
       <Suspended {...props} />
     </ConversationWidenessContext.Provider>

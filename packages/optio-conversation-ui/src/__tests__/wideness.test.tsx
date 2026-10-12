@@ -4,6 +4,7 @@ import type { ComponentType } from 'react';
 import { registerWidget } from 'optio-ui';
 import { ConversationView, type ConversationViewProps } from '../ConversationView.js';
 import { ConversationWidget, registerConversationWidget } from '../ConversationWidget.js';
+import { ConversationWidenessContext } from '../wideness.js';
 
 // registerConversationWidget's registration is captured (optio-ui keeps its
 // registry lookup private).
@@ -78,6 +79,38 @@ describe('wideness', () => {
     unmount();
     render(<ConversationWidget {...widgetProps} wideness="wide" />);
     expect(width()).toBe('100%');
+  });
+
+  // A host can also change it live (owner, 2026-10-12: the demo's switch
+  // reloaded the page): a ConversationWidget without its own wideness, and
+  // one registered without it, take the host's ConversationWidenessContext.
+  it("a ConversationWidget without its own wideness follows the host's context, live", () => {
+    const view = render(
+      <ConversationWidenessContext.Provider value="narrow"><ConversationWidget {...widgetProps} /></ConversationWidenessContext.Provider>,
+    );
+    expect(width()).toBe('880px');
+    const content = screen.getByTestId('conversation-content');
+    view.rerender(
+      <ConversationWidenessContext.Provider value="wide"><ConversationWidget {...widgetProps} /></ConversationWidenessContext.Provider>,
+    );
+    expect(width()).toBe('100%');
+    // The same conversation, not a remount.
+    expect(screen.getByTestId('conversation-content')).toBe(content);
+  });
+
+  it("its own wideness wins over the host's context", () => {
+    render(
+      <ConversationWidenessContext.Provider value="wide"><ConversationWidget {...widgetProps} wideness="narrow" /></ConversationWidenessContext.Provider>,
+    );
+    expect(width()).toBe('880px');
+  });
+
+  it("registered without a wideness, the widget follows the host's context", () => {
+    registerConversationWidget();
+    const [, Widget] = vi.mocked(registerWidget).mock.calls.at(-1)!;
+    const Registered = Widget as ComponentType<typeof widgetProps>;
+    render(<ConversationWidenessContext.Provider value="switch"><Registered {...widgetProps} /></ConversationWidenessContext.Provider>);
+    expect(screen.getByTestId('wide-toggle')).toBeTruthy();
   });
 
   it('registerConversationWidget({ wideness }) registers a widget with it', () => {
