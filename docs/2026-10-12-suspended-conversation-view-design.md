@@ -66,11 +66,17 @@ starts and no seed is taken.
 
 ### 2. optio-claudecode: the read hook
 
-- `create_claudecode_task` sets
-  `read_conversation=lambda ctx: _read_conversation(ctx, decrypt=config.session_blob_decrypt)`, only
-  when `config.conversation_ui`.
-- `_read_conversation` calls the existing `_load_conversation_buffer(ctx, decrypt=…)`. That is the
-  same decrypt, parse and filter as resume. It returns a list of `[seq, event]` lists, or None.
+`create_claudecode_task` sets `read_conversation` (only when `config.conversation_ui`) to
+`_read_conversation(ctx, decrypt=config.session_blob_decrypt)`, which reads **strictly**:
+
+- **Absent record:** returns None, so the listener answers 404 `no-conversation`.
+- **Unreadable record:** a decrypt error, bad JSON, or a GridFS or Mongo error raises, so the listener
+  answers 500 `read-failed` and the UI offers Retry.
+- **Otherwise:** it returns `{"events": [[seq, event], ...], "capturedAt": <ISO, +00:00>}`.
+
+Decryption, parsing and filtering run in `asyncio.to_thread`. The parser `_parse_conversation_record`
+is shared with resume, which stays lenient: a bad record means an empty buffer, never a failed
+launch. A snapshot whose conversation blob is missing (a dangling reference) is `read-failed`.
 
 ### 3. optio-api: `GET /processes/:id/conversation`
 
