@@ -32,7 +32,7 @@ CORE = {
     "max_download_bytes", "auto_start", "native_spinner", "install_dir",
     "session_blob_encrypt", "session_blob_decrypt",
     "seed_blob_encrypt", "seed_blob_decrypt", "on_resume_refresh",
-    "use_client_messages", "on_caller_message",
+    "use_client_messages", "on_caller_message", "welcome",
 }
 
 

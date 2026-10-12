@@ -39,6 +39,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from optio_agents import WelcomeCard
 from optio_agents_all import OpencodeTaskConfig, create_task, get_agent_info
 from optio_core.models import TaskInstance
 from optio_opencode import (
@@ -256,6 +257,18 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     consumer_instructions="",   # defaulted conversation prompt
                     mode="conversation",
                     conversation_ui=True,
+                    welcome=WelcomeCard(
+                        title=f"{_NAME} conversation",
+                        description=(
+                            f"An {_NAME} session from a captured seed: type a message to start. "
+                            "Tool calls appear as one-line rows, and when OpenCode asks for a "
+                            "permission you **approve or deny** it here. "
+                            "Try the session controls (model, and effort on models with "
+                            "variants), "
+                            "attach a file, or ask for a file and download it from the reply."
+                        ),
+                        icon="/welcome/optio.png",
+                    ),
                     show_session_controls=True,
                     show_file_upload=True,
                     file_download=True,

@@ -38,6 +38,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from optio_agents import WelcomeCard
 from optio_agents_all import ClaudeCodeTaskConfig, create_task, get_agent_info
 from optio_claudecode import (
     HookContext,
@@ -236,6 +237,22 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     consumer_instructions="",   # defaulted conversation prompt
                     mode="conversation",
                     conversation_ui=True,
+                    welcome=WelcomeCard(
+                        # A language map: the widget shows the viewer's language.
+                        title={
+                            "en": "Claude Code conversation",
+                            "hu": "Beszélgetés a Claude Code-dal",
+                            "de": "Gespräch mit Claude Code",
+                        },
+                        description=(
+                            f"A {_NAME} session from a captured seed: type a message to start. "
+                            "Tool calls appear as one-line rows, and those that need permission "
+                            "wait for you to **approve or deny** them. "
+                            "Try the session controls (model, effort, permission mode), "
+                            "attach a file, or ask for a file and download it from the reply."
+                        ),
+                        icon="/welcome/optio.png",
+                    ),
                     show_session_controls=True,
                     show_file_upload=True,
                     file_download=True,
@@ -266,6 +283,19 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     consumer_instructions=CONSUMER_PROMPT,
                     mode="conversation",
                     conversation_ui=True,
+                    welcome=WelcomeCard(
+                        title=f"{_NAME} conversation+task",
+                        description=(
+                            f"{_NAME} starts on its own: it reads `context.txt`, asks for your "
+                            "favourite colour and ships a mission report as a deliverable. "
+                            "Answer its question here; it runs without permission prompts and its "
+                            "tool calls appear as one-line rows. Session controls, file upload and "
+                            "download are on."
+                        ),
+                        icon="/welcome/optio.png",
+                        # A taller card (CSS pixels).
+                        min_height=200,
+                    ),
                     show_session_controls=True,
                     show_file_upload=True,
                     file_download=True,
