@@ -1,10 +1,14 @@
 """Claudecode-specific parts of the CLAUDE.md resume section and delivery note."""
 
-from types import SimpleNamespace
+import dataclasses
+
+import pytest
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 
+from optio_claudecode import ClaudeCodeTaskConfig
 from optio_claudecode.prompt import PROFILE, compose_agents_md
+from optio_claudecode.session import _maybe_refresh_on_resume
 
 _POLL_RULE = "At the start of every new incoming user message"
 
@@ -41,10 +45,42 @@ def test_polling_flag_passes_through():
     assert f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}`" in out
 
 
-def test_session_polls_resume_log_only_without_host_protocol():
-    from optio_claudecode.session import _checks_resume_log_every_message
-    assert _checks_resume_log_every_message(SimpleNamespace(host_protocol=False))
-    assert not _checks_resume_log_every_message(SimpleNamespace(host_protocol=True))
+class _FakeHost:
+    workdir = "/tmp/fake-wd"
+
+    def __init__(self) -> None:
+        self.writes: list[tuple[str, str]] = []
+
+    async def write_text(self, path: str, text: str) -> None:
+        self.writes.append((path, text))
+
+
+class _FakeHookCtx:
+    async def read_text_from_host(self, path: str, *, silent: bool = False) -> str:
+        return "stale"
+
+
+@pytest.mark.parametrize("mode_kw", [
+    dict(mode="iframe"),
+    dict(mode="conversation", host_protocol=False,
+         permission_mode="bypassPermissions"),
+], ids=["iframe", "conversation-no-host-protocol"])
+async def test_refreshed_claude_md_waits_for_the_resume_notice(mode_kw):
+    """Every resume that continues a transcript is announced, host_protocol
+    or not, so the CLAUDE.md the on-resume refresh writes tells claude to
+    wait for the notice instead of reading resume.log before each message."""
+    cfg = ClaudeCodeTaskConfig(
+        consumer_instructions="original", fs_isolation=False, **mode_kw,
+        on_resume_refresh=lambda c: dataclasses.replace(
+            c, consumer_instructions="UPDATED"),
+    )
+    host = _FakeHost()
+    protocol = get_protocol(browser="redirect")
+    assert await _maybe_refresh_on_resume(host, _FakeHookCtx(), cfg, protocol) == ["CLAUDE.md"]
+    (path, text), = host.writes
+    assert path == "CLAUDE.md" and "UPDATED" in text
+    assert _POLL_RULE not in text
+    assert f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}`" in text
 
 
 def test_threaded_docs_and_no_prompt_text_of_its_own():

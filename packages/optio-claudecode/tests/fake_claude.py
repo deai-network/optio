@@ -222,12 +222,24 @@ def _scenario_seed() -> None:
     time.sleep(30.0)
 
 
+def _user_text(msg: dict) -> str:
+    """The text of a stream-json user message (string or text parts)."""
+    content = (msg.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    return "".join(part.get("text", "") for part in content or []
+                   if isinstance(part, dict))
+
+
 def run_stream_json_mode(argv: list[str]) -> int:
     """Bidirectional NDJSON fake: one scripted reply per user message.
 
     Env knobs:
       FAKE_CLAUDE_REPLY          — reply text template; '{n}' = turn number
                                    (default 'reply-{n}')
+      FAKE_CLAUDE_STDIN_LOG      — path: append each user message's text
+                                   to it, one JSON string per line, as it
+                                   is read (what claude was told, in order).
       FAKE_CLAUDE_PERMISSION     — '1': before the first result, emit a
                                    can_use_tool control_request and wait for
                                    the control_response; the decision is
@@ -261,6 +273,7 @@ def run_stream_json_mode(argv: list[str]) -> int:
     want_permission = os.environ.get("FAKE_CLAUDE_PERMISSION") == "1"
     exit_after = int(os.environ.get("FAKE_CLAUDE_EXIT_AFTER", "0"))
     hold_turn = os.environ.get("FAKE_CLAUDE_HOLD_TURN") == "1"
+    stdin_log = os.environ.get("FAKE_CLAUDE_STDIN_LOG")
     session_id = "fake-session-0000"
     # Permission mode as the real CLI reports and switches it (verified on
     # 2.1.268): init names the launch mode; set_permission_mode answers, then
@@ -331,6 +344,9 @@ def run_stream_json_mode(argv: list[str]) -> int:
             continue
         if msg.get("type") != "user":
             continue
+        if stdin_log:
+            with open(stdin_log, "a", encoding="utf-8") as f:
+                f.write(json.dumps(_user_text(msg)) + "\n")
         n += 1
         decision_note = ""
         if want_permission and n == 1:

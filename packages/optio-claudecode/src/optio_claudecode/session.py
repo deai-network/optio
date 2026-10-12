@@ -828,12 +828,14 @@ async def run_claudecode_session(
 
         # Kickoff / resume notice as first stdin messages (print mode with
         # --input-format stream-json takes no positional prompt). The resume
-        # notice uses the System: convention, which is only taught to the agent
-        # in the host-protocol prompt block — so suppress it when host_protocol
-        # is off (the agent still detects resumes via resume.log).
+        # notice goes out on every resume that continues a transcript, with or
+        # without host_protocol: CLAUDE.md teaches the System: convention in
+        # both (the keyword docs, else optio-agents' System: explainer) and
+        # tells claude to wait for this notice instead of reading resume.log
+        # before each message. A resume without a transcript sends nothing.
         if config.auto_start and not resuming:
             await conversation.send(host_actions.AUTO_START_PROMPT)
-        elif resuming and pass_continue and config.host_protocol:
+        elif resuming and pass_continue:
             await conversation.send(f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}")
         # Fix 19 (owner ruling 2026-09-15, finding 6 #2): the messages the
         # previous run left queued and undelivered go out again, in order,
@@ -1576,6 +1578,16 @@ async def _plant_session_content(
     Returns ``(cred_baseline, focus_env)``. Mirrors the pre-existing inline
     logic exactly for the iframe path; conversation mode reuses it unchanged
     except for the prompt-composition kwargs (mode-aware).
+
+    CLAUDE.md is composed with ``check_resume_log_every_message=False`` in
+    every mode: claude reads resume.log only when the System: resume notice
+    arrives, never before each message. Every resume that continues a
+    transcript sends that notice, host_protocol or not (the --continue
+    positional in iframe mode, the first stdin message in conversation
+    mode). A resume without a transcript launches without --continue and
+    sends none, and the wording is still right there: that is a new
+    conversation, which reads CLAUDE.md anew and has no earlier resume.log
+    line to compare against, so polling would tell it nothing either.
     """
     # focus_mode: layer the quiet-TUI knobs (focus view + fullscreen) onto
     # the planted settings, plus the no-flicker launch env. Off → passthrough.
@@ -1623,7 +1635,7 @@ async def _plant_session_content(
                 omit_task_framing=omit_task_framing,
                 fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                 file_download=config.file_download,
-                check_resume_log_every_message=_checks_resume_log_every_message(config),
+                check_resume_log_every_message=False,
             ),
         )
     else:
@@ -2231,20 +2243,6 @@ async def _rotate_optio_log(host: Host) -> None:
     await host.write_text("optio.log", "")
 
 
-def _checks_resume_log_every_message(config: ClaudeCodeTaskConfig) -> bool:
-    """Whether CLAUDE.md tells the agent to poll resume.log on every message.
-
-    With host_protocol on, every resume that continues a transcript sends the
-    System: resume notice (the --continue positional in iframe mode, the first
-    stdin message in conversation mode), so the agent can rely on it. With
-    host_protocol off (conversation mode only) the notice is suppressed and the
-    agent must poll. A resume without a transcript starts a new conversation
-    with no remembered resume.log line to compare against, so polling would
-    not help there either.
-    """
-    return not config.host_protocol
-
-
 async def _append_resume_log_entry(
     host, *, refreshed: list[str] | None = None,
 ) -> None:
@@ -2274,7 +2272,8 @@ async def _maybe_refresh_on_resume(
     """Run on_resume_refresh (if any) and rewrite CLAUDE.md when changed.
 
     ``protocol`` is the session's protocol; its documentation is rendered so
-    the refreshed file matches the fresh-start composition.
+    the refreshed file matches the fresh-start composition (notice-only
+    resume detection included, see ``_plant_session_content``).
 
     Returns the list of filenames rewritten (currently at most
     ``["CLAUDE.md"]``). A hook that raises is logged and ignored.
@@ -2304,7 +2303,7 @@ async def _maybe_refresh_on_resume(
         omit_task_framing=omit_task_framing,
         fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
-        check_resume_log_every_message=_checks_resume_log_every_message(new_config),
+        check_resume_log_every_message=False,
     )
     try:
         existing = await hook_ctx.read_text_from_host("CLAUDE.md", silent=True)

@@ -17,15 +17,18 @@ Covered scenarios:
      error message contains 'exited unexpectedly'; conversation.closed.
   4. auto_start=True → the kickoff prompt is the first stdin message
      (asserted via the fake's turn counter: our explicit send is turn 2).
-  5. host_protocol=False → CLAUDE.md on disk lacks 'Log channel'; task still
-     completes via close().
+  5. host_protocol=False → CLAUDE.md on disk lacks 'Log channel' and tells
+     claude to wait for the resume notice; task still completes via close().
   6. ui_widget is None on the TaskInstance returned by create_claudecode_task
      for conversation mode, 'iframe-input' for iframe mode (pure unit assert).
+  7. host_protocol=False resume of a continued transcript → the System:
+     resume notice goes to claude's stdin.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import pathlib
 import time as _time
 
@@ -33,8 +36,10 @@ import pytest
 
 from optio_core.lifecycle import Optio
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task
 from optio_claudecode import session as cc_session
+from optio_claudecode.transcript import slugify_workdir
 
 
 _TERMINAL = {"done", "failed", "cancelled"}
@@ -242,7 +247,10 @@ async def test_host_protocol_off_omits_keyword_docs_from_claude_md(
     mongo_db,
 ):
     """host_protocol=False plants a CLAUDE.md without the keyword-protocol
-    docs; the task still completes cleanly via close().
+    docs, which tells claude to wait for the System: resume notice rather
+    than read resume.log before each message (the notice is sent without
+    host_protocol too, see the next test); the task still completes cleanly
+    via close().
 
     CLAUDE.md is read inside ``before_execute`` (after planting, before
     launch) because the session's ``finally`` removes the workdir.
@@ -274,6 +282,76 @@ async def test_host_protocol_off_omits_keyword_docs_from_claude_md(
 
         assert "Log channel" not in observed["claude_md"]
         assert "Converse with the test." in observed["claude_md"]
+        assert "At the start of every new incoming user message" not in observed["claude_md"]
+        assert f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}`" in observed["claude_md"]
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+async def _plant_transcript(hook_ctx) -> None:
+    """before_execute: a transcript (the fake writes none), so the snapshot
+    carries one and a resume continues it."""
+    workdir = pathlib.Path(hook_ctx._host.workdir)
+    pdir = workdir / "home/.claude/projects" / slugify_workdir(str(workdir))
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "t.jsonl").write_text("\n".join(json.dumps(line) for line in [
+        {"uuid": "u1", "parentUuid": None, "sessionId": "s", "type": "user",
+         "message": {"role": "user", "content": "hi"}},
+        {"uuid": "u2", "parentUuid": "u1", "sessionId": "s", "type": "assistant",
+         "message": {"role": "assistant", "model": "claude-opus-4-6",
+                     "content": [{"type": "text", "text": "hello"}]}},
+    ]) + "\n")
+
+
+@pytest.mark.asyncio
+async def test_resume_without_host_protocol_sends_the_resume_notice(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+):
+    """An optio resume that continues a transcript announces itself with
+    the System: resume notice on stdin, host_protocol off too (CLAUDE.md
+    teaches the System: convention in both modes and tells claude to wait
+    for this notice). Nobody else sends anything in either run, so the
+    notice is all the fake was told."""
+    stdin_log = tmp_path / "stdin.jsonl"
+    monkeypatch.setenv("FAKE_CLAUDE_STDIN_LOG", str(stdin_log))
+    optio = await _make_optio(mongo_db, "ccconv7")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-resume-notice",
+            name="Resume notice without host protocol",
+            config=_conversation_config(
+                shim_install_dir, claude_cache_dir,
+                host_protocol=False,
+                supports_resume=True,
+                # Snapshot capture refuses to run without credentials on disk.
+                credentials_json={"oauth_token": "test-token"},
+                before_execute=_plant_transcript,
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "cc-conv-resume-notice", session_id=None, timeout=60,
+        )
+        await conv.close()
+        proc = await _wait_terminal(optio, "cc-conv-resume-notice")
+        assert proc.get("hasSavedState") is True
+
+        assert not stdin_log.exists()              # the fresh run was told nothing
+        conv2 = await optio.launch_and_await_result(
+            "cc-conv-resume-notice", resume=True, session_id=None, timeout=60,
+        )
+        await _wait_for(lambda: stdin_log.exists() and stdin_log.read_text().endswith("\n"))
+        told = [json.loads(line) for line in stdin_log.read_text().splitlines()]
+        assert told == [f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]
+
+        await conv2.close()
+        proc = await _wait_terminal(optio, "cc-conv-resume-notice")
+        assert proc["status"]["state"] == "done"
     finally:
         await optio.shutdown(grace_seconds=1.0)
 

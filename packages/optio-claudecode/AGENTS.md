@@ -68,6 +68,16 @@ tell, claude is launched on the configured model (else `default`), its list is
 used, and a correction relaunches. See
 `docs/2026-05-29-optio-claudecode-resume-design.md`.
 
+Every resume that continues a transcript tells claude so with
+`System: you have been resumed` (`RESUME_NOTICE`), with or without
+`host_protocol`: the positional after `--continue` in iframe mode, the first
+stdin message in conversation mode. CLAUDE.md is therefore always composed
+with `check_resume_log_every_message=False` (fresh start and the on-resume
+refresh): claude reads `resume.log` when that notice arrives, for its
+`REFRESHED:` suffix, not at the start of every message. A resume without a
+transcript launches without `--continue` and sends no notice; that is a new
+conversation, which reads CLAUDE.md anew.
+
 ## Snapshot capture and unsaved work
 
 `session._capture_snapshot` runs at teardown (only when `supports_resume`
