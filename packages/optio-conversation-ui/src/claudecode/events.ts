@@ -8,8 +8,8 @@
 
 import type { ChatItem, ChatState } from '../chat.js';
 import {
-  COMPACT_SUMMARY_PREFIX, INTERRUPTED_BY_YOU, INTERRUPTED_SESSION_ENDED, addQueued, appendItems, appendBand, dropUndelivered, foldControlUpdate, hasResumeNotice,
-  isPinned, isQueued, takeQueuedAt, takeQueuedIds,
+  COMPACT_SUMMARY_PREFIX, CUSTOM_CONTROL_PREFIX, INTERRUPTED_BY_YOU, INTERRUPTED_SESSION_ENDED, addQueued, appendItems, appendBand, dropUndelivered,
+  foldControlUpdate, hasResumeNotice, isPinned, isQueued, takeQueuedAt, takeQueuedIds,
 } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
@@ -26,10 +26,64 @@ const PART_SEPARATOR = '\n\n';
 const INTERRUPT_ECHO = /^\[Request interrupted by user( for tool use)?\]$/;
 const ABORTED = new Set<string>(['aborted_streaming', 'aborted_tools']);
 
+// The CLI's wrapper around a local command's output, echoed as a user event.
+const LOCAL_COMMAND_STDOUT = '<local-command-stdout>';
+
 // A /compact command's own replay echoes, after its summary (CLI 2.1.294):
 // its output, then the command itself.
 function isCompactCommandEcho(text: string): boolean {
-  return text.startsWith('<local-command-stdout>Compacted') || text.includes('<command-name>/compact</command-name>');
+  return text.startsWith(`${LOCAL_COMMAND_STDOUT}Compacted`) || text.includes('<command-name>/compact</command-name>');
+}
+
+// CLI 2.1.296's echo of a live model switch (apply_flag_settings): an isReplay
+// user event, with no turn around it, naming the model's full id.
+const MODEL_SWITCH_ECHO = /^<local-command-stdout>Set model to `([^`]+)`<\/local-command-stdout>$/;
+
+// The model a model switch echo names; null for any other text.
+function modelSwitchEcho(text: string): string | null {
+  return MODEL_SWITCH_ECHO.exec(text.trim())?.[1] ?? null;
+}
+
+// -- Switch bands (owner request 2026-10-12) ---------------------------------
+// optio announces its own custom pick (x-optio-custom-pick) ahead of the
+// switch. The CLI's echo of it draws nothing (its model is kept on the pick);
+// the control update that answers the pick ends it, with a band naming the
+// option when it shows the control at that option (applied), none when not
+// (refused). A pick that changes only the effort has no echo: the update
+// still draws its band. A model switch echoed with no pick pending is one
+// optio did not ask for: a band naming the model.
+
+type SwitchedItem = Extract<ChatItem, { kind: 'switched' }>;
+
+function endPick(state: ChatState): ChatState {
+  if (state.pendingPick === undefined) return state;
+  const next = { ...state };
+  delete next.pendingPick;
+  return next;
+}
+
+// A control update (already folded into `state`): one that carries
+// customControls answers the pending pick. Value patches (the widget's own
+// optimistic one) and built-ins-only snapshots leave it pending.
+function answerPick(state: ChatState, ev: any, seq: number): ChatState {
+  const pick = state.pendingPick;
+  if (pick === undefined || !Array.isArray(ev.customControls)) return state;
+  const ended = endPick(state);
+  const shown = ev.customControls.find((c: any) => c?.id === pick.id);
+  if (shown?.value !== pick.value) return ended;
+  const band: SwitchedItem = { kind: 'switched', seq, control: pick.id, option: pick.value };
+  if (pick.model !== undefined) band.model = pick.model;
+  if (pick.timestamp !== undefined) band.timestamp = pick.timestamp;
+  return { ...ended, items: insertBeforePending(ended.items, [band]) };
+}
+
+// x-optio-resumed's customControls: the selection [{id, value}] the resumed
+// run launched with (value null: no option matches); undefined without one.
+function resumedSelection(raw: unknown): { id: string; value: string | null }[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw
+    .filter((c: any) => typeof c?.id === 'string' && (typeof c.value === 'string' || c.value === null))
+    .map((c: any) => ({ id: c.id, value: c.value }));
 }
 
 // The kind of the last conversation item, the pinned queued tail left out.
@@ -44,13 +98,30 @@ type ActivityItem = Extract<ChatItem, { kind: 'activity' }>;
 
 // Text a content block contributes to the reply bubble: a text block's text,
 // or the narration a text-bearing thinking block carries. Since CLI 2.1.267
-// the model writes its between-tool narration as such "thinking updates"; the
-// real reasoning arrives as a separate thinking block with empty text. With
-// `thinkingRows` (see ReduceOptions) thinking text is reasoning instead, never
-// part of the reply.
-function blockText(block: any, thinkingRows = false): string | null {
+// the model writes its between-tool narration as such "thinking updates", and
+// the frame lists them in `narration_block_indexes` (indexes into
+// message.content; CLI 2.1.296: "treat unlisted thinking blocks as ordinary
+// thinking"). Any other thinking block is reasoning, never part of the reply:
+// empty unless the launch asked for its text (thinkingVerbosity "visible"),
+// which a turn recorded then still carries when the task is hidden again.
+// With `thinkingRows` (see ReduceOptions) thinking text is a reasoning row.
+function blockText(block: any, narration: boolean, thinkingRows = false): string | null {
   if (block?.type === 'text' && typeof block.text === 'string') return block.text;
-  return thinkingRows ? null : thinkingText(block);
+  return thinkingRows || !narration ? null : thinkingText(block);
+}
+
+// The indexes of a frame's narration thinking blocks (narration_block_indexes).
+function narrationIndexes(ev: any): Set<number> {
+  const listed = ev?.narration_block_indexes;
+  return new Set(Array.isArray(listed) ? listed.filter((i: unknown) => Number.isInteger(i)) : []);
+}
+
+// A stream event of a response whose request asked for the reasoning text:
+// the CLI stamps the request's thinking display on the stream_event wrapper
+// (2.1.296: message_start, a thinking block's content_block_start, and its
+// thinking_delta). Its thinking deltas cannot be told apart from narration.
+function displaysReasoning(ev: any): boolean {
+  return typeof ev?.thinking_display === 'string' && ev.thinking_display !== 'omitted';
 }
 
 // A thinking block's text, if it carries any.
@@ -699,7 +770,15 @@ export function reduceEvent(
   }
   switch (ev?.type) {
     case 'x-optio-control-update':
-      return foldControlUpdate(state, ev);
+      return answerPick(foldControlUpdate(state, ev), ev, seq);
+
+    // Synthetic, listener-emitted (switch bands): optio's own custom pick,
+    // right before it asks claude to switch; the control update after it
+    // answers it (answerPick).
+    case 'x-optio-custom-pick': {
+      if (typeof ev.id !== 'string' || typeof ev.value !== 'string') return state;
+      return { ...state, pendingPick: { id: ev.id, value: ev.value } };
+    }
 
     // Synthetic, listener-emitted (Fix 12, owner ruling 2026-09-14): the
     // listener's own stamp of a streamed message's exact start (server clock
@@ -839,6 +918,21 @@ export function reduceEvent(
       if (lastContentKind(state.items) === 'compacted' && isCompactCommandEcho(rawText)) return state;
       // The CLI's own marker for the turn optio interrupted: its row says so.
       if (state.interrupt && INTERRUPT_ECHO.test(rawText.trim())) return state;
+      // A model switch echo is no turn and no message: busy stays as it was.
+      // It is kept on optio's pending pick (whose answer draws the band), or
+      // is a band of its own.
+      const switchedTo = modelSwitchEcho(rawText);
+      if (switchedTo !== null) {
+        const t = wireTime(ev);
+        if (state.pendingPick !== undefined) {
+          const pendingPick = { ...state.pendingPick, model: switchedTo };
+          if (t !== null) pendingPick.timestamp = t;
+          return { ...state, pendingPick };
+        }
+        const band: SwitchedItem = { kind: 'switched', seq, model: switchedTo };
+        if (t !== null) band.timestamp = t;
+        return { ...state, items: insertBeforePending(state.items, [band]) };
+      }
       const isInjectedNotification =
         ev.origin && typeof ev.origin === 'object'
           ? ev.origin.kind === 'task-notification'
@@ -947,7 +1041,11 @@ export function reduceEvent(
       const userItem: UserItem = { kind: 'user', text: text.trimEnd(), seq };
       if (echoTs !== undefined) userItem.timestamp = echoTs;
       const rows: ChatItem[] = attach ? [attach, userItem] : [userItem];
-      return { ...state, items: insertBeforePending(state.items, rows), busy: true };
+      // A local command's output is no turn (as the model switch echo above,
+      // which CLI 2.1.296 sends with no turn around it), so it leaves busy as
+      // it was.
+      const busy = text.startsWith(LOCAL_COMMAND_STDOUT) ? state.busy : true;
+      return { ...state, items: insertBeforePending(state.items, rows), busy };
     }
 
     // Synthetic, widget-emitted: render the operator's own message the moment
@@ -1252,8 +1350,9 @@ export function reduceEvent(
           ? state.pendingMessageStart.ts
           : undefined;
       let items = state.items;
-      for (const block of blocks) {
-        const text = blockText(block, opts.thinkingRows);
+      const narration = narrationIndexes(ev);
+      for (const [index, block] of blocks.entries()) {
+        const text = blockText(block, narration.has(index), opts.thinkingRows);
         const reasoning = opts.thinkingRows ? thinkingText(block) : null;
         if (text !== null) {
           const freshStart = marker !== undefined
@@ -1324,8 +1423,11 @@ export function reduceEvent(
       const d = ev.event?.delta;
       const isThinking = d?.type === 'thinking_delta';
       // Reasoning (thinkingRows) shows as a row from its final thinking block;
-      // it never streams into the reply.
-      if (isThinking && opts.thinkingRows) return state;
+      // it never streams into the reply. Nor does any thinking delta of a
+      // response that carries reasoning text: its narration joins the reply
+      // from the final thinking block, where narration_block_indexes tells
+      // the two apart.
+      if (isThinking && (opts.thinkingRows || displaysReasoning(ev))) return state;
       const delta = isThinking ? d.thinking : d?.text;
       if (typeof delta !== 'string' || delta === '') return state;
       // Fix 12: this message's resolved START (see the `assistant` case for
@@ -1419,7 +1521,8 @@ export function reduceEvent(
     }
 
     case 'x-optio-closed': {
-      state = endInterrupt(state);
+      // A pick still unanswered was never applied (switch bands).
+      state = endPick(endInterrupt(state));
       // Session ended: stop every running row, background rows included.
       const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
       // Review of fix 13b, finding 2: settle any "Not delivered" note still
@@ -1431,7 +1534,9 @@ export function reduceEvent(
     }
 
     case 'x-optio-resumed': {
-      state = endInterrupt(state);
+      // A pick the old run left unanswered (it closed during the switch)
+      // must not pair with this run's first control update (switch bands).
+      state = endPick(endInterrupt(state));
       // Synthetic, listener-emitted after a resumed run's restored history
       // (x-optio-closed is not persisted, so nothing else ends that run here).
       // Its process is gone: stop what it left running, background rows
@@ -1453,9 +1558,19 @@ export function reduceEvent(
         settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'), requeued)),
         requeued,
       );
+      // Switch bands (owner request 2026-10-12): `customControls`, the
+      // task-defined controls' selection this run launched with, is folded
+      // into the controls; the band names the selected options as its mode.
+      const selection = resumedSelection(ev.customControls);
+      for (const { id, value } of selection ?? []) {
+        state = foldControlUpdate(state, { id: `${CUSTOM_CONTROL_PREFIX}${id}`, value });
+      }
+      const options = selection
+        ?.filter((s): s is { id: string; value: string } => s.value !== null)
+        .map((s) => ({ control: s.id, option: s.value }));
       // Resume band (owner request 2026-10-08): mark where the old run ended,
       // in front of the bubbles this run re-queues.
-      return { ...state, items: appendBand(items, 'resumed', seq), busy: false };
+      return { ...state, items: appendBand(items, 'resumed', seq, options), busy: false };
     }
 
     case 'system': {

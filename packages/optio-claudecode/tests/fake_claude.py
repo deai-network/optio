@@ -264,10 +264,41 @@ def run_stream_json_mode(argv: list[str]) -> int:
                                    initialize with an error (as a CLI without
                                    it would) unless launched with --continue
                                    (a relaunch answers normally).
+      FAKE_CLAUDE_ARGV_LOG       — a file path: append this launch's argv
+                                   (without argv[0]) as one JSON line.
+      FAKE_CLAUDE_CONTROL_LOG    — a file path: append the ``request`` of
+                                   every control_request read on stdin as
+                                   one JSON line.
+      FAKE_CLAUDE_APPLY_ERROR    — a message: answer apply_flag_settings
+                                   with an error carrying it (nothing
+                                   changes).
+      FAKE_CLAUDE_DROP_EFFORT    — comma-separated effort levels this claude
+                                   does not take: dropped silently from
+                                   --effort and from apply_flag_settings (as
+                                   the real CLI drops a level it does not
+                                   know), so get_settings reports another
+                                   effort than optio asked for.
+
+    The reply template may also name ``{model}`` (the model the turn runs on,
+    a full id) and ``{effort}`` (its effort level, ``default`` when none was
+    set). Like the real CLI (2.1.296), every turn starts with a system/init
+    naming the model it runs on, and apply_flag_settings switches model and
+    effort from the next turn on, without a restart. The control request
+    get_settings answers as the real CLI does (task-1 spike, 2.1.296):
+    ``effective`` / ``sources`` hold the apply_flag_settings layer (launch
+    flags are not a settings source), ``applied`` the model the next turn
+    runs (a full id) and its effort (the account default, ``medium``, when
+    none is set).
     """
     def emit(obj):
         sys.stdout.write(json.dumps(obj) + "\n")
         sys.stdout.flush()
+
+    argv_log = os.environ.get("FAKE_CLAUDE_ARGV_LOG")
+    if argv_log:
+        with open(argv_log, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(argv[1:]) + "\n")
+    control_log = os.environ.get("FAKE_CLAUDE_CONTROL_LOG")
 
     reply_tpl = os.environ.get("FAKE_CLAUDE_REPLY", "reply-{n}")
     want_permission = os.environ.get("FAKE_CLAUDE_PERMISSION") == "1"
@@ -291,8 +322,18 @@ def run_stream_json_mode(argv: list[str]) -> int:
     if model_arg is None and "--continue" in argv:
         model_arg = _transcript_model()
     models, running_model = cli_models_for(model_arg)
-    emit({"type": "system", "subtype": "init", "session_id": session_id,
-          "model": running_model, "cwd": os.getcwd(), "permissionMode": mode})
+    dropped = {lvl for lvl in os.environ.get("FAKE_CLAUDE_DROP_EFFORT", "").split(",") if lvl}
+    effort = argv[argv.index("--effort") + 1] if "--effort" in argv else "default"
+    if effort in dropped:
+        effort = "default"
+    # The apply_flag_settings layer, as get_settings reports it.
+    flag_layer: dict = {}
+
+    def init_event():
+        return {"type": "system", "subtype": "init", "session_id": session_id,
+                "model": running_model, "cwd": os.getcwd(), "permissionMode": mode}
+
+    emit(init_event())
     n = 0
     for line in sys.stdin:
         line = line.strip()
@@ -301,6 +342,49 @@ def run_stream_json_mode(argv: list[str]) -> int:
         msg = json.loads(line)
         if msg.get("type") == "control_request":
             sub = (msg.get("request") or {}).get("subtype")
+            if control_log:
+                with open(control_log, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(msg.get("request")) + "\n")
+            if sub == "apply_flag_settings":
+                # As the real CLI answers it (2.1.296, spike): settings must be
+                # an object; keys merge into the flag layer; an unknown model is
+                # taken as given, an unknown effort level silently dropped.
+                settings = (msg.get("request") or {}).get("settings")
+                failure = os.environ.get("FAKE_CLAUDE_APPLY_ERROR")
+                if not isinstance(settings, dict) or failure:
+                    emit({"type": "control_response", "response": {
+                        "subtype": "error", "request_id": msg.get("request_id"),
+                        "error": failure or "apply_flag_settings requires `settings` "
+                                            "to be an object",
+                    }})
+                    continue
+                if "model" in settings:
+                    wanted = settings["model"] or "default"
+                    running_model = next((m["resolvedModel"] for m in models
+                                          if m["value"] == wanted), wanted)
+                    flag_layer["model"] = settings["model"]
+                level = settings.get("effortLevel")
+                if level in ("low", "medium", "high", "xhigh", "max") and level not in dropped:
+                    effort = level
+                    flag_layer["effortLevel"] = level
+                emit({"type": "control_response", "response": {
+                    "subtype": "success", "request_id": msg.get("request_id"),
+                }})
+                continue
+            if sub == "get_settings":
+                emit({"type": "control_response", "response": {
+                    "subtype": "success", "request_id": msg.get("request_id"),
+                    "response": {
+                        "effective": dict(flag_layer),
+                        "sources": ([{"source": "flagSettings", "settings": dict(flag_layer)}]
+                                    if flag_layer else []),
+                        "applied": {"model": running_model,
+                                    "effort": "medium" if effort == "default" else effort,
+                                    "advisor": None, "ultracode": False,
+                                    "ultracodeRequested": False, "ultracodeAvailable": True},
+                    },
+                }})
+                continue
             if sub == "initialize" and (
                     os.environ.get("FAKE_CLAUDE_INITIALIZE") == "error-fresh"
                     and "--continue" not in argv):
@@ -348,6 +432,7 @@ def run_stream_json_mode(argv: list[str]) -> int:
             with open(stdin_log, "a", encoding="utf-8") as f:
                 f.write(json.dumps(_user_text(msg)) + "\n")
         n += 1
+        emit(init_event())
         decision_note = ""
         if want_permission and n == 1:
             emit({"type": "control_request", "request_id": "perm-1",
@@ -390,7 +475,7 @@ def run_stream_json_mode(argv: list[str]) -> int:
             # stdin closed without an interrupt arriving: nothing left to
             # reply to.
             return 0
-        text = reply_tpl.format(n=n) + decision_note
+        text = reply_tpl.format(n=n, model=running_model, effort=effort) + decision_note
         emit({"type": "assistant", "message": {
             "role": "assistant", "content": [{"type": "text", "text": text}],
         }, "session_id": session_id})

@@ -658,6 +658,18 @@ grok, kimicode, antigravity) inherit their common field sets from mixins in
   resolves a map for the viewer's language (`resolve_text`: the language's
   entry, else `"en"`, else the first). Anything but a `WelcomeCard` or None
   raises `ValueError`.
+- **`CustomControlsConfigMixin`** (`optio_agents.custom_controls`) —
+  `custom_controls`: task-defined selectors (`CustomControl` with
+  `CustomOption`s, each setting a fixed `ControlSettings` combination of
+  model / reasoning effort / permission mode; labels a string or a language
+  map read by `resolve_text`), independent of the controls bar. Only
+  claudecode accepts a non-empty list so far
+  (`optio_agents_all.supports_custom_controls`); the others raise `ValueError`.
+- **`ResumeConfigMixin`** — `smooth_resume` (default False): this task should
+  be resumed without confirmation when a message arrives. A send to the
+  suspended session resumes it directly; a send that discards a failed run's
+  unsaved work still asks. Every engine accepts it; only claudecode's
+  suspended replay acts on it so far (`widgetData.smoothResume`).
 
 `optio-agents-all` guards this uniformity with a union-wide test; its
 `create_task` passes configs through verbatim. Details:
@@ -688,8 +700,9 @@ message sent while it starts goes after them; stage 1 wires Claude Code
 message (the steering id, for messages Steering sends) and a trailing blank
 line on a busy native-queue send. `Steering.reset_transport()` (Fix 25)
 re-writes an in-flight message rather than dropping it when a wrapper
-relaunches its transport mid-turn (Claude Code: a model/effort change),
-so the queue behind it keeps draining and the UI does not stay stuck busy.
+relaunches its transport mid-turn (Claude Code did for a model/effort change;
+it now switches them live, without a relaunch), so the queue behind it keeps
+draining and the UI does not stay stuck busy.
 `begin_transport_reset()` (Fix 29) latches that in-flight message from the
 moment the relaunch begins, so the dying process's own last events cannot
 clear it first and leave nothing to rescue.

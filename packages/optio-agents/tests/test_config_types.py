@@ -165,3 +165,32 @@ def test_the_mixin_rejects_a_welcome_that_is_not_a_card():
         cfg(consumer_instructions="x", welcome="nope")
     with pytest.raises(ValueError, match="welcome"):
         cfg(consumer_instructions="x", welcome={"title": "Hi"})
+# --- ResumeConfigMixin: how a suspended session resumes, shared by engines -----
+
+def _resume_config():
+    from dataclasses import dataclass
+    from optio_agents import ResumeConfigMixin
+
+    @dataclass(frozen=True, kw_only=True)
+    class _EngineConfig(ResumeConfigMixin):
+        consumer_instructions: str
+
+    return _EngineConfig
+
+
+def test_resume_mixin_is_exported_at_the_top_level():
+    import optio_agents
+    from optio_agents.config_types import ResumeConfigMixin
+
+    assert optio_agents.ResumeConfigMixin is ResumeConfigMixin
+    assert "ResumeConfigMixin" in optio_agents.__all__
+
+
+def test_smooth_resume_is_off_by_default():
+    # A message to a suspended session asks before it resumes it.
+    assert _resume_config()(consumer_instructions="x").smooth_resume is False
+
+
+def test_smooth_resume_can_be_turned_on():
+    cfg = _resume_config()(consumer_instructions="x", smooth_resume=True)
+    assert cfg.smooth_resume is True

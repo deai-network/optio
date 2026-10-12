@@ -18,7 +18,13 @@ const delta = (text: string) => ({ type: 'stream_event', event: { type: 'content
 const messageStart = (msgId: string) => ({ type: 'stream_event', event: { type: 'message_start', message: { id: msgId } } });
 const result = (text: string) => ({ type: 'result', subtype: 'success', result: text });
 const thinking = (text: string, msgId?: string) => ({ type: 'assistant', message: { role: 'assistant', id: msgId, content: [{ type: 'thinking', thinking: text, signature: 'sig' }] } });
+// A thinking block the frame lists in narration_block_indexes (CLI 2.1.296:
+// the server tagged it as narration, the prose between tool calls).
+const narration = (text: string, msgId?: string) => ({ ...thinking(text, msgId), narration_block_indexes: [0] });
 const thinkingDelta = (text: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: text } } });
+// A delta of a response whose request asked for the reasoning text
+// (--thinking-display summarized): the wrapper carries thinking_display.
+const summarizedDelta = (text: string) => ({ ...thinkingDelta(text), thinking_display: 'summarized' });
 const T0 = '2026-09-12T10:00:00.000Z';
 const T5 = '2026-09-12T10:00:05.000Z';
 const T9 = '2026-09-12T10:00:09.000Z';
@@ -520,25 +526,62 @@ describe('real tool rows', () => {
 
 describe('narration from thinking blocks', () => {
   // Since CLI 2.1.267 the model writes its between-tool narration as a
-  // text-bearing thinking block; the real reasoning is an empty thinking block.
+  // text-bearing thinking block, and the frame lists it in
+  // narration_block_indexes. Any other thinking block is the model's
+  // reasoning: empty unless the launch asked for its text
+  // (--thinking-display summarized, thinkingVerbosity "visible"), and never
+  // part of the reply.
 
-  it('a text-bearing thinking block becomes an assistant bubble', () => {
-    const s = run([user('q'), thinking("I'll check the VPN first.", 'm1')]);
+  it('a listed text-bearing thinking block becomes an assistant bubble', () => {
+    const s = run([user('q'), narration("I'll check the VPN first.", 'm1')]);
     const bubbles = ofKind(s, 'assistant');
     expect(bubbles.map((b) => b.text)).toEqual(["I'll check the VPN first."]);
     expect(bubbles[0].pending).toBe(true);
   });
 
-  it('an empty thinking block (hidden reasoning) is ignored', () => {
-    const s = run([thinking('', 'm1'), thinking('   ', 'm1')]);
+  it('an empty thinking block (hidden reasoning) is ignored, listed or not', () => {
+    const s = run([thinking('', 'm1'), thinking('   ', 'm1'), narration('', 'm1')]);
     expect(s.items).toEqual([]);
+  });
+
+  it('an unlisted text-bearing thinking block is reasoning and adds nothing', () => {
+    // A turn recorded while the task showed thinking (summarized display),
+    // replayed after it went back to hidden.
+    const s = run([user('q'), thinking('Phone calls are Kontaktberichte with KonArt_ID 1.', 'm1'), assistantText('The last call was on 2 September.', 'm1')]);
+    expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(['The last call was on 2 September.']);
+    expect(ofKind(s, 'thinking')).toEqual([]);
+  });
+
+  it('of one frame\'s thinking blocks, only the listed ones are narration', () => {
+    const frame = {
+      type: 'assistant',
+      narration_block_indexes: [1],
+      message: {
+        role: 'assistant', id: 'm1',
+        content: [
+          { type: 'thinking', thinking: 'Weighing a metadata filter.', signature: 'sig' },
+          { type: 'thinking', thinking: 'Checking the log.', signature: 'sig' },
+          { type: 'text', text: 'All good.' },
+        ],
+      },
+    };
+    expect(ofKind(run([frame]), 'assistant').map((b) => b.text)).toEqual(['Checking the log.\n\nAll good.']);
   });
 
   it('thinking_delta streams narration and the final thinking event does not duplicate it', () => {
     const mid = run([messageStart('m1'), thinkingDelta("I'll "), thinkingDelta('check.')]);
     expect(ofKind(mid, 'assistant').map((b) => b.text)).toEqual(["I'll check."]);
-    const s = reduceEvent(mid, thinking("I'll check.", 'm1'), 4);
+    const s = reduceEvent(mid, narration("I'll check.", 'm1'), 4);
     expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(["I'll check."]);
+  });
+
+  it('a summarized response\'s thinking_delta does not stream; its narration arrives with the final event', () => {
+    const mid = run([messageStart('m1'), summarizedDelta('Weighing a metadata filter.')]);
+    expect(ofKind(mid, 'assistant')).toEqual([]);
+    const reasoning = reduceEvent(mid, thinking('Weighing a metadata filter.', 'm1'), 3);
+    expect(ofKind(reasoning, 'assistant')).toEqual([]);
+    const s = reduceEvent(reduceEvent(reasoning, summarizedDelta('Checking the log.'), 4), narration('Checking the log.', 'm1'), 5);
+    expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(['Checking the log.']);
   });
 
   it('narration and text in one message form one bubble with two parts (live)', () => {
@@ -546,7 +589,7 @@ describe('narration from thinking blocks', () => {
       messageStart('m1'),
       thinking('', 'm1'),
       thinkingDelta('Checking the log.'),
-      thinking('Checking the log.', 'm1'),
+      narration('Checking the log.', 'm1'),
       delta('All good.'),
       assistantText('All good.', 'm1'),
     ]);
@@ -554,26 +597,26 @@ describe('narration from thinking blocks', () => {
   });
 
   it('narration and text in one message form one bubble with two parts (replay, no deltas)', () => {
-    const s = run([thinking('Checking the log.', 'm1'), assistantText('All good.', 'm1')]);
+    const s = run([narration('Checking the log.', 'm1'), assistantText('All good.', 'm1')]);
     expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(['Checking the log.\n\nAll good.']);
   });
 
   it('result keeps narration that precedes the result text in the same message', () => {
-    const s = run([user('q'), thinking('Checking the log.', 'm1'), assistantText('All good.', 'm1'), result('All good.')]);
+    const s = run([user('q'), narration('Checking the log.', 'm1'), assistantText('All good.', 'm1'), result('All good.')]);
     const bubbles = ofKind(s, 'assistant');
     expect(bubbles.map((b) => b.text)).toEqual(['Checking the log.\n\nAll good.']);
     expect(bubbles[0].pending).toBe(false);
   });
 
   it('result keeps narration when its text differs from the bubble only in surrounding whitespace', () => {
-    const a = run([user('q'), thinking('Checking the log.', 'm1'), assistantText('All good.\n', 'm1'), result('All good.')]);
+    const a = run([user('q'), narration('Checking the log.', 'm1'), assistantText('All good.\n', 'm1'), result('All good.')]);
     expect(ofKind(a, 'assistant').map((b) => b.text)).toEqual(['Checking the log.\n\nAll good.\n']);
-    const b = run([user('q'), thinking('Checking the log.', 'm1'), assistantText('All good.', 'm1'), result('\nAll good.\n\n')]);
+    const b = run([user('q'), narration('Checking the log.', 'm1'), assistantText('All good.', 'm1'), result('\nAll good.\n\n')]);
     expect(ofKind(b, 'assistant').map((x) => x.text)).toEqual(['Checking the log.\n\nAll good.']);
   });
 
   it('narration in different messages stays in separate bubbles', () => {
-    const s = run([thinking('Step one.', 'm1'), thinking('Step two.', 'm2')]);
+    const s = run([narration('Step one.', 'm1'), narration('Step two.', 'm2')]);
     expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(['Step one.', 'Step two.']);
   });
 
@@ -1203,5 +1246,159 @@ describe('a message sent while a resumed session starts (waiting announcement)',
     const item = s.items.find((i) => i.kind === 'user' && i.queueId === 'u2');
     expect(item && item.kind === 'user' && item.queued).toBeFalsy();
     expect(item && item.kind === 'user' && item.local).toBe(true);
+  });
+});
+
+// CLI 2.1.296: a live model switch (apply_flag_settings) in a conversation
+// that has had a turn echoes the CLI's own "/model" output as an isReplay
+// user event, with no turn around it (no session_state_changed, no result).
+describe('live model switch echo (local-command-stdout)', () => {
+  const switchEcho = {
+    type: 'user', isReplay: true, timestamp: T9, uuid: '9fb29c52-0b6e-474e-8266-f771e709e1d4',
+    message: { role: 'user', content: '<local-command-stdout>Set model to `claude-sonnet-5-5`</local-command-stdout>' },
+  };
+
+  it('does not make an idle agent busy', () => {
+    const s = run([user('q'), assistantText('a', 'msg_1'), result('a'), switchEcho]);
+    expect(s.busy).toBe(false);
+  });
+
+  it('leaves a busy agent busy', () => {
+    const s = run([user('q'), assistantText('a', 'msg_1'), switchEcho]);
+    expect(s.busy).toBe(true);
+  });
+});
+
+// Switch bands (owner request 2026-10-12): a model switch, and a confirmed
+// pick of a task-defined control, are drawn as a band, not a user bubble.
+// optio announces its own pick (x-optio-custom-pick) ahead of the switch; the
+// CLI's echo of it draws nothing, the control update that confirms it draws
+// the band, a refusal draws none.
+describe('switch bands', () => {
+  const echo = (model: string) => ({
+    type: 'user', isReplay: true, timestamp: T9, uuid: `echo-${model}`,
+    message: { role: 'user', content: `<local-command-stdout>Set model to \`${model}\`</local-command-stdout>` },
+  });
+  const SPEED = {
+    id: 'speed', label: null, description: 'What should be the balance between detail level and speed?',
+    options: [{ value: 'fast', label: 'Fast' }, { value: 'extensive', label: 'Extensive' }],
+    value: 'extensive',
+  };
+  const TONE = { id: 'tone', label: 'Tone', options: [{ value: 'concise', label: 'Concise' }], value: 'concise' };
+  const pick = (value: string) => ({ type: 'x-optio-custom-pick', id: 'speed', value });
+  const controlResponse = { type: 'control_response', response: { subtype: 'success', request_id: 'req_1', response: {} } };
+  const update = (value: string | null) => ({ type: 'x-optio-control-update', controls: [], customControls: [{ ...SPEED, value }] });
+  const resumedWith = (value: string | null) => ({ type: 'x-optio-resumed', customControls: [{ id: 'speed', value }] });
+  const turn = [user('q'), assistantText('a', 'msg_1'), result('a')];
+  const withSpeed: ChatState = { ...initialChatState, customControls: [SPEED] as any };
+  const bands = (s: ChatState) => ofKind(s, 'switched');
+
+  it('a model switch optio did not ask for is a band naming the model, not a user bubble', () => {
+    const s = run([...turn, echo('claude-sonnet-5-5')]);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'switched']);
+    expect(bands(s)).toEqual([{ kind: 'switched', seq: 4, timestamp: Date.parse(T9), model: 'claude-sonnet-5-5' }]);
+  });
+
+  it('our pick, its echo and the update that confirms it: exactly one band, naming the option', () => {
+    const s = run([...turn, pick('fast'), echo('claude-sonnet-5-5'), controlResponse, update('fast')], withSpeed);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'switched']);
+    expect(bands(s)).toEqual([{
+      kind: 'switched', seq: 7, control: 'speed', option: 'fast', model: 'claude-sonnet-5-5', timestamp: Date.parse(T9),
+    }]);
+    expect(s.pendingPick).toBeUndefined();
+    expect(s.customControls?.[0].value).toBe('fast');
+  });
+
+  it('a pick that changes only the effort (no echo) still draws its band', () => {
+    const s = run([...turn, pick('fast'), controlResponse, update('fast')], withSpeed);
+    expect(bands(s)).toEqual([{ kind: 'switched', seq: 6, control: 'speed', option: 'fast' }]);
+  });
+
+  it('an update without customControls (a value patch, a built-ins snapshot) does not end the pick', () => {
+    const patch = { type: 'x-optio-control-update', id: 'custom:speed', value: 'fast' };
+    const builtIns = { type: 'x-optio-control-update', controls: [] };
+    const s = run([...turn, pick('fast'), patch, echo('claude-sonnet-5-5'), builtIns, update('fast')], withSpeed);
+    expect(bands(s)).toHaveLength(1);
+    expect(bands(s)[0]).toMatchObject({ control: 'speed', option: 'fast', model: 'claude-sonnet-5-5' });
+  });
+
+  it.each([['the old value', 'extensive'], ['no option', null]])(
+    'a refused pick (the update shows %s) draws no band and ends: a later switch is generic',
+    (_, value) => {
+      const s = run([...turn, pick('fast'), update(value)], withSpeed);
+      expect(bands(s)).toEqual([]);
+      expect(s.pendingPick).toBeUndefined();
+      expect(bands(run([echo('claude-haiku-5')], s))).toEqual([
+        { kind: 'switched', seq: 1, timestamp: Date.parse(T9), model: 'claude-haiku-5' },
+      ]);
+    },
+  );
+
+  it('busy is left as it was by the pick, its echo, the answer and the update', () => {
+    const events = [pick('fast'), echo('claude-sonnet-5-5'), controlResponse, update('fast')];
+    for (const [prefix, busy] of [[turn, false], [[user('q'), assistantText('a', 'msg_1')], true]] as const) {
+      let s = run([...prefix], withSpeed);
+      expect(s.busy).toBe(busy);
+      for (const ev of events) {
+        s = reduceEvent(s, ev, 99);
+        expect(s.busy).toBe(busy);
+      }
+    }
+  });
+
+  it('any other local command output renders as before, busy unchanged', () => {
+    const other = {
+      type: 'user', isReplay: true, timestamp: T9,
+      message: { role: 'user', content: '<local-command-stdout>Set effort to high</local-command-stdout>' },
+    };
+    const s = run([...turn, pick('fast'), other], withSpeed);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'user']);
+    expect(s.busy).toBe(false);
+  });
+
+  it('x-optio-resumed with customControls: the band records the selected options, the values are folded', () => {
+    const from: ChatState = { ...initialChatState, customControls: [SPEED, TONE] as any };
+    const marker = { type: 'x-optio-resumed', customControls: [{ id: 'speed', value: 'fast' }, { id: 'tone', value: null }] };
+    const s = run([...turn, marker], from);
+    expect(ofKind(s, 'resumed')).toEqual([{ kind: 'resumed', seq: 4, options: [{ control: 'speed', option: 'fast' }] }]);
+    expect(s.customControls?.map((c) => [c.id, c.value])).toEqual([['speed', 'fast'], ['tone', null]]);
+  });
+
+  it('x-optio-resumed without customControls draws the band as before', () => {
+    expect(ofKind(run([...turn, { type: 'x-optio-resumed' }], withSpeed), 'resumed')).toEqual([{ kind: 'resumed', seq: 4 }]);
+  });
+
+  it('a second marker right after the first names the mode of the newer run', () => {
+    const s = run([...turn, resumedWith('extensive'), resumedWith('fast')], withSpeed);
+    expect(ofKind(s, 'resumed')).toEqual([{ kind: 'resumed', seq: 4, options: [{ control: 'speed', option: 'fast' }] }]);
+  });
+
+  it('a pick the old run never answered ends with that run', () => {
+    const s = run([...turn, pick('fast'), { type: 'x-optio-resumed' }, echo('claude-sonnet-5-5')], withSpeed);
+    expect(bands(s)).toEqual([{ kind: 'switched', seq: 6, timestamp: Date.parse(T9), model: 'claude-sonnet-5-5' }]);
+  });
+
+  // A pick persisted with no outcome after it (the conversation closed during
+  // the switch) must not pair with the next run's first control update.
+  it.each([
+    ['x-optio-resumed', { type: 'x-optio-resumed' }],
+    ['x-optio-resumed with customControls', resumedWith('extensive')],
+    ['x-optio-closed', { type: 'x-optio-closed', reason: 'ended' }],
+  ])('a pending pick is dropped at %s: a later update showing that option draws no band', (_, marker) => {
+    const s = run([...turn, pick('fast'), marker, update('fast')], withSpeed);
+    expect(bands(s)).toEqual([]);
+    expect(s.pendingPick).toBeUndefined();
+  });
+
+  it('a replayed buffer (old run, then the resume marker) draws the same bands in place', () => {
+    const s = run([
+      ...turn, pick('fast'), echo('claude-sonnet-5-5'), controlResponse, update('fast'), echo('claude-opus-5'),
+      resumedWith('fast'), user('System: you have been resumed'),
+    ], withSpeed);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'switched', 'switched', 'resumed', 'activity']);
+    expect(bands(s).map((b) => [b.control, b.option, b.model])).toEqual([
+      ['speed', 'fast', 'claude-sonnet-5-5'], [undefined, undefined, 'claude-opus-5'],
+    ]);
+    expect(ofKind(s, 'resumed')[0].options).toEqual([{ control: 'speed', option: 'fast' }]);
   });
 });

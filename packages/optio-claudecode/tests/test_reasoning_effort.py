@@ -2,9 +2,8 @@
 
 File-disjoint units that need no live claude: config validation, the per-model
 effort levels (from the CLI's own model list), the `--effort` argv flag, the
-conversation set_control / restart-signal wiring, and the synthetic control
-re-emit. The full restart loop (effort_task arm) is exercised in
-test_conversation_ui_session.py.
+conversation's live set_control, and the synthetic control re-emit. The live
+switch end to end is exercised in test_conversation_ui_session.py.
 """
 
 import pytest
@@ -145,33 +144,36 @@ async def test_system_init_captures_runtime_model():
     assert conv.runtime_model_observed.is_set()
 
 
-# --- D. set_control routes to the restart signal ------------------------
+# --- D. set_control switches live (test_live_switch.py has the rest) -----
 
 
 @pytest.mark.asyncio
-async def test_set_control_effort_fires_restart_signal():
+async def test_set_control_effort_switches_live_keeping_the_model():
+    import asyncio
     from optio_claudecode.conversation import ClaudeCodeConversation
+    from .test_conversation_driver import _FakeHandle
+    from .test_live_switch import _answer_readback
+    handle = _FakeHandle()
     conv = ClaudeCodeConversation()
-    await conv.set_control("reasoning_effort", "high")
-    assert conv.requested_effort == "high"
-    assert conv.effort_change_requested.is_set()
-    # an effort change must NOT masquerade as a model change
-    assert conv.requested_model is None
-    assert not conv.model_change_requested.is_set()
+    conv.attach(handle)
+    conv.models_offered = CATALOG
+    conv.model, conv.effort = "sonnet", "medium"
+    reader = asyncio.create_task(conv.run_reader())
+    switch = asyncio.create_task(conv.set_control("reasoning_effort", "high"))
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    # an effort change carries the running model along, unchanged
+    assert req["request"] == {"subtype": "apply_flag_settings",
+                              "settings": {"model": "sonnet", "effortLevel": "high"}}
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": req["request_id"]}})
+    await _answer_readback(handle)              # then claude is asked what it runs
+    await asyncio.wait_for(switch, 60)
+    assert (conv.model, conv.effort) == ("sonnet", "high")
+    handle.stdout.eof()
+    await reader
 
 
-@pytest.mark.asyncio
-async def test_set_control_model_leaves_effort_untouched():
-    from optio_claudecode.conversation import ClaudeCodeConversation
-    conv = ClaudeCodeConversation()
-    await conv.set_control("model", "sonnet")
-    assert conv.requested_model == "sonnet"
-    assert conv.model_change_requested.is_set()
-    assert conv.requested_effort is None
-    assert not conv.effort_change_requested.is_set()
-
-
-# --- E. control re-emit on relaunch -------------------------------------
+# --- E. control re-emit after a switch -----------------------------------
 
 
 @pytest.mark.asyncio

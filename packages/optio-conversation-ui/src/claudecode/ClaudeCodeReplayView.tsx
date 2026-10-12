@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Modal } from 'antd';
-import { isResurrectable, type WidgetProps } from 'optio-ui';
+import { isResumable, isResurrectable, type WidgetProps } from 'optio-ui';
 import { SpinnerScope } from 'vultus-antd';
-import type { ChatState, SessionControl } from '../chat.js';
+import type { ChatState, CustomControl, SessionControl } from '../chat.js';
 import { initialChatState, reduceEvent, type ReduceOptions } from './events.js';
 import { ConversationView } from '../ConversationView.js';
 import { todosFromWidgetData } from '../todosFromWidgetData.js';
@@ -17,7 +17,9 @@ import { ResumingPanel } from './ResumingPanel.js';
 // same ConversationView, closed, with no transport: no EventSource, no POSTs.
 // Given the widget's API and proxy URLs, its composer stays usable: Send asks
 // to resume the session, then resumes it and sends the message once it is
-// live (resumeAndSend.ts). Without them the view is read-only.
+// live (resumeAndSend.ts). A task with smooth_resume (widgetData.smoothResume)
+// is not asked, unless the send discards unsaved work. Without the URLs the
+// view is read-only.
 
 export interface ClaudeCodeReplayViewProps {
   process: WidgetProps['process'];
@@ -37,6 +39,9 @@ export interface ClaudeCodeReplayViewProps {
   // WidgetProps.readOnly: the host shows the process read-only, so the
   // composer must not resume it.
   readOnly?: boolean;
+  // WidgetProps.hideEmptyRuns: leave out the runs a resume added where nothing
+  // happened, the last one included (see ConversationView).
+  hideEmptyRuns?: boolean;
   // The session is resuming (optio-ui keeps this view on screen until the
   // live one is ready): the input gives way to a spinner panel.
   resuming?: boolean;
@@ -90,6 +95,7 @@ export function ClaudeCodeReplayView({
   prefix,
   widgetProxyUrl,
   readOnly,
+  hideEmptyRuns,
   resuming,
   themeMode,
   onToggleTheme,
@@ -100,21 +106,29 @@ export function ClaudeCodeReplayView({
   const thinkingVerbosity = ((widgetData as any)?.thinkingVerbosity ?? 'hidden') as
     'hidden' | 'visible';
   const initialControls = ((widgetData as any)?.controls ?? []) as SessionControl[];
+  const initialCustomControls = ((widgetData as any)?.customControls ?? []) as CustomControl[];
   const showSessionControls = Boolean((widgetData as any)?.showSessionControls);
   const maxUploadBytes = Number((widgetData as any)?.maxUploadBytes ?? 10_000_000);
   const nativeSpinner = Boolean((widgetData as any)?.nativeSpinner);
+  // The task's smooth_resume: sending resumes the session without asking.
+  const smoothResume = (widgetData as any)?.smoothResume === true;
 
   // capturedAt, else one clock read at mount.
   const [mountedAt] = useState(() => Date.now());
   const captured = capturedAt ? Date.parse(capturedAt) : NaN;
   const now = Number.isFinite(captured) ? captured : mountedAt;
 
-  // Seeded like ClaudeCodeView's reducer: `{...initialChatState, controls}`
-  // from widgetData. Re-folded only when the record (events array) or the
-  // thinking verbosity changes; `now` changes only with the record.
+  // Seeded like ClaudeCodeView's reducer: `{...initialChatState, controls,
+  // customControls}` from widgetData. Re-folded only when the record (events
+  // array) or the thinking verbosity changes; `now` changes only with the record.
   const thinkingRows = thinkingVerbosity === 'visible';
   const state = useMemo(
-    () => foldRecord(events, { ...initialChatState, controls: initialControls }, now, { thinkingRows }),
+    () => foldRecord(
+      events,
+      { ...initialChatState, controls: initialControls, customControls: initialCustomControls },
+      now,
+      { thinkingRows },
+    ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [events, now, thinkingRows],
   );
@@ -124,6 +138,9 @@ export function ClaudeCodeReplayView({
   const pending = useResumeSend(process._id);
   const canResume = !readOnly && apiBaseUrl !== undefined && Boolean(prefix) && Boolean(widgetProxyUrl);
   const discards = isResurrectable(process);
+  // smooth_resume: a send that resumes the saved session goes straight to
+  // resume-and-send. One that discards a failed run's unsaved work still asks.
+  const asks = !(smoothResume && isResumable(process) && !discards);
   const confirmSend = (): Promise<boolean> =>
     new Promise((resolve) => {
       modal.confirm({
@@ -148,6 +165,8 @@ export function ClaudeCodeReplayView({
   // The same state-derived props as ClaudeCodeView. No steer, interrupt,
   // permission, download or control-change handlers: the session controls get
   // their values (for labels) but, without onControlChange, render no inputs.
+  // Likewise the custom controls: they name the modes in the switch and resume
+  // bands, and without onCustomControlChange no selector renders.
   return (
     <SpinnerScope name={`optio:process:${process._id}`}>
       {modalHolder}
@@ -158,6 +177,7 @@ export function ClaudeCodeReplayView({
         closedLabel={SUSPENDED_CLOSED_LABEL}
         busy={state.busy}
         toolVerbosity={toolVerbosity}
+        hideEmptyRuns={hideEmptyRuns}
         thinkingVerbosity={thinkingVerbosity}
         showFileUpload={false}
         maxUploadBytes={maxUploadBytes}
@@ -168,7 +188,7 @@ export function ClaudeCodeReplayView({
         // puts its text back (draft), with the reason in the notice.
         composeWhenClosed={canResume && pending?.phase !== 'resuming'}
         inputReplacement={resuming ? <ResumingPanel pending={pending} /> : undefined}
-        confirmSend={confirmSend}
+        confirmSend={asks ? confirmSend : undefined}
         draft={pending?.phase === 'failed' ? pending.text : undefined}
         // While resuming, the panel says it instead.
         notice={resuming ? undefined : <ResumeSendNotice processId={process._id} state={pending} />}
@@ -176,6 +196,7 @@ export function ClaudeCodeReplayView({
         onPermission={noop}
         onFileDownload={noop}
         controls={showSessionControls ? state.controls : undefined}
+        customControls={state.customControls}
         themeMode={themeMode}
         onToggleTheme={onToggleTheme}
       />

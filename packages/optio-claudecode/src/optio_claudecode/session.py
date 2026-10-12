@@ -34,6 +34,7 @@ from optio_core.models import BasicAuth, SessionCrypto, TaskInstance
 from optio_agents.context import HookContext
 from optio_agents.conversation import ConversationClosed
 from optio_agents.fs_grants import fs_isolation_dirs
+from optio_agents.mcp import resolve_mcp_servers
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import (
     Host, LocalHost, ProcessHandle, RemoteHost, proc_wait, unwind_tracing,
@@ -376,6 +377,7 @@ async def run_claudecode_session(
             ctx, host, hook_ctx, config, protocol,
             resuming=resuming, resolved_seed_id=resolved_seed_id,
         )
+        mcp_config_path = await _plant_mcp_servers(ctx, host, config)
 
         # Network binding (same env handling as opencode for multi-container deploys)
         bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
@@ -395,30 +397,35 @@ async def run_claudecode_session(
             permission_mode=config.permission_mode,
             allowed_tools=config.allowed_tools,
             disallowed_tools=config.disallowed_tools,
+            tools=config.tools,
+            mcp_config_path=mcp_config_path,
             # A continued session runs an alias (default when none is
             # configured), not the full id its transcript ended on.
             model=cc_models.launch_model(config.model, continuing=pass_continue),
             resuming=pass_continue,
         )
-        # auto_start: append the kickoff prompt ONLY on a genuine fresh launch.
-        # Gated on `resuming` (not pass_continue): a no-transcript resume still
-        # drops --continue (D3) but must NOT re-issue the kickoff, which would
-        # restart the task instead of leaving the restored session as-is.
+        # The positional prompts (at most one of the two), after `--` so no
+        # multi-value option before them takes them for its values.
         claude_flags = [
             *claude_flags,
-            *host_actions.build_auto_start_args(
-                auto_start=config.auto_start, resuming=resuming,
-            ),
-        ]
-        # Resume notification: a System:-prefixed positional appended after
-        # --continue, so the restored conversation gets a "you have been
-        # resumed" turn. Gated on pass_continue (a transcript is actually
-        # being continued); a no-transcript resume sends nothing.
-        claude_flags = [
-            *claude_flags,
-            *host_actions.build_resume_notice_args(
-                resuming=resuming, pass_continue=pass_continue,
-            ),
+            *host_actions.positional_prompt_args([
+                # auto_start: the kickoff prompt ONLY on a genuine fresh
+                # launch. Gated on `resuming` (not pass_continue): a
+                # no-transcript resume still drops --continue (D3) but must
+                # NOT re-issue the kickoff, which would restart the task
+                # instead of leaving the restored session as-is.
+                *host_actions.build_auto_start_args(
+                    auto_start=config.auto_start, resuming=resuming,
+                ),
+                # Resume notification: a System:-prefixed positional with
+                # --continue, so the restored conversation gets a "you have
+                # been resumed" turn. Gated on pass_continue (a transcript is
+                # actually being continued); a no-transcript resume sends
+                # nothing.
+                *host_actions.build_resume_notice_args(
+                    resuming=resuming, pass_continue=pass_continue,
+                ),
+            ]),
         ]
         launch_env = {
             **(config.env or {}),
@@ -513,26 +520,41 @@ async def run_claudecode_session(
             resuming=resuming, resolved_seed_id=resolved_seed_id,
         )
         cred_baseline = cred_baseline_out
+        # Resolved once per launch (_spawn); the model probe gets neither the
+        # file nor its flags.
+        mcp_config_path = await _plant_mcp_servers(ctx, host, config)
 
-        # The `--model` value, also the model select's value: the configured
-        # model or the operator's pick (an alias from the CLI's list, or a
-        # full id). None: no --model (claude's default) on a fresh launch; a
-        # continued session runs the default alias (models.launch_model).
-        current_model = cc_models.launch_model(config.model, continuing=pass_continue)
-        # Live graded reasoning-effort, applied as `--effort` at (re)launch the
-        # same way current_model drives `--model`. Starts at the configured
-        # value; a reasoning_effort control change updates it and relaunches.
-        current_effort = config.reasoning_effort
+        # The task's custom controls: each control's default option replaces
+        # the config's own model / reasoning effort / permission mode
+        # (controls.custom_defaults). `base_*` is what a session runs while
+        # nothing is picked; a resume's saved picks replace them in turn. The
+        # models the options name are the task's own: launched and switched
+        # to as given, like a configured model (conversation.task_models).
+        defaults = cc_controls.custom_defaults(config.custom_controls)
+        base_model = defaults.get("model") or config.model
+        base_effort = defaults.get("reasoning_effort") or config.reasoning_effort
+        base_mode = defaults.get("permission_mode") or config.permission_mode
+        conversation.task_models = cc_controls.task_models(config.custom_controls)
+        # The `--model` value at launch: the configured model (or a custom
+        # control's default) or the operator's pick (an alias from the CLI's
+        # list, or a full id). None: no --model (claude's default) on a fresh
+        # launch; a continued session runs the default alias
+        # (models.launch_model). Once claude runs, conversation.model holds
+        # it, and each live switch updates it.
+        current_model = cc_models.launch_model(base_model, continuing=pass_continue)
+        # Graded reasoning effort, `--effort` at launch the same way; then
+        # conversation.effort, which a live switch updates.
+        current_effort = base_effort
         # An optio resume of a continued conversation brings back the
         # operator's picks (picks.py), each checked against this run: the
         # permission mode below, the model and effort once the CLI has listed
         # its models. `picks` is what the next resume restores, saved on every
-        # pick; `correcting_restore` marks the one relaunch that applies a
-        # correction (not a pick).
+        # switch.
         saved_picks = (await cc_picks.load(host)
                        if resuming and pass_continue and config.conversation_ui else None)
         picks = saved_picks or cc_picks.Picks()
-        correcting_restore = False
+        # Serializes picks-file writes; each writes the latest `picks`.
+        picks_lock = asyncio.Lock()
         if saved_picks is not None:
             # The model stays the launch value until the CLI's list says the
             # saved one is still offered (_restore_picks).
@@ -540,13 +562,16 @@ async def run_claudecode_session(
         # The CLI's own model list (its answer to the stream-json control
         # request initialize), asked once claude is up; None until then, and
         # while the CLI could not tell (then the picker offers the bare
-        # aliases and a relaunch asks again).
+        # aliases, and each live switch asks again: apply_settings).
         cli_models = None
-        # Set inside the conversation_ui block once the model list is in;
-        # (model, effort) -> serialized control list. Reused on every model/
-        # effort relaunch to re-emit the controls snapshot (effort presence and
-        # preselected level follow the selected model).
+        # Set inside the conversation_ui block once the model list is in:
+        # () -> the serialized control list for the running values. Reused on
+        # every live switch to re-emit the controls snapshot (effort presence
+        # and preselected level follow the selected model).
         build_controls = None
+        # Set next to it: () -> widgetData.customControls for the running
+        # values (controls.custom_controls_snapshot).
+        build_custom_controls = None
         # The controls snapshot the widget was last given (widgetData or an
         # x-optio-control-update). The system/init branch re-emits only a
         # changed one; the permission branch (system/init carries
@@ -554,8 +579,8 @@ async def run_claudecode_session(
         # the select.
         shown_controls = None
         # The permission_mode control: all six modes, the ones this session
-        # cannot use disabled with their reason. Switched live, so a relaunch
-        # keeps the running mode; bypass stays reachable when the task allows it.
+        # cannot use disabled with their reason. Switched live; bypass stays
+        # reachable when the task allows it.
         permission_options = cc_controls.permission_mode_options(
             permission_gate=config.permission_gate, bypass_allowed=config.bypass_allowed,
         )
@@ -573,22 +598,31 @@ async def run_claudecode_session(
 
         def _resolved(value: str | None) -> str | None:
             # The full id the CLI listed `value` as resolving to (None: unknown).
-            return next((m.get("resolved") for m in cli_models or [] if m["id"] == value), None)
+            listed = cli_models or conversation.models_offered or []
+            return next((m.get("resolved") for m in listed if m["id"] == value), None)
+
+        async def _save_picks() -> None:
+            # The latest `picks`, written in turn (a live switch and the
+            # permission branch below may both save).
+            async with picks_lock:
+                await cc_picks.save(host, picks)
 
         def _restore_picks(catalog: list[dict]) -> bool:
             # The restored picks against the CLI's list, asked of a claude
             # launched without the saved model (so the list holds no echo of
             # it): the saved model while listed, else its family
             # (models.restore_model), else the configured model, else default;
-            # an effort level that model lacks gives way to its default. True
-            # when the model or effort to run is not the one launched.
+            # a model the task names (a custom control's option) is kept as
+            # is. An effort level that model lacks gives way to its default.
+            # True when the model or effort to run is not the one launched.
             nonlocal current_model, current_effort, picks
             launched = (current_model, current_effort)
             if saved_picks.model:
-                restored = cc_models.restore_model(
-                    catalog, saved=saved_picks.model, resolved=saved_picks.model_resolved,
-                )
-                target = restored or cc_models.launch_model(config.model, continuing=True)
+                restored = (saved_picks.model if saved_picks.model in conversation.task_models
+                            else cc_models.restore_model(
+                                catalog, saved=saved_picks.model,
+                                resolved=saved_picks.model_resolved))
+                target = restored or cc_models.launch_model(base_model, continuing=True)
                 if restored != saved_picks.model:
                     label = next((m["label"] for m in catalog if m["id"] == target), target)
                     ctx.report_progress(
@@ -607,10 +641,12 @@ async def run_claudecode_session(
 
         async def _spawn(model: str | None, *, do_continue: bool):
             claude_flags = host_actions.build_claude_flags(
-                permission_mode=conversation.permission_mode or config.permission_mode,
+                permission_mode=conversation.permission_mode or base_mode,
                 allow_bypass=config.bypass_allowed,
                 allowed_tools=config.allowed_tools,
                 disallowed_tools=config.disallowed_tools,
+                tools=config.tools,
+                mcp_config_path=mcp_config_path,
                 model=model,
                 resuming=do_continue,
                 effort=current_effort,
@@ -696,8 +732,12 @@ async def run_claudecode_session(
         # A resume restoring picks asks the CLI's list first, so this launch
         # already runs the checked picks: no message can reach a model the
         # CLI no longer offers. When the probe cannot tell, the launched
-        # process's list is used instead (then a correction relaunches).
+        # process's list is used instead (then a correction switches it live,
+        # before the first message).
         restore_pending = False
+        # The probe's list (None: not asked, or it could not tell); also what
+        # x-optio-resumed's selection is derived over (below).
+        probed = None
         if saved_picks is not None and (saved_picks.model or saved_picks.effort):
             probed = await _probe_cli_models(current_model)
             if probed is not None:
@@ -707,6 +747,52 @@ async def run_claudecode_session(
         ctx.report_progress(None, f"Launching {AGENT_INFO.name} (conversation)…")
         handle, reader_task = await _spawn(current_model, do_continue=pass_continue)
         launched_handle = handle
+        conversation.model, conversation.effort = current_model, current_effort
+
+        def _emit_controls() -> None:
+            # The running values to the widget: the built-in controls
+            # snapshot and the custom controls with their derived selection,
+            # in one x-optio-control-update. Also the listener's
+            # refresh_controls, after a refused custom pick.
+            nonlocal shown_controls
+            if build_controls is None:
+                return      # not shown yet: widgetData will carry the values
+            shown_controls = build_controls()
+            conversation.emit_control_update(
+                shown_controls, custom_controls=build_custom_controls(),
+            )
+
+        async def _on_settings_change(applied: bool) -> None:
+            # A live model/effort switch claude answered (the conversation's
+            # apply_settings, from a built-in or a custom control): taken, it
+            # is kept for a resume; either way the widget gets the running
+            # values (it patched its select optimistically). Saved before the
+            # snapshot goes out, so the answer to the pick finds it saved.
+            nonlocal picks, cli_models
+            if not config.conversation_ui:
+                return
+            if applied:
+                picks = dataclasses.replace(
+                    picks, model=conversation.model,
+                    model_resolved=_resolved(conversation.model), effort=conversation.effort,
+                )
+                await _save_picks()
+                ctx.report_progress(
+                    None,
+                    f"{AGENT_INFO.name} switched to model={conversation.model or 'default'} "
+                    f"effort={conversation.effort or 'default'}",
+                )
+            if cli_models is None and build_controls is not None:
+                # The CLI could not list its models at launch; the switch
+                # asked again (apply_settings), and maybe learned them.
+                cli_models = conversation.models_offered
+            _emit_controls()
+
+        conversation.on_settings_change = _on_settings_change
+        # Claude reports running another model or effort than optio recorded
+        # (conversation.check_settings: after launch and after every switch).
+        conversation.on_settings_mismatch = (
+            lambda text: ctx.report_progress(None, text, level="warning"))
         await _on_agent_live(ctx, config)
 
         ctx.publish_result(conversation)
@@ -725,6 +811,21 @@ async def run_claudecode_session(
                 await _load_conversation_buffer(ctx, decrypt=config.session_blob_decrypt)
                 if resuming else None
             )
+            # The resume marker (x-optio-resumed) names the custom controls'
+            # selection this run launches with: the values running now, its
+            # restored picks over the controls' defaults
+            # (controls.custom_controls_selection), so the widget can say
+            # which mode the session resumed in. Over the probe's model list
+            # when a resume asked it (claude itself is asked below, once the
+            # listener is up), else none: then only the same value matches.
+            # No key without custom controls.
+            resumed_selection = None
+            if initial_events and config.custom_controls:
+                resumed_selection = cc_controls.custom_controls_selection(
+                    config.custom_controls, catalog=probed or [],
+                    model=conversation.model, effort=conversation.effort,
+                    permission_mode=conversation.permission_mode or base_mode,
+                )
             # conversation_ui occupies the single permission-handler slot (see design §2).
             # File uploads flow through the generic optio-api /api/widget-upload
             # route → materializeUpload RPC → this per-task writer, which runs in
@@ -756,6 +857,11 @@ async def run_claudecode_session(
                 # Only the controls the widget shows may be set: none when the
                 # controls bar is off, else the session_controls allowlist.
                 allowed_controls=config.settable_controls,
+                # The task's own controls ("custom:<id>"), whatever the bar
+                # says; a refused pick re-sends the running values.
+                custom_controls=config.custom_controls,
+                refresh_controls=_emit_controls,
+                resumed_custom_controls=resumed_selection,
                 # Reasoning gets its own rows: a cut-off reply's partial keeps
                 # only its text.
                 show_thinking=config.thinking_verbosity == "visible",
@@ -770,34 +876,60 @@ async def run_claudecode_session(
             )
             # Before the first message: claude answers initialize at once.
             cli_models = await cc_models.fetch_cli_models(conversation)
+            # What a live switch is checked against (a switch made before
+            # this point may have asked claude already).
+            cli_models = cli_models or conversation.models_offered
+            conversation.models_offered = cli_models
+            checked = False
             if restore_pending and cli_models is not None and _restore_picks(cli_models):
-                correcting_restore = True
-                conversation.requested_model = current_model
-                conversation.model_change_requested.set()
+                # The launched claude runs a restored pick its list no longer
+                # offers: switch it to the corrected one, live, before any
+                # message reaches it. An effort level the corrected model
+                # lacks gives way to its preselected one (apply_settings).
+                try:
+                    await conversation.apply_settings(model=current_model)
+                    checked = True      # the switch read back what claude runs
+                except Exception:  # noqa: BLE001 — the session goes on, on the launched model
+                    _LOG.warning("could not switch to the corrected resume picks", exc_info=True)
+            if not checked:
+                # Once after launch: does claude run the model and effort it
+                # was launched with? (A mismatch is reported, see above.)
+                await conversation.check_settings()
 
-            def build_controls(model, effort):
+            def build_controls():
                 # See controls.build_controls: the model select over the CLI's
                 # list (the bare aliases when it could not tell) showing the
                 # picked alias, else default, unless the model the running
-                # claude reports says otherwise; the effort slider over the
-                # selected model's levels; the permission_mode select showing
-                # the running mode; narrowed by the session_controls allowlist.
+                # claude reports says otherwise (unknown right after a switch,
+                # until the next turn's system/init); the effort slider over
+                # the selected model's levels; the permission_mode select
+                # showing the running mode; narrowed by the session_controls
+                # allowlist.
                 return cc_controls.build_controls(
                     catalog=cli_models or cc_models.fallback_models(),
-                    model=model, effort=effort,
-                    # While a model change is pending (a pick, or the
-                    # correction of a restored one), the running process's
-                    # model is about to go: not shown.
-                    runtime_model=(None if conversation.model_change_requested.is_set()
-                                   else conversation.runtime_model),
-                    permission_mode=conversation.permission_mode or config.permission_mode,
+                    model=conversation.model, effort=conversation.effort,
+                    runtime_model=conversation.runtime_model,
+                    permission_mode=conversation.permission_mode or base_mode,
                     permission_options=permission_options,
                     allowed=config.session_controls,
                 )
 
+            def build_custom_controls():
+                # See controls.custom_controls_snapshot: each custom control
+                # as defined (labels unresolved), selecting the option whose
+                # settings all match the running values (none after a manual
+                # change in the built-in controls). Not narrowed by the
+                # session_controls allowlist, sent whatever the bar says.
+                return cc_controls.custom_controls_snapshot(
+                    config.custom_controls,
+                    catalog=cli_models or cc_models.fallback_models(),
+                    model=conversation.model, effort=conversation.effort,
+                    permission_mode=conversation.permission_mode or base_mode,
+                )
+
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
             upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
-            shown_controls = build_controls(current_model, current_effort)
+            shown_controls = build_controls()
             await ctx.set_widget_data({
                 "protocol": "claudecode",
                 "toolVerbosity": config.tool_verbosity,
@@ -807,6 +939,10 @@ async def run_claudecode_session(
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
                 "controls": shown_controls,
+                "customControls": build_custom_controls(),
+                # Read by the suspended replay (widgetData outlives the
+                # suspend): a send resumes the session without asking.
+                "smoothResume": config.smooth_resume,
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,
@@ -870,11 +1006,9 @@ async def run_claudecode_session(
                 # exit code.
                 wait_task = asyncio.create_task(proc_wait(handle))
                 close_task = asyncio.create_task(conversation.close_requested.wait())
-                model_task = asyncio.create_task(conversation.model_change_requested.wait())
-                effort_task = asyncio.create_task(conversation.effort_change_requested.wait())
                 init_task = asyncio.create_task(conversation.runtime_model_observed.wait())
                 perm_task = asyncio.create_task(conversation.permission_mode_observed.wait())
-                waiters = (wait_task, close_task, model_task, effort_task, init_task, perm_task)
+                waiters = (wait_task, close_task, init_task, perm_task)
                 try:
                     done, _ = await asyncio.wait(
                         set(waiters), return_when=asyncio.FIRST_COMPLETED,
@@ -891,124 +1025,39 @@ async def run_claudecode_session(
 
                 if init_task in done and close_task not in done and wait_task not in done:
                     # --- the running model, as the stream's system/init names
-                    # it (a full id, e.g. "claude-opus-5[1m]"): it moves the
-                    # model select only when it is not what the selected alias
-                    # resolves to (controls.build_controls); re-emit the
-                    # snapshot then. NOT a relaunch; current_model (the
-                    # --model value) is unchanged. ---
+                    # it (a full id, e.g. "claude-opus-5[1m]"; every turn
+                    # starts with one, so after a live switch the next turn's
+                    # names the new model): it moves the model select only
+                    # when it is not what the selected alias resolves to
+                    # (controls.build_controls); re-emit the snapshot then.
+                    # conversation.model (the picked value) is unchanged. ---
                     conversation.runtime_model_observed.clear()
                     if build_controls is not None:
-                        snapshot = build_controls(current_model, current_effort)
+                        # (The custom controls' selection does not depend on
+                        # the running model's full id.)
+                        snapshot = build_controls()
                         if snapshot != shown_controls:
                             shown_controls = snapshot
-                            conversation.emit_control_update(snapshot)
+                            conversation.emit_control_update(
+                                snapshot, custom_controls=build_custom_controls(),
+                            )
                     continue
 
                 if perm_task in done and close_task not in done and wait_task not in done:
                     # --- the running permission mode changed (our live switch,
                     # a refused one, or Claude's own, e.g. leaving plan mode):
-                    # re-emit the controls snapshot so the select shows it. Not
-                    # a relaunch. ---
+                    # keep it for a resume while it differs from the mode a
+                    # session starts in (the configured one, or a custom
+                    # control's default), then re-emit the controls snapshot
+                    # so the select shows it (saved first: whoever sees the
+                    # snapshot finds it saved). ---
                     conversation.permission_mode_observed.clear()
-                    if build_controls is not None:
-                        shown_controls = build_controls(current_model, current_effort)
-                        conversation.emit_control_update(shown_controls)
-                    # Kept for a resume while it differs from the configured mode.
                     mode = conversation.permission_mode
-                    kept = mode if mode and mode != config.permission_mode else None
+                    kept = mode if mode and mode != base_mode else None
                     if config.conversation_ui and kept != picks.permission_mode:
                         picks = dataclasses.replace(picks, permission_mode=kept)
-                        await cc_picks.save(host, picks)
-                    if not (model_task in done or effort_task in done):
-                        continue
-
-                relaunch = model_task in done or effort_task in done
-                if relaunch and close_task not in done and wait_task not in done:
-                    # --- model / effort swap: relaunch in place, keep the task
-                    # alive. Both a model pick and a reasoning-effort pick
-                    # restart claude with fresh --model/--effort flags and
-                    # --continue; only the fired knob(s) are consumed here so an
-                    # effort-only change leaves current_model untouched. ---
-                    if model_task in done:
-                        current_model = conversation.requested_model or current_model
-                        conversation.model_change_requested.clear()
-                        if not correcting_restore:
-                            picks = dataclasses.replace(
-                                picks, model=current_model, model_resolved=_resolved(current_model),
-                            )
-                    if effort_task in done:
-                        current_effort = conversation.requested_effort or current_effort
-                        conversation.effort_change_requested.clear()
-                        if not correcting_restore:
-                            picks = dataclasses.replace(picks, effort=current_effort)
-                    correcting_restore = False
-                    if config.conversation_ui:
-                        await cc_picks.save(host, picks)
-                    ctx.report_progress(
-                        None,
-                        f"Switching to model={current_model or 'default'} "
-                        f"effort={current_effort or 'default'}…",
-                    )
-                    # Tell the conversation this process EOF is a restart, not a
-                    # close — keeps the widget live (no x-optio-closed / grayed
-                    # input) and the conversation object open across the swap.
-                    # Fix 29/W1 (wave-2 re-review): begin_transport_reset()
-                    # right alongside it, BEFORE the kill, latches Steering's
-                    # in-flight message against the dying process's own last
-                    # events (an abort result + trailing idle, or a shutdown
-                    # sweep's cancelled/discarded/refused) clearing it before
-                    # reset_transport() below gets to rescue it.
-                    conversation.begin_restart()
-                    if conv_listener is not None:
-                        conv_listener.begin_transport_reset()
-                    # Graceful kill (not aggressive) so claude flushes its
-                    # transcript before --continue resumes it on the new model.
-                    await host.terminate_subprocess(handle, aggressive=False)
-                    # Fix 29/W2 (wave-2 re-review): drain the reader across the
-                    # dying process's own real EOF instead of cancelling it
-                    # outright. A cancel discards whatever the process wrote to
-                    # the pipe that the reader had not yet pulled off — e.g. a
-                    # command_lifecycle "started" for the in-flight message —
-                    # so Steering would never learn it was taken, and
-                    # reset_transport() below would write it a second time on
-                    # top of what --continue already restored. The graceful
-                    # kill above means the process's own stdout EOFs on its
-                    # own; bound the wait so a reader stuck on a truly hung
-                    # pipe still falls back to the previous hard cancel rather
-                    # than blocking the relaunch forever.
-                    try:
-                        await asyncio.wait_for(reader_task, GRACEFUL_INTERRUPT_TIMEOUT_S)
-                    except asyncio.TimeoutError:
-                        reader_task.cancel()
-                        try:
-                            await reader_task
-                        except asyncio.CancelledError:
-                            pass
-                    handle, reader_task = await _spawn(current_model, do_continue=True)
-                    launched_handle = handle
-                    # Fix 25 (final-review-2 I3 / ledger line 399): the killed
-                    # process took its in-flight steering message with it —
-                    # attach() above (inside _spawn) already zeroed
-                    # is_pending()'s counters, but Steering._in_flight itself
-                    # would otherwise stay set forever, stalling the queue.
-                    # Re-write it (and anything behind it) to the process
-                    # just attached, now that it's live to receive it.
-                    if conv_listener is not None:
-                        await conv_listener.reset_transport()
-                    # Re-derive + re-emit the controls for the (possibly new)
-                    # model: the reasoning_effort slider's presence and its
-                    # preselected level follow the selected model. The list is
-                    # kept from the first process (a pinned full id's own
-                    # entry stays offered); asked again only if that one could
-                    # not tell.
-                    if build_controls is not None:
-                        if cli_models is None:
-                            cli_models = await cc_models.fetch_cli_models(conversation)
-                        shown_controls = build_controls(current_model, current_effort)
-                        conversation.emit_control_update(shown_controls)
-                    ctx.report_progress(
-                        None, f"{AGENT_INFO.name} resumed on {current_model or 'default model'}"
-                    )
+                        await _save_picks()
+                    _emit_controls()
                     continue
 
                 if close_task in done and wait_task not in done:
@@ -1675,6 +1724,21 @@ async def _plant_session_content(
     return cred_baseline, focus_env
 
 
+async def _plant_mcp_servers(
+    ctx: ProcessContext, host: Host, config: ClaudeCodeTaskConfig,
+) -> str | None:
+    """This launch's MCP servers, planted for ``--mcp-config``: the file's
+    path, or None without servers (a file an older snapshot carried is
+    removed; the capture now leaves it out). Resolved anew on every launch,
+    fresh and resume, so a provider hands out fresh credentials each time; a
+    provider's exception fails the launch with its own message. Logs the
+    server names only (header values are credentials)."""
+    servers = await resolve_mcp_servers(config, ctx.process_id)
+    if servers:
+        _LOG.info("MCP servers for this launch: %s", ", ".join(s.name for s in servers))
+    return await host_actions.plant_mcp_config(host, host.workdir, servers)
+
+
 async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
     async with ctx.load_blob(blob_id) as reader:
         while True:
@@ -1750,12 +1814,19 @@ async def _has_transcript(host: Host) -> bool:
 
 
 async def _archive_home_claude(host: Host) -> bytes:
-    """tar.gz the sensitive ``home/.claude`` subtree and fetch it as bytes."""
+    """tar.gz the sensitive ``home/.claude`` subtree and fetch it as bytes.
+
+    Without the MCP file (``host_actions.MCP_CONFIG_REL``): its header values
+    are credentials, and it is rewritten at every launch, so no snapshot
+    (encrypted or not) ever carries them. The file stays on the host."""
     workdir = host.workdir.rstrip("/")
     tmpfile = f"{workdir}/.optio-claudecode-session.tar.gz"
     _trace("archive_home: tar run_command START")
+    # --exclude before the operand: GNU tar applies it to the names after it.
     r = await host.run_command(
-        f"tar -czf {shlex.quote(tmpfile)} -C {shlex.quote(workdir)} home/.claude"
+        f"tar -czf {shlex.quote(tmpfile)} "
+        f"--exclude={shlex.quote(host_actions.MCP_CONFIG_REL)} "
+        f"-C {shlex.quote(workdir)} home/.claude"
     )
     _trace("archive_home: tar run_command DONE exit=%d", r.exit_code)
     if r.exit_code != 0:

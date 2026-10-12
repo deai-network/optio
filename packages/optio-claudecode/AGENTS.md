@@ -48,24 +48,27 @@ configured model, else the `default` alias (`models.launch_model`, both modes).
 `--continue` alone keeps the full model id the transcript ended on (even over a
 settings.json `model`; verified on CLI 2.1.268), while an alias runs the newest
 model it names, so a resumed session moves to a newer model by itself; a pinned
-full id stays pinned. A fresh launch passes only a configured model. An
-in-session relaunch (a model or effort pick) passes the picked model, else the
-launch value, else none (`--continue` then keeps the model the process ran).
+full id stays pinned. A fresh launch passes only a configured model. A model
+or effort pick never relaunches: it switches the running claude live (see the
+session controls below). Every launch keeps passing `--model` / `--effort`:
+bare `--continue` restores the model but not the effort (CLI 2.1.296).
 The operator's picks in the conversation widget (model, reasoning effort,
 permission mode) are kept across an optio resume (`picks.py`: a file in
 `home/.claude`, so in the session blob; only an optio resume reads it back, not
 `session_restore_from` or a seed). Before the resumed launch a short-lived
 claude (same env and isolation, no `--continue`, no turn, no transcript;
-`--model` the configured model or `default`, never the saved one, so the list
+`--model` the configured model (or a custom control's default) or `default`,
+never the saved one, so the list
 holds no echo of it) is asked only `initialize`, and each pick is checked
 against that list: a model it no longer lists moves to the newest entry of its
 family (`models.restore_model`: the
 `claude-<family>-<version>` of the full id saved with the pick, its `[variant]`
 kept when offered, never `default`), else the configured model, else
-`default`; an effort level the model lacks gives way to its default; a
+`default` (a model a custom control's option names stays as is); an effort
+level the model lacks gives way to its default; a
 permission mode the task does not offer is dropped. When that probe cannot
 tell, claude is launched on the configured model (else `default`), its list is
-used, and a correction relaunches. See
+used, and a correction is switched to live, before the first message. See
 `docs/2026-05-29-optio-claudecode-resume-design.md`.
 
 Every resume that continues a transcript tells claude so with
@@ -320,19 +323,74 @@ when the hook returns, and when it raises `NothingToResurrect`.
   `--allow-dangerously-skip-permissions`). None: only when starting in it;
   True: also from another starting mode; False: never (contradicts starting in
   it, a config error). `bypass_allowed` resolves it.
+* `tools: list[str] | None = None` — the built-in tools claude has at all
+  (`--tools <comma-separated>`). None: claude's default set; `[]`: `--tools ""`,
+  no built-in tools (unlike `allowed_tools`, where an empty list means unset).
+* `mcp_servers` (`optio_agents.McpConfigMixin`: a list of `McpServer`, or a
+  provider awaited with the process id) — resolved on every launch, fresh and
+  resume, right after the session content is planted
+  (`session._plant_mcp_servers`), and written to
+  `<workdir>/home/.claude/optio-mcp.json` (`host_actions.plant_mcp_config`:
+  `{"mcpServers": {<name>: {"type": "http", "url", "headers"}}}`, mode 0600,
+  created empty before the headers go in). Claude gets `--mcp-config <path>
+  --strict-mcp-config`, so no other MCP source applies (an `mcpServers` key in
+  settings.json is ignored by Claude Code anyway). No servers: a file an older
+  snapshot carried is removed, no flags. The file never enters a snapshot: the
+  session capture leaves it out (`session._archive_home_claude` excludes
+  `host_actions.MCP_CONFIG_REL`; the session blob is encrypted only when
+  `session_blob_encrypt` is set), the plaintext workdir tar runs after
+  home/.claude is removed, and the seed manifests are allowlists that do not
+  name it. The model probe gets neither the file nor the flags. A provider's exception fails the launch with its
+  message; header values (credentials) are never logged.
+* Positional prompts (the auto_start kickoff, the resume notice) go after `--`
+  (`host_actions.positional_prompt_args`): `--tools`, `--mcp-config` and
+  `--allowed-tools` take several values and would swallow a prompt after them.
 * `SessionControlsConfigMixin` — the conversation widget's controls bar:
   `show_session_controls` (requires conversation mode + `conversation_ui`)
   and the optional `session_controls` allowlist of control ids (None: all).
-  Claude Code's controls (`controls.build_controls`): `model` and
-  `reasoning_effort` (applied by relaunching claude with `--model` /
-  `--effort` + `--continue`), and `permission_mode`, switched in place with
-  the stream-json control request `set_permission_mode`. The select always
+  Claude Code's controls (`controls.build_controls`): `model`,
+  `reasoning_effort` and `permission_mode`, all switched live, without a
+  restart, by `ClaudeCodeConversation.apply_settings(model=, effort=,
+  permission_mode=)` (None: unchanged; `set_control` routes to it). A model
+  and/or effort change is ONE stream-json control request
+  `apply_flag_settings {settings: {model, effortLevel}}`, always with both
+  keys and explicit values (claude falls a missing or null one back to the
+  account's default, not the launch flags): the effort sent with a model
+  change is the running level when the new model lists it (or lists none),
+  else the model's preselected one; an effort change carries the running
+  model (`default` when none was set). A permission mode is
+  `set_permission_mode`, sent first and switched back if claude then refuses
+  the model/effort change. Claude takes an unknown model as given and drops
+  an unknown level silently, so each value is checked first against the
+  CLI's model list (`conversation.models_offered`, `models.offers`;
+  the running model always passes; while the CLI cannot list its models,
+  each switch asks it again and takes a model as given): `ValueError` (→ /control 400
+  `bad-value`, and the listener's `refresh_controls` re-sends the running
+  values), nothing sent. Claude's error answer raises `ControlRejected`
+  (→ 409 `rejected` with its message) and leaves the values as they were. On
+  success `conversation.model` / `effort` hold the new values, the picks are
+  saved and an `x-optio-control-update` re-emitted (the body's
+  `conversation.on_settings_change` hook; after a refusal the hook re-emits
+  the unchanged values, replacing the widget's optimistic one). Claude
+  answers a model change made while a turn runs after that turn; it applies
+  from the next turn, whose `system/init` names the new model (until then
+  `runtime_model` is None). After an applied model/effort change, and once
+  after launch (`session.py`, once claude has answered initialize),
+  `conversation.check_settings` asks claude what it runs (control request
+  `get_settings`: `applied.model`, a full id, and `applied.effort`, its one
+  live readout of the effort) and compares it with `conversation.model` /
+  `effort`: the model as the select compares a runtime model
+  (`models.model_differs`; not when the CLI's list does not resolve it), the
+  effort when one is recorded; no answer in `SETTINGS_READBACK_TIMEOUT_S` or
+  an error answer compares nothing. A mismatch is logged as a WARNING and
+  reported as a warning progress line (`conversation.on_settings_mismatch`);
+  the recorded values, and so the selection shown, stay. The permission_mode select always
   lists all six modes with a description each
   (`controls.permission_mode_options`); without `permission_gate` Manual and
   Plan (they ask the operator) are disabled with the reason, and Bypass is
   disabled unless `bypass_allowed`. Only enabled modes can be set. The select
-  follows the mode the stream reports (`system/init`, `system/status`); a
-  relaunch keeps the running mode. Every snapshot is narrowed by the
+  follows the mode the stream reports (`system/init`, `system/status`).
+  Every snapshot is narrowed by the
   allowlist, and the listener's /control refuses an id outside
   `settable_controls` (403 `not-allowed`; all of them while the bar is off).
 * `WelcomeConfigMixin` — `welcome: WelcomeCard | None = None`: the card the
@@ -367,7 +425,64 @@ when the hook returns, and when it raises `NothingToResurrect`.
   entry stays offered after a switch); when the CLI cannot tell (an error
   answer, no models, no answer in `models.INITIALIZE_TIMEOUT_S`) the select
   offers the bare aliases default/opus/sonnet/haiku without descriptions or
-  effort levels, and the next relaunch asks again.
+  effort levels, and each live switch asks again.
+* `CustomControlsConfigMixin` (`custom_controls`, `optio_agents.custom_controls`)
+  — the task's own selectors, each option a fixed `ControlSettings` (model /
+  reasoning effort / permission mode). Requires conversation mode +
+  `conversation_ui`; independent of `show_session_controls` and the
+  `session_controls` allowlist. On top of the shared checks the config refuses
+  an option whose permission mode this task cannot switch to
+  (`controls.permission_mode_unusable`: Manual / Plan without
+  `permission_gate`, Bypass unless `bypass_allowed`) and two options of one
+  control that do not differ in a setting both set (both could match, so the
+  selection would be ambiguous). Launch: each control's default option
+  replaces the config's `model` / `reasoning_effort` / `permission_mode`
+  (`controls.custom_defaults`; the session's `base_*`), fresh and on a resume
+  that saved no pick; saved picks win over them, and a permission mode is
+  saved while it differs from that launch mode. The models the options name
+  (`controls.task_models`, `conversation.task_models`) are the task's own,
+  like a configured model: switched to and restored as given, though the
+  CLI's list (its picker's entries, e.g. no plain `opus`) may not name them.
+  widgetData `customControls` and every `x-optio-control-update`
+  (`controls.custom_controls_snapshot`): per control `{id, label,
+  description, options: [{value, label, description}], value}`, labels and
+  descriptions as defined (a string or a language map; a missing description,
+  and the label of a control without a caption, is null), `value` the option
+  whose settings all match the running values
+  (`controls.custom_control_value`; the model compared as the model select
+  shows it), else null (e.g. after a manual built-in change). `[]` without
+  custom controls. `POST /control {id: "custom:<control id>", value: <option
+  value>}` (`controls.CUSTOM_CONTROL_PREFIX`; accepted whatever
+  `settable_controls` says) applies the option's settings in ONE
+  `apply_settings` (one `apply_flag_settings`, plus `set_permission_mode`
+  when it sets a mode); the hook saves the picks and re-emits. 400 `bad-id` /
+  `bad-value` for a control / option the task does not define; 409 with
+  nothing changed: `closed`, `busy` while a turn runs (the listener's
+  `_turn_running`: claude would apply a model change only after the turn;
+  asked again under the conversation's switch lock right before each request
+  is written, `apply_settings(busy=...)` raising `SwitchBusy`, since the
+  switch may first wait for another pick or ask claude for its model list),
+  `rejected` + `error` when claude refuses or the session cannot apply the
+  option's values (`ValueError`). After `busy` / `rejected` the listener's
+  `refresh_controls` re-emits the running values, replacing the widget's
+  optimistic selection. A pick past the 400 / `closed` / `busy` checks is
+  announced right before `apply_settings` by `{"type": "x-optio-custom-pick",
+  "id": <control id>, "value": <option value>}` through the conversation's
+  `emit_event` (buffered and persisted), so it precedes whatever claude
+  answers the switch with (Claude Code echoes a model change as an
+  `isReplay` user event, `<local-command-stdout>Set model to ...`); the
+  widget draws the pick's band from it, and none for that echo. Its outcome
+  follows as the `x-optio-control-update` above. A
+  resumed run's `x-optio-resumed` carries `customControls: [{id, value}]`,
+  the selection it launches with (Replay-buffer semantics, Resume).
+* `ResumeConfigMixin` (`smooth_resume: bool = False`, `optio_agents`) —
+  "resume without confirmation when a message arrives". Published as
+  widgetData `smoothResume` (next to `customControls`, conversation UI only).
+  widgetData outlives a suspend, so the suspended replay
+  (optio-conversation-ui's `ClaudeCodeReplayView`) reads it there: set, a
+  send to the suspended session resumes it and sends the message without the
+  "Resume the session?" question; a send that would discard a failed run's
+  unsaved work (`isResurrectable`) still asks.
 * `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt` —
   inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
   (alongside the `ClaustrumConfigMixin` triad). Optional synchronous
@@ -558,7 +673,9 @@ Replay-buffer semantics:
   `{"type": "x-optio-permission-answered", "request_id": ..., "behavior": ...}`,
   broadcast (and buffered) when a permission is answered so every
   viewer sees the card resolve; `{"type": "x-optio-resumed"}` (below);
-  `{"type": "x-optio-message-start", "id", "ts"}` (Fix 12); and, at a
+  `{"type": "x-optio-message-start", "id", "ts"}` (Fix 12);
+  `{"type": "x-optio-custom-pick", "id", "value"}` right before a custom
+  control's switch (see `custom_controls` above); and, at a
   session end mid-turn (Fix 19, below), `{"type": "x-optio-partial", "id",
   "text"}` and `{"type": "x-optio-interrupt", "by": "session"}`.
 * `x-optio-message-start` (Fix 12, owner ruling 2026-09-14: an assistant
@@ -628,11 +745,14 @@ Replay-buffer semantics:
   nothing in its queue, so the next message goes when the turn ends idle.
   Messages still pending when the session ends are never written.
 * Relaunch (Fix 25, final-review-2 I3 / ledger line 399; latched and
-  hardened by Fix 29/W1-W3, wave-2 re-review). A model or reasoning-effort
-  change kills `claude` mid-turn and relaunches it with `--continue`: the
+  hardened by Fix 29/W1-W3, wave-2 re-review). Since model and effort switch
+  live (custom session controls), `session.py` no longer relaunches; the
+  transport support below stays for a future relaunch, and describes the
+  relaunch arm `session.py` had. A relaunch kills
+  `claude` mid-turn and relaunches it with `--continue`: the
   dead process takes its in-flight steering message with it, so neither its
   `command_lifecycle` nor the turn's own `result` will ever arrive for it.
-  `session.py`'s relaunch arm calls `conversation.begin_restart()` AND
+  The relaunch arm calls `conversation.begin_restart()` AND
   `ConversationListener.begin_transport_reset()` (→
   `Steering.begin_transport_reset()`) BEFORE the kill: the latch stops the
   dying process's own last gasp — an abort `result` + trailing idle, or a
@@ -653,7 +773,7 @@ Replay-buffer semantics:
   29/W2). `ClaudeCodeConversation.attach()` zeroes `_pending` and
   `_sends_since_result` (alongside `_restarting`), so `is_pending()` does
   not stay stuck True from the dead turn once the new process is attached.
-  `session.py`'s relaunch arm then calls `ConversationListener.
+  The relaunch arm then calls `ConversationListener.
   reset_transport()` (the same spot `requeue_undelivered()` is called from
   for a resume), which delegates to `Steering.reset_transport()`: it clears
   the `begin_transport_reset()` latch and, unless the drained events already
@@ -725,7 +845,14 @@ Replay-buffer semantics:
   the session calls `listener.requeue_undelivered()`: `Steering.requeue`
   re-sends them in order, each under a new uuid with one `{"type":
   "x-optio-requeued", "id", "new_id"}`, one at a time (Fix 17). Nothing
-  the CLI already started is re-sent.
+  the CLI already started is re-sent. When the task defines custom
+  controls, the marker also carries `"customControls": [{"id", "value"}]`:
+  the selection the resumed run launches with (its restored picks over the
+  controls' defaults; `value` null when no option matches), which the
+  session derives (`controls.custom_controls_selection`) before it builds
+  the listener (`resumed_custom_controls=`), over the probe's model list
+  when the resume asked it. The widget names that mode in its resume band.
+  No key without custom controls.
 
 **Handler-slot rule**: `conversation_ui=True` occupies the single
 `on_permission_request` slot (the listener registers the handler and

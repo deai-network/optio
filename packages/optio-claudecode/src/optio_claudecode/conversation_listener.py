@@ -9,7 +9,9 @@ optio-api widget proxy (which injects the basic-auth credential):
                      After a resume the restored history is followed by one
                      {"type": "x-optio-resumed"} marker, carrying
                      "requeued": [ids] when the run re-sends messages the
-                     previous run left undelivered (Fix 19).
+                     previous run left undelivered (Fix 19), and
+                     "customControls": [{id, value}] when the task defines
+                     custom controls (the selection the run launches with).
   POST /send       — {text}  -> steering.send_when_ready; {ok, id, queued}
   POST /steer      — {text, upTo?} -> steering.interrupt_and_send; {ok, id}
                      (empty text: Send now, deliver what is queued; id is
@@ -17,7 +19,12 @@ optio-api widget proxy (which injects the basic-auth credential):
                      needs nothing beyond the interrupt since Fix 17, as
                      queued messages reach Claude one at a time, in order)
   POST /interrupt  — {}      -> steering.interrupt (stop only)
-  POST /control    — {id, value}                  -> conversation.set_control
+  POST /control    — {id, value}                  -> conversation.set_control;
+                     {id: "custom:<control id>", value: <option value>}
+                     -> conversation.apply_settings(the option's settings),
+                     refused (409 busy) while a turn runs; a pick that gets
+                     as far as the switch is announced first by an
+                     x-optio-custom-pick {id, value}
   GET  /download   — ?path=<relpath>              -> download_reader; returns
                      the bytes with Content-Disposition: attachment.
   POST /permission — {request_id, behavior, updated_input?, message?}
@@ -34,15 +41,17 @@ import json
 import logging
 import time
 from collections import deque
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Sequence
 
 from aiohttp import web
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
+from optio_agents.custom_controls import CustomControl
 from optio_agents.session_controls import control_allowed
 from optio_agents.steering import INTERRUPT_EVENT, Steering
 
-from optio_claudecode.conversation import ControlRejected
+from optio_claudecode.controls import CUSTOM_CONTROL_PREFIX
+from optio_claudecode.conversation import ControlRejected, SwitchBusy
 from optio_claudecode.steering import make_steering, undelivered_queued
 
 _LOG = logging.getLogger(__name__)
@@ -51,6 +60,12 @@ BUFFER_MAXLEN = 1000
 # Synthetic marker appended after a re-primed (resumed) history: the prior
 # run's process is gone, so anything it left running will never report.
 RESUMED_EVENT_TYPE = "x-optio-resumed"
+# Synthetic marker for a custom control pick, {"type", "id": <control id>,
+# "value": <option value>}: emitted through the conversation's emit_event
+# (buffered and persisted) right before the switch, so it precedes whatever
+# claude answers it with (e.g. its echo of a model change). The widget draws
+# the pick's band from it, and no band for that echo.
+CUSTOM_PICK_EVENT_TYPE = "x-optio-custom-pick"
 # Synthetic marker this listener stamps for every streamed message (Fix 12,
 # owner ruling 2026-09-14): stream_event frames carry no time and are never
 # buffered (see UNBUFFERED_TYPES below), so a streamed message's true start
@@ -105,6 +120,9 @@ class ConversationListener:
         steering: "Steering | None" = None,
         clock: "Callable[[], float]" = _wall_clock_ms,
         allowed_controls: "list[str] | None" = None,
+        custom_controls: "Sequence[CustomControl] | None" = None,
+        refresh_controls: "Callable[[], None] | None" = None,
+        resumed_custom_controls: "Sequence[dict] | None" = None,
         show_thinking: bool = False,
         hold_input: bool = False,
     ) -> None:
@@ -126,6 +144,13 @@ class ConversationListener:
         # refuses any other id, so a control hidden from the widget cannot be
         # set by posting here directly.
         self._allowed_controls = allowed_controls
+        # The task's custom controls, by id: /control takes "custom:<id>" for
+        # these whatever the allowlist says (they are shown on their own).
+        self._custom_controls = {c.id: c for c in custom_controls or ()}
+        # Re-sends the running values to the widget (an x-optio-control-update)
+        # after a refused custom pick, or a built-in value the session does
+        # not offer: the widget showed it optimistically.
+        self._refresh_controls = refresh_controls
         # thinking_verbosity "visible": claude runs with --thinking-display
         # summarized, and thinking text is reasoning, which the widget shows in
         # its own rows; otherwise it is narration, part of the reply.
@@ -158,10 +183,16 @@ class ConversationListener:
             # rows that run left running (a background task, a call with no
             # result). Buffered and persisted like any event, so a later
             # resume replays it at this point. It lists the ids this run
-            # re-queues, so the widget keeps those bubbles queued.
+            # re-queues, so the widget keeps those bubbles queued; and, when
+            # the task defines custom controls, the selection this run
+            # launches with (``resumed_custom_controls``, the session's
+            # controls.custom_controls_selection), so the widget names the
+            # mode it resumed in.
             resumed: dict = {"type": RESUMED_EVENT_TYPE}
             if self._undelivered:
                 resumed["requeued"] = [qid for qid, _ in self._undelivered]
+            if resumed_custom_controls is not None:
+                resumed["customControls"] = [dict(c) for c in resumed_custom_controls]
             self._seq += 1
             self._buffer.append((self._seq, resumed))
         # Fix 19, session end. Whether a turn runs (session_state_changed
@@ -520,6 +551,10 @@ class ConversationListener:
         cid = payload.get("id")
         if not isinstance(cid, str) or not cid:
             return web.json_response({"ok": False, "reason": "bad-id"}, status=400)
+        if cid.startswith(CUSTOM_CONTROL_PREFIX):
+            return await self._set_custom_control(
+                cid[len(CUSTOM_CONTROL_PREFIX):], payload.get("value"),
+            )
         if not control_allowed(cid, self._allowed_controls):
             return web.json_response({"ok": False, "reason": "not-allowed"}, status=403)
         value = payload.get("value")
@@ -528,12 +563,75 @@ class ConversationListener:
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
         except ValueError:
-            # A value the control does not offer.
+            # A value the control does not offer. The widget showed it
+            # optimistically: the running values go back to it.
+            self._refresh()
             return web.json_response({"ok": False, "reason": "bad-value"}, status=400)
         except ControlRejected as e:
             # Claude itself refused the change.
             return web.json_response({"ok": False, "reason": "rejected", "error": str(e)}, status=409)
         return web.json_response({"ok": True})
+
+    async def _set_custom_control(self, control_id: str, value) -> web.Response:
+        """A custom control pick: the option's settings, applied live in one
+        switch (``apply_settings``). 400 ``bad-id`` / ``bad-value`` for a
+        control or option the task does not define. 409 and nothing changed:
+        ``closed``; ``busy`` while a turn runs (claude would apply a model
+        change only after it, so the pick is refused instead); ``rejected``
+        (with the reason) when claude refuses it or the session cannot apply
+        the option's values. After ``busy`` / ``rejected`` the running values
+        are re-sent, replacing the widget's optimistic selection. ``busy`` is
+        checked again under the conversation's switch lock, right before
+        each request is written (``apply_settings``' ``busy``): the switch
+        may wait for another pick, or ask claude first, while a turn starts.
+
+        A pick past the 400 / ``closed`` / ``busy`` checks is announced by an
+        ``x-optio-custom-pick`` (``CUSTOM_PICK_EVENT_TYPE``) through the
+        conversation's event stream right before ``apply_settings``, so it
+        precedes everything that answers the switch. Its outcome follows:
+        the running values re-sent (an x-optio-control-update) whether the
+        switch was applied or refused, a refusal under the switch lock
+        included; nothing if the conversation closes first."""
+        control = self._custom_controls.get(control_id)
+        if control is None:
+            return web.json_response({"ok": False, "reason": "bad-id"}, status=400)
+        option = next((o for o in control.options
+                       if isinstance(value, str) and o.value == value), None)
+        if option is None:
+            return web.json_response({"ok": False, "reason": "bad-value"}, status=400)
+        if self._conversation.closed:
+            return web.json_response({"ok": False, "reason": "closed"}, status=409)
+        if self._turn_running():
+            self._refresh()
+            return web.json_response({"ok": False, "reason": "busy"}, status=409)
+        settings = option.settings
+        # Queued ahead of the request apply_settings writes, so ahead of
+        # anything claude answers it with.
+        self._conversation.emit_event({
+            "type": CUSTOM_PICK_EVENT_TYPE, "id": control.id, "value": option.value,
+        })
+        try:
+            await self._conversation.apply_settings(
+                model=settings.model, effort=settings.reasoning_effort,
+                permission_mode=settings.permission_mode, busy=self._turn_running,
+            )
+        except ConversationClosed:
+            return web.json_response({"ok": False, "reason": "closed"}, status=409)
+        except SwitchBusy:
+            self._refresh()
+            return web.json_response({"ok": False, "reason": "busy"}, status=409)
+        except (ControlRejected, ValueError) as e:
+            self._refresh()
+            return web.json_response({"ok": False, "reason": "rejected", "error": str(e)}, status=409)
+        return web.json_response({"ok": True})
+
+    def _refresh(self) -> None:
+        if self._refresh_controls is None:
+            return
+        try:
+            self._refresh_controls()
+        except Exception:  # noqa: BLE001 — the answer to the pick still goes out
+            _LOG.exception("conversation listener: refresh_controls raised")
 
     async def _handle_download(self, request: web.Request) -> web.Response:
         if not self._authorized(request):

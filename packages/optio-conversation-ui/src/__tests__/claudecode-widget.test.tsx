@@ -217,8 +217,17 @@ describe('ConversationWidget', () => {
   it('narration from a thinking block renders as a reply even with thinkingVerbosity hidden', () => {
     render(<ConversationWidget {...makeProps({ process: { _id: 'p1', name: 'n', widgetData: { thinkingVerbosity: 'hidden' }, status: { state: 'running' } } })} />);
     fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: '', signature: 's' }] } });
-    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: 'Checking the VPN before the harness run.', signature: 's' }] } });
+    fire({ type: 'assistant', narration_block_indexes: [0], message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: 'Checking the VPN before the harness run.', signature: 's' }] } });
     expect(screen.getByText('Checking the VPN before the harness run.')).toBeTruthy();
+  });
+
+  it('reasoning recorded with summarized thinking stays hidden with thinkingVerbosity hidden', () => {
+    render(<ConversationWidget {...makeProps({ process: { _id: 'p1', name: 'n', widgetData: { thinkingVerbosity: 'hidden' }, status: { state: 'running' } } })} />);
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: 'Weighing a metadata filter over a date sort.', signature: 's' }] } });
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: 'The last call was on 2 September.' }] } });
+    expect(screen.getByText('The last call was on 2 September.')).toBeTruthy();
+    expect(screen.queryByText(/Weighing a metadata filter/)).toBeNull();
+    expect(screen.queryByTestId('thinking')).toBeNull();
   });
 
   it('reasoning renders as a thinking row with thinkingVerbosity visible', () => {
@@ -270,12 +279,12 @@ describe('ConversationWidget', () => {
     expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Lean-verify all 15 · 12s');
   });
 
-  it('tool verbosity description-while-active: every call is a collapsed row', () => {
+  it('tool verbosity description-while-active: only the running call has a row; the finished background job its muted line', () => {
     render(<ConversationWidget {...propsV('description-while-active')} />);
     fireSession();
-    expect(statuses()).toEqual(['done', 'done', 'running']);
-    expect(screen.getAllByTestId('tool-call')[2].textContent).toContain('/x');
-    expect(screen.queryByTestId('background-finished')).toBeNull();
+    expect(statuses()).toEqual(['running']);
+    expect(screen.getAllByTestId('tool-call')[0].textContent).toContain('/x');
+    expect(screen.getByTestId('background-finished').textContent).toContain('Lean-verify all 15');
     expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 

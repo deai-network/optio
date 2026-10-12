@@ -250,3 +250,17 @@ class WelcomeConfigMixin:
                 f"{type(self).__name__}.welcome={self.welcome!r} must be a "
                 "WelcomeCard or None."
             )
+@dataclass(frozen=True, kw_only=True)
+class ResumeConfigMixin:
+    """How a suspended session resumes, shared by every engine TaskConfig via
+    inheritance. Fields stay top-level on each config (no nesting) so callers
+    write ``smooth_resume=`` verbatim.
+
+    ``smooth_resume``: this task should be resumed without confirmation when a
+    message arrives. Sending a message to the suspended session resumes it
+    directly; without it (the default) the widget asks first. A send that
+    would resurrect a failed run, discarding its unsaved work, still asks. Only
+    Claude Code has a suspended view whose send resumes the session today (it
+    publishes the flag as ``widgetData.smoothResume``); the other engines
+    accept the flag, and it has no effect on them until they get one."""
+    smooth_resume: bool = False

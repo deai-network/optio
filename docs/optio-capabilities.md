@@ -530,8 +530,10 @@ Path safety: `validate_deliverable_path` (realpath + escape rejection) and
 
 ### 6.3 The capability model — the weakest part
 
-**There is no `capabilities()` query.** A consumer cannot ask "does engine X support resume / MCP /
-permissions?" programmatically. Capability is expressed four ways, all largely implicit:
+**There is no `capabilities()` query.** A consumer cannot ask "does engine X support resume /
+permissions?" programmatically (MCP servers and custom session controls are the two exceptions:
+`optio_agents_all.supports_mcp` and `optio_agents_all.supports_custom_controls`, below).
+Capability is expressed four ways, all largely implicit:
 
 1. `ProtocolFeatures` — three facets only (browser, client messages, caller messages).
 2. **The `TaskConfig` field set** — a capability an engine lacks is simply an absent field, and
@@ -542,9 +544,32 @@ permissions?" programmatically. Capability is expressed four ways, all largely i
    effort. A control collapsing to ≤1 option is auto-disabled with a reason.
 4. `AGENTS` / `get_agent_info` — identity metadata only, not capability.
 
-**MCP has no first-class surface anywhere.** Three ACP wrappers send `"mcpServers": self._mcp_servers`
-on the wire and nothing populates it from config. Still true at `4aebde18`: `mcp` has zero hits in any
-wrapper's `types.py`.
+**MCP servers are part of the shared agent configuration (since 2026-10-11).** `optio_agents.mcp`
+defines `McpServer` (`name`, `url` -- remote streamable HTTP only -- and `headers`, whose values its
+`repr` never shows), `McpServersProvider` (an async callable taking the process id, like
+`SeedProvider`) and `McpConfigMixin`, which all seven `<X>TaskConfig`s inherit: `mcp_servers` is
+`None`, a static list, or a provider resolved at launch. `resolve_mcp_servers(config, process_id)`
+is the one shared resolver (a static list is checked, a provider awaited and its result checked; a
+provider's exception fails the launch); an engine calls it on every launch, fresh and resume.
+
+Only **claudecode** translates it: it writes `home/.claude/optio-mcp.json` (mode 0600) and passes
+`--mcp-config <file> --strict-mcp-config`, so claude sees no other MCP source; with no servers it
+removes a stale file an older snapshot carried. The file is rewritten at every launch, so it enters
+no snapshot: the session capture of `home/.claude` leaves it out (that blob is encrypted only when
+`session_blob_encrypt` is set), `home/.claude` never enters the plaintext workdir tar, and the seed
+manifests are allowlists that do not name it. claudecode also gained `tools` (`--tools`; `[]` gives
+claude no built-in tools). The other six configs refuse any non-None `mcp_servers` ("<agent> does
+not support mcp_servers yet") until their translation lands; the three ACP wrappers still send an empty
+`mcpServers` slot on the wire. Since every config has the field, the field set no longer tells
+support apart: ask `optio_agents_all.supports_mcp(agent_type)` (backed by `MCP_AGENT_TYPES`).
+
+**Custom session controls are part of it too (since 2026-10-11).** `optio_agents.custom_controls`
+defines `CustomControl`, a task-defined selector in the conversation input bar whose `CustomOption`s
+each set a fixed combination of model / reasoning effort / permission mode (`ControlSettings`), and
+`CustomControlsConfigMixin`, which all seven configs inherit (`custom_controls`). Only **claudecode**
+applies them (widgetData `customControls`; a pick switches the running claude live); the other six
+refuse a non-empty list. As with MCP, the field set does not tell support apart: ask
+`optio_agents_all.supports_custom_controls(agent_type)` (backed by `CUSTOM_CONTROLS_AGENT_TYPES`).
 
 **One capability did arrive, and it is the account layer.** `optio_agents/account.py` (165 lines) now
 exists — `UsageWindow`, `AccountInfo` (with a `summary` property and `next_reset()`), `EMPTY`,
@@ -571,14 +596,15 @@ its own seed provider, and must pass `models_required`: antigravity's windows ar
 | **Streaming** | yes | yes | yes | yes | yes | **no token deltas** |
 | **Interrupt** | `turn/interrupt` | `POST /abort` | ACP cancel | ACP cancel | ACP cancel | **coarse** (kills the process) |
 | **Reasoning effort** | 6 levels + slider | per-prompt variant | **none** | 4 levels, **no slider** | 5+6 levels + slider | **none** |
-| **MCP** | no | no | wire slot only | wire slot only | wire slot only | n/a |
+| **MCP** | config refuses | config refuses | config refuses; empty wire slot | config refuses; empty wire slot | config refuses; empty wire slot | config refuses |
 | **Permission gate** | yes | **no field** | yes | yes | yes | field exists, **no-op seam** |
 | **src LOC** | 5 590 | 4 110 | 5 343 | 4 821 | 4 989 | 5 095 |
 | **test:src** | 1.38 | **2.05** | 1.13 | **1.05** | 1.42 | 1.20 |
 
 (claudecode, omitted from the original table because it was the reference wrapper: **5 231 src,
 1.61 test:src**. Every non-numeric cell above — invocation, wire, iframe mechanism, streaming,
-interrupt, effort, MCP, permission gate — was re-verified unchanged.)
+interrupt, effort, MCP, permission gate — was re-verified unchanged on 2026-09-20. The MCP row
+changed on 2026-10-11: claudecode is the one wrapper with MCP servers, via `--mcp-config`; see 6.3.)
 
 Maturity read: **codex** (audited, 28/29 parity) and **opencode** (deepest suite) are production-grade.
 **kimicode** is substantively mature but under-documented (14-line README). **grok** is the clean ACP

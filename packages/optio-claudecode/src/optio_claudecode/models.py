@@ -103,6 +103,12 @@ def _resolving_to(catalog: list[dict], model: str) -> dict | None:
     return next((m for m in found if m["id"] != DEFAULT_MODEL), found[0] if found else None)
 
 
+def offers(catalog: list[dict], value: str) -> bool:
+    """True when the catalog offers ``value``: an entry of that id, or one
+    resolving to it (a full id an alias stands for)."""
+    return _by_id(catalog, value) is not None or _resolving_to(catalog, value) is not None
+
+
 def shown_model(catalog: list[dict], *, picked: str | None, runtime: str | None) -> str:
     """The value the model select shows.
 
@@ -122,6 +128,20 @@ def shown_model(catalog: list[dict], *, picked: str | None, runtime: str | None)
         other = _resolving_to(catalog, runtime)
         value = other["id"] if other is not None else runtime
     return value
+
+
+def model_differs(catalog: list[dict], *, picked: str | None, running: str) -> bool:
+    """Whether claude is known to run another model than ``picked`` (the
+    model as picked, None: ``default``); ``running`` is the full id it
+    reports (get_settings ``applied.model``). Compared as the model select
+    compares the model system/init reports (``shown_model``): only when the
+    catalog says what ``picked`` resolves to. False when it cannot tell (e.g.
+    a model the catalog does not list: claude reports an unknown model as
+    given, so the readback cannot catch one)."""
+    if running == picked:
+        return False
+    shown = shown_model(catalog, picked=picked, runtime=None)
+    return shown_model(catalog, picked=picked, runtime=running) != shown
 
 
 def catalog_with(catalog: list[dict], value: str) -> list[dict]:
@@ -181,7 +201,7 @@ def restore_model(catalog: list[dict], *, saved: str, resolved: str | None) -> s
     with the same ``[variant]``; never ``default``, whose model changes under
     it. None when no entry is of that family (the caller falls back to the
     configured model)."""
-    if _by_id(catalog, saved) is not None or _resolving_to(catalog, saved) is not None:
+    if offers(catalog, saved):
         return saved
     source = resolved or saved
     base, variant = _split_variant(source)

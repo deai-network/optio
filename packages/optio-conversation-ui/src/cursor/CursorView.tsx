@@ -101,6 +101,7 @@ export function CursorView(props: WidgetProps) {
         closed={state.closed}
         busy={busy}
         toolVerbosity={toolVerbosity}
+        hideEmptyRuns={props.hideEmptyRuns}
         thinkingVerbosity={thinkingVerbosity}
         showFileUpload={showFileUpload}
         maxUploadBytes={maxUploadBytes}

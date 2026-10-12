@@ -1,14 +1,18 @@
 """Uniformity guard: the shared config surface must be identical across all 7
 engines. Every ``AgentTaskConfig`` union member inherits the blob-crypto,
-claustrum, session-controls and welcome field sets from the
-``optio_agents.config_types`` mixins, so the guard is structural (subclass
+claustrum, session-controls, welcome, MCP, custom-controls and resume field
+sets from the ``optio_agents.config_types``, ``optio_agents.mcp`` and
+``optio_agents.custom_controls`` mixins, so the guard is structural (subclass
 checks) plus behavioral (validation + fallback behave the same on each
 concrete config class)."""
 from typing import get_args
 
 import pytest
 
-from optio_agents import BlobCryptoConfigMixin, WelcomeCard, WelcomeConfigMixin
+from optio_agents import (
+    BlobCryptoConfigMixin, CustomControlsConfigMixin, McpConfigMixin, ResumeConfigMixin,
+    WelcomeCard, WelcomeConfigMixin,
+)
 from optio_agents.config_types import ClaustrumConfigMixin, SessionControlsConfigMixin
 
 import optio_agents_all as aa
@@ -45,6 +49,28 @@ def test_union_members_inherit_shared_mixins(cls):
     assert issubclass(cls, ClaustrumConfigMixin)
     assert issubclass(cls, SessionControlsConfigMixin)
     assert issubclass(cls, WelcomeConfigMixin)
+    assert issubclass(cls, McpConfigMixin)
+    assert issubclass(cls, CustomControlsConfigMixin)
+    assert issubclass(cls, ResumeConfigMixin)
+
+
+@pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)
+def test_smooth_resume_off_by_default_and_accepted_on_every_engine(cls):
+    # A harmless flag: every engine takes it, whether or not it has a
+    # suspended view whose send resumes the session yet.
+    assert _make(cls).smooth_resume is False
+    assert _make(cls, smooth_resume=True).smooth_resume is True
+
+
+@pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)
+def test_custom_controls_unset_or_empty_on_every_engine(cls):
+    # Every engine accepts the field; None (the default) and [] mean no
+    # custom controls, whether or not the engine can apply them.
+    assert _make(cls).custom_controls is None
+    assert _make(cls, custom_controls=[]).custom_controls == []
+    # A malformed value is a config error everywhere.
+    with pytest.raises(ValueError, match="custom_controls"):
+        _make(cls, custom_controls="speed")
 
 
 @pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)

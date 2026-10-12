@@ -9,6 +9,11 @@ export interface WidgetProps {
   /** The host shows the process read-only (`ProcessDetailView readOnly`):
    *  the widget must not launch or resume it. Absent: not read-only. */
   readOnly?: boolean;
+  /** For a conversation widget: leave out the runs a resume added where
+   *  nothing happened (the agent woke up, was told it had been resumed,
+   *  answered that it was ready, and was suspended again). Widgets without
+   *  runs ignore it. Absent: every run shows. */
+  hideEmptyRuns?: boolean;
 }
 
 export type WidgetComponent = ComponentType<WidgetProps>;

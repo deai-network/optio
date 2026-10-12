@@ -6,15 +6,18 @@ import {
   denyWithReason, useBoolField, useOneOfField, useSpinnerKey, useVultusComponents, type ActionStatus,
 } from 'vultus-antd';
 import type { TextAreaProps, TextAreaRef } from 'antd/es/input/TextArea';
-import type { ChatItem, ChatState, SessionControl } from './chat.js';
+import type { ChatItem, ChatState, CustomControl, SessionControl } from './chat.js';
 import { Actions, Attachments, Bubble, Sender, Think, ThoughtChain, Welcome, XProvider } from '@ant-design/x';
 import type { ThoughtChainItemType } from '@ant-design/x';
 import { transcriptKeys } from './transcriptKeys.js';
 import { ConversationWidenessContext, type ConversationWideness } from './wideness.js';
 import { ConversationWelcomeContext, type ConversationWelcome } from './welcome.js';
+import { withoutEmptyRuns } from './runs.js';
 import { resolveText, useLanguage } from './text.js';
 import { ConversationSetBusyContext } from './busy.js';
 import { AnswerBlock } from './AnswerBlock.js';
+import { ResumeBandText, SwitchBandText } from './BandText.js';
+import { ControlErrorSlot, CustomControls } from './CustomControls.js';
 import { AnswerFiles, FILE_LINK_CLASS } from './FileCards.js';
 import { SlotSpinner } from './spinners/SlotSpinner.js';
 import { CodeBlock } from './CodeBlock.js';
@@ -93,6 +96,11 @@ export interface ConversationViewProps {
   // → a persistent one-line row (⟳/✓/✗/⏹). 'verbose' → the line plus the args/
   // result detail; a finished tool collapses to the line (click to expand).
   toolVerbosity: 'silent' | 'description-while-active' | 'description-only' | 'verbose';
+  // The host's choice (owner request 2026-10-12; WidgetProps.hideEmptyRuns):
+  // leave out the runs a resume added where nothing happened (see runs.ts).
+  // The current run shows while the conversation is open; once `closed` (the
+  // suspended replay), an empty last run is left out too. Absent: every run.
+  hideEmptyRuns?: boolean;
   // Reasoning/thinking traces (e.g. grok's agent_thought_chunk). 'hidden' → not
   // rendered; 'visible' → shown in a distinct reasoning style. Task-level, set
   // by the engine via widgetData — the view never decides visibility itself.
@@ -161,6 +169,11 @@ export interface ConversationViewProps {
   // to the wrapper (POST /control or UI-local).
   controls?: SessionControl[];
   onControlChange?: (id: string, value: string | boolean) => void;
+  // Task-defined controls (widgetData.customControls), before the built-in
+  // ones and shown whatever `controls` is. onCustomControlChange picks an
+  // option: resolves to null once applied, else to why not (the error slot).
+  customControls?: CustomControl[];
+  onCustomControlChange?: (id: string, value: string) => Promise<string | null>;
   // theming (only set by ConversationWidget when ownTheme):
   themeMode?: 'light' | 'dark';
   onToggleTheme?: () => void; // absent => no ☀/🌙 button
@@ -1223,6 +1236,18 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const [sending, setSending] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The input bar's error slot, offered to an engine view around this one
+  // (ControlErrorSlot: ClaudeCodeView shows its built-in controls' failures
+  // here). Filled while mounted, whatever controls are shown; the custom
+  // controls report their own failures through onError.
+  const controlErrorSlot = useContext(ControlErrorSlot);
+  useEffect(() => {
+    if (!controlErrorSlot) return undefined;
+    controlErrorSlot.current = setError;
+    return () => {
+      if (controlErrorSlot.current === setError) controlErrorSlot.current = null;
+    };
+  }, [controlErrorSlot]);
   // Ant Design X experiment (owner-approved 2026-10-12): the files to send are
   // X Attachments' upload list (antd UploadFile, the File in originFileObj);
   // `attachments` is what onSend / onSteer get, as before.
@@ -1293,7 +1318,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     const observer = new ResizeObserver(fit);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [props.controls]);
+  }, [props.controls, props.customControls]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -1553,7 +1578,12 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       run = [];
     };
     items.forEach((item, i) => {
-      if (item.kind === 'tool' && toolVerbosity !== 'silent') {
+      // description-while-active shows a tool only while it runs: a finished
+      // one leaves the chain (renderItem gives a finished background job its
+      // muted outcome line, as at silent, and nothing else).
+      const hidden = item.kind === 'tool' && toolVerbosity === 'description-while-active'
+        && toolLifecycle(item).finished;
+      if (item.kind === 'tool' && toolVerbosity !== 'silent' && !hidden) {
         run.push(item);
         return;
       }
@@ -1867,9 +1897,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         const stopped = item.status === 'stopped';
         const elapsed =
           item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
-        // Silent is unchanged: no ordinary tool row. A background job still
-        // leaves its muted line, including while it is running.
-        if (toolVerbosity === 'silent') {
+        // Silent: no ordinary tool row. A background job still leaves its
+        // muted line, including while it is running. description-while-active
+        // sends only its finished tools here (renderTranscript): the same, a
+        // finished background job's line and nothing else.
+        if (toolVerbosity === 'silent' || toolVerbosity === 'description-while-active') {
           if (!item.background) return null;
           return finished
             ? renderBackgroundLine(item, failed, elapsed, token)
@@ -1952,9 +1984,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       case 'closed':
         return renderDivider(`closed-${item.seq}`, undefined, `conversation ended${item.reason ? ` (${item.reason})` : ''}`, 'solid');
       case 'resumed':
+      case 'switched':
         // Resume marker (owner request 2026-10-08): the session was captured
-        // here and resumed later.
-        return renderDivider(`resumed-${item.seq}`, 'resume-band', 'Session has been saved and resumed.', 'solid');
+        // here and resumed later; it names the mode the resumed run runs in.
+        // Switch marker (owner request 2026-10-12), the same divider: the
+        // model or a task-defined control's option was switched here.
+        return item.kind === 'resumed'
+          ? renderDivider(`resumed-${item.seq}`, 'resume-band',
+            <ResumeBandText item={item} customControls={props.customControls} />, 'solid')
+          : renderDivider(`switched-${item.seq}`, 'switch-band',
+            <SwitchBandText item={item} controls={props.controls} customControls={props.customControls} />, 'solid');
       case 'compacting':
       case 'compacted':
         // Compaction markers (owner request 2026-10-08), around the summary.
@@ -1966,11 +2005,14 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     }
   }
 
-  // A marker across the transcript (conversation ended, resumed, compacted):
+  // A marker across the transcript (conversation ended, resumed, switched,
+  // compacted):
   // an X Bubble.Divider (Ant Design X experiment), its text in the middle.
   // Keyed apart from the row that may draw it (a resume notice, a compaction
   // summary), which carries the same seq.
-  function renderDivider(key: string, testId: string | undefined, label: string, variant: 'solid' | 'dashed') {
+  function renderDivider(
+    key: string, testId: string | undefined, label: React.ReactNode, variant: 'solid' | 'dashed',
+  ) {
     return (
       <div key={key} data-testid={testId} style={{ alignSelf: 'stretch' }}>
         <Bubble.Divider content={label} dividerProps={{ variant, plain: true }} />
@@ -2072,7 +2114,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 alone repeats. */}
             {/* The agent task's welcome card, first in the transcript. */}
             {welcome && <WelcomeCard welcome={welcome} />}
-            {renderTranscript(state.items)}
+            {renderTranscript(props.hideEmptyRuns ? withoutEmptyRuns(state.items, !closed) : state.items)}
             {/* The process died (or the conversation was closed engine-side):
                 append the ended divider after the transcript. */}
             {closed && renderDivider('conversation-closed', 'conversation-closed', props.closedLabel ?? 'conversation ended', 'solid')}
@@ -2162,14 +2204,26 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               /* Sender's footer: a single-height toolbar — model + attach on the left,
                   Send/Interrupt pushed right. All size="small" so heights match. */
               <div ref={toolbarRef} data-testid="session-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {props.controls && props.onControlChange ? (
+                {(props.customControls?.length && props.onCustomControlChange) || (props.controls && props.onControlChange) ? (
                   <>
+                    {/* The task's own controls (custom) first, then the built-in
+                        ones; both collapse into the Settings popover together. */}
                     <span className="optio-cc-inline-controls">
-                      <SessionControls
-                        controls={props.controls}
-                        disabled={props.busy || props.state.closed}
-                        onChange={props.onControlChange}
-                      />
+                      {props.customControls?.length && props.onCustomControlChange ? (
+                        <CustomControls
+                          controls={props.customControls}
+                          disabled={props.busy || props.state.closed}
+                          onChange={props.onCustomControlChange}
+                          onError={setError}
+                        />
+                      ) : null}
+                      {props.controls && props.onControlChange ? (
+                        <SessionControls
+                          controls={props.controls}
+                          disabled={props.busy || props.state.closed}
+                          onChange={props.onControlChange}
+                        />
+                      ) : null}
                     </span>
                     {/* When even the compact toolbar is too wide (optio-cc-collapsed),
                         the controls collapse into this button, which opens them,
@@ -2181,11 +2235,21 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                         rootClassName="optio-cc-settings-popover"
                         content={
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
-                            <SessionControls
-                              controls={props.controls}
-                              disabled={props.busy || props.state.closed}
-                              onChange={props.onControlChange}
-                            />
+                            {props.customControls?.length && props.onCustomControlChange ? (
+                              <CustomControls
+                                controls={props.customControls}
+                                disabled={props.busy || props.state.closed}
+                                onChange={props.onCustomControlChange}
+                                onError={setError}
+                              />
+                            ) : null}
+                            {props.controls && props.onControlChange ? (
+                              <SessionControls
+                                controls={props.controls}
+                                disabled={props.busy || props.state.closed}
+                                onChange={props.onControlChange}
+                              />
+                            ) : null}
                           </div>
                         }
                       >

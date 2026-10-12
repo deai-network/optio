@@ -75,5 +75,23 @@ describe('ClaudeCodeView session controls', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/widget/db/gm/p1/control');
     expect(JSON.parse(init.body as string)).toEqual({ id: 'model', value: 'claude-opus-4-1' });
+    expect(screen.queryByTestId('conversation-error')).toBeNull();
+  });
+
+  // A failed pick is shown in the input bar's error slot, worded as for the
+  // custom controls.
+  it.each([
+    [400, { ok: false, reason: 'bad-value' }, 'Switch failed: this option is not available.'],
+    [409, { ok: false, reason: 'rejected', error: 'Model claude-opus-4-1 is not available' },
+      'Switch failed: Model claude-opus-4-1 is not available'],
+    [409, { ok: false, reason: 'closed' }, 'Switch failed: the conversation has ended.'],
+    [502, {}, 'Switch failed — retry.'],
+  ])('a pick answered %i shows why in the error slot', async (status, body, text) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), { status })));
+    render(<ClaudeCodeView {...makeProps({ showSessionControls: true, controls: CONTROLS })} />);
+    fireEvent.mouseDown(screen.getByTestId('control-model').querySelector('[role=\"combobox\"]')!);
+    await waitFor(() => expect(screen.getByText('Opus 4.1')).toBeTruthy());
+    fireEvent.click(screen.getByText('Opus 4.1'));
+    await waitFor(() => expect(screen.getByTestId('conversation-error').textContent).toBe(text));
   });
 });

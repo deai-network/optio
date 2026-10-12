@@ -110,6 +110,7 @@ export function AntigravityView(props: WidgetProps) {
         closed={state.closed}
         busy={busy}
         toolVerbosity={toolVerbosity}
+        hideEmptyRuns={props.hideEmptyRuns}
         thinkingVerbosity={thinkingVerbosity}
         nativeSpinner={nativeSpinner ? <NativeSpinner engine="antigravity" /> : undefined}
         showFileUpload={showFileUpload}

@@ -11,6 +11,7 @@ from optio_agents.config_types import (
     AllowedDir,
     BlobCryptoConfigMixin,
     ConversationMode,
+    ResumeConfigMixin,
     SeedProvider,
     SeedUnavailableError,
     ThinkingVerbosity,
@@ -20,11 +21,23 @@ from optio_agents.config_types import (
     WelcomeConfigMixin,
 )
 from optio_agents.context import HookContext, HookContextProtocol, SYSTEM_MESSAGE_PREFIX
+from optio_agents.custom_controls import (
+    ControlSettings,
+    CustomControl,
+    CustomControlsConfigMixin,
+    CustomOption,
+)
 from optio_agents.conversation import (
     Conversation,
     ConversationClosed,
     PermissionDecision,
     PermissionRequest,
+)
+from optio_agents.mcp import (
+    McpConfigMixin,
+    McpServer,
+    McpServersProvider,
+    resolve_mcp_servers,
 )
 from optio_agents.protocol import (
     CALLER_MESSAGE_QUEUE_BOUND,
@@ -81,6 +94,7 @@ __all__ = [
     "AllowedDir",
     "BlobCryptoConfigMixin",
     "ConversationMode",
+    "ResumeConfigMixin",
     "SeedProvider",
     "SeedUnavailableError",
     "ThinkingVerbosity",
@@ -102,6 +116,14 @@ __all__ = [
     "ConversationClosed",
     "PermissionDecision",
     "PermissionRequest",
+    "McpConfigMixin",
+    "McpServer",
+    "McpServersProvider",
+    "resolve_mcp_servers",
+    "ControlSettings",
+    "CustomControl",
+    "CustomControlsConfigMixin",
+    "CustomOption",
     "browser_shims",
     "claustrum",
     "model_probe",

@@ -652,6 +652,67 @@ def test_build_claude_flags_continue_is_last():
     assert flags[-1] == "--continue"
 
 
+def test_tools_empty_list_disables_builtins():
+    """tools=[] is not "unset" (unlike allowed_tools): it passes `--tools ""`,
+    which gives claude no built-in tools at all."""
+    flags = host_actions.build_claude_flags(
+        permission_mode=None, allowed_tools=None, disallowed_tools=None, tools=[],
+    )
+    assert flags == ["--tools", ""]
+
+
+def test_tools_list_is_comma_joined():
+    flags = host_actions.build_claude_flags(
+        permission_mode=None, allowed_tools=None, disallowed_tools=None,
+        tools=["Read", "Grep"],
+    )
+    assert flags == ["--tools", "Read,Grep"]
+
+
+def test_mcp_flags_are_added_with_a_config_path():
+    path = "/wd/home/.claude/optio-mcp.json"
+    flags = host_actions.build_claude_flags(
+        permission_mode=None, allowed_tools=None, disallowed_tools=None,
+        mcp_config_path=path,
+    )
+    assert flags == ["--mcp-config", path, "--strict-mcp-config"]
+
+
+def test_no_mcp_flags_without_a_path():
+    flags = host_actions.build_claude_flags(
+        permission_mode="acceptEdits", allowed_tools=["Read"], disallowed_tools=None,
+        resuming=True, model="sonnet",
+    )
+    assert "--mcp-config" not in flags
+    assert "--strict-mcp-config" not in flags
+    assert "--tools" not in flags
+
+
+def test_tools_and_mcp_flags_come_before_continue_and_model():
+    """--tools and --mcp-config take several values; the option after each
+    ends its list (--strict-mcp-config always follows --mcp-config)."""
+    path = "/wd/home/.claude/optio-mcp.json"
+    flags = host_actions.build_claude_flags(
+        permission_mode="bypassPermissions", allowed_tools=None, disallowed_tools=None,
+        tools=[], mcp_config_path=path, resuming=True, model="default",
+    )
+    assert flags == [
+        "--permission-mode", "bypassPermissions",
+        "--tools", "",
+        "--mcp-config", path, "--strict-mcp-config",
+        "--continue",
+        "--model", "default",
+    ]
+
+
+def test_a_prompt_after_the_tools_flags_follows_a_double_dash():
+    """A prompt right after a multi-value option (--tools, --mcp-config,
+    --allowed-tools) is read as one more value of it (CLI 2.1.296:
+    `claude -p --tools "" hello` gets no prompt); `--` ends the options."""
+    assert host_actions.positional_prompt_args([]) == []
+    assert host_actions.positional_prompt_args(["System: go"]) == ["--", "System: go"]
+
+
 def test_auto_start_args_fresh_appends_prompt():
     args = host_actions.build_auto_start_args(auto_start=True, resuming=False)
     assert args == [host_actions.AUTO_START_PROMPT]

@@ -132,6 +132,62 @@ stay top-level on each config — callers write `fs_isolation=` /
   widgets ignore it). Engines call `self._validate_welcome()` from
   `__post_init__` (anything but a `WelcomeCard` or None raises
   `ValueError`). Both names are exported from `optio_agents`.
+* `ResumeConfigMixin` — how a suspended session resumes:
+  `smooth_resume: bool = False`, "this task should be resumed without
+  confirmation when a message arrives". Set, a message sent to the suspended
+  session resumes it directly; unset, the widget asks first. A send that
+  would discard a failed run's unsaved work (a resurrect) still asks. No
+  validation and no refusal: every engine accepts it. Only claudecode has a
+  suspended view whose send resumes the session so far (it publishes the flag
+  as `widgetData.smoothResume`); on the other engines it has no effect until
+  they get one.
+* `McpConfigMixin` (in `optio_agents.mcp`, with the rest of the MCP
+  vocabulary) — `mcp_servers`: None (no MCP servers, the default), a static
+  list of `McpServer`, or a `McpServersProvider` (an async callable awaited
+  with the process id, like `SeedProvider`, so per-launch credentials stay
+  fresh). `McpServer(name, url, headers)` is one remote streamable-HTTP server
+  (name of letters, digits, `_`, `-`; an http(s) URL; header values are
+  credentials, never shown in a `repr` or an error). Engines call
+  `self._validate_mcp(supported=..., agent=...)` from `__post_init__` (an
+  engine without a translation refuses any non-None value; a static list is
+  checked) and `resolve_mcp_servers(config, process_id)` on every launch,
+  fresh and resume (a provider's result is checked; its exception fails the
+  launch). Only claudecode translates it so far: ask
+  `optio_agents_all.supports_mcp(agent_type)`.
+* `CustomControlsConfigMixin` (in `optio_agents.custom_controls`) —
+  `custom_controls: list[CustomControl] | None`: task-defined selectors shown
+  in the conversation view, independent of `show_session_controls` /
+  `session_controls`. Engines call
+  `self._validate_custom_controls(supported=..., agent=...)` from
+  `__post_init__`: an engine that cannot apply them refuses a non-empty list
+  (`<agent> does not support custom_controls yet`); otherwise control ids are
+  unique and each setting (model, reasoning effort, permission mode) is set by
+  the options of at most one control. Only claudecode applies them so far: ask
+  `optio_agents_all.supports_custom_controls(agent_type)`. See the next
+  section.
+
+## Custom session controls (`optio_agents.custom_controls`)
+
+* `Text` — a plain string or a map of language code (`en`, `hu`, `de`, ...)
+  to a non-empty string; `resolve_text(text, language)` gives the language's
+  entry, else `en`, else the first entry (a plain string as is).
+* `ControlSettings(model, reasoning_effort, permission_mode)` — what an option
+  sets; None leaves a setting alone, at least one is set. `reasoning_effort` is
+  one of `KNOWN_REASONING_EFFORTS` (low, medium, high, xhigh, max) and
+  `permission_mode` one of `KNOWN_PERMISSION_MODES` (Claude Code's wire values:
+  `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`;
+  `manual` is spelled `default`). Kept here because optio-agents imports no
+  engine; optio-agents-all's tests keep them equal to optio-claudecode's.
+  `to_dict()` holds only the set values.
+* `CustomOption(value, label, settings, description=None)` — `value` of
+  letters, digits, `_`, `-`; `label` / `description` are `Text`.
+* `CustomControl(id, label, default, options, description=None)` — `id` of
+  letters, digits, `_`, `-` (its `/control` id is `custom:<id>`); `label` is
+  `Text` or None (no caption); at least 2 options with unique values;
+  `default` is one of them, applied when a session starts.
+
+All are frozen and validated on construction (`ValueError`); language maps
+and the options list are copied.
 
 ## Localized text (`optio_agents.text`)
 

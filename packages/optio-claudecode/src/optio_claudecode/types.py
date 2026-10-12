@@ -22,9 +22,12 @@ from optio_agents import (
 from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
+    ResumeConfigMixin,
     SessionControlsConfigMixin,
     WelcomeConfigMixin,
 )
+from optio_agents.custom_controls import CustomControlsConfigMixin
+from optio_agents.mcp import McpConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -32,6 +35,8 @@ from optio_agents.protocol.session import (
 )
 from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
+
+from optio_claudecode.controls import validate_custom_controls
 
 # AllowedDir, ConversationMode, ToolVerbosity, ThinkingVerbosity, SeedProvider
 # and SeedUnavailableError are the shared vocabulary owned by optio_agents; they
@@ -92,7 +97,8 @@ def _identity_resume_refresh(config: "ClaudeCodeTaskConfig") -> "ClaudeCodeTaskC
 
 @dataclass(frozen=True, kw_only=True)
 class ClaudeCodeTaskConfig(
-    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin, McpConfigMixin,
+    CustomControlsConfigMixin, ResumeConfigMixin,
     WelcomeConfigMixin,
 ):
     """Configuration for one optio-claudecode task instance.
@@ -130,6 +136,14 @@ class ClaudeCodeTaskConfig(
     allow_bypass_permissions: bool | None = None
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] | None = None
+    # The built-in tools claude has at all: `--tools <comma-separated>`. None:
+    # claude's default set; [] (unlike allowed_tools): `--tools ""`, no
+    # built-in tools (e.g. a chat that only uses its MCP servers' tools).
+    tools: list[str] | None = None
+    # mcp_servers (McpConfigMixin): resolved on every launch, fresh and
+    # resume, and written to home/.claude/optio-mcp.json (mode 0600; left out
+    # of every snapshot and seed, since it is rewritten at each launch), which
+    # claude gets as `--mcp-config <path> --strict-mcp-config`.
     # When True, a fresh launch passes a trailing positional prompt
     # ("System: Read CLAUDE.md and execute the task it describes") so claude starts the
     # task unattended. Suppressed on resume (--continue) to avoid re-triggering.
@@ -241,6 +255,15 @@ class ClaudeCodeTaskConfig(
     # SessionControlsConfigMixin. Claude Code's controls: "model" (default
     # config.model), "reasoning_effort", "permission_mode". The bar requires
     # mode="conversation" and conversation_ui=True.
+    # custom_controls (CustomControlsConfigMixin): the task's own selectors,
+    # shown whatever show_session_controls says (also mode="conversation" and
+    # conversation_ui=True). Each control's default option replaces model /
+    # reasoning_effort / permission_mode below at launch; a pick switches
+    # claude live (/control id "custom:<id>").
+    # smooth_resume (ResumeConfigMixin): carried to the widget as
+    # widgetData.smoothResume, which outlives a suspend; the suspended replay
+    # then resumes the session on a send without asking (a send that discards
+    # unsaved work still asks).
     # Replace the generic working-spinner with claudecode's on-brand native
     # spinner in the conversation widget. Requires mode="conversation" and
     # conversation_ui=True.
@@ -300,6 +323,10 @@ class ClaudeCodeTaskConfig(
         # delivery_type (with fs_isolation on) fails fast.
         self._validate_claustrum()
         self._validate_blob_crypto()
+        # MCP servers are supported here (a malformed static list is refused).
+        self._validate_mcp(supported=True, agent=self.agent_type)
+        # Custom session controls are accepted here (a malformed list is refused).
+        self._validate_custom_controls(supported=True, agent=self.agent_type)
         if self.allow_bypass_permissions is False and self.permission_mode == "bypassPermissions":
             raise ValueError(
                 "ClaudeCodeTaskConfig: permission_mode='bypassPermissions' contradicts "
@@ -364,6 +391,19 @@ class ClaudeCodeTaskConfig(
             )
         self._validate_session_controls()
         self._validate_welcome()
+        if self.custom_controls:
+            # Shown in the conversation widget, picked there; each default
+            # replaces the config's own model / effort / permission mode at
+            # launch, so its mode must be one this task can run in.
+            if not (self.mode == "conversation" and self.conversation_ui):
+                raise ValueError(
+                    "ClaudeCodeTaskConfig: custom_controls requires "
+                    "mode='conversation' and conversation_ui=True."
+                )
+            validate_custom_controls(
+                self.custom_controls, permission_gate=self.permission_gate,
+                bypass_allowed=self.bypass_allowed, owner="ClaudeCodeTaskConfig",
+            )
         if self.native_spinner and not (self.mode == "conversation" and self.conversation_ui):
             raise ValueError(
                 "ClaudeCodeTaskConfig: native_spinner=True requires "

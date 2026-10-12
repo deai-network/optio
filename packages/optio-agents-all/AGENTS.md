@@ -21,11 +21,20 @@ dataclasses.
   a 0/1-element list).
 * `AGENTS` / `get_agent_info(agent_type)` — canonical per-engine metadata
   (`optio_agents.AgentInfo`).
+* `MCP_AGENT_TYPES` / `supports_mcp(agent_type)` -- the engines whose config
+  accepts `mcp_servers` (only `claudecode` for now; guarded by
+  `tests/test_capabilities.py`).
+* `CUSTOM_CONTROLS_AGENT_TYPES` / `supports_custom_controls(agent_type)` --
+  the engines whose config accepts a non-empty `custom_controls` (only
+  `claudecode` for now; guarded by `tests/test_capabilities.py`, which also
+  keeps `optio_agents.custom_controls`' known effort levels and permission
+  modes equal to optio-claudecode's).
 
 ## Config uniformity guarantee
 
 Every member of `AgentTaskConfig` subclasses the shared mixins from
-`optio_agents.config_types`, so these field sets are uniform across all 7
+`optio_agents.config_types` (and `optio_agents.mcp`,
+`optio_agents.custom_controls`), so these field sets are uniform across all 7
 engines (guarded by `tests/test_config_uniformity.py`):
 
 * `ClaustrumConfigMixin` — `fs_isolation` / `extra_allowed_dirs` /
@@ -39,6 +48,17 @@ engines (guarded by `tests/test_config_uniformity.py`):
   raises `ValueError`) and `welcome_widget_data`, the
   `{title, description, icon, minHeight}` dict every engine publishes as the
   conversation widget's `welcome` widgetData key.
+* `McpConfigMixin` -- `mcp_servers` (a list of `McpServer` or a provider
+  awaited with the process id). An engine outside `MCP_AGENT_TYPES` raises
+  `ValueError` (`<agent_type> does not support mcp_servers yet`) at
+  construction for any non-None value.
+* `CustomControlsConfigMixin` -- `custom_controls` (a list of
+  `CustomControl`; None or `[]` for none). An engine outside
+  `CUSTOM_CONTROLS_AGENT_TYPES` raises `ValueError` (`<agent_type> does not
+  support custom_controls yet`) at construction for a non-empty list.
+* `ResumeConfigMixin` -- `smooth_resume` (default False): a message sent to
+  the suspended session resumes it without confirmation. Accepted by every
+  engine, never refused; only claudecode's suspended view acts on it so far.
 
 Full mixin semantics: `packages/optio-agents/AGENTS.md`.
 

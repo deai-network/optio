@@ -33,7 +33,44 @@ import { useProcess } from './useProcessQueries.js';
  * `staleTime: Infinity`: a record never changes for a given suspend (whose
  * stoppedAt is in the key), so a window refocus or a remount does not refetch
  * it, and the engine does not decrypt it again. `refetch()` still fetches.
+ *
+ * Retries: see `conversationRetry` / `conversationRetryDelay`. A 503 (no
+ * engine conversation archive reachable) is retried long enough to outlast an
+ * engine restart: a host page that is open while the engine restarts reads the
+ * record of the very suspend that restart caused, while the archive is down.
  */
+// A 503 (the engine's conversation archive is not reachable, e.g. the engine
+// is restarting): six retries, 1 + 2 + 4 + 8 + 15 + 15 s (~45 s), so a read
+// started at the beginning of a restart still gets the record.
+const UNAVAILABLE_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 15000];
+// Other transient failures (a network blip, a 500): two retries.
+const TRANSIENT_RETRIES = 2;
+
+function errorStatus(error: unknown): number | undefined {
+  const status = (error as { status?: number } | null)?.status;
+  return typeof status === 'number' ? status : undefined;
+}
+
+/** Whether to retry the conversation read after `failureCount` failures. A 4xx
+ * never (not-found / not-suspended / no-conversation: asking again does not
+ * change the process); a 503 through UNAVAILABLE_RETRY_DELAYS_MS; anything
+ * else TRANSIENT_RETRIES times. */
+export function conversationRetry(failureCount: number, error: unknown): boolean {
+  const status = errorStatus(error);
+  if (status !== undefined && status >= 400 && status < 500) return false;
+  if (status === 503) return failureCount < UNAVAILABLE_RETRY_DELAYS_MS.length;
+  return failureCount < TRANSIENT_RETRIES;
+}
+
+/** The wait before retry `attempt` (0-based): the 503 schedule, else
+ * react-query's default exponential backoff (1 s, 2 s, ... up to 30 s). */
+export function conversationRetryDelay(attempt: number, error: unknown): number {
+  if (errorStatus(error) === 503) {
+    return UNAVAILABLE_RETRY_DELAYS_MS[Math.min(attempt, UNAVAILABLE_RETRY_DELAYS_MS.length - 1)];
+  }
+  return Math.min(1000 * 2 ** attempt, 30000);
+}
+
 export function useProcessConversation(
   processId: string,
   opts?: { enabled?: boolean; stoppedAt?: string | null },
@@ -64,13 +101,9 @@ export function useProcessConversation(
     // never stale, so a window refocus or a remount does not make the engine
     // decrypt it again. An explicit refetch() (a Retry) still fetches.
     staleTime: Infinity,
-    // Never retry a 4xx (not-found / not-suspended / no-conversation / etc.) —
-    // the process state won't change because we asked again. Give transient
-    // failures (network blip, 500, 503) a couple of attempts.
-    retry: (failureCount: number, error: unknown) => {
-      const status = (error as { status?: number } | null)?.status;
-      if (typeof status === 'number' && status >= 400 && status < 500) return false;
-      return failureCount < 2;
-    },
+    // Never a 4xx; a 503 long enough to outlast an engine restart; other
+    // transient failures briefly (conversationRetry / conversationRetryDelay).
+    retry: conversationRetry,
+    retryDelay: conversationRetryDelay,
   });
 }

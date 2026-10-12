@@ -24,6 +24,7 @@ from optio_claudecode.info import AGENT_INFO
 
 if TYPE_CHECKING:
     from optio_agents import HookContextProtocol
+    from optio_agents.mcp import McpServer
     from optio_host import Host
     from optio_host.host import ProcessHandle
 
@@ -651,6 +652,53 @@ async def apply_claude_settings(
     await host.write_text(settings_rel, json.dumps(merged, indent=2))
 
 
+# The task's MCP servers for claude (`--mcp-config`). Its header values are
+# credentials, and it is rewritten at every launch, so it enters no snapshot:
+# the session capture leaves it out (session._archive_home_claude), and it is
+# inside home/.claude, which is removed before the plaintext workdir tar and
+# reaches a seed only through allowlist manifests that do not name it.
+# Claude Code ignores an `mcpServers` key in settings.json.
+MCP_CONFIG_REL = "home/.claude/optio-mcp.json"
+
+
+async def plant_mcp_config(
+    host: "Host", workdir: str, servers: "list[McpServer]",
+) -> str | None:
+    """Write this launch's MCP servers to ``<workdir>/home/.claude/optio-mcp.json``
+    and return the file's absolute path, for ``build_claude_flags(
+    mcp_config_path=...)``. With no servers, remove the file (a snapshot
+    captured before the capture left it out may carry one) and return None.
+
+    The content is Claude Code's ``{"mcpServers": {<name>: {"type": "http",
+    "url": ..., "headers": {...}}}}`` (remote streamable-HTTP servers only).
+    Header values are credentials: the file is created empty with mode 0600
+    (any previous one, or a symlink in its place, removed first) before they
+    are written into it, and they are never logged.
+    """
+    path = f"{workdir.rstrip('/')}/{MCP_CONFIG_REL}"
+    qpath = shlex.quote(path)
+    if servers:
+        cmd = (f"mkdir -p {shlex.quote(os.path.dirname(path))} && rm -f {qpath} "
+               f"&& (umask 077 && : > {qpath})")
+    else:
+        cmd = f"rm -f {qpath}"
+    r = await host.run_command(cmd)
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"preparing {path!r} failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
+        )
+    if not servers:
+        return None
+    payload = {"mcpServers": {
+        s.name: {"type": "http", "url": s.url, "headers": dict(s.headers)}
+        for s in servers
+    }}
+    # write_text truncates the file in place (its 0600 mode stays); it takes
+    # a path relative to host.workdir.
+    await host.write_text(os.path.relpath(path, host.workdir), json.dumps(payload))
+    return path
+
+
 def _build_claude_shell_command(
     *,
     claude_path: str,
@@ -1150,11 +1198,22 @@ def build_claude_flags(
     model: str | None = None,
     effort: str | None = None,
     allow_bypass: bool = False,
+    tools: list[str] | None = None,
+    mcp_config_path: str | None = None,
     show_thinking: bool = False,
 ) -> list[str]:
     """Translate ClaudeCodeTaskConfig permission knobs to an argv list.
 
-    Empty lists are treated as None: no flag is emitted.
+    Empty ``allowed_tools``/``disallowed_tools`` lists are treated as None: no
+    flag is emitted. ``tools`` is different: None emits nothing (claude's
+    default tool set), a list emits ``--tools <comma-separated>``, and an empty
+    list ``--tools ""`` (no built-in tools at all).
+    ``mcp_config_path`` (see ``plant_mcp_config``) emits ``--mcp-config <path>
+    --strict-mcp-config``: claude loads its MCP servers from that file only,
+    ignoring every other MCP source. ``--tools`` and ``--mcp-config`` take
+    several values; ``--strict-mcp-config`` (and any option after ``--tools``)
+    ends the list, and a positional prompt goes after ``--``
+    (``positional_prompt_args``).
     When ``resuming`` is True, ``--continue`` is appended so claude picks
     up the most recent conversation in ``home/.claude/projects/<cwd>/``.
     ``model`` emits `--model <value>`; not validated — vendor strings change.
@@ -1177,6 +1236,10 @@ def build_claude_flags(
         out += ["--allowed-tools", ",".join(allowed_tools)]
     if disallowed_tools:
         out += ["--disallowed-tools", ",".join(disallowed_tools)]
+    if tools is not None:
+        out += ["--tools", ",".join(tools)]
+    if mcp_config_path is not None:
+        out += ["--mcp-config", mcp_config_path, "--strict-mcp-config"]
     if resuming:
         out += ["--continue"]
     if model:
@@ -1303,6 +1366,17 @@ def build_resume_notice_args(*, resuming: bool, pass_continue: bool) -> list[str
     if resuming and pass_continue:
         return [f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]
     return []
+
+
+def positional_prompt_args(prompts: list[str]) -> list[str]:
+    """The trailing positional prompts of a claude launch, after ``--``.
+
+    Without it a prompt that follows an option taking several values
+    (``--tools``, ``--mcp-config``, ``--allowed-tools``) is read as one more
+    value of that option, and claude gets no prompt (verified on CLI 2.1.296:
+    ``claude -p --tools "" hello`` has no prompt, ``claude -p --tools "" --
+    hello`` has). Empty when there is no prompt."""
+    return ["--", *prompts] if prompts else []
 
 
 async def send_text_to_claude(
