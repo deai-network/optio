@@ -20,6 +20,7 @@ from optio_agents import (
 from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
+    ResumeConfigMixin,
     SessionControlsConfigMixin,
     WelcomeConfigMixin,
 )
@@ -73,7 +74,7 @@ def _identity_resume_refresh(config: "CursorTaskConfig") -> "CursorTaskConfig":
 @dataclass(frozen=True, kw_only=True)
 class CursorTaskConfig(
     ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin, McpConfigMixin,
-    CustomControlsConfigMixin,
+    CustomControlsConfigMixin, ResumeConfigMixin,
     WelcomeConfigMixin,
 ):
     """Configuration for one optio-cursor task instance (Stage 0).

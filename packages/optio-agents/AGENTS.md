@@ -132,6 +132,15 @@ stay top-level on each config — callers write `fs_isolation=` /
   widgets ignore it). Engines call `self._validate_welcome()` from
   `__post_init__` (anything but a `WelcomeCard` or None raises
   `ValueError`). Both names are exported from `optio_agents`.
+* `ResumeConfigMixin` — how a suspended session resumes:
+  `smooth_resume: bool = False`, "this task should be resumed without
+  confirmation when a message arrives". Set, a message sent to the suspended
+  session resumes it directly; unset, the widget asks first. A send that
+  would discard a failed run's unsaved work (a resurrect) still asks. No
+  validation and no refusal: every engine accepts it. Only claudecode has a
+  suspended view whose send resumes the session so far (it publishes the flag
+  as `widgetData.smoothResume`); on the other engines it has no effect until
+  they get one.
 * `McpConfigMixin` (in `optio_agents.mcp`, with the rest of the MCP
   vocabulary) — `mcp_servers`: None (no MCP servers, the default), a static
   list of `McpServer`, or a `McpServersProvider` (an async callable awaited

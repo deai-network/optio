@@ -21,6 +21,7 @@ from optio_agents import (
 from optio_agents.config_types import (
     BlobCryptoConfigMixin,
     ClaustrumConfigMixin,
+    ResumeConfigMixin,
     SessionControlsConfigMixin,
     WelcomeConfigMixin,
 )
@@ -107,7 +108,7 @@ _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 @dataclass(frozen=True, kw_only=True)
 class KimiCodeTaskConfig(
     ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin, McpConfigMixin,
-    CustomControlsConfigMixin,
+    CustomControlsConfigMixin, ResumeConfigMixin,
     WelcomeConfigMixin,
 ):
     """Configuration for one optio-kimicode task instance.

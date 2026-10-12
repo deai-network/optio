@@ -56,6 +56,9 @@ engines (guarded by `tests/test_config_uniformity.py`):
   `CustomControl`; None or `[]` for none). An engine outside
   `CUSTOM_CONTROLS_AGENT_TYPES` raises `ValueError` (`<agent_type> does not
   support custom_controls yet`) at construction for a non-empty list.
+* `ResumeConfigMixin` -- `smooth_resume` (default False): a message sent to
+  the suspended session resumes it without confirmation. Accepted by every
+  engine, never refused; only claudecode's suspended view acts on it so far.
 
 Full mixin semantics: `packages/optio-agents/AGENTS.md`.
 

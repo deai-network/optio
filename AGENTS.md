@@ -665,6 +665,11 @@ grok, kimicode, antigravity) inherit their common field sets from mixins in
   map read by `resolve_text`), independent of the controls bar. Only
   claudecode accepts a non-empty list so far
   (`optio_agents_all.supports_custom_controls`); the others raise `ValueError`.
+- **`ResumeConfigMixin`** — `smooth_resume` (default False): this task should
+  be resumed without confirmation when a message arrives. A send to the
+  suspended session resumes it directly; a send that discards a failed run's
+  unsaved work still asks. Every engine accepts it; only claudecode's
+  suspended replay acts on it so far (`widgetData.smoothResume`).
 
 `optio-agents-all` guards this uniformity with a union-wide test; its
 `create_task` passes configs through verbatim. Details:
