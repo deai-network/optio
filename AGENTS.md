@@ -1261,7 +1261,9 @@ conversation archive. A 200 appears as `data` (`data.body` is
 thrown by ts-rest and surfaces as `error` (`error.status`; `error.body` is
 `{ reason, message }` except for 401, which is `{ message }`). Never retries a 4xx (transient
 errors get up to 2). `opts.enabled: false` fetches nothing at all (neither the conversation nor
-the process doc below).
+the process doc below). `staleTime: Infinity`: a record is fixed for a given suspend (whose
+`stoppedAt` is in the key), so a window refocus or a remount never refetches it; an explicit
+`refetch()` still does.
 
 Query key includes the process's current `status.stoppedAt` alongside the id, so a
 resume-then-resuspend cycle gets a fresh cache entry instead of momentarily showing the

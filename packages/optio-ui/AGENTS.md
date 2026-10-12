@@ -557,6 +557,10 @@ react-query result, unmodified (the return type is loose — `any`, since `Optio
 Never retries a 4xx (`error.status` 400–499) — the process's state won't change because the
 read is repeated. Transient errors (network, 5xx) get up to 2 retries.
 
+`staleTime: Infinity`: a record is fixed for a given suspend, and the key below carries that
+suspend's `stoppedAt`, so a window refocus or a remount never refetches it (each refetch would
+make the engine decrypt it again). An explicit `refetch()` (e.g. a Retry button) still fetches.
+
 The query key is `['process-conversation', database, prefix, processId, statusTimestamp]`,
 where `statusTimestamp` is the process's current `status.stoppedAt`. This is the timestamp a
 suspend (a cancel with saved state) sets, so a resume-then-resuspend cycle gets a fresh cache

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query';
 import { OptioProvider } from '../context/OptioProvider.js';
 import { useProcessConversation } from '../hooks/useProcessConversation.js';
 
@@ -106,6 +106,68 @@ describe('useProcessConversation', () => {
       await new Promise((r) => setTimeout(r, 50));
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a window refocus does not refetch the record (fixed for its stoppedAt, so never stale)', async () => {
+    let conversationCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (isConversationUrl(url)) {
+        conversationCalls += 1;
+        return new Response(
+          JSON.stringify({ events: [], capturedAt: null }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      throw new Error(`unexpected process-doc fetch: ${url}`);
+    });
+
+    const { result } = renderHook(
+      () => useProcessConversation('p1', { stoppedAt: '2026-10-12T00:00:00Z' }),
+      { wrapper: wrap },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(conversationCalls).toBe(1);
+    expect(result.current.isStale).toBe(false);
+
+    try {
+      // Blur then focus: react-query refetches every stale query on focus,
+      // and a refetch marks the query fetching synchronously, so the result
+      // right after the focus event is a deterministic checkpoint.
+      act(() => {
+        focusManager.setFocused(false);
+        focusManager.setFocused(true);
+      });
+      expect(result.current.isFetching).toBe(false);
+      expect(conversationCalls).toBe(1);
+    } finally {
+      focusManager.setFocused(undefined);
+    }
+  });
+
+  it('an explicit refetch (a Retry) still fetches', async () => {
+    let conversationCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (isConversationUrl(url)) {
+        conversationCalls += 1;
+        return new Response(
+          JSON.stringify({ events: [], capturedAt: null }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      throw new Error(`unexpected process-doc fetch: ${url}`);
+    });
+
+    const { result } = renderHook(
+      () => useProcessConversation('p1', { stoppedAt: '2026-10-12T00:00:00Z' }),
+      { wrapper: wrap },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    await act(async () => {
+      await result.current.refetch();
+    });
+    expect(conversationCalls).toBe(2);
   });
 
   describe('opts.stoppedAt', () => {

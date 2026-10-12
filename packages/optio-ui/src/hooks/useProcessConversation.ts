@@ -29,6 +29,10 @@ import { useProcess } from './useProcessQueries.js';
  * an internal `useProcess(processId)` call, as before. `opts.enabled: false`
  * also skips the process-doc fetch (as well as the conversation fetch) —
  * nothing fetches at all.
+ *
+ * `staleTime: Infinity`: a record never changes for a given suspend (whose
+ * stoppedAt is in the key), so a window refocus or a remount does not refetch
+ * it, and the engine does not decrypt it again. `refetch()` still fetches.
  */
 export function useProcessConversation(
   processId: string,
@@ -56,6 +60,10 @@ export function useProcessConversation(
     queryKey: ['process-conversation', database, prefix, processId, statusTimestamp],
     queryData: { params: { id: processId }, query: { database, prefix } },
     enabled: !!processId && enabled,
+    // A record is fixed for a given suspend, and its stoppedAt is in the key:
+    // never stale, so a window refocus or a remount does not make the engine
+    // decrypt it again. An explicit refetch() (a Retry) still fetches.
+    staleTime: Infinity,
     // Never retry a 4xx (not-found / not-suspended / no-conversation / etc.) —
     // the process state won't change because we asked again. Give transient
     // failures (network blip, 500, 503) a couple of attempts.
