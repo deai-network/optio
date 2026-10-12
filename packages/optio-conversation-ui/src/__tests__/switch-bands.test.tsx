@@ -5,6 +5,7 @@ import huHU from 'antd/locale/hu_HU';
 import type { ReactElement } from 'react';
 import { ConversationView, type ConversationViewProps } from '../ConversationView.js';
 import { ClaudeCodeView } from '../claudecode/ClaudeCodeView.js';
+import { ClaudeCodeReplayView } from '../claudecode/ClaudeCodeReplayView.js';
 import type { ChatItem, ChatState, CustomControl, SessionControl } from '../chat.js';
 
 // Switch bands (owner request 2026-10-12): a model switch, and a confirmed
@@ -280,5 +281,42 @@ describe('ClaudeCodeView switch bands', () => {
     expect(resume.textContent).toBe('Session has been saved and resumed in fast mode.');
     const [, generic] = screen.getAllByTestId('switch-band');
     expect(generic.compareDocumentPosition(resume) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+// The suspended replay (ClaudeCodeReplayView) folds the saved record through
+// the same reducer, read-only: its bands name the task-defined modes as the
+// live view's do, and no selector is offered.
+describe('ClaudeCodeReplayView switch bands', () => {
+  function replay(widgetData: any, events: unknown[]) {
+    return render(
+      <ClaudeCodeReplayView
+        process={{ _id: 'p1', name: 'n', widgetData, status: { state: 'cancelled' } } as any}
+        widgetData={widgetData}
+        events={events.map((ev, i) => [i + 1, ev])}
+        capturedAt={null}
+      />,
+    );
+  }
+
+  it('a pick in the record: "Switched to fast mode.", and no selector renders', () => {
+    replay({ protocol: 'claudecode', customControls: [SPEED] }, [
+      ...turn,
+      pick('fast'), echo('claude-sonnet-5-5'), controlResponse, update('fast'),
+      echo('claude-opus-5'),
+    ]);
+    expect(bandTexts()).toEqual(['Switched to fast mode.', 'Model switched.']);
+    expect(screen.queryByText(/local-command-stdout|Set model to/)).toBeNull();
+    expect(screen.queryByTestId('custom-control-speed')).toBeNull();
+    expect(document.querySelector('.ant-segmented')).toBeNull();
+  });
+
+  it('the resume band names the mode from widgetData\'s customControls', () => {
+    replay({ protocol: 'claudecode', customControls: [SPEED] }, [
+      ...turn,
+      { type: 'x-optio-resumed', customControls: [{ id: 'speed', value: 'fast' }] },
+    ]);
+    expect(screen.getByTestId('resume-band').textContent).toBe('Session has been saved and resumed in fast mode.');
+    expect(screen.queryByTestId('custom-control-speed')).toBeNull();
   });
 });

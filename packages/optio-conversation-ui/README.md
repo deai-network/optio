@@ -63,8 +63,10 @@ resumes the session (claudecode, below).
   row still running. The view is `ConversationView`, closed, under the divider "Session has
   been saved". Interrupt, permission and download do nothing, and it offers no upload
   and no control inputs. A permission request the record left unanswered still shows its
-  Approve and Deny buttons, but they are inert. The tool verbosity, controls seed and todos
-  come from `widgetData`, as in the live view.
+  Approve and Deny buttons, but they are inert. The tool verbosity, the controls and custom
+  controls seeds and todos come from `widgetData`, as in the live view. The custom controls
+  name the modes in the switch and resume bands ("Switched to fast mode."); with no
+  `onCustomControlChange`, no selector renders.
 - **Sending resumes the session** (claudecode). The input and Send stay usable. Send asks
   "Resume the session?"; on "Resume and send" the view resumes the process (`POST
   /processes/:id/launch` with `resume: true`) and the message waits, in browser memory only,

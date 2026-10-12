@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Modal } from 'antd';
 import { isResurrectable, type WidgetProps } from 'optio-ui';
 import { SpinnerScope } from 'vultus-antd';
-import type { ChatState, SessionControl } from '../chat.js';
+import type { ChatState, CustomControl, SessionControl } from '../chat.js';
 import { initialChatState, reduceEvent, type ReduceOptions } from './events.js';
 import { ConversationView } from '../ConversationView.js';
 import { todosFromWidgetData } from '../todosFromWidgetData.js';
@@ -100,6 +100,7 @@ export function ClaudeCodeReplayView({
   const thinkingVerbosity = ((widgetData as any)?.thinkingVerbosity ?? 'hidden') as
     'hidden' | 'visible';
   const initialControls = ((widgetData as any)?.controls ?? []) as SessionControl[];
+  const initialCustomControls = ((widgetData as any)?.customControls ?? []) as CustomControl[];
   const showSessionControls = Boolean((widgetData as any)?.showSessionControls);
   const maxUploadBytes = Number((widgetData as any)?.maxUploadBytes ?? 10_000_000);
   const nativeSpinner = Boolean((widgetData as any)?.nativeSpinner);
@@ -109,12 +110,17 @@ export function ClaudeCodeReplayView({
   const captured = capturedAt ? Date.parse(capturedAt) : NaN;
   const now = Number.isFinite(captured) ? captured : mountedAt;
 
-  // Seeded like ClaudeCodeView's reducer: `{...initialChatState, controls}`
-  // from widgetData. Re-folded only when the record (events array) or the
-  // thinking verbosity changes; `now` changes only with the record.
+  // Seeded like ClaudeCodeView's reducer: `{...initialChatState, controls,
+  // customControls}` from widgetData. Re-folded only when the record (events
+  // array) or the thinking verbosity changes; `now` changes only with the record.
   const thinkingRows = thinkingVerbosity === 'visible';
   const state = useMemo(
-    () => foldRecord(events, { ...initialChatState, controls: initialControls }, now, { thinkingRows }),
+    () => foldRecord(
+      events,
+      { ...initialChatState, controls: initialControls, customControls: initialCustomControls },
+      now,
+      { thinkingRows },
+    ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [events, now, thinkingRows],
   );
@@ -148,6 +154,8 @@ export function ClaudeCodeReplayView({
   // The same state-derived props as ClaudeCodeView. No steer, interrupt,
   // permission, download or control-change handlers: the session controls get
   // their values (for labels) but, without onControlChange, render no inputs.
+  // Likewise the custom controls: they name the modes in the switch and resume
+  // bands, and without onCustomControlChange no selector renders.
   return (
     <SpinnerScope name={`optio:process:${process._id}`}>
       {modalHolder}
@@ -176,6 +184,7 @@ export function ClaudeCodeReplayView({
         onPermission={noop}
         onFileDownload={noop}
         controls={showSessionControls ? state.controls : undefined}
+        customControls={state.customControls}
         themeMode={themeMode}
         onToggleTheme={onToggleTheme}
       />
