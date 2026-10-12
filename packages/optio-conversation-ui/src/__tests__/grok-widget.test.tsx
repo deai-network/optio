@@ -120,9 +120,14 @@ describe('GrokView (Stage 7 parity)', () => {
     });
     fire({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } });
 
-    const link = await screen.findByText(/report/);
+    // The answer's file card (FileCard.List under the reply) downloads it.
+    const card = await waitFor(() => {
+      const el = document.querySelector('.ant-file-card-list .ant-file-card-file');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
     await act(async () => {
-      fireEvent.click(link);
+      fireEvent.click(card);
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const dlCall = (fetchMock.mock.calls as any[]).find((c) => String(c[0]).includes('/download'));

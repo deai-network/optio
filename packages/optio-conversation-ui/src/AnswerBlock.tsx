@@ -7,6 +7,7 @@ import '@ant-design/x-markdown/themes/light.css';
 import '@ant-design/x-markdown/themes/dark.css';
 import { CodeBlock } from './CodeBlock.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
+import { FILE_LINK_CLASS, fileName } from './FileCards.js';
 import { useDarkTheme } from './themeMode.js';
 
 // The one public seam for rendering an assistant answer (also the compaction
@@ -43,16 +44,18 @@ function Code({ className, children, block, lang }: ComponentProps) {
 }
 
 // An agent's `[name](optio-file:relpath)` downloads that workdir file through
-// the host's FileDownloadContext handler (plain text when there is none);
-// any other link opens in a new tab.
+// the host's FileDownloadContext handler (plain text when there is none): a
+// link showing just the file name (owner, 2026-10-12); the answer's files are
+// also listed as X file cards under the reply (FileCards.tsx). Any other link
+// opens in a new tab.
 function Link({ href, children }: ComponentProps<{ href?: string }>) {
   const onDownload = useContext(FileDownloadContext);
   if (typeof href === 'string' && href.startsWith('optio-file:')) {
     const relpath = href.slice('optio-file:'.length);
-    const filename = relpath.split('/').pop() || relpath;
+    const filename = fileName(relpath);
     return onDownload ? (
-      <Typography.Link onClick={() => onDownload(relpath, filename)} style={{ cursor: 'pointer' }}>
-        ⬇ {children}
+      <Typography.Link className={FILE_LINK_CLASS} onClick={() => onDownload(relpath, filename)}>
+        {filename}
       </Typography.Link>
     ) : (
       <Typography.Text>{children}</Typography.Text>

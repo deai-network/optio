@@ -11,6 +11,8 @@ import { Actions, Bubble, Think, ThoughtChain, XProvider } from '@ant-design/x';
 import type { ThoughtChainItemType } from '@ant-design/x';
 import { transcriptKeys } from './transcriptKeys.js';
 import { AnswerBlock } from './AnswerBlock.js';
+import { AnswerFiles, FILE_LINK_CLASS } from './FileCards.js';
+import { SlotSpinner } from './spinners/SlotSpinner.js';
 import { CodeBlock } from './CodeBlock.js';
 import { useDarkTheme } from './themeMode.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
@@ -299,6 +301,12 @@ function ensureGlassStyle(): void {
     --optio-x-glass-fill: linear-gradient(135deg, ${system(16)} 14%, ${system(5)} 59%);
     --optio-x-glass-edge: linear-gradient(180deg, ${system(30)} 0%, ${system(0)} 100%);
     --optio-x-glass-shadow: 0 1px 2px ${system(10)}, 0 4px 14px ${system(14)};
+  }
+  /* A download link is not external: no X-markdown external-link marker
+     (owner-approved 2026-10-12; FileCards.tsx). */
+  .x-markdown-light a.${FILE_LINK_CLASS}::after,
+  .x-markdown-dark a.${FILE_LINK_CLASS}::after {
+    content: none;
   }`;
 }
 // Also on module load: a hot reload re-runs this module but not the view's
@@ -811,20 +819,6 @@ function QuestionCard({
       </div>
     </div>
   );
-}
-
-// A loading site's spinner. When the app lends a Spinner through vultus-core's
-// slot (vultus-antd's VultusProvider components={{ Spinner }}), this renders
-// that Spinner, keyed `localKey` within any enclosing SpinnerScope (each agent
-// view scopes its conversation with optio:process:<id>); the lent Spinner wins
-// over `fallback` (the working indicator's agent-brand nativeSpinner).
-// Otherwise it renders `fallback`, else antd's small Spin: exactly what the
-// site rendered before the slot existed.
-function SlotSpinner({ localKey, fallback }: { localKey: string; fallback?: React.ReactNode }): React.ReactNode {
-  const { Spinner } = useVultusComponents();
-  const spinnerKey = useSpinnerKey(localKey);
-  if (Spinner) return <Spinner spinnerKey={spinnerKey} size="small" />;
-  return fallback ?? <Spin size="small" />;
 }
 
 function renderBackgroundRunning(
@@ -1573,6 +1567,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             contentRender={() => (
               <div className="optio-cc-answer">
                 <AnswerBlock text={ellipsis.markdownText} pending={item.pending} />
+                <AnswerFiles text={item.text} />
                 {ellipsis.trailingSpan && <span data-testid="answer-interrupt-ellipsis">{ELLIPSIS}</span>}
               </div>
             )}

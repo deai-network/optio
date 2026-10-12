@@ -112,9 +112,14 @@ describe('CodexView (Stages 6-7 parity)', () => {
       params: { threadId: 't1', turn: { id: 'turn-1', status: 'completed', items: [] } },
     });
 
-    const link = await screen.findByText(/report/);
+    // The answer's file card (FileCard.List under the reply) downloads it.
+    const card = await waitFor(() => {
+      const el = document.querySelector('.ant-file-card-list .ant-file-card-file');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
     await act(async () => {
-      fireEvent.click(link);
+      fireEvent.click(card);
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const dlCall = (fetchMock.mock.calls as any[]).find((c) => String(c[0]).includes('/download'));
