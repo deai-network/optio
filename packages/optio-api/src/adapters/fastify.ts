@@ -13,9 +13,10 @@ import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import httpProxy from '@fastify/http-proxy';
 import { createHash } from 'node:crypto';
-import type { AuthCallback, AccessHooks, AuthorizeCallback, ScopeCallback } from '../auth.js';
+import type { AuthCallback, AccessHooks, AuthorizeCallback, ScopeCallback, VisibilityCallback } from '../auth.js';
 import { accessFor, checkAuth } from '../auth.js';
-import { findScopedProcess, gateInstances, gateProcess } from '../access-scope.js';
+import { findReadableProcess, gateInstances, gateProcess } from '../access-scope.js';
+import { processReads } from '../process-reads.js';
 import { createWidgetUpstreamRegistry } from '../widget-upstream-registry.js';
 import {
   resolveWidgetUpstream,
@@ -242,8 +243,9 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
         return;
       }
 
+      const widgetAccess = await accessFor(req, opts.hooks);
       const gate = await gateProcess(
-        db.collection(`${prefix}_processes`), processId, await accessFor(req, opts.hooks), 'widget',
+        processReads(db, prefix, widgetAccess.visibility), processId, widgetAccess, 'widget',
       );
       if (!gate.ok) {
         reply.code(gate.status).send({
@@ -438,6 +440,8 @@ interface BaseOptioApiOptions {
   scope?: ScopeCallback<import('fastify').FastifyRequest>;
   /** Decide mutating actions and instance discovery (see auth.ts). */
   authorize?: AuthorizeCallback<import('fastify').FastifyRequest>;
+  /** Hide processes from a request (see auth.ts). */
+  visibility?: VisibilityCallback<import('fastify').FastifyRequest>;
   verbose?: boolean;
 }
 
@@ -462,6 +466,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
   const hooks: AccessHooks<import('fastify').FastifyRequest> = {
     scope: opts.scope,
     authorize: opts.authorize,
+    visibility: opts.visibility,
   };
   const access = (request: any) => accessFor(request, hooks);
 
@@ -601,8 +606,9 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
         reply.code(404).send({ message: 'session not running' });
         return;
       }
+      const ctlAccess = await access(request);
       const gate = await gateProcess(
-        db.collection(`${prefix}_processes`), processId, await access(request), 'widget-control',
+        processReads(db, prefix, ctlAccess.visibility), processId, ctlAccess, 'widget-control',
       );
       if (!gate.ok) {
         reply.code(gate.status).send({
@@ -631,8 +637,9 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
         reply.code(404).send({ message: 'session not running' });
         return;
       }
+      const uplAccess = await access(request);
       const gate = await gateProcess(
-        db.collection(`${prefix}_processes`), processId, await access(request), 'widget-upload',
+        processReads(db, prefix, uplAccess.visibility), processId, uplAccess, 'widget-upload',
       );
       if (!gate.ok) {
         reply.code(gate.status).send({
@@ -675,8 +682,9 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     }
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
-    const col = db.collection(`${prefix}_processes`);
-    const proc = await findScopedProcess(col, id, (await access(request)).scope);
+    const treeAccess = await access(request);
+    const treeReads = processReads(db, prefix, treeAccess.visibility);
+    const proc = await findReadableProcess(treeReads, id, treeAccess);
     if (!proc) {
       reply.code(404).send({ message: 'Process not found' });
       return;
@@ -700,6 +708,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       rootId: proc.rootId.toString(),
       baseDepth: proc.depth,
       maxDepth: sseOpts.maxDepth,
+      visibility: treeAccess.visibility,
     });
 
     poller.start();
@@ -725,11 +734,11 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       return;
     }
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
-    const col = db.collection(`${prefix}_processes`);
-    const { scope } = await access(request);
+    const multiAccess = await access(request);
+    const multiReads = processReads(db, prefix, multiAccess.visibility);
 
     async function resolveOne(id: string): Promise<{ id: string; proc: any | null }> {
-      const proc = await findScopedProcess(col, id, scope);
+      const proc = await findReadableProcess(multiReads, id, multiAccess);
       return { id, proc };
     }
     const [treeResolved, flatResolved] = await Promise.all([
@@ -773,6 +782,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       treeRoots,
       flatIds,
       maxDepth: sseOpts.maxDepth,
+      visibility: multiAccess.visibility,
     });
     poller.start();
     request.raw.on('close', () => poller.stop());
@@ -797,7 +807,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       return;
     }
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
-    const { scope } = await access(request);
+    const { scope, visibility } = await access(request);
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -816,6 +826,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       onError: () => reply.raw.end(),
       metadataFilter: sseOpts.metadataFilter,
       scope,
+      visibility,
     });
 
     poller.start();
@@ -833,7 +844,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       return;
     }
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
-    const { scope } = await access(request);
+    const { scope, visibility } = await access(request);
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -860,6 +871,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       sendEvent,
       onError: () => reply.raw.end(),
       scope,
+      visibility,
     });
 
     poller.start();

@@ -4,6 +4,7 @@ import { MongoClient, ObjectId, type Db } from 'mongodb';
 import Redis from 'ioredis-mock';
 import * as http from 'node:http';
 import { registerOptioApi } from '../fastify.js';
+import { not, eq } from '../../index.js';
 
 let mongoClient: MongoClient;
 let db: Db;
@@ -168,5 +169,30 @@ describe('GET /api/processes/tree/multi/stream', () => {
     });
     expect(res.statusCode).toBe(400);
     await app.close();
+  });
+
+  it('reports a visibility-hidden id in the resolution event\'s missing list', async () => {
+    await seedProcess({ processId: 'pid-hidden-chat', metadata: { kind: 'data-chat' } });
+    await seedProcess({ processId: 'pid-visible' });
+    const app = Fastify();
+    registerOptioApi(app, {
+      db, redis, authenticate: () => 'operator',
+      visibility: () => not(eq('kind', 'data-chat')),
+    });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const addr = app.server.address() as { port: number };
+    const baseUrl = `http://127.0.0.1:${addr.port}`;
+    try {
+      const url = `${baseUrl}/api/processes/tree/multi/stream?treeIds=pid-hidden-chat&flatIds=pid-visible&prefix=optio`;
+      const events = await collectSseEvents(url, (evts) =>
+        evts.some((e: any) => e.type === 'resolution'),
+      );
+      const resolutionEvent = events.find((e: any) => e.type === 'resolution') as any;
+      expect(resolutionEvent).toBeDefined();
+      expect(resolutionEvent.missing).toContain('pid-hidden-chat');
+      expect(resolutionEvent.missing).not.toContain('pid-visible');
+    } finally {
+      await app.close();
+    }
   });
 });

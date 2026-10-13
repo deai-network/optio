@@ -13,15 +13,6 @@ import { fileURLToPath } from 'node:url';
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-// Migrated by Task 5: these still name the collection directly and are
-// exempt from the three rules below until that work lands.
-const PENDING = [
-  'adapters/fastify.ts',
-  'adapters/express.ts',
-  'adapters/nextjs-app.ts',
-  'adapters/nextjs-pages.ts',
-];
-
 // `processCollection(` is called only here, outside process-reads.ts itself.
 const PROCESS_COLLECTION_ALLOWLIST: Record<string, string> = {
   'process-change-hub.ts': 'a change stream, which serves no documents',
@@ -48,8 +39,7 @@ function listTsFiles(dir: string, base: string): string[] {
 // rules by definition (it is where the collection is named, where
 // `processCollection(` is implemented and called, and where `.unfiltered`
 // is produced).
-const ALL_FILES = listTsFiles(SRC_DIR, SRC_DIR).filter((f) => f !== 'process-reads.ts');
-const CHECKED_FILES = ALL_FILES.filter((f) => !PENDING.includes(f));
+const CHECKED_FILES = listTsFiles(SRC_DIR, SRC_DIR).filter((f) => f !== 'process-reads.ts');
 
 function read(file: string): string {
   return readFileSync(join(SRC_DIR, file), 'utf8');

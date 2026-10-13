@@ -15,10 +15,11 @@ import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  accessFor, checkAuth, UNRESTRICTED,
-  type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback,
+  accessFor, checkAuth, hasAccessHooks, UNRESTRICTED,
+  type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback, type VisibilityCallback,
 } from '../auth.js';
 import { gateInstances, inScope } from '../access-scope.js';
+import { processReads } from '../process-reads.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
 import {
   detectLegacyMetadataParams,
@@ -51,6 +52,8 @@ interface BaseOptioApiOptions {
   scope?: ScopeCallback<NextApiRequest>;
   /** Decide mutating actions and instance discovery (see auth.ts). */
   authorize?: AuthorizeCallback<NextApiRequest>;
+  /** Hide processes from a request (see auth.ts). */
+  visibility?: VisibilityCallback<NextApiRequest>;
 }
 
 const c = initContract();
@@ -73,12 +76,14 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
 
   // The request's access travels to the ts-rest routes in an
   // AsyncLocalStorage set around the ts-rest call (as in nextjs-app).
-  const hooks: AccessHooks<NextApiRequest> = { scope: opts.scope, authorize: opts.authorize };
+  const hooks: AccessHooks<NextApiRequest> = {
+    scope: opts.scope, authorize: opts.authorize, visibility: opts.visibility,
+  };
   const requestAccess = new AsyncLocalStorage<Access>();
   function currentAccess(): Access {
     const access = requestAccess.getStore();
     if (access) return access;
-    if (!hooks.scope && !hooks.authorize) return UNRESTRICTED;
+    if (!hasAccessHooks(hooks)) return UNRESTRICTED;
     throw new Error('optio-api: route reached without the request\'s access');
   }
 
@@ -188,9 +193,9 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
       }
       const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
-      const col = db.collection(`${prefix}_processes`);
-      const found = await col.findOne({ _id: new ObjectId(id) });
-      const proc = found && (await inScope(col, found, access.scope)) ? found : null;
+      const reads = processReads(db, prefix, access.visibility);
+      const found = await reads.findOne({ _id: new ObjectId(id) });
+      const proc = found && (await inScope(reads, found, access.scope)) ? found : null;
       if (!proc) {
         res.status(404).json({ message: 'Process not found' });
         return;
@@ -214,6 +219,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
         rootId: proc.rootId.toString(),
         baseDepth: proc.depth,
         maxDepth: sseOpts.maxDepth,
+        visibility: access.visibility,
       });
 
       poller.start();
@@ -245,12 +251,12 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
         return;
       }
       const { db, prefix } = resolveDb(dbOpts, sseOpts);
-      const col = db.collection(`${prefix}_processes`);
+      const reads = processReads(db, prefix, access.visibility);
 
       async function resolveOne(id: string): Promise<{ id: string; proc: any | null }> {
         try {
-          const found = await col.findOne({ _id: new ObjectId(id) });
-          const proc = found && (await inScope(col, found, access.scope)) ? found : null;
+          const found = await reads.findOne({ _id: new ObjectId(id) });
+          const proc = found && (await inScope(reads, found, access.scope)) ? found : null;
           return { id, proc };
         } catch {
           return { id, proc: null };
@@ -297,6 +303,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
         treeRoots,
         flatIds: resolvedFlatIds,
         maxDepth: sseOpts.maxDepth,
+        visibility: access.visibility,
       });
       poller.start();
       req.on('close', () => poller.stop());
@@ -341,6 +348,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
         onError: () => res.end(),
         metadataFilter: sseOpts.metadataFilter,
         scope: access.scope,
+        visibility: access.visibility,
       });
 
       poller.start();

@@ -14,10 +14,11 @@ import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  accessFor, checkAuth, UNRESTRICTED,
-  type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback,
+  accessFor, checkAuth, hasAccessHooks, UNRESTRICTED,
+  type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback, type VisibilityCallback,
 } from '../auth.js';
 import { gateInstances, inScope } from '../access-scope.js';
+import { processReads } from '../process-reads.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
 import {
   detectLegacyMetadataParams,
@@ -51,6 +52,8 @@ interface BaseOptioApiOptions {
   scope?: ScopeCallback<Request>;
   /** Decide mutating actions and instance discovery (see auth.ts). */
   authorize?: AuthorizeCallback<Request>;
+  /** Hide processes from a request (see auth.ts). */
+  visibility?: VisibilityCallback<Request>;
 }
 
 const c = initContract();
@@ -74,12 +77,14 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
   // ts-rest's app-router handler sees its own request object, not the
   // caller's, so the request's access travels to the routes in an
   // AsyncLocalStorage set around the ts-rest call.
-  const hooks: AccessHooks<Request> = { scope: opts.scope, authorize: opts.authorize };
+  const hooks: AccessHooks<Request> = {
+    scope: opts.scope, authorize: opts.authorize, visibility: opts.visibility,
+  };
   const requestAccess = new AsyncLocalStorage<Access>();
   function currentAccess(): Access {
     const access = requestAccess.getStore();
     if (access) return access;
-    if (!hooks.scope && !hooks.authorize) return UNRESTRICTED;
+    if (!hasAccessHooks(hooks)) return UNRESTRICTED;
     throw new Error('optio-api: route reached without the request\'s access');
   }
 
@@ -195,9 +200,9 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
       }
       const { db, prefix: resolvedPrefix } = resolveDb(dbOpts, sseOpts);
 
-      const col = db.collection(`${resolvedPrefix}_processes`);
-      const found = await col.findOne({ _id: new ObjectId(id) });
-      const proc = found && (await inScope(col, found, access.scope)) ? found : null;
+      const reads = processReads(db, resolvedPrefix, access.visibility);
+      const found = await reads.findOne({ _id: new ObjectId(id) });
+      const proc = found && (await inScope(reads, found, access.scope)) ? found : null;
       if (!proc) {
         return new Response(JSON.stringify({ message: 'Process not found' }), {
           status: 404,
@@ -219,6 +224,7 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
             rootId: proc.rootId.toString(),
             baseDepth: proc.depth,
             maxDepth: sseOpts.maxDepth,
+            visibility: access.visibility,
           });
 
           poller.start();
@@ -289,6 +295,7 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
             onError: () => controller.close(),
             metadataFilter: sseOpts.metadataFilter,
             scope: access.scope,
+            visibility: access.visibility,
           });
 
           poller.start();

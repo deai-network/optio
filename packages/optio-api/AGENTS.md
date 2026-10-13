@@ -91,6 +91,7 @@ interface OptioApiOptions {
                                            // Returns 'viewer' | 'operator' | null.
   scope?: ScopeCallback<TRequest>;         // Optional tenant boundary. See "Access scope".
   authorize?: AuthorizeCallback<TRequest>; // Optional per-action decision. See "Access scope".
+  visibility?: VisibilityCallback<TRequest>; // Optional per-process hide. See "Access scope".
 }
 ```
 
@@ -219,8 +220,17 @@ under the condition, and — only when `reads.visibility` is set — prunes
 orphans before collecting log lines, so a process left parentless by a
 hidden ancestor contributes no lines. The streams (`stream-poller.ts`)
 consult it too, each building its own `ProcessReads` at creation time — see
-"Stream Poller" below. The adapters' options don't expose it yet — that is
-a later change.
+"Stream Poller" below; the multi-tree stream (Fastify, Next.js Pages Router)
+reports a hidden id in the `resolution` event's `missing` list, exactly like
+a nonexistent or out-of-scope one. All four adapters accept `visibility` next
+to `scope` and `authorize` and pass it through to every handler call and
+every poller they create (list, tree, multi-tree, session-events); Fastify
+and Express resolve the tree-stream entry point and the multi-tree
+`resolveOne` lookup with `findReadableProcess`, while the Next.js adapters
+keep their `_id`-only lookup (`reads.findOne({ _id })` followed by
+`inScope`) — both forms read through the request's `ProcessReads`, so a
+hidden entry point is a 404 (missing, for multi-tree) the same as an
+out-of-scope one.
 
 Per request, `checkAuth` records the authenticated role (keyed by the native
 request object) and `accessFor(req, hooks)` resolves the hooks once into an
@@ -260,7 +270,10 @@ another document. The only unfiltered reads left are `inScope`'s own root
 lookup (it judges scope only and returns no document of its own) and
 `findActionTarget`'s own target lookup (the newest document by `_id` or
 `processId`), whose result is checked against `visibility` before it is
-returned; adapters still come in a later change.
+returned. Fastify and Express use `findReadableProcess` for their
+tree-stream and multi-tree lookups; the Next.js adapters use the `_id`-only
+`reads.findOne` + `inScope` form instead (see "Access scope and
+authorization" above).
 
 ### One choke point
 

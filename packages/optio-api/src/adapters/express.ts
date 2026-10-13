@@ -14,8 +14,12 @@ import { parseSseOptions, checkLegacyMetadataParams, LegacyMetadataParamError } 
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
-import { accessFor, checkAuth, type AccessHooks, type AuthorizeCallback, type ScopeCallback } from '../auth.js';
-import { findScopedProcess, gateInstances } from '../access-scope.js';
+import {
+  accessFor, checkAuth,
+  type AccessHooks, type AuthorizeCallback, type ScopeCallback, type VisibilityCallback,
+} from '../auth.js';
+import { findReadableProcess, gateInstances } from '../access-scope.js';
+import { processReads } from '../process-reads.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
 import { createOptioContext, type OptioContext } from '../context.js';
 
@@ -33,6 +37,8 @@ interface BaseOptioApiOptions {
   scope?: ScopeCallback<import('express').Request>;
   /** Decide mutating actions and instance discovery (see auth.ts). */
   authorize?: AuthorizeCallback<import('express').Request>;
+  /** Hide processes from a request (see auth.ts). */
+  visibility?: VisibilityCallback<import('express').Request>;
 }
 
 const c = initContract();
@@ -52,7 +58,9 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
     dbOpts = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
     ctx = createOptioContext({ dbOpts, redis });
   }
-  const hooks: AccessHooks<import('express').Request> = { scope: opts.scope, authorize: opts.authorize };
+  const hooks: AccessHooks<import('express').Request> = {
+    scope: opts.scope, authorize: opts.authorize, visibility: opts.visibility,
+  };
   const access = (req: any) => accessFor(req, hooks);
 
   // Global auth enforcement. Runs on every /api/* request before any
@@ -100,7 +108,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
       return;
     }
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
-    const { scope } = await access(req);
+    const { scope, visibility } = await access(req);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -119,6 +127,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
       onError: () => res.end(),
       metadataFilter: sseOpts.metadataFilter,
       scope,
+      visibility,
     });
     poller.start();
     req.on('close', () => poller.stop());
@@ -205,8 +214,9 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
     }
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
-    const col = db.collection(`${prefix}_processes`);
-    const proc = await findScopedProcess(col, id, (await access(req)).scope);
+    const treeAccess = await access(req);
+    const reads = processReads(db, prefix, treeAccess.visibility);
+    const proc = await findReadableProcess(reads, id, treeAccess);
     if (!proc) {
       res.status(404).json({ message: 'Process not found' });
       return;
@@ -230,6 +240,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
       rootId: proc.rootId.toString(),
       baseDepth: proc.depth,
       maxDepth: sseOpts.maxDepth,
+      visibility: treeAccess.visibility,
     });
     poller.start();
     req.on('close', () => poller.stop());

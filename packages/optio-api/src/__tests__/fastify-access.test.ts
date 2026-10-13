@@ -4,6 +4,7 @@ import { MongoClient, ObjectId, type Db } from 'mongodb';
 import { registerOptioApi } from '../adapters/fastify.js';
 import type { OptioContext } from '../context.js';
 import type { AuthorizeInput } from '../auth.js';
+import { or, not, eq } from '../index.js';
 
 const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_fastify_access';
@@ -57,6 +58,10 @@ function customerOf(req: any): number {
   return Number(req.headers['x-customer'] ?? '-1');
 }
 
+function header(req: any, name: string): string | undefined {
+  return req.headers[name];
+}
+
 function policy(input: AuthorizeInput, customer: number): boolean {
   const admin = customer === 0;
   if (input.action === 'instances') return admin;
@@ -74,11 +79,32 @@ async function buildApp(engine: any, withHooks = true): Promise<FastifyInstance>
       ? {
           scope: (req: any) => (customerOf(req) === 0 ? null : { customerId: customerOf(req) }),
           authorize: (req: any, input: AuthorizeInput) => policy(input, customerOf(req)),
+          visibility: (req: any) => (customerOf(req) === 0 ? null : or(not(eq('kind', 'data-chat')), eq('ownerId', String(header(req, 'x-user') ?? '')))),
         }
       : {}),
   });
   await app.ready();
   return app;
+}
+
+function mk(customerId: number, extra: Record<string, unknown> = {}) {
+  const _id = new ObjectId();
+  return {
+    _id, processId: `p-${_id.toHexString()}`, name: 'P', rootId: _id, parentId: null, depth: 0, order: 0,
+    status: { state: 'running' }, progress: { percent: null }, cancellable: true, log: [],
+    metadata: { customerId, dataspace: customerId === 1 ? 'mine' : 'theirs' },
+    widgetUpstream: { url: 'http://127.0.0.1:9', innerAuth: null },
+    controlUpstream: { url: 'http://127.0.0.1:9', innerAuth: null },
+    ...extra,
+  };
+}
+
+// A data-chat hidden from every request in this file: no request sends
+// `x-user: other`, so `eq('ownerId', ...)` never matches it.
+async function insertHiddenChat(): Promise<ObjectId> {
+  const chat = mk(1, { metadata: { customerId: 1, kind: 'data-chat', ownerId: 'other' } });
+  await col().insertOne(chat as any);
+  return chat._id;
 }
 
 let otherId: ObjectId;
@@ -87,17 +113,6 @@ let guardedId: ObjectId;
 
 beforeEach(async () => {
   await col().deleteMany({});
-  const mk = (customerId: number, extra: Record<string, unknown> = {}) => {
-    const _id = new ObjectId();
-    return {
-      _id, processId: `p-${_id.toHexString()}`, name: 'P', rootId: _id, parentId: null, depth: 0, order: 0,
-      status: { state: 'running' }, progress: { percent: null }, cancellable: true, log: [],
-      metadata: { customerId, dataspace: customerId === 1 ? 'mine' : 'theirs' },
-      widgetUpstream: { url: 'http://127.0.0.1:9', innerAuth: null },
-      controlUpstream: { url: 'http://127.0.0.1:9', innerAuth: null },
-      ...extra,
-    };
-  };
   const other = mk(2);
   const mine = mk(1);
   const guarded = mk(1, { metadata: { customerId: 1, requiredRoles: ['admin'] } });
@@ -225,6 +240,65 @@ describe('fastify adapter with scope + authorize', () => {
     const app = await buildApp(makeEngine());
     const res = await app.inject({ method: 'GET', url: `/api/processes?${q}&limit=50`, headers: { 'x-customer': '0' } });
     expect(res.json().totalCount).toBe(3);
+    await app.close();
+  });
+
+  it('hides a visibility-blocked chat from the list, single reads and the tree stream, and 404s commands without reaching the engine', async () => {
+    const engine = makeEngine();
+    const app = await buildApp(engine);
+    const hiddenChatId = await insertHiddenChat();
+
+    const list = await app.inject({ method: 'GET', url: `/api/processes?${q}&limit=50`, headers: as1 });
+    expect(list.json().items.map((p: any) => p._id)).not.toContain(String(hiddenChatId));
+
+    const get = await app.inject({ method: 'GET', url: `/api/processes/${hiddenChatId}?${q}`, headers: as1 });
+    expect(get.statusCode).toBe(404);
+
+    const tree = await app.inject({ method: 'GET', url: `/api/processes/${hiddenChatId}/tree/stream?${q}`, headers: as1 });
+    expect(tree.statusCode).toBe(404);
+
+    const cancel = await app.inject({ method: 'POST', url: `/api/processes/${hiddenChatId}/cancel?${q}`, headers: as1, payload: {} });
+    expect(cancel.statusCode).toBe(404);
+    expect(engine.cancel).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('404s the widget proxy, widget-control and widget-upload for a visibility-blocked chat', async () => {
+    const engine = makeEngine();
+    const app = await buildApp(engine);
+    const hiddenChatId = await insertHiddenChat();
+
+    const widget = await app.inject({ method: 'GET', url: `/api/widget/${DB_NAME}/${PREFIX}/${hiddenChatId}/`, headers: as1 });
+    expect(widget.statusCode).toBe(404);
+    const control = await app.inject({
+      method: 'POST', url: `/api/widget-control/${DB_NAME}/${PREFIX}/${hiddenChatId}`, headers: as1,
+      payload: { text: 'x' },
+    });
+    expect(control.statusCode).toBe(404);
+    const boundary = 'b0undary';
+    const upload = await app.inject({
+      method: 'POST', url: `/api/widget-upload/${DB_NAME}/${PREFIX}/${hiddenChatId}`,
+      headers: { ...as1, 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="x.txt"\r\n\r\nhi\r\n--${boundary}--\r\n`,
+    });
+    expect(upload.statusCode).toBe(404);
+    expect(engine.materializeUpload).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('500s when the visibility hook returns an invalid predicate', async () => {
+    const app = Fastify();
+    registerOptioApi(app, {
+      ctx: makeCtx(makeEngine()),
+      authenticate: () => 'operator',
+      scope: (req: any) => (customerOf(req) === 0 ? null : { customerId: customerOf(req) }),
+      authorize: (req: any, input: AuthorizeInput) => policy(input, customerOf(req)),
+      visibility: () => ({ AND: [] }) as any,
+    });
+    await app.ready();
+    const res = await app.inject({ method: 'GET', url: `/api/processes?${q}&limit=50`, headers: as1 });
+    expect(res.statusCode).toBe(500);
     await app.close();
   });
 });

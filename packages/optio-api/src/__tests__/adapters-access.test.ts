@@ -9,6 +9,7 @@ import { createOptioRouteHandlers } from '../adapters/nextjs-app.js';
 import { createOptioHandler } from '../adapters/nextjs-pages.js';
 import type { OptioContext } from '../context.js';
 import type { AuthorizeInput } from '../auth.js';
+import { or, not, eq } from '../index.js';
 
 // The same scope/authorize scenario as fastify-access.test.ts, run through
 // the Express, Next.js App Router and Next.js Pages Router adapters.
@@ -72,7 +73,24 @@ function hooks() {
       if (input.process?.metadata?.requiredRoles && !admin) return false;
       return true;
     },
+    visibility: (req: any) => (customerOf(req) === 0 ? null : or(not(eq('kind', 'data-chat')), eq('ownerId', String(header(req, 'x-user') ?? '')))),
   };
+}
+
+function mk(metadata: Record<string, unknown>) {
+  const _id = new ObjectId();
+  return {
+    _id, processId: `p-${_id.toHexString()}`, name: 'P', rootId: _id, parentId: null, depth: 0, order: 0,
+    status: { state: 'idle' }, progress: { percent: null }, cancellable: true, log: [], metadata,
+  };
+}
+
+// A data-chat hidden from every request in this file: no driver sends an
+// `x-user` header, so `eq('ownerId', ...)` never matches it.
+async function insertHiddenChat(): Promise<ObjectId> {
+  const chat = mk({ customerId: 1, kind: 'data-chat', ownerId: 'other' });
+  await col().insertOne(chat as any);
+  return chat._id;
 }
 
 let otherId: ObjectId;
@@ -81,13 +99,6 @@ let guardedId: ObjectId;
 
 beforeEach(async () => {
   await col().deleteMany({});
-  const mk = (metadata: Record<string, unknown>) => {
-    const _id = new ObjectId();
-    return {
-      _id, processId: `p-${_id.toHexString()}`, name: 'P', rootId: _id, parentId: null, depth: 0, order: 0,
-      status: { state: 'idle' }, progress: { percent: null }, cancellable: true, log: [], metadata,
-    };
-  };
   const other = mk({ customerId: 2 });
   const mine = mk({ customerId: 1 });
   const guarded = mk({ customerId: 1, requiredRoles: ['admin'] });
@@ -204,5 +215,65 @@ for (const [name, makeDriver] of drivers) {
       const call = makeDriver(makeEngine());
       expect((await call('GET', '/api/optio/instances')).status).toBe(403);
     });
+
+    it('hides a visibility-blocked chat from the list, single reads and the tree stream, and 404s a command without reaching the engine', async () => {
+      const engine = makeEngine();
+      const call = makeDriver(engine);
+      const hiddenChatId = await insertHiddenChat();
+
+      const list = await call('GET', `/api/processes?${q}&limit=50`);
+      expect(list.json.items.map((p: any) => p._id)).not.toContain(String(hiddenChatId));
+
+      expect((await call('GET', `/api/processes/${hiddenChatId}?${q}`)).status).toBe(404);
+      expect((await call('GET', `/api/processes/${hiddenChatId}/tree/stream?${q}`)).status).toBe(404);
+
+      expect((await call('POST', `/api/processes/${hiddenChatId}/cancel?${q}`)).status).toBe(404);
+      expect(engine.cancel).not.toHaveBeenCalled();
+    });
   });
 }
+
+describe('visibility: an invalid predicate fails the request', () => {
+  it('express: 500', async () => {
+    const app = express();
+    app.use(express.json());
+    registerExpress(app, {
+      ctx: makeCtx(makeEngine()),
+      authenticate: () => 'operator' as const,
+      visibility: () => ({ AND: [] }) as any,
+    });
+    const res = await request(app).get(`/api/processes?${q}&limit=50`).set('x-customer', '1');
+    expect(res.status).toBe(500);
+  });
+
+  // nextjs-app and nextjs-pages call `accessFor` with no try/catch around it
+  // already, so a hook that throws today (e.g. a bad `scope` callback)
+  // rejects the handler's promise rather than answering 500. An invalid
+  // predicate goes through the same unguarded `accessFor` call, so it
+  // rejects the same way.
+  it('nextjs-app: the handler call rejects', async () => {
+    const { GET } = createOptioRouteHandlers({
+      ctx: makeCtx(makeEngine()),
+      authenticate: () => 'operator' as const,
+      visibility: () => ({ AND: [] }) as any,
+    });
+    await expect(
+      GET(new NextRequest(`http://localhost/api/processes?${q}&limit=50`, { headers: { 'x-customer': '1' } } as any)),
+    ).rejects.toThrow();
+  });
+
+  it('nextjs-pages: the handler call rejects', async () => {
+    const { handler } = createOptioHandler({
+      ctx: makeCtx(makeEngine()),
+      authenticate: () => 'operator' as const,
+      visibility: () => ({ AND: [] }) as any,
+    });
+    const { req, res } = createMocks({
+      method: 'GET',
+      url: `/api/processes?${q}&limit=50`,
+      query: { prefix: PREFIX, limit: '50', 'ts-rest': ['api', 'processes'] } as any,
+      headers: { 'x-customer': '1' },
+    });
+    await expect(handler(req as any, res as any)).rejects.toThrow();
+  });
+});

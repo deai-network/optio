@@ -915,6 +915,7 @@ interface SugarOptioApiOptions {
   authenticate: AuthCallback<TRequest>;
   scope?: ScopeCallback<TRequest>;            // optional tenant boundary (see below)
   authorize?: AuthorizeCallback<TRequest>;    // optional per-action decision (see below)
+  visibility?: VisibilityCallback<TRequest>;  // optional per-process hide (see below)
 }
 
 // Explicit form: caller supplies a pre-built OptioContext. Returns void.
@@ -923,6 +924,7 @@ interface ExplicitOptioApiOptions {
   authenticate: AuthCallback<TRequest>;
   scope?: ScopeCallback<TRequest>;
   authorize?: AuthorizeCallback<TRequest>;
+  visibility?: VisibilityCallback<TRequest>;
 }
 
 // AuthCallback returns 'viewer' (read-only) | 'operator' (read+write) | null (deny).
@@ -950,7 +952,7 @@ interface ExplicitOptioApiOptions {
 //
 // Without scope/authorize nothing changes (no extra lookups).
 //
-// AccessHooks also gains a `visibility` hook (a per-request metadata predicate,
+// visibility(req) -> ProcessMetadataFilter | null (a per-request metadata predicate,
 // `VisibilityCallback<TRequest>`; see packages/optio-api/AGENTS.md "Access scope
 // and authorization"): `Access` carries it and gateProcess (the single-process
 // action gate) checks it before authorize, 404ing a hidden process the same as an
@@ -961,8 +963,11 @@ interface ExplicitOptioApiOptions {
 // option alongside `scope`, reads through processReads, and -- for the tree and
 // multi-tree streams -- prunes orphans and re-reads on any metadata change (not
 // only a member's), so a process gaining or losing visibility appears or
-// disappears mid-stream like a create or delete does today. It is not yet
-// exposed as an adapter option (OptioApiOptions above).
+// disappears mid-stream like a create or delete does today. All four adapters
+// accept it next to scope/authorize and pass it through to every handler call
+// and every poller they create; a hidden id in the multi-tree stream's
+// `resolveOne` is reported in the `resolution` event's `missing` list, exactly
+// like a nonexistent or out-of-scope one.
 ```
 
 ### Fastify Adapter
