@@ -164,6 +164,11 @@ until the agent regenerates them.
   restores today's behaviour exactly.
 - **Release.** optio-host first, then optio-agents, following `docs/release-cookbook.md`, only on
   the owner's go.
+  - optio-host is released as a **minor** (0.4.0), not a patch. optio-agents and every engine
+    package now use what only 0.4 has (`optio_host.capture_cap`, and `archive_workdir`'s
+    `on_note` with its level), so their `optio-host` requirement is raised from `>=0.3,<0.4` to
+    `>=0.4,<0.5` in the same release wave. The release script rewrites those pins; by the
+    cookbook's wave rule, every package whose pin moved is released too.
 - **Excavator.** Its `.env.example` should document the variable; that is a separate excavator
   change.
 
@@ -238,5 +243,36 @@ decision above:
   under "The setting" above. Read again at capture time, inside the fail-safe decision, the
   same error instead falls back to a full capture, by the same reasoning as any other failed
   decision.
-- **The engines forward the note the same way as every other milestone line:**
-  `ctx.report_progress(None, note)`.
+- **The engines forward the note the same way as every other milestone line,** at the level it
+  comes with: `ctx.report_progress(None, note, level=level)` (see "The note carries a level"
+  below).
+
+Settled after the final review (2026-10-14):
+
+- **The listed entries are literal tar excludes that BusyBox tar takes too.** Each entry is one
+  `--exclude=./<entry>` with `\`, `*`, `?` and `[` backslash-escaped
+  (`capture_cap.literal_exclude`). GNU tar and BusyBox tar both match it literally and only from
+  the root: `./node_modules` keeps `./pkg/node_modules`, `build[1]` keeps `build1`. The first
+  version switched GNU tar's mode with `--anchored --no-wildcards`, which BusyBox tar (Alpine)
+  rejects, so the whole archive failed and the snapshot was lost. The escapes count toward the
+  64 KiB exclude budget.
+- **Only GNU tar and BusyBox tar get the list.** Before applying any entry, the host runs
+  `tar --version 2>&1 | head -1`, once per `LocalHost` and once per `RemoteHost` connection.
+  Any other tar (bsdtar strips a pattern's leading `./`, so the exclude would match anywhere)
+  gets none, and the capture takes everything with the warning
+  `regenerable.txt not applied: tar on this host is not GNU or BusyBox ('<version line>');
+  capturing everything`.
+- **The note carries a level.** `on_note` is `Callable[[str, str], None]`, called as
+  `on_note(note, level)` with `level` `"info"` or `"warning"`, the levels of
+  `ctx.report_progress`. A warning: the list is missing, unreadable or names no path, the tar is
+  neither GNU nor BusyBox, or the decision failed. Info: paths were left out. The
+  `optio_host.archive` logger logs the note at the same level.
+- **A missing list is told from a failed read.** Exit 1 from the list read (the `[ -f ]` test)
+  gives `regenerable.txt is missing or not a regular file`. Any other exit, e.g. 127 without
+  `timeout`, gives `regenerable.txt could not be read (exit N)`. A list that is read but names
+  no path gives `regenerable.txt lists no paths`. The Python fallback tells a missing or
+  non-regular file from any other `OSError` the same way.
+- **The list never leaves itself out.** An entry naming `regenerable.txt` is skipped, alongside
+  the cases under "Sanitising" above, so the list is always captured.
+- **The entries left out are logged** at DEBUG on `optio_host.archive` whenever the list is
+  applied.
