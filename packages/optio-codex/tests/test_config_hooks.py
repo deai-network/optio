@@ -142,7 +142,7 @@ async def test_capture_snapshot_writes_through_session_blob_encrypt(monkeypatch)
 
     workdir_tar = b"codex-workdir-tar-with-home-dot-codex"
 
-    async def _fake_archive(_excl):
+    async def _fake_archive(_excl, *, on_note=None):
         # Emit in two chunks to prove the encrypt path buffers whole.
         yield workdir_tar[:10]
         yield workdir_tar[10:]
@@ -179,7 +179,7 @@ async def test_capture_snapshot_plaintext_streams_unwrapped(monkeypatch):
     fake_ctx.mark_has_saved_state = AsyncMock()
     fake_ctx.process_id = "pid-x"
 
-    async def _fake_archive(_excl):
+    async def _fake_archive(_excl, *, on_note=None):
         yield b"plain-workdir"
 
     fake_host = MagicMock()

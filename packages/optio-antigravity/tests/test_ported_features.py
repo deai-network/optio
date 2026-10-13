@@ -85,7 +85,7 @@ class _FakeHost:
         self.written: dict[str, str] = {}
         self._existing = existing_text or {}
 
-    async def archive_workdir(self, exclude):
+    async def archive_workdir(self, exclude, *, on_note=None):
         # Emit in two chunks so the buffer-join path is exercised.
         mid = len(self._archive) // 2
         yield self._archive[:mid]

@@ -1012,13 +1012,20 @@ async def _capture_snapshot(
     ``session_blob_decrypt`` unwraps it on the restore read.
     """
     exclude = effective_workdir_exclude(workdir_exclude)
+
+    # The capture-cap decision's one-line note (at most one per capture, Task
+    # 3/4) has no process-log handle at the host layer, so it is forwarded
+    # here through ctx.report_progress, same as every other milestone line.
+    def _on_note(note: str) -> None:
+        ctx.report_progress(None, note)
+
     async with ctx.store_blob("workdir") as wwriter:
         if session_blob_encrypt is None:
-            async for chunk in host.archive_workdir(exclude):
+            async for chunk in host.archive_workdir(exclude, on_note=_on_note):
                 await wwriter.write(chunk)
         else:
             buf = bytearray()
-            async for chunk in host.archive_workdir(exclude):
+            async for chunk in host.archive_workdir(exclude, on_note=_on_note):
                 buf.extend(chunk)
             await wwriter.write(session_blob_encrypt(bytes(buf)))
         workdir_blob_id = wwriter.file_id

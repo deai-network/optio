@@ -113,7 +113,7 @@ class _FakeHost:
         self._chunks_with_delays = chunks_with_delays
         self._clock = clock
 
-    def archive_workdir(self, exclude):
+    def archive_workdir(self, exclude, *, on_note=None):
         async def _gen():
             for chunk, delay in self._chunks_with_delays:
                 self._clock.tick(delay)
@@ -181,9 +181,9 @@ async def test_archive_progress_exclude_passed_through_unchanged():
     seen_excludes = []
 
     class _RecordingHost(_FakeHost):
-        def archive_workdir(self, exclude):
+        def archive_workdir(self, exclude, *, on_note=None):
             seen_excludes.append(exclude)
-            return super().archive_workdir(exclude)
+            return super().archive_workdir(exclude, on_note=on_note)
 
     host = _RecordingHost([(b"z", 1.0)], clock)
     writer = _FakeWriter()
@@ -191,6 +191,29 @@ async def test_archive_progress_exclude_passed_through_unchanged():
         ctx, host, ["node_modules"], writer, start=0.0, clock=clock,
     )
     assert seen_excludes == [["node_modules"]]
+
+
+async def test_archive_on_note_reaches_process_log():
+    """``on_note`` is the cap decision's one-line note (Task 3/4). The
+    engine's ``_stream_archive_to_blob`` must forward it to the process log
+    through ``ctx.report_progress`` — the same call it already uses for
+    every other milestone line in this module — so a fake host that calls
+    ``on_note`` mid-capture ends up with its note in ``ctx.messages``."""
+    clock = _FakeClock()
+    ctx = _FakeCtx()
+
+    class _NotingHost(_FakeHost):
+        def archive_workdir(self, exclude, *, on_note=None):
+            if on_note is not None:
+                on_note("left out 2 paths listed in regenerable.txt")
+            return super().archive_workdir(exclude, on_note=on_note)
+
+    host = _NotingHost([(b"z", 1.0)], clock)
+    writer = _FakeWriter()
+    await _stream_archive_to_blob(
+        ctx, host, None, writer, start=0.0, clock=clock,
+    )
+    assert "left out 2 paths listed in regenerable.txt" in ctx.messages
 
 
 # --- _capture_snapshot: the full always-on milestone sequence ------------
@@ -246,7 +269,7 @@ async def test_capture_snapshot_emits_the_four_milestones_in_order(monkeypatch):
     fake_ctx.mark_has_saved_state = AsyncMock()
     fake_ctx.clear_unsaved_work = AsyncMock()
 
-    async def _fake_archive(_excl):
+    async def _fake_archive(_excl, *, on_note=None):
         yield b"w" * (3 * 1024 * 1024)  # 3 MB of workdir tar, one chunk
 
     fake_host = MagicMock()

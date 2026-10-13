@@ -944,13 +944,21 @@ async def _capture_snapshot(
     agy's ~/.gemini state); the plaintext default streams chunk-by-chunk with no
     buffering. Mirrors optio-claudecode's encrypt-on-capture.
     """
+    # The capture-cap decision's one-line note (at most one per capture, Task
+    # 3/4) has no process-log handle at the host layer, so it is forwarded
+    # here through ctx.report_progress, same as every other milestone line.
+    def _on_note(note: str) -> None:
+        ctx.report_progress(None, note)
+
     async with ctx.store_blob("workdir") as wwriter:
         if session_blob_encrypt is None:
-            async for chunk in host.archive_workdir(workdir_exclude):
+            async for chunk in host.archive_workdir(workdir_exclude, on_note=_on_note):
                 await wwriter.write(chunk)
         else:
             raw = b"".join(
-                [chunk async for chunk in host.archive_workdir(workdir_exclude)]
+                [chunk async for chunk in host.archive_workdir(
+                    workdir_exclude, on_note=_on_note,
+                )]
             )
             await wwriter.write(session_blob_encrypt(raw))
         workdir_blob_id = wwriter.file_id

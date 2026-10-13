@@ -118,7 +118,7 @@ async def test_capture_writes_through_session_blob_encrypt(monkeypatch):
     fake_ctx.mark_has_saved_state = AsyncMock()
     fake_ctx.clear_unsaved_work = AsyncMock()
 
-    async def _fake_archive(_excl):
+    async def _fake_archive(_excl, *, on_note=None):
         yield b"workdir-bytes"
     fake_host = MagicMock()
     fake_host.workdir = "/tmp/wd"

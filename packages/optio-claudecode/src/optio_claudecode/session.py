@@ -2060,10 +2060,16 @@ async def _stream_archive_to_blob(
     unit-tested with a fake host and an injected ``clock``, without a real
     archive or GridFS. Returns the total byte count streamed. Does not
     change what is archived or how — purely an observing pass-through.
+
+    Also forwards the capture-cap decision's one-line note (at most one per
+    capture) to the process log through ``ctx.report_progress`` — the host
+    layer has no handle to it, so each engine wrapper forwards it.
     """
     total = 0
     last_report = start
-    async for chunk in host.archive_workdir(exclude):
+    async for chunk in host.archive_workdir(
+        exclude, on_note=lambda note: ctx.report_progress(None, note),
+    ):
         await wwriter.write(chunk)
         total += len(chunk)
         now = clock()
