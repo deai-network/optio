@@ -1,6 +1,7 @@
 import type { Db, MongoClient } from 'mongodb';
 import type { Redis } from 'ioredis';
 import type { DbOptions } from './resolve.js';
+import { processCollection } from './process-reads.js';
 
 const REQUIRED_FIELDS = ['processId', 'rootId', 'depth'];
 
@@ -21,7 +22,7 @@ async function discoverPrefixesInDb(db: Db, only?: string): Promise<string[]> {
   const confirmed: string[] = [];
 
   for (const prefix of candidates) {
-    const doc = await db.collection(`${prefix}_processes`).findOne();
+    const doc = await processCollection(db, prefix).findOne();
     if (doc && REQUIRED_FIELDS.every((f) => f in doc)) {
       confirmed.push(prefix);
     }

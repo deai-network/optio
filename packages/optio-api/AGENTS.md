@@ -192,24 +192,27 @@ Without any hook behaviour is exactly as before: commands go straight to
 the engine and no extra lookups run. With `scope` only or `authorize` only,
 behaviour is unchanged as well — `visibility` is strictly additive.
 
-**Where `visibility` is checked today.** `gateProcess` — the single-process
-action gate behind launch, cancel, dismiss, resurrect, the three widget routes
-and the conversation read — checks `access.visibility` right alongside
-`access.scope`, before `authorize` is asked: a hidden process is a 404 the
-same as an out-of-scope one, including when a duplicated `processId` resolves
-(as the engine does) to a newest document that is hidden while an older one
-of the same `processId` is visible. The read handlers consult it too:
-`listProcesses` ANDs it into the query (and into `countDocuments`, via
-`findReadableProcess` and `andVisibility`/`pruneOrphans` below), so a client
-`metadataFilter` cannot widen past it and `totalCount` stays exact across
-every page; `getProcess` and `getProcessLog` 404 a hidden process, by either
-id form; `getProcessTree` 404s a hidden entry point and otherwise fetches
-only visible children at each level, so a hidden process takes its subtree
-with it; `getProcessTreeLog` 404s a hidden entry point, fetches the tree's
-processes under the condition, and — only when `access.visibility` is set —
-prunes orphans before collecting log lines, so a process left parentless by
-a hidden ancestor contributes no lines. Streams and the adapters' options do
-not consult `visibility` yet — that is a later change.
+**Where `visibility` is checked today.** Every process read that can reach a
+response goes through one choke point, `processReads` (`process-reads.ts`;
+see "One choke point" below) — no handler ANDs the visibility condition
+itself. `gateProcess` — the single-process action gate behind launch, cancel,
+dismiss, resurrect, the three widget routes and the conversation read —
+checks `access.visibility` right alongside `access.scope`, via an explicit
+`isVisible` check on an unfiltered read, before `authorize` is asked: a
+hidden process is a 404 the same as an out-of-scope one, including when a
+duplicated `processId` resolves (as the engine does) to a newest document
+that is hidden while an older one of the same `processId` is visible. The
+read handlers consult it too, through the `ProcessReads` each builds once
+per request: `listProcesses` ANDs it into the query and `countDocuments`, so
+a client `metadataFilter` cannot widen past it and `totalCount` stays exact
+across every page; `getProcess` and `getProcessLog` 404 a hidden process, by
+either id form; `getProcessTree` 404s a hidden entry point and otherwise
+fetches only visible children at each level, so a hidden process takes its
+subtree with it; `getProcessTreeLog` 404s a hidden entry point, fetches the
+tree's processes under the condition, and — only when `reads.visibility` is
+set — prunes orphans before collecting log lines, so a process left
+parentless by a hidden ancestor contributes no lines. Streams and the
+adapters' options do not consult `visibility` yet — that is a later change.
 
 Per request, `checkAuth` records the authenticated role (keyed by the native
 request object) and `accessFor(req, hooks)` resolves the hooks once into an
@@ -234,12 +237,67 @@ a Mongo filter fragment and `$and` it into a base filter, the same shape as
 document by a Mongo count query (never a JS copy of the semantics); `null`
 admits everything without issuing a query. `pruneOrphans(docs, keep?)` drops tree
 children whose parent chain doesn't resolve to a kept root, preserving input
-order and memoising per id. `findReadableProcess(col, id, access)` (in
+order and memoising per id. `findReadableProcess(reads, id, access)` (in
 `access-scope.ts`) looks a process up by either id form under both `scope` and
 `visibility`, returning `null` for a process that fails either — the single-read
 building block `getProcess`, `getProcessLog`, `getProcessTree` and
-`getProcessTreeLog` use in place of `findScopedProcess`; adapters still come
-in a later change.
+`getProcessTreeLog` use in place of `findScopedProcess`. `findScopedProcess`,
+`findReadableProcess`, `findActionTarget`, `inScope` and `gateProcess` all accept
+either a `ProcessReads` or a plain `Collection` (wrapped internally with
+`processReadsOf(col, null)`, since these lookups only ever need `.unfiltered`,
+each followed by its own explicit visibility check); adapters still come in a
+later change.
+
+### One choke point
+
+`process-reads.ts` is the only module that names the `{prefix}_processes`
+collection and the only one that ANDs the visibility condition into a query,
+so the rule the host declares once in `visibility` cannot be forgotten by a
+route added later (spec: "One choke point", decision 6).
+
+```typescript
+function processCollection(db: Db, prefix: string): Collection;
+
+interface ProcessReads {
+  readonly visibility: ProcessMetadataFilter | null;
+  find(filter: Filter<Document>, options?: FindOptions): FindCursor<WithId<Document>>;
+  findOne(filter: Filter<Document>, options?: FindOptions): Promise<WithId<Document> | null>;
+  countDocuments(filter: Filter<Document>, options?: CountDocumentsOptions): Promise<number>;
+  /** The collection without the condition, for access-scope.ts alone. */
+  readonly unfiltered: Collection;
+}
+function processReads(db: Db, prefix: string, visibility: ProcessMetadataFilter | null): ProcessReads;
+function processReadsOf(col: Collection, visibility: ProcessMetadataFilter | null): ProcessReads;
+```
+
+Each handler builds one `ProcessReads` per request
+(`processReads(db, prefix, access.visibility)`) and reads through it
+exclusively; `find`/`findOne`/`countDocuments` AND the condition into the
+caller's filter (never replacing it, so a client filter cannot widen past
+it) and, with `visibility` null, pass the caller's filter object through
+unchanged — the same reference, not a copy — so a host with no `visibility`
+hook sees identical queries to a plain `Collection`. `.unfiltered` exists for
+`access-scope.ts` alone: its lookups (scope's root fallback, the action
+gate's target lookup) need a raw read, each followed by its own explicit
+`isVisible`/`inScope` check, not `ProcessReads`'s own filtering.
+
+**The guard test** (`process-reads-guard.test.ts`) scans every non-test
+source file and fails when:
+
+1. any file but `process-reads.ts` names a processes collection (a template
+   ending in `_processes`);
+2. `processCollection(` is called outside its allowlist — each allowed file
+   carries its reason in the test: `process-change-hub.ts` (a change stream,
+   which serves no documents), `discovery.ts` (instance discovery, gated by
+   `'instances'`), and `widget-proxy-core.ts` / `agent-input.ts` (upstream
+   lookups that run only after `gateProcess` admitted the process);
+3. `.unfiltered` is used outside `access-scope.ts` and `process-reads.ts`.
+
+`stream-poller.ts` and the four `adapters/*.ts` files still name the
+collection directly and are temporarily exempt (`PENDING` in the guard test);
+Task 4 and Task 5 migrate them and empty that list. A new route that reads
+processes therefore either goes through `processReads` or fails this test
+until its file is deliberately allowlisted, with a reason, in review.
 
 ## Fastify Adapter
 

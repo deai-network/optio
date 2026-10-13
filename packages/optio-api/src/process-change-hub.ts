@@ -9,6 +9,7 @@
  */
 import type { ChangeStream, ChangeStreamDocument, Db, Document, MongoClient, Timestamp } from 'mongodb';
 import { toProcessChange, type ProcessChange } from './process-change-relevance.js';
+import { processCollection } from './process-reads.js';
 
 /** The server cannot provide change streams (standalone, or not allowed). */
 export class ChangeStreamsUnavailable extends Error {}
@@ -249,7 +250,7 @@ export function createMongoProcessChangeSource(db: Db, prefix: string): ProcessC
       // From the cluster time of `hello`: nothing written after open()
       // resolves is missed.
       const startAtOperationTime = hello.operationTime as Timestamp | undefined;
-      const stream: ChangeStream<Document> = db.collection(`${prefix}_processes`).watch(
+      const stream: ChangeStream<Document> = processCollection(db, prefix).watch(
         TRIM_CHANGES, startAtOperationTime ? { startAtOperationTime } : {},
       );
       let closed = false;

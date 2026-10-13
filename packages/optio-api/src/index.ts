@@ -82,6 +82,15 @@ export {
   pruneOrphans,
 } from './visibility.js';
 
+// The one choke point for process reads (for custom adapters; see AGENTS.md
+// "One choke point")
+export {
+  processCollection,
+  processReads,
+  processReadsOf,
+  type ProcessReads,
+} from './process-reads.js';
+
 // Predicate builders (for visibility hooks)
 export { and, or, not, leaf, eq, ne, isIn, notIn, exists, gt, gte, lt, lte } from 'optio-contracts';
 

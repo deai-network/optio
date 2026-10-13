@@ -840,12 +840,15 @@ export { resolveConversationArchive, forgetConversationArchive, fetchConversatio
          CONVERSATION_ARCHIVE_MAX_BODY_BYTES,
          type ConversationArchiveEndpoint, type ConversationFetchResult } from 'optio-api';
 
-// Scope helpers (for custom adapters). findActionTarget(col, id): the document a
+// Scope helpers (for custom adapters). findActionTarget(reads, id): the document a
 // single-process action targets, by _id for a 24-hex id, else by processId (a
 // duplicated processId resolves to the newest document, as the engine does).
-// findReadableProcess(col, id, access): the same lookup, additionally null when
+// findReadableProcess(reads, id, access): the same lookup, additionally null when
 // the document fails `access.visibility`; used by getProcess, getProcessLog,
 // getProcessTree and getProcessTreeLog in place of findScopedProcess.
+// findScopedProcess/findReadableProcess/findActionTarget/inScope/gateProcess all
+// accept a `ProcessReads` (below) or, for custom adapters and compatibility, a
+// plain `Collection`.
 export { findActionTarget, findReadableProcess } from 'optio-api';
 
 // Visibility helpers (for custom adapters). normalizeVisibility(raw): validate a
@@ -855,14 +858,30 @@ export { findActionTarget, findReadableProcess } from 'optio-api';
 // andScope; isVisible(col, doc, visibility): whether one document satisfies the
 // predicate, judged in Mongo; pruneOrphans(docs, keep?): drop tree children whose
 // parent chain doesn't resolve to a kept root. Wired into AccessHooks (the `visibility`
-// hook), gateProcess (the single-process action gate), and now the read handlers:
-// listProcesses ANDs it into the query and countDocuments (totalCount stays exact
-// across pages); getProcess/getProcessLog/getProcessTree/getProcessTreeLog 404 a
-// hidden process (by either id form); getProcessTree fetches only visible children
-// at each level; getProcessTreeLog prunes orphans (only when visibility is set)
-// before collecting log lines. Streams and the adapter options don't consult it yet.
+// hook) and gateProcess (the single-process action gate, via an explicit `isVisible`
+// check on an unfiltered read). Every process read that can reach a response --
+// listProcesses (and its countDocuments), getProcess/getProcessLog/getProcessTree/
+// getProcessTreeLog (404 for a hidden process by either id form; getProcessTree
+// fetches only visible children at each level; getProcessTreeLog prunes orphans,
+// only when visibility is set, before collecting log lines) -- goes through the one
+// choke point below, `processReads`, so no handler ANDs the condition itself.
+// Streams and the adapter options don't consult it yet.
 export { normalizeVisibility, visibilityToMongo, andVisibility, isVisible,
          pruneOrphans } from 'optio-api';
+
+// The one choke point for process reads (packages/optio-api/AGENTS.md "One choke
+// point"): processCollection(db, prefix) is the only place allowed to name the
+// `{prefix}_processes` collection outside a short allowlist (a change stream, instance
+// discovery, and the two upstream lookups that run only after gateProcess admitted the
+// process). processReads(db, prefix, visibility) / processReadsOf(col, visibility)
+// return a `ProcessReads`, whose find/findOne/countDocuments AND the visibility
+// condition into every query, passing a null-visibility filter through unchanged (the
+// same object, not a copy). The handlers build one `ProcessReads` per request and
+// read through it exclusively; a guard test (process-reads-guard.test.ts) fails the
+// build if a new read path names the collection, calls processCollection outside its
+// allowlist, or reaches `.unfiltered` outside access-scope.ts, so a route added later
+// cannot forget the rule.
+export { processCollection, processReads, processReadsOf, type ProcessReads } from 'optio-api';
 
 // Predicate builders (for writing a visibility hook), re-exported from optio-contracts
 export { and, or, not, leaf, eq, ne, isIn, notIn, exists, gt, gte, lt, lte } from 'optio-api';

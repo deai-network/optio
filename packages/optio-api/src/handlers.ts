@@ -1,4 +1,4 @@
-import { ObjectId, type Db } from 'mongodb';
+import { ObjectId } from 'mongodb';
 import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import type { OptioContext } from './context.js';
@@ -7,7 +7,8 @@ import { UNRESTRICTED, type Access } from './auth.js';
 import {
   andScope, findActionTarget, findReadableProcess, gateProcess, scopedResyncFilter,
 } from './access-scope.js';
-import { andVisibility, pruneOrphans } from './visibility.js';
+import { pruneOrphans } from './visibility.js';
+import { processReads, type ProcessReads } from './process-reads.js';
 import { fetchConversation, type ConversationFetchResult } from './conversation-archive.js';
 import type {
   LaunchFailureReason as LaunchFailureReasonType,
@@ -16,10 +17,6 @@ import type {
   ResurrectFailureReason as ResurrectFailureReasonType,
   ConversationFailureReason as ConversationFailureReasonType,
 } from 'optio-contracts';
-
-function col(db: Db, prefix: string) {
-  return db.collection(`${prefix}_processes`);
-}
 
 function stripServerSideFields<T extends Record<string, any>>(proc: T): Omit<T, 'widgetUpstream'> {
   const { widgetUpstream: _omit, ...rest } = proc;
@@ -58,18 +55,19 @@ export async function listProcesses(
 ) {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const { cursor, limit, rootId, state, metadataFilter } = query;
+  const reads = processReads(db, prefix, access.visibility);
 
-  const filter: Record<string, unknown> = andVisibility(
-    andScope({ ...metadataFilterToMongo(metadataFilter) }, access.scope),
-    access.visibility,
+  const filter: Record<string, unknown> = andScope(
+    { ...metadataFilterToMongo(metadataFilter) },
+    access.scope,
   );
   if (rootId) filter.rootId = new ObjectId(rootId);
   if (state) filter['status.state'] = state;
   if (cursor) filter._id = { $gt: new ObjectId(cursor) };
 
   const [items, totalCount] = await Promise.all([
-    col(db, prefix).find(filter).sort({ _id: 1 }).limit(limit + 1).toArray(),
-    col(db, prefix).countDocuments(filter),
+    reads.find(filter).sort({ _id: 1 }).limit(limit + 1).toArray(),
+    reads.countDocuments(filter),
   ]);
   const hasNext = items.length > limit;
   if (hasNext) items.pop();
@@ -87,31 +85,27 @@ export async function getProcess(
   access: Access = UNRESTRICTED,
 ) {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const proc = await findReadableProcess(col(db, prefix), id, access);
+  const reads = processReads(db, prefix, access.visibility);
+  const proc = await findReadableProcess(reads, id, access);
   if (!proc) return null;
   return toResponse(proc);
 }
 
 async function buildTree(
-  db: Db,
-  prefix: string,
+  reads: ProcessReads,
   processId: ObjectId,
-  visibility: ProcessMetadataFilter | null,
   maxDepth?: number,
   currentDepth = 0,
 ): Promise<any> {
-  const proc = await col(db, prefix).findOne({ _id: processId });
+  const proc = await reads.findOne({ _id: processId });
   if (!proc) return null;
 
   let children: any[] = [];
   if (maxDepth === undefined || currentDepth < maxDepth) {
-    const childDocs = await col(db, prefix)
-      .find(andVisibility({ parentId: processId }, visibility))
-      .sort({ order: 1 })
-      .toArray();
+    const childDocs = await reads.find({ parentId: processId }).sort({ order: 1 }).toArray();
 
     children = await Promise.all(
-      childDocs.map((c) => buildTree(db, prefix, c._id, visibility, maxDepth, currentDepth + 1)),
+      childDocs.map((c) => buildTree(reads, c._id as ObjectId, maxDepth, currentDepth + 1)),
     );
     children = children.filter(Boolean);
   }
@@ -134,15 +128,15 @@ export async function getProcessTree(
   access: Access = UNRESTRICTED,
 ) {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
+  const reads = processReads(db, prefix, access.visibility);
   // Resolve the entry-point doc first so we can accept either id form.
-  // Internal recursion in `buildTree` walks via `parentId` ObjectId
-  // references and does not need the lookup helper; the whole tree shares
-  // the entry point's tenant, so the scope is checked there only. Below the
-  // entry point only the visibility condition is added, never scope (see
-  // AGENTS.md "Access scope and authorization").
-  const entry = await findReadableProcess(col(db, prefix), id, access);
+  // `buildTree` reads only through `reads` (visibility, never scope) for
+  // everything below the entry point; the whole tree shares the entry
+  // point's tenant, so scope is checked here only (see AGENTS.md "Access
+  // scope and authorization").
+  const entry = await findReadableProcess(reads, id, access);
   if (!entry) return null;
-  return buildTree(db, prefix, entry._id as ObjectId, access.visibility, query.maxDepth);
+  return buildTree(reads, entry._id as ObjectId, query.maxDepth);
 }
 
 export interface PaginationQuery {
@@ -162,7 +156,8 @@ export async function getProcessLog(
   access: Access = UNRESTRICTED,
 ) {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const proc = await findReadableProcess(col(db, prefix), id, access);
+  const reads = processReads(db, prefix, access.visibility);
+  const proc = await findReadableProcess(reads, id, access);
   if (!proc) return null;
 
   const { cursor, limit } = query;
@@ -194,17 +189,17 @@ export async function getProcessTreeLog(
   access: Access = UNRESTRICTED,
 ) {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const proc = await findReadableProcess(col(db, prefix), id, access);
+  const reads = processReads(db, prefix, access.visibility);
+  const proc = await findReadableProcess(reads, id, access);
   if (!proc) return null;
 
   const { maxDepth, cursor, limit } = query;
-  let filter: Record<string, unknown> = { rootId: proc.rootId };
+  const filter: Record<string, unknown> = { rootId: proc.rootId };
   if (maxDepth !== undefined) {
     filter.depth = { $lte: proc.depth + maxDepth };
   }
-  filter = andVisibility(filter, access.visibility);
-  let allProcs = await col(db, prefix).find(filter).toArray();
-  if (access.visibility) {
+  let allProcs = await reads.find(filter).toArray();
+  if (reads.visibility) {
     allProcs = pruneOrphans(allProcs);
   }
 
@@ -255,13 +250,13 @@ export async function getProcessConversation(
   access: Access = UNRESTRICTED,
 ): Promise<ConversationResult> {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const processes = col(db, prefix);
-  const gate = await gateProcess(processes, id, access, 'widget');
+  const reads = processReads(db, prefix, access.visibility);
+  const gate = await gateProcess(reads, id, access, 'widget');
   if (!gate.ok && gate.status === 403) {
     return { status: 403, body: { reason: 'forbidden', message: 'Forbidden' }, headers: NO_STORE };
   }
   // Unrestricted access skips gateProcess's lookup; find the document here.
-  const doc = gate.ok ? (gate.doc ?? (await findActionTarget(processes, id))) : null;
+  const doc = gate.ok ? (gate.doc ?? (await findActionTarget(reads, id))) : null;
   if (!doc) {
     return { status: 404, body: { reason: 'not-found', message: 'No such process.' }, headers: NO_STORE };
   }
@@ -350,7 +345,8 @@ export async function launchProcess(
   access: Access = UNRESTRICTED,
 ): Promise<LaunchCommandResult> {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const gate = await gateProcess(col(db, prefix), id, access, 'launch');
+  const reads = processReads(db, prefix, access.visibility);
+  const gate = await gateProcess(reads, id, access, 'launch');
   if (!gate.ok) return gate.status === 404 ? launchFail('not-found') : FORBIDDEN;
   const engine = resolveOptioEngine(ctx, query);
   const result = await engine.launch({ processId: id, resume, sessionId });
@@ -365,7 +361,8 @@ export async function cancelProcess(
   access: Access = UNRESTRICTED,
 ): Promise<CancelCommandResult> {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const gate = await gateProcess(col(db, prefix), id, access, 'cancel');
+  const reads = processReads(db, prefix, access.visibility);
+  const gate = await gateProcess(reads, id, access, 'cancel');
   if (!gate.ok) return gate.status === 404 ? cancelFail('not-found') : FORBIDDEN;
   const engine = resolveOptioEngine(ctx, query);
   const result = await engine.cancel({ processId: id });
@@ -380,7 +377,8 @@ export async function dismissProcess(
   access: Access = UNRESTRICTED,
 ): Promise<DismissCommandResult> {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const gate = await gateProcess(col(db, prefix), id, access, 'dismiss');
+  const reads = processReads(db, prefix, access.visibility);
+  const gate = await gateProcess(reads, id, access, 'dismiss');
   if (!gate.ok) return gate.status === 404 ? dismissFail('not-found') : FORBIDDEN;
   const engine = resolveOptioEngine(ctx, query);
   const result = await engine.dismiss({ processId: id });
@@ -418,7 +416,8 @@ export async function resurrectProcess(
   access: Access = UNRESTRICTED,
 ): Promise<ResurrectCommandResult> {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const gate = await gateProcess(col(db, prefix), id, access, 'resurrect');
+  const reads = processReads(db, prefix, access.visibility);
+  const gate = await gateProcess(reads, id, access, 'resurrect');
   if (!gate.ok) return gate.status === 404 ? resurrectFail('not-found') : FORBIDDEN;
   const engine = resolveOptioEngine(ctx, query);
   const result = await engine.resurrect({ processId: id, sessionId });

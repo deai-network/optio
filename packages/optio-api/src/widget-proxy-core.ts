@@ -1,5 +1,6 @@
 import { ObjectId, type Db } from 'mongodb';
 import type { InnerAuthDoc, WidgetUpstreamRegistry, WidgetUpstreamValue } from './widget-upstream-registry.js';
+import { processCollection } from './process-reads.js';
 
 export async function resolveWidgetUpstream(
   db: Db,
@@ -24,7 +25,7 @@ export async function resolveWidgetUpstream(
     return null;
   }
 
-  const doc = await db.collection(`${prefix}_processes`).findOne(
+  const doc = await processCollection(db, prefix).findOne(
     { _id: oid },
     { projection: { widgetUpstream: 1, 'widgetData.stripProxyPrefix': 1 } },
   );

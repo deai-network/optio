@@ -1,6 +1,7 @@
 import { ObjectId, type Db } from 'mongodb';
 import type { InnerAuthDoc, WidgetUpstreamValue } from './widget-upstream-registry.js';
 import { applyInnerAuthHeaders } from './widget-proxy-core.js';
+import { processCollection } from './process-reads.js';
 
 export interface AgentInputResult {
   status: number;
@@ -30,7 +31,7 @@ export async function forwardAgentInput(
     return { status: 400, body: { message: 'Invalid processId' } };
   }
 
-  const doc = await db.collection(`${prefix}_processes`).findOne(
+  const doc = await processCollection(db, prefix).findOne(
     { _id: oid },
     { projection: { controlUpstream: 1 } },
   );
