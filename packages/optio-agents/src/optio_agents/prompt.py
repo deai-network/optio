@@ -24,6 +24,9 @@ from optio_agents.browser_shims import BrowserMode
 from optio_agents.context import SYSTEM_MESSAGE_PREFIX
 from optio_agents.protocol.features import ProtocolFeatures
 from optio_agents.protocol.prompt import RESUME_NOTICE, build_log_channel_prompt
+from optio_host.capture_cap import REGENERABLE_LIST, workdir_capture_max_bytes
+
+_MIB = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -110,7 +113,7 @@ caveats:**
 - **Anything outside the workdir is not preserved.**
 {state_dir_bullet}
 {outside_clause}
-
+{regenerable_clause}
 ### Detecting a resume: `resume.log`
 
 Each session start (fresh or resumed) appends one line to
@@ -129,8 +132,15 @@ those files is stale and must be re-read before continuing.
 {detection_clause}"""
 
 
-def _resume_steps(instructions_file: str) -> str:
-    """What the agent does once it knows it was resumed (either detection style)."""
+def _resume_steps(instructions_file: str, regenerable: bool = False) -> str:
+    """What the agent does once it knows it was resumed (either detection style).
+
+    ``regenerable`` adds the regenerable-list step, under the same condition
+    as the paragraph in ``_RESUME_SECTION_TEMPLATE`` (the capture cap is on)."""
+    regenerable_step = (
+        f"- If paths listed in `./{REGENERABLE_LIST}` are missing, regenerate "
+        "them before you continue.\n"
+    ) if regenerable else ""
     return f"""- Verify any tools, processes, or files you previously gathered
   outside the workdir are still where you left them.
 - Re-establish anything that's gone (re-launch a server, re-fetch a
@@ -139,11 +149,11 @@ def _resume_steps(instructions_file: str) -> str:
   listed file** (e.g. `cat ./{instructions_file}`) — the harness updated it
   since your last context snapshot and the version you remember is
   out of date.
-- Then resume the work you were doing.
+{regenerable_step}- Then resume the work you were doing.
 """
 
 
-def _detect_by_polling(instructions_file: str) -> str:
+def _detect_by_polling(instructions_file: str, regenerable: bool = False) -> str:
     """Pull: poll resume.log on every user message, for sessions the harness
     may resume without telling the agent."""
     return """**At the start of every new incoming user message, read
@@ -151,7 +161,7 @@ def _detect_by_polling(instructions_file: str) -> str:
 remembered last time you checked. If a new line has appeared, treat
 the situation as a resume:
 
-""" + _resume_steps(instructions_file) + """
+""" + _resume_steps(instructions_file, regenerable) + """
 If a resume slips past unnoticed, a failing tool call is the
 next-best signal — re-check `./resume.log` then.
 
@@ -160,7 +170,7 @@ channel; when you see one, follow the `resume.log` procedure above.
 """
 
 
-def _detect_by_notice(instructions_file: str) -> str:
+def _detect_by_notice(instructions_file: str, regenerable: bool = False) -> str:
     """Push: every resume is announced by the resume notice, so resume.log is
     read only when it arrives (for its REFRESHED: suffix)."""
     return f"""The harness tells you about every resume with a
@@ -169,7 +179,18 @@ not need to check `./resume.log` before each message. When that message
 arrives, read the latest line of `./resume.log` and treat the situation
 as a resume:
 
-""" + _resume_steps(instructions_file)
+""" + _resume_steps(instructions_file, regenerable)
+
+
+_REGENERABLE_CLAUSE_TEMPLATE = (
+    "**Keep `./{list_name}` current.** List in it anything big in the workdir "
+    "that you could regenerate quickly and completely: dependency installs, "
+    "build outputs, caches, data you can download again. One path per line, "
+    "relative to the workdir; a `#` note after a path is fine (e.g. "
+    "`frontend/node_modules  # npm ci`). When the workdir is over {cap_mb} MB "
+    "at snapshot time, these paths are left out of the snapshot. Never list "
+    "anything holding work you could not regenerate."
+)
 
 
 def _state_dir_bullet(profile: AgentPromptProfile) -> str:
@@ -190,12 +211,30 @@ def render_resume_section(
     profile: AgentPromptProfile,
     workdir_exclude: list[str],
     check_resume_log_every_message: bool = True,
+    *,
+    capture_max_bytes: int | None = None,
 ) -> str:
     """Render the resume section for ``profile`` and the effective exclude list.
 
     ``check_resume_log_every_message`` picks how the agent detects a resume:
     by polling ``resume.log`` on every user message (default), or by waiting
-    for the ``System:`` resume notice (only when every resume sends one)."""
+    for the ``System:`` resume notice (only when every resume sends one).
+
+    ``capture_max_bytes`` is the workdir capture cap in bytes. ``None`` (the
+    default) reads ``workdir_capture_max_bytes()`` — once, here — so a bad
+    ``OPTIO_WORKDIR_CAPTURE_MAX_MB`` surfaces as soon as the instructions file
+    is composed. A cap of ``0`` (the feature off) renders neither the
+    ``./regenerable.txt`` paragraph nor its resume step; any positive value
+    renders both, naming the cap in whole MiB."""
+    cap_bytes = (
+        workdir_capture_max_bytes() if capture_max_bytes is None else capture_max_bytes
+    )
+    regenerable = cap_bytes != 0
+    regenerable_clause = (
+        "\n" + _REGENERABLE_CLAUSE_TEMPLATE.format(
+            list_name=REGENERABLE_LIST, cap_mb=cap_bytes // _MIB,
+        ) + "\n"
+    ) if regenerable else ""
     if not workdir_exclude:
         excludes_clause = (
             "**No paths are excluded** — every file in the workdir is preserved."
@@ -220,8 +259,9 @@ def render_resume_section(
         excludes_clause=excludes_clause,
         outside_clause=outside_clause,
         state_dir_bullet=_state_dir_bullet(profile),
+        regenerable_clause=regenerable_clause,
         instructions_file=profile.instructions_file,
-        detection_clause=detect(profile.instructions_file),
+        detection_clause=detect(profile.instructions_file, regenerable),
     )
 
 
@@ -254,6 +294,7 @@ def compose_instructions_file(
     fs_isolation_dirs: list[tuple[str, str]] | None = None,
     file_download: bool = False,
     check_resume_log_every_message: bool = True,
+    capture_max_bytes: int | None = None,
 ) -> str:
     """Render a wrapper's instructions file.
 
@@ -279,6 +320,11 @@ def compose_instructions_file(
       check_resume_log_every_message: False tells the agent to rely on the
         ``System:`` resume notice instead of polling ``resume.log``. Pass it
         only when every resume sends that notice.
+      capture_max_bytes: the workdir capture cap in bytes, for the
+        ``./regenerable.txt`` paragraph and resume step. ``None`` (the
+        default) reads ``workdir_capture_max_bytes()``. Only read when
+        ``supports_resume`` (no resume section, no capture, nothing to tell
+        the agent).
     """
     body = consumer_instructions.rstrip()
     if file_download:
@@ -294,7 +340,10 @@ def compose_instructions_file(
     else:
         pre = ""
     resume_block = (
-        render_resume_section(profile, workdir_exclude, check_resume_log_every_message)
+        render_resume_section(
+            profile, workdir_exclude, check_resume_log_every_message,
+            capture_max_bytes=capture_max_bytes,
+        )
         if supports_resume else ""
     )
     if not host_protocol:

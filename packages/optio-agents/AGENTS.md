@@ -380,6 +380,45 @@ behind every conversation listener's `POST /send`, `POST /steer` and
 * `emit` must put the event into the wrapper's own event stream (in order
   with native events) so the conversation listener buffers and persists it.
 
+## Instructions file (`optio_agents.prompt`)
+
+`compose_instructions_file` (and the `render_resume_section` it calls for the
+resume section) gains the `./regenerable.txt` paragraph and resume step from
+the workdir capture cap design (`docs/2026-10-13-workdir-capture-cap-design.md`).
+
+* `render_resume_section(profile, workdir_exclude, check_resume_log_every_message=True, *, capture_max_bytes=None)`
+  and `compose_instructions_file(..., capture_max_bytes=None)`: `None` (the
+  default) reads `optio_host.capture_cap.workdir_capture_max_bytes()` once,
+  inside `render_resume_section`, so a bad `OPTIO_WORKDIR_CAPTURE_MAX_MB`
+  surfaces at agent launch rather than only when a capture runs. Passing an
+  explicit byte count (tests, or a caller that already resolved it) skips that
+  read.
+* The paragraph renders, right after the section's existing "preserved / not
+  preserved" text, when the task supports resume (the resume section exists
+  only then — exactly when captures happen) AND the cap is not `0`:
+
+  > **Keep `./regenerable.txt` current.** List in it anything big in the
+  > workdir that you could regenerate quickly and completely: dependency
+  > installs, build outputs, caches, data you can download again. One path
+  > per line, relative to the workdir; a `#` note after a path is fine (e.g.
+  > `frontend/node_modules  # npm ci`). When the workdir is over `<C>` MB at
+  > snapshot time, these paths are left out of the snapshot. Never list
+  > anything holding work you could not regenerate.
+
+  `<C>` is the configured cap in whole MiB.
+* Under the same condition, `_resume_steps` (threaded through both
+  `_detect_by_polling` and `_detect_by_notice` via a `regenerable` flag) gains
+  one more step:
+
+  > - If paths listed in `./regenerable.txt` are missing, regenerate them
+  >   before you continue.
+
+* A cap of `0` (`OPTIO_WORKDIR_CAPTURE_MAX_MB=0`, the feature off) or
+  `supports_resume=False` renders neither text. No wrapper passes
+  `capture_max_bytes` itself — each inherits the environment-driven default
+  through `compose_instructions_file`, so `test_wrapper_compose_signature_is_uniform`
+  (optio-agents-all) still holds.
+
 ## Dependency direction
 
 Depends on `optio-host` and `optio-core`; consumed by every engine wrapper

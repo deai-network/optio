@@ -1,5 +1,7 @@
 """Tests for the shared instructions-file composer."""
 
+import pytest
+
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents.prompt import (
     _todo_note,
@@ -8,6 +10,9 @@ from optio_agents.prompt import (
     AgentPromptProfile,
     compose_instructions_file,
 )
+from optio_host.capture_cap import ENV_VAR, REGENERABLE_LIST
+
+_MIB = 1024 * 1024
 
 PLAIN = AgentPromptProfile()
 CLAUDE = AgentPromptProfile(
@@ -24,6 +29,16 @@ def _c(instructions="do X", profile=PLAIN, workdir_exclude=("a", "b"), **kw):
     return compose_instructions_file(
         instructions, profile=profile, workdir_exclude=list(workdir_exclude), **kw,
     )
+
+
+@pytest.fixture(autouse=True)
+def _default_capture_cap_env(monkeypatch):
+    """Isolate every test in this module from whatever the host's own
+    OPTIO_WORKDIR_CAPTURE_MAX_MB happens to be: unset means the documented
+    default (100 MiB, the feature on), matching ``workdir_capture_max_bytes``.
+    A test that cares about a specific setting overrides it with its own
+    monkeypatch call."""
+    monkeypatch.delenv(ENV_VAR, raising=False)
 
 
 def test_order_preamble_intro_docs_resume_delivery_framing_body():
@@ -187,3 +202,51 @@ def test_todo_note_survives_when_the_task_framing_is_omitted():
     assert "## Task" not in out
     assert "via the `todo_write` tool" in out
     assert out.index("via the `todo_write` tool") < out.index("do X")
+
+
+
+# --- the regenerable-list paragraph and resume step --------------------
+
+
+def test_regenerable_paragraph_and_step_render_at_the_given_cap():
+    out = _c(capture_max_bytes=100 * _MIB)
+    assert "**Keep `./regenerable.txt` current.**" in out
+    assert "over 100 MB at snapshot time" in out
+    assert (
+        "If paths listed in `./regenerable.txt` are missing, regenerate "
+        "them before you continue." in out
+    )
+
+
+def test_regenerable_paragraph_names_the_configured_cap():
+    out = _c(capture_max_bytes=250 * _MIB)
+    assert "over 250 MB" in out
+
+
+def test_regenerable_paragraph_and_step_absent_when_cap_is_zero():
+    out = _c(capture_max_bytes=0)
+    assert "**Keep `./regenerable.txt` current.**" not in out
+    assert "regenerate them before you continue" not in out
+
+
+def test_regenerable_paragraph_and_step_absent_without_resume_support():
+    out = _c(supports_resume=False, capture_max_bytes=100 * _MIB)
+    assert "**Keep `./regenerable.txt` current.**" not in out
+    assert "regenerate them before you continue" not in out
+
+
+def test_regenerable_absent_when_env_setting_is_zero(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "0")
+    out = _c()
+    assert "**Keep `./regenerable.txt` current.**" not in out
+    assert "regenerate them before you continue" not in out
+
+
+def test_regenerable_bad_env_setting_raises(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "x")
+    with pytest.raises(ValueError):
+        _c()
+
+
+def test_regenerable_list_name_constant_matches_optio_host():
+    assert REGENERABLE_LIST == "regenerable.txt"
