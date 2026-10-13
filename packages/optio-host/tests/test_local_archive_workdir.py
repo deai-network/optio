@@ -61,9 +61,19 @@ def _populate_anchored(root: str) -> None:
     _write(root, "node_modules/a.js", "a")
     _write(root, "pkg/node_modules/b.js", "b")
     _write(root, "build[1]/x", "x")
+    _write(root, "build1/z", "z")  # what `build[1]` would match as a glob
     _write(root, "buildx/y", "y")
+    _write(root, "star/*", "*")
+    _write(root, "star/keep", "s")  # what `star/*` would match as a glob
+    _write(root, "back\\slash", "\\")
     _write(root, "keep.txt", "k")
     _write(root, ".git/HEAD", "ref: refs/heads/main\n")
+
+
+# The entries of `_populate_anchored` that a regenerable list names, and what
+# a capture leaving them out (and `.git`) must keep.
+_ANCHORED = ["node_modules", "build[1]", "star/*", "back\\slash"]
+_ANCHORED_KEPT = {"pkg/node_modules/b.js", "build1/z", "buildx/y", "star/keep", "keep.txt"}
 
 
 def _tar_member_names(blob: bytes) -> set[str]:
@@ -231,17 +241,32 @@ async def test_symlinks_are_stored_as_symlinks_not_followed(tmp_workdir):
 
 
 def test_archive_command_anchored_excludes_are_literal_and_root_only(tmp_workdir):
+    # Run for real on this host's tar (GNU tar on excavator). The docker-gated
+    # round trip in optio-opencode's test_host_remote_resume.py runs the same
+    # kind of excludes on BusyBox tar.
     workdir = os.path.join(tmp_workdir, "src")
     _populate_anchored(workdir)
 
-    cmd = host_mod._archive_command(
-        workdir, [".git"], "gzip -1", ["node_modules", "build[1]"],
-    )
+    cmd = host_mod._archive_command(workdir, [".git"], "gzip -1", _ANCHORED)
     proc = subprocess.run(cmd, shell=True, capture_output=True)
 
     assert proc.returncode == 0, proc.stderr
-    names = _tar_member_names(proc.stdout)
-    assert names == {"pkg/node_modules/b.js", "buildx/y", "keep.txt"}
+    assert _tar_member_names(proc.stdout) == _ANCHORED_KEPT
+
+
+def test_archive_command_anchored_excludes_are_escaped_literals():
+    """Pin: each entry is one `--exclude=./<entry>` with `\\`, `*`, `?` and
+    `[` backslash-escaped; no `--anchored` or `--no-wildcards`, which BusyBox
+    tar rejects."""
+    script = (
+        "set -o pipefail; cd /w && tar cf - --exclude=.git "
+        "--exclude=./node_modules --exclude='./build\\[1]' --exclude='./star/\\*' "
+        "--exclude='./back\\\\slash' --exclude='./a\\?b' . | gzip -1"
+    )
+
+    assert host_mod._archive_command(
+        "/w", [".git"], "gzip -1", _ANCHORED + ["a?b"],
+    ) == f"bash -c {shlex.quote(script)}"
 
 
 def test_archive_command_without_anchored_matches_todays_string(tmp_workdir):
@@ -552,6 +577,67 @@ async def test_fallback_on_note_that_raises_does_not_stop_the_capture(tmp_workdi
     blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=_boom))
 
     assert _tar_member_names(blob) == {"keep.txt", "regenerable.txt", "b/a/node_modules/y.js"}
+
+
+# --- the tar flavour -------------------------------------------------------------
+
+_BSDTAR = "bsdtar 3.7.2 - libarchive 3.7.2 zlib/1.3.1 liblzma/5.4.3 bz2lib/1.0.8"
+
+
+def _fake_tar(tmp_workdir: str, monkeypatch, version: str) -> str:
+    """Put a ``tar`` on PATH whose ``--version`` prints ``version`` and
+    appends a line to the returned marker file; anything else runs the real
+    tar."""
+    real = shutil.which("tar")
+    bindir = os.path.join(tmp_workdir, "fakebin-tar")
+    os.makedirs(bindir)
+    marker = os.path.join(tmp_workdir, "tar-version-probes")
+    with open(os.path.join(bindir, "tar"), "w") as fh:
+        fh.write(
+            "#!/bin/sh\n"
+            f'if [ "$1" = --version ]; then echo probe >> {shlex.quote(marker)}; '
+            f"echo {shlex.quote(version)}; exit 0; fi\n"
+            f'exec {shlex.quote(real)} "$@"\n'
+        )
+    os.chmod(os.path.join(bindir, "tar"), 0o755)
+    monkeypatch.setenv("PATH", bindir + os.pathsep + os.environ["PATH"])
+    return marker
+
+
+async def test_tar_neither_gnu_nor_busybox_captures_everything_and_warns(
+    tmp_workdir, monkeypatch, caplog,
+):
+    # bsdtar strips a pattern's leading ./, so ./big would match anywhere.
+    monkeypatch.setenv(ENV_VAR, "1")
+    _fake_tar(tmp_workdir, monkeypatch, _BSDTAR)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES
+    assert notes == [
+        "regenerable.txt not applied: tar on this host is not GNU or BusyBox "
+        f"({_BSDTAR!r}); capturing everything"
+    ]
+    assert _archive_notes(caplog) == [(logging.WARNING, notes[0])]
+
+
+async def test_tar_flavour_is_probed_once_per_host(tmp_workdir, monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "1")
+    marker = _fake_tar(tmp_workdir, monkeypatch, "tar (GNU tar) 1.35")
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+
+    for _ in range(2):
+        blob = await _drain(h.archive_workdir(_CAP_EXCLUDE))
+        assert _tar_member_names(blob) == {
+            "keep.txt", "regenerable.txt", "b/a/node_modules/y.js",
+        }
+
+    assert open(marker).read() == "probe\n"
 
 
 # --- compression ---------------------------------------------------------------

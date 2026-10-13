@@ -248,7 +248,14 @@ import shutil
 import signal as _signal
 import time as _time
 
-from optio_host.capture_cap import regenerable_excludes, workdir_capture_max_bytes
+from optio_host.capture_cap import (
+    TAR_VERSION_COMMAND,
+    literal_exclude,
+    regenerable_excludes,
+    tar_takes_literal_excludes,
+    unknown_tar_note,
+    workdir_capture_max_bytes,
+)
 
 _trace_logger = _logging.getLogger("optio_core.cancel_trace")
 _CANCEL_TRACE = os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
@@ -391,27 +398,23 @@ def _archive_command(
     explicitly (the remote login shell, or the local ``/bin/sh``, may be dash)
     so ``pipefail`` carries a tar failure through the pipe into the exit status.
 
-    ``patterns`` keep the existing match-anywhere glob semantics (GNU tar's
+    ``patterns`` keep the existing match-anywhere glob semantics (tar's
     default, unanchored). ``anchored`` entries are different: each excludes
     exactly ``./<entry>`` (and, when it is a directory, everything under it),
-    taken literally with no globbing. The archived tree is rooted at ``.``
-    (tar member names are ``./…``), so ``--exclude`` options are emitted in
-    this order: the existing patterns first (unaffected), then
-    ``--anchored --no-wildcards`` to switch tar's matching mode, then one
-    literal ``--exclude=./<entry>`` per anchored entry. ``--exclude`` options
-    are positional in GNU tar, so patterns parsed before the mode switch keep
-    their original (unanchored, glob) meaning.
+    taken literally with no globbing. Each becomes one
+    ``capture_cap.literal_exclude`` option after the patterns: ``./<entry>``
+    with its glob characters backslash-escaped, which GNU tar and BusyBox tar
+    both read that way (the caller checks the flavour first, see
+    ``capture_cap.tar_takes_literal_excludes``). No mode option changes how
+    the patterns match, so the order of the options does not matter.
     """
-    excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)
-    anchored_opts = ""
-    if anchored:
-        anchored_excludes = " ".join(
-            f"--exclude={shlex.quote('./' + entry)}" for entry in anchored
-        )
-        anchored_opts = f" --anchored --no-wildcards {anchored_excludes}"
+    excludes = " ".join(
+        [f"--exclude={shlex.quote(p)}" for p in patterns]
+        + [literal_exclude(entry) for entry in anchored]
+    )
     script = (
         f"set -o pipefail; cd {shlex.quote(workdir)} && "
-        f"tar cf - {excludes}{anchored_opts} . | {compressor}"
+        f"tar cf - {excludes} . | {compressor}"
     )
     return f"bash -c {shlex.quote(script)}"
 
@@ -439,8 +442,9 @@ def _report_capture_note(
     on_note: Callable[[str], None] | None,
 ) -> None:
     """Log the capture decision's note, if any, on ``optio_host.archive`` and
-    hand it to ``on_note``. A note that leaves nothing out is the
-    missing-list one, logged at WARNING; the others at INFO."""
+    hand it to ``on_note``. A note that leaves nothing out (the list is
+    missing or empty, or tar is not GNU or BusyBox) is logged at WARNING; the
+    others at INFO."""
     if note is None:
         return
     _archive_logger.log(_logging.INFO if anchored else _logging.WARNING, "%s", note)
@@ -450,18 +454,27 @@ def _report_capture_note(
 async def _capture_excludes(
     decide: Callable[[int], Awaitable[tuple[list[str], str | None]]],
     on_note: Callable[[str], None] | None,
+    tar_version: Callable[[], Awaitable[str]] | None = None,
 ) -> list[str]:
     """Run the capture-cap decision fail-safe and report its note.
 
     ``decide(cap_bytes)`` is the host's decision (``regenerable_excludes``
-    or the fallback's). Anything it raises, the cap setting included, makes
-    the note ``capture decision failed (<exception>); capturing everything``,
-    logged at WARNING on ``optio_host.archive`` and handed to ``on_note``,
-    and the capture leaves nothing out: losing a shutdown snapshot to the
-    decision is worse than an oversized one. Returns the entries to exclude,
-    anchored."""
+    or the fallback's). ``tar_version()`` is the first line of the host's
+    ``tar --version``, asked only when the decision leaves something out
+    (``None``: the in-process fallback, which needs no tar). A tar that is
+    not GNU or BusyBox (``tar_takes_literal_excludes``) leaves nothing out,
+    with ``unknown_tar_note``. Anything the decision or the probe raises, the
+    cap setting included, makes the note ``capture decision failed
+    (<exception>); capturing everything``, logged at WARNING on
+    ``optio_host.archive`` and handed to ``on_note``, and the capture leaves
+    nothing out: losing a shutdown snapshot to the decision is worse than an
+    oversized one. Returns the entries to exclude, anchored."""
     try:
         anchored, note = await decide(workdir_capture_max_bytes())
+        if anchored and tar_version is not None:
+            version_line = await tar_version()
+            if not tar_takes_literal_excludes(version_line):
+                anchored, note = [], unknown_tar_note(version_line)
     except Exception as exc:
         note = f"capture decision failed ({exc!r}); capturing everything"
         _archive_logger.warning("%s", note, exc_info=True)
@@ -509,6 +522,7 @@ class LocalHost:
         self.taskdir = taskdir
         self.workdir = os.path.join(taskdir, "workdir")
         self._tail_proc: asyncio.subprocess.Process | None = None
+        self._tar_version: str | None = None
 
     async def connect(self) -> None:
         return None
@@ -721,6 +735,14 @@ class LocalHost:
             exit_code=proc.returncode if proc.returncode is not None else -1,
         )
 
+    async def _tar_version_line(self) -> str:
+        """The first line of the local ``tar --version``, for the capture cap
+        (``capture_cap.tar_takes_literal_excludes``). Probed once per host."""
+        if self._tar_version is None:
+            _, out = await _run_local_bash(TAR_VERSION_COMMAND)
+            self._tar_version = out.strip()
+        return self._tar_version
+
     def archive_workdir(
         self,
         exclude: list[str] | None,
@@ -763,6 +785,7 @@ class LocalHost:
             anchored = await _capture_excludes(
                 lambda cap: regenerable_excludes(_run_local_bash, self.workdir, patterns, cap),
                 on_note,
+                self._tar_version_line,
             )
             compressor = "pigz -1" if shutil.which("pigz") else "gzip -1"
             cmd = _archive_command(self.workdir, patterns, compressor, anchored)
@@ -1004,9 +1027,11 @@ class RemoteHost:
         self._forward: asyncssh.SSHListener | None = None
         self._host_home_cache: str | None = None
         self._compressor: str | None = None
+        self._tar_version: str | None = None
 
     async def connect(self) -> None:
         self._compressor = None
+        self._tar_version = None
         self._conn = await asyncssh.connect(
             host=self._ssh.host,
             username=self._ssh.user,
@@ -1186,6 +1211,15 @@ class RemoteHost:
             self._compressor = "pigz -1" if probe.exit_status == 0 else "gzip -1"
         return self._compressor
 
+    async def _tar_version_line(self) -> str:
+        """The first line of the remote ``tar --version``, for the capture
+        cap (``capture_cap.tar_takes_literal_excludes``). Probed once per
+        connection."""
+        if self._tar_version is None:
+            _, out = await self._run_for_capture(TAR_VERSION_COMMAND)
+            self._tar_version = out.strip()
+        return self._tar_version
+
     async def _run_for_capture(self, cmd: str) -> tuple[int, str]:
         """The capture decision's ``run``: ``cmd`` over the connection, its
         exit status (``-1`` when none arrived) and its stdout, decoded with
@@ -1218,6 +1252,7 @@ class RemoteHost:
                     self._run_for_capture, self.workdir, patterns, cap,
                 ),
                 on_note,
+                self._tar_version_line,
             )
             compressor = await self._archive_compressor()
             cmd = _archive_command(self.workdir, patterns, compressor, anchored)

@@ -18,8 +18,8 @@ test_host_remote_resume.py.
 
 The capture cap (``OPTIO_WORKDIR_CAPTURE_MAX_MB``) is off for every test here
 unless the test turns it on, so the host's environment never leaks in; the
-capture-cap section turns it on and answers its ``du`` and ``cat`` through
-the fake connection's ``run``.
+capture-cap section turns it on and answers its ``du``, its list read and
+its tar-flavour probe through the fake connection's ``run``.
 """
 
 from __future__ import annotations
@@ -203,6 +203,7 @@ class _FakeConn:
         exit_status_arrives_early: bool = False,
         du: "tuple[int, str] | Exception" = (0, "4096\t.\n"),
         regenerable: tuple[int, str] = (1, ""),
+        tar_version: str = "tar (GNU tar) 1.35\n",
     ):
         self._pigz = pigz
         self._data = data
@@ -213,6 +214,7 @@ class _FakeConn:
         self._early = exit_status_arrives_early
         self._du = du
         self._regenerable = regenerable
+        self._tar_version = tar_version
         self.run_commands: list[str] = []
         self.run_kwargs: list[dict] = []
         self.created: list[str] = []
@@ -229,6 +231,8 @@ class _FakeConn:
             return _RunResult(*self._du)
         if "-- regenerable.txt" in cmd:
             return _RunResult(*self._regenerable)
+        if cmd == capture_cap.TAR_VERSION_COMMAND:
+            return _RunResult(0, self._tar_version)
         return _RunResult(0)
 
     async def create_process(self, cmd: str, encoding=None) -> _FakeProc:
@@ -443,13 +447,15 @@ async def test_archive_workdir_over_the_cap_excludes_the_listed_paths(
         capture_cap.du_command(_W, ["a b"]),
         "cd /t/workdir && [ -f regenerable.txt ] && "
         "timeout 1 head -c 65536 -- regenerable.txt",
+        "tar --version 2>&1 | head -1",
     ]
     # Decoded with errors="replace", so a binary list cannot raise.
     assert [kw for c, kw in zip(conn.run_commands, conn.run_kwargs) if "pigz" not in c] == [
-        {"errors": "replace"}, {"errors": "replace"},
+        {"errors": "replace"}, {"errors": "replace"}, {"errors": "replace"},
     ]
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1", ["big"])]
-    assert "--anchored --no-wildcards --exclude=./big" in conn.created[0]
+    assert "--exclude=./big . |" in conn.created[0]
+    assert "--anchored" not in conn.created[0]
     assert notes == ["workdir 2 MB (cap 1 MB): left out 1 path listed in regenerable.txt"]
     assert [(r.levelno, r.getMessage()) for r in caplog.records
             if r.name == "optio_host.archive"] == [(logging.INFO, notes[0])]
@@ -545,3 +551,55 @@ async def test_archive_workdir_on_note_that_raises_does_not_stop_the_capture(mon
 
     assert out == data
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1", ["big"])]
+
+
+_BSDTAR = "bsdtar 3.7.2 - libarchive 3.7.2 zlib/1.3.1 liblzma/5.4.3 bz2lib/1.0.8"
+
+
+async def test_archive_workdir_tar_neither_gnu_nor_busybox_captures_everything(
+    monkeypatch, caplog,
+):
+    # bsdtar strips a pattern's leading ./, so ./big would match anywhere.
+    monkeypatch.setenv(ENV_VAR, "1")
+    conn = _FakeConn(
+        pigz=True, data=b"x", du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"),
+        tar_version=_BSDTAR + "\n",
+    )
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+
+    assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
+    assert notes == [
+        "regenerable.txt not applied: tar on this host is not GNU or BusyBox "
+        f"({_BSDTAR!r}); capturing everything"
+    ]
+    assert [(r.levelno, r.getMessage()) for r in caplog.records
+            if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0])]
+
+
+async def test_archive_workdir_busybox_tar_takes_the_list(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "1")
+    conn = _FakeConn(
+        pigz=True, data=b"x", du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"),
+        tar_version="tar (busybox) 1.37.0\n",
+    )
+
+    await _drain(_host(conn).archive_workdir(exclude=["a b"]))
+
+    assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1", ["big"])]
+
+
+async def test_archive_workdir_probes_the_tar_flavour_once_per_connection(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "1")
+    conn = _FakeConn(
+        pigz=True, data=b"x", du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"),
+    )
+    h = _host(conn)
+
+    await _drain(h.archive_workdir(exclude=["a b"]))
+    await _drain(h.archive_workdir(exclude=["a b"]))
+
+    assert conn.run_commands.count(capture_cap.TAR_VERSION_COMMAND) == 1
+    assert conn.created == 2 * [host_mod._archive_command(_W, ["a b"], "pigz -1", ["big"])]

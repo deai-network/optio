@@ -16,7 +16,9 @@ test cannot be wired through the SSH launch path.
 
 from __future__ import annotations
 
+import io
 import json
+import tarfile
 
 import pytest
 import pytest_asyncio
@@ -94,6 +96,36 @@ async def test_remote_archive_workdir_yields_chunks(remote_host: RemoteHost):
         chunks.append(chunk)
 
     assert len(b"".join(chunks)) > 0, "expected at least some tar bytes"
+
+
+async def test_remote_archive_over_the_cap_leaves_out_the_listed_paths(
+    remote_host: RemoteHost, monkeypatch,
+):
+    """Over the capture cap, the archive succeeds on the sshd image's BusyBox
+    tar and leaves out exactly what regenerable.txt lists, taken literally."""
+    monkeypatch.setenv("OPTIO_WORKDIR_CAPTURE_MAX_MB", "1")
+    probe = await remote_host._conn.run("tar --version 2>&1 | head -1", check=False)
+    assert "busybox" in (probe.stdout or "").lower(), probe.stdout
+    setup = await remote_host._conn.run(
+        f"cd {remote_host.workdir} && mkdir -p big pkg/big 'build[1]' build1 && "
+        "head -c 2097152 /dev/zero > big/blob.bin && echo k > keep.txt && "
+        "echo p > pkg/big/p.txt && echo b > 'build[1]/b' && echo c > build1/c && "
+        "printf 'big\\nbuild[1]\\n' > regenerable.txt",
+        check=False,
+    )
+    assert setup.exit_status == 0, setup.stderr
+    notes: list = []
+
+    blob = b"".join([
+        chunk async for chunk in remote_host.archive_workdir(
+            exclude=[".git"], on_note=notes.append,
+        )
+    ])
+
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        files = {m.name.removeprefix("./") for m in tf.getmembers() if m.isfile()}
+    assert files == {"keep.txt", "regenerable.txt", "pkg/big/p.txt", "build1/c"}
+    assert notes == ["workdir 2 MB (cap 1 MB): left out 2 paths listed in regenerable.txt"]
 
 
 async def test_remote_restore_workdir_empties_then_extracts(sshd):

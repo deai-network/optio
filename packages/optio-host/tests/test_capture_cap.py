@@ -311,3 +311,47 @@ async def test_entries_beyond_the_command_line_budget_are_ignored():
         "workdir 2 MB (cap 1 MB): left out 3855 paths listed in regenerable.txt "
         "(2145 more ignored: list too long)"
     )
+
+
+# --- literal excludes and the tar flavour ---------------------------------------
+
+
+@pytest.mark.parametrize("entry, arg", [
+    ("node_modules", "--exclude=./node_modules"),
+    ("build[1]", "--exclude='./build\\[1]'"),
+    ("star/*", "--exclude='./star/\\*'"),
+    ("a?b", "--exclude='./a\\?b'"),
+    ("back\\slash", "--exclude='./back\\\\slash'"),
+    ("it's", "--exclude='./it'\"'\"'s'"),
+])
+def test_literal_exclude_escapes_glob_characters(entry, arg):
+    # GNU tar and BusyBox tar both read a backslash-escaped character
+    # literally; `./` anchors the pattern at the archive root.
+    assert capture_cap.literal_exclude(entry) == arg
+
+
+async def test_escapes_count_against_the_command_line_budget():
+    # "0000*" becomes --exclude='./0000\*': 20 bytes, plus 4 for each of its
+    # two single quotes (the outer `bash -c` quoting), plus a separator.
+    names = [f"{i:04x}*" for i in range(6000)]
+    run = _FakeRun(du=(0, f"{2 * _MIB}\t.\n"), cat=(0, "\n".join(names) + "\n"))
+
+    entries, _ = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    kept = 65536 // 29
+    assert kept == 2259
+    assert entries == names[:kept]
+
+
+@pytest.mark.parametrize("version_line, applies", [
+    ("tar (GNU tar) 1.35", True),
+    ("tar (busybox) 1.37.0", True),
+    ("bsdtar 3.7.2 - libarchive 3.7.2 zlib/1.3.1 liblzma/5.4.3 bz2lib/1.0.8", False),
+    ("", False),
+])
+def test_tar_takes_literal_excludes(version_line, applies):
+    assert capture_cap.tar_takes_literal_excludes(version_line) is applies
+
+
+def test_tar_version_command():
+    assert capture_cap.TAR_VERSION_COMMAND == "tar --version 2>&1 | head -1"

@@ -55,6 +55,20 @@ where the workdir lives:
 - **Over the cap:** it reads `regenerable.txt` with `list_command(workdir)`
   and parses it with `parse_regenerable`. The archive leaves the entries out
   as anchored, literal excludes: `./<entry>` and everything under it.
+  - Each entry is one `literal_exclude(entry)` option: `--exclude=./<entry>`
+    with `\`, `*`, `?` and `[` backslash-escaped. GNU tar and BusyBox tar both
+    read it literally and only from the root (`./node_modules` keeps
+    `./pkg/node_modules`; `build[1]` keeps `build1`). There is no
+    `--anchored`/`--no-wildcards`: BusyBox tar rejects them, which failed the
+    whole archive.
+  - **The tar flavour.** Before applying any entry, the host runs
+    `TAR_VERSION_COMMAND` (`tar --version 2>&1 | head -1`), once per
+    `LocalHost` and once per `RemoteHost` connection. Only GNU tar and BusyBox
+    tar (`tar_takes_literal_excludes`) take the list. Any other tar (bsdtar
+    strips a pattern's leading `./`, so the exclude would match anywhere)
+    gets none, and the note becomes `unknown_tar_note`:
+    `regenerable.txt not applied: tar on this host is not GNU or BusyBox
+    ('<version line>'); capturing everything`.
 - **The read is bounded:**
   `[ -f regenerable.txt ] && timeout 1 head -c 65536 -- regenerable.txt`.
   - Only a regular file (or a symlink to one) is read, so a FIFO cannot hang
@@ -62,13 +76,13 @@ where the workdir lives:
     means an empty list.
   - At most `LIST_MAX_BYTES` (64 KiB) is read. A last line that this limit
     cuts short is dropped, so a cut-off `src/gen` never excludes `./src`.
-- **The entries are limited.** Each applied entry becomes an
-  `--exclude=./<entry>` in the single `bash -c` argument that runs the
+- **The entries are limited.** Each applied entry becomes a
+  `literal_exclude` option in the single `bash -c` argument that runs the
   archive, and Linux caps one exec argument at 128 KiB (E2BIG). Entries are
   applied in order while those arguments fit in `EXCLUDES_MAX_BYTES` (64 KiB,
-  counting the outer quoting); the rest are ignored, and the note says
-  `(N more ignored: list too long)`.
-- **The hosts' `run`:** `RemoteHost` runs both commands over its SSH
+  counting the escapes and the outer quoting); the rest are ignored, and the
+  note says `(N more ignored: list too long)`.
+- **The hosts' `run`:** `RemoteHost` runs these commands over its SSH
   connection, and `LocalHost` under local `bash`. Both decode output with
   `errors="replace"`, so a binary list cannot raise.
 - **LocalHost's fallback** (no `tar` or `bash`) decides with
@@ -83,8 +97,8 @@ where the workdir lives:
   `capture decision failed (<exception>); capturing everything`, logged at
   WARNING on `optio_host.archive` and handed to `on_note` like every other
   note, and the capture goes ahead leaving nothing out. That covers the cap
-  setting, the measurement, the list read, and an SSH channel or a `bash`
-  spawn that fails. Losing a shutdown snapshot is worse than capturing an
+  setting, the measurement, the list read, the tar probe, and an SSH channel
+  or a `bash` spawn that fails. Losing a shutdown snapshot is worse than capturing an
   oversized one. An `on_note` that raises is logged too, and the capture
   goes on.
 
@@ -99,6 +113,7 @@ one-line note. Under the cap there is none.
     or `workdir size unknown (du timed out after 1 s): left out 3 paths …`;
   - at WARNING when the list is missing or empty and everything is captured,
     e.g. `workdir 214 MB is over the 100 MB capture cap, but regenerable.txt
-    is missing or empty; capturing everything`.
+    is missing or empty; capturing everything`, and when the host's tar is
+    not GNU or BusyBox.
 
 Sizes in notes are whole MiB, rounded down.

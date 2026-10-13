@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import re
 import shlex
 from typing import Awaitable, Callable
 
@@ -29,11 +30,20 @@ DU_TIMEOUT_S = 1
 # At most this much of `regenerable.txt` is read.
 LIST_MAX_BYTES = 64 * 1024
 
-# Each applied entry becomes one `--exclude=./<entry>` in the single
+# Each applied entry becomes one `literal_exclude` argument in the single
 # `bash -c` argument that runs the archive, and Linux caps one exec argument
 # at 128 KiB (E2BIG). Entries are applied, in order, while their arguments
 # fit in this many bytes; the rest are ignored.
 EXCLUDES_MAX_BYTES = 64 * 1024
+
+# Prints the first line of the host's `tar --version`, e.g.
+# "tar (GNU tar) 1.35" or "tar (busybox) 1.37.0"; see
+# `tar_takes_literal_excludes`.
+TAR_VERSION_COMMAND = "tar --version 2>&1 | head -1"
+
+# The characters a tar exclude pattern reads as glob syntax (and `\`, the
+# escape character itself).
+_GLOB_CHARS = re.compile(r"([\\*?\[])")
 
 _MIB = 1024 * 1024
 
@@ -186,6 +196,38 @@ async def regenerable_excludes(
     return over_cap_excludes(size, unknown, cap_bytes, text if exit_code == 0 else "")
 
 
+def literal_exclude(entry: str) -> str:
+    """The tar option, shell-quoted, that leaves out exactly `./<entry>` and
+    everything under it, on GNU tar and BusyBox tar alike.
+
+    The archive runs `tar cf - .`, so member names start with `./`, and both
+    tars try an exclude pattern only from the start of a name or of one of
+    its components: `./node_modules` matches `./node_modules` but never
+    `./pkg/node_modules`. `\\`, `*`, `?` and `[` are backslash-escaped, so
+    the entry is matched literally (`build[1]` never matches `build1`). No
+    mode options such as GNU's `--anchored --no-wildcards`, which BusyBox
+    tar rejects."""
+    escaped = _GLOB_CHARS.sub(r"\\\1", entry)
+    return "--exclude=" + shlex.quote("./" + escaped)
+
+
+def tar_takes_literal_excludes(version_line: str) -> bool:
+    """Whether the tar whose `TAR_VERSION_COMMAND` printed `version_line`
+    reads `literal_exclude`'s patterns as meant: GNU tar and BusyBox tar do.
+    Any other tar does not (bsdtar strips a pattern's leading `./`, so it
+    would match anywhere), and the list is not applied."""
+    return "GNU tar" in version_line or "busybox" in version_line.lower()
+
+
+def unknown_tar_note(version_line: str) -> str:
+    """The note of a capture over the cap whose host's tar fails
+    `tar_takes_literal_excludes`, so nothing is left out."""
+    return (
+        f"{REGENERABLE_LIST} not applied: tar on this host is not GNU or "
+        f"BusyBox ({version_line!r}); capturing everything"
+    )
+
+
 def _complete_lines(text: str) -> str:
     """`text`, read with the `LIST_MAX_BYTES` limit, without a last line the
     limit may have cut short: a cut-off `src/gen` must not exclude `./src`.
@@ -200,9 +242,10 @@ def _complete_lines(text: str) -> str:
 
 def _exec_cost(entry: str) -> int:
     """Bytes that `entry` adds to the archive's `bash -c` argument: its
-    `--exclude=` argument and a separator, plus 4 for each single quote,
-    which the outer `bash -c` quoting turns into `'"'"'`."""
-    arg = f"--exclude={shlex.quote('./' + entry)}"
+    `literal_exclude` argument (escapes included) and a separator, plus 4
+    for each single quote, which the outer `bash -c` quoting turns into
+    `'"'"'`."""
+    arg = literal_exclude(entry)
     return len(arg) + 4 * arg.count("'") + 1
 
 
