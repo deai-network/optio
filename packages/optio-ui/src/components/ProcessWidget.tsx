@@ -11,8 +11,10 @@ export interface UseProcessWidgetStateResult {
    *  shown (same `WidgetProps` either way); `'resuming'` while a process this
    *  hook was showing suspended resumes and its live widget is not ready yet:
    *  the suspended variant stays on screen (a relaunch clears `widgetData`
-   *  until the task sets it again), so the host's layout does not flip. */
-  mode: 'live' | 'suspended' | 'resuming';
+   *  until the task sets it again), so the host's layout does not flip;
+   *  `'waiting'` (only with the `placeholder` option) while an active process
+   *  has no widget to show yet: `widget` is the placeholder. */
+  mode: 'live' | 'suspended' | 'resuming' | 'waiting';
 }
 
 /**
@@ -44,6 +46,14 @@ export interface UseProcessWidgetOptions {
   readOnly?: boolean;
   /** Passed to the widget as `WidgetProps.hideEmptyRuns`. */
   hideEmptyRuns?: boolean;
+  /** What stands in for the widget until it can show the process: returned
+   *  as the widget (mode `'waiting'`) while an active process that names a
+   *  registered widget has none to show yet (scheduled, or running before
+   *  its `widgetData`), and passed to the widget as `WidgetProps.placeholder`
+   *  for its own loading states (e.g. the suspended conversation's fetch). A
+   *  resume keeps the suspended variant instead (`'resuming'`). Absent: null
+   *  while waiting, and the widget's own loading indicator. */
+  placeholder?: ReactNode;
 }
 
 export function useProcessWidgetState(
@@ -77,6 +87,13 @@ export function useProcessWidgetState(
     && shownSuspended.current === tree._id
     && isActive(tree as any)
     && !(live && widgetDataReady);
+  // On its way: an active process whose widget is not ready yet gets the
+  // caller's placeholder, if the widget can show once it is.
+  if (!resuming && isActive(tree as any) && !(live && widgetDataReady)) {
+    if (options?.placeholder === undefined || !getWidget(widgetName)) return none();
+    shownSuspended.current = null;
+    return { mode: 'waiting', widget: options.placeholder };
+  }
   if (!live && !suspended && !resuming) return none();
   if (!widgetDataReady && !resuming) return none();
 
@@ -113,6 +130,7 @@ export function useProcessWidgetState(
         database={database}
         {...(options?.readOnly ? { readOnly: true } : {})}
         {...(options?.hideEmptyRuns ? { hideEmptyRuns: true } : {})}
+        {...(options?.placeholder !== undefined ? { placeholder: options.placeholder } : {})}
       />
     ),
   };

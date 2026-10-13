@@ -125,6 +125,15 @@ export function SuspendedConversationWidget(props: WidgetProps) {
     );
   }
 
+  // The host's stand-in while the record loads (WidgetProps.placeholder),
+  // else the loading line.
+  if (props.placeholder !== undefined) {
+    return (
+      <div data-testid="optio-conversation-suspended-loading" style={{ width: '100%', height: '100%' }}>
+        {props.placeholder}
+      </div>
+    );
+  }
   return (
     <Surface testId="optio-conversation-suspended-loading">
       <div data-testid="optio-widget-loading">

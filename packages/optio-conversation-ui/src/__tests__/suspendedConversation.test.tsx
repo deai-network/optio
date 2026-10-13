@@ -549,6 +549,21 @@ describe('SuspendedConversationWidget: loading', () => {
     render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
     expect(screen.getByTestId('optio-widget-loading').innerHTML).toBe('Loading…');
   });
+
+  it("the host's placeholder (WidgetProps.placeholder) takes the place of \"Loading…\"", () => {
+    useProcessConversation.mockReturnValue(pending());
+    render(lent(<SuspendedConversationWidget {...widgetProps()} placeholder={<div data-testid="host-card" />} />));
+    expect(screen.getByTestId('optio-conversation-suspended-loading')).toBeTruthy();
+    expect(screen.getByTestId('host-card')).toBeTruthy();
+    expect(screen.queryByTestId('optio-widget-loading')).toBeNull();
+  });
+
+  it('the placeholder goes once the record is there', () => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps()} placeholder={<div data-testid="host-card" />} />));
+    expect(screen.queryByTestId('host-card')).toBeNull();
+    expect(screen.getByText('List the files')).toBeTruthy();
+  });
 });
 
 describe('SuspendedConversationWidget: while the session resumes', () => {

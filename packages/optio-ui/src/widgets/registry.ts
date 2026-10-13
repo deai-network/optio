@@ -1,4 +1,4 @@
-import type { ComponentType } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 
 export interface WidgetProps {
   process: any;
@@ -14,6 +14,11 @@ export interface WidgetProps {
    *  answered that it was ready, and was suspended again). Widgets without
    *  runs ignore it. Absent: every run shows. */
   hideEmptyRuns?: boolean;
+  /** What the host shows while the process waits for its widget
+   *  (`useProcessWidgetState`'s `placeholder`). A widget with a loading
+   *  state of its own (e.g. the suspended conversation's fetch) shows it
+   *  there. Absent: the widget's own loading indicator. */
+  placeholder?: ReactNode;
 }
 
 export type WidgetComponent = ComponentType<WidgetProps>;

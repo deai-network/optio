@@ -336,3 +336,68 @@ describe('useProcessWidgetState: a resume keeps the suspended variant on screen'
     expect(h.result.current).toBeNull();
   });
 });
+
+describe('useProcessWidgetState: a placeholder while the widget is on its way', () => {
+  // With `placeholder`, an active process that names a registered widget but
+  // has none to show yet gets the placeholder (mode "waiting"), and widgets
+  // receive it as `WidgetProps.placeholder` for their own loading states.
+  const Live = (props: any) => <div data-testid="live">{props.placeholder}</div>;
+  const Suspended = (props: any) => <div data-testid="suspended">{props.placeholder}</div>;
+  const card = <div data-testid="card" />;
+  const starting = (overrides: Record<string, unknown> = {}) => baseTree({ widgetData: null, ...overrides });
+
+  beforeEach(() => registerWidget('my-widget', Live, { suspended: Suspended }));
+
+  it.each(['scheduled', 'running'])('returns the placeholder as mode "waiting" while %s without widgetData', (state) => {
+    const { result } = renderHook(() => useProcessWidgetState(starting({ status: { state } }), { placeholder: card }));
+    expect(result.current?.mode).toBe('waiting');
+    render(<>{result.current?.widget}</>);
+    expect(screen.getByTestId('card')).toBeTruthy();
+    expect(screen.queryByTestId('live')).toBeNull();
+  });
+
+  it('without a placeholder, a starting process still shows nothing', () => {
+    const { result } = renderHook(() => useProcessWidgetState(starting()));
+    expect(result.current).toBeNull();
+  });
+
+  it.each(['idle', 'done', 'failed'])('returns null for state=%s even with a placeholder', (state) => {
+    const { result } = renderHook(() => useProcessWidgetState(starting({ status: { state } }), { placeholder: card }));
+    expect(result.current).toBeNull();
+  });
+
+  it('returns null with a placeholder when no live widget is registered under the name', () => {
+    const { result } = renderHook(() => useProcessWidgetState(starting({ uiWidget: 'nope' }), { placeholder: card }));
+    expect(result.current).toBeNull();
+  });
+
+  it('a resume keeps the suspended variant rather than the placeholder', () => {
+    const h = renderHook(({ t }) => useProcessWidgetState(t, { placeholder: card }), { initialProps: { t: suspendedTree() as any } });
+    h.rerender({ t: baseTree({ supportsResume: true, hasSavedState: true, widgetData: null }) });
+    expect(h.result.current?.mode).toBe('resuming');
+  });
+
+  it('hands the placeholder to the widget, live and suspended alike', () => {
+    const live = renderHook(() => useProcessWidgetState(baseTree(), { placeholder: card }));
+    expect(live.result.current?.mode).toBe('live');
+    render(<>{live.result.current?.widget}</>);
+    expect(screen.getByTestId('live').querySelector('[data-testid="card"]')).toBeTruthy();
+    cleanup();
+    const suspended = renderHook(() => useProcessWidgetState(suspendedTree(), { placeholder: card }));
+    render(<>{suspended.result.current?.widget}</>);
+    expect(screen.getByTestId('suspended').querySelector('[data-testid="card"]')).toBeTruthy();
+  });
+
+  it('adds placeholder to WidgetProps only when the caller gives one', () => {
+    let captured: any;
+    _clearWidgetRegistry();
+    registerWidget('my-widget', () => null, { suspended: (props: any) => { captured = props; return null; } });
+    function Host({ withCard }: { withCard?: boolean }) {
+      return <>{useProcessWidget(suspendedTree(), withCard ? { placeholder: card } : undefined)}</>;
+    }
+    const { rerender } = render(<Host />);
+    expect('placeholder' in captured).toBe(false);
+    rerender(<Host withCard />);
+    expect(captured.placeholder).toBe(card);
+  });
+});
