@@ -169,6 +169,21 @@ fails the whole request (the promise rejects) rather than passing through
 unfiltered. Excavator's rule, for illustration:
 `visibility: (req) => or(not(eq('kind', 'data-chat')), eq('ownerId', userIdOf(req)))`.
 
+**Declared once, at init.** The host registers `visibility` once, with the
+adapter's other options, next to `scope` and `authorize`; clients never send
+it, and no route takes it as a parameter. It is a function of the request
+only so that a rule can name the requesting user; a rule per group of
+processes is a clause of that one predicate, typically one per `kind`, plus a
+last clause for everything else (including processes with no `kind`):
+
+```ts
+visibility: (req) => or(
+  and(eq('kind', 'data-chat'), eq('ownerId', me(req))),     // chats: their owner only
+  and(eq('kind', 'report'), isIn('teamId', teams(req))),    // reports: the user's teams
+  not(isIn('kind', ['data-chat', 'report'])),                // everything else: visible
+)
+```
+
 `scope`'s enforcement, unchanged by `visibility`:
 
 | Route | Out of scope |
@@ -180,6 +195,12 @@ unfiltered. Excavator's rule, for illustration:
 | `GET /api/processes/:id/conversation` | 404 `{ reason: 'not-found' }`; the engine is not called |
 | widget proxy, `widget-control`, `widget-upload` (Fastify) | the route's not-found response |
 | `POST /api/processes/resync` | runs with the client's flat filter plus the scope keys (the engine filters regenerated tasks and pruned records by it); 403 if the filter contradicts the scope, 400 for a predicate-tree filter |
+
+**Resync is unaffected by `visibility`** (not per-process; bounded by `scope`
+alone). **A clean resync (`clean: true`) deletes every root record its scope
+filter matches, hidden ones included** (owner ruling 2026-10-13): the host's
+`authorize('resync', { clean })` decides who may run one. A plain resync only
+regenerates, and prunes records whose task no longer exists.
 
 **`authorize(req, input)`** runs only after a process is confirmed in scope
 and (where checked) visible: a process the request cannot see is a 404
@@ -218,7 +239,12 @@ each level, so a hidden process takes its subtree with it;
 `getProcessTreeLog` 404s a hidden entry point, fetches the tree's processes
 under the condition, and — only when `reads.visibility` is set — prunes
 orphans before collecting log lines, so a process left parentless by a
-hidden ancestor contributes no lines. The streams (`stream-poller.ts`)
+hidden ancestor contributes no lines. **Edge case:** a child whose own
+metadata diverges from what it inherited (e.g. a host re-stamping only the
+root) can be visible while its parent is hidden; it stays readable on its
+own (a single read, the list) but appears in no tree, since a tree keeps a
+process only when its parent is kept -- documented rather than paid for with
+an ancestor walk on every tree read. The streams (`stream-poller.ts`)
 consult it too, each building its own `ProcessReads` at creation time — see
 "Stream Poller" below; the multi-tree stream (Fastify, Next.js Pages Router)
 reports a hidden id in the `resolution` event's `missing` list, exactly like

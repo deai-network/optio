@@ -940,7 +940,11 @@ interface ExplicitOptioApiOptions {
 // the widget proxy, widget-control and widget-upload. Outside the scope a process
 // behaves as not found (404; missing in multi-tree resolution). A scoped
 // resync runs with the client's flat filter plus the scope keys; a filter
-// contradicting the scope is 403, a predicate tree 400.
+// contradicting the scope is 403, a predicate tree 400. Resync is unaffected
+// by visibility (not per-process; bounded by scope alone): a clean resync
+// (clean: true) deletes every root record its scope filter matches, hidden
+// ones included -- authorize('resync', { clean }) decides who may run one. A
+// plain resync only regenerates, and prunes records whose task no longer exists.
 //
 // authorize(req, { role, action, process?, metadataFilter?, clean? }) -> boolean:
 // called only after a process is confirmed in scope and (where checked) visible —
@@ -954,11 +958,18 @@ interface ExplicitOptioApiOptions {
 //
 // visibility(req) -> ProcessMetadataFilter | null (a per-request metadata predicate,
 // `VisibilityCallback<TRequest>`; see packages/optio-api/AGENTS.md "Access scope
-// and authorization"): `Access` carries it and gateProcess (the single-process
-// action gate) checks it before authorize, 404ing a hidden process the same as an
-// out-of-scope one. The read handlers (list, single reads, the tree and the tree
-// log) honour it too: a hidden process is a 404/omitted, exactly like a missing
-// one, and the tree log's orphans are pruned once visibility can create them. The
+// and authorization"): declared once at init next to scope/authorize -- clients
+// never send it, no route takes it as a parameter. A rule per group of processes
+// is a clause of the one predicate (typically one per `kind`, plus a catch-all for
+// everything else), e.g. or(and(eq('kind','data-chat'), eq('ownerId', me(req))),
+// not(isIn('kind', ['data-chat']))). `Access` carries it and gateProcess (the
+// single-process action gate) checks it before authorize, 404ing a hidden process
+// the same as an out-of-scope one. The read handlers (list, single reads, the tree
+// and the tree log) honour it too: a hidden process is a 404/omitted, exactly like
+// a missing one, and the tree log's orphans are pruned once visibility can create
+// them -- a child whose own metadata diverges from its inherited copy can stay
+// visible under a hidden parent on a single read or the list, but appears in no
+// tree (no ancestor walk; documented, not compensated for). The
 // streams (stream-poller.ts) honour it too: each poller takes a `visibility`
 // option alongside `scope`, reads through processReads, and -- for the tree and
 // multi-tree streams -- prunes orphans and re-reads on any metadata change (not
