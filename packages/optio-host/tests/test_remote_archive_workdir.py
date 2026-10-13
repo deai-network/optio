@@ -201,7 +201,7 @@ class _FakeConn:
         stall_stdout_until_stderr_drained: bool = False,
         stdout_gate: asyncio.Event | None = None,
         exit_status_arrives_early: bool = False,
-        du: tuple[int, str] = (0, "4096\t.\n"),
+        du: "tuple[int, str] | Exception" = (0, "4096\t.\n"),
         regenerable: tuple[int, str] = (1, ""),
     ):
         self._pigz = pigz
@@ -224,8 +224,10 @@ class _FakeConn:
         if "command -v pigz" in cmd:
             return _RunResult(0 if self._pigz else 1)
         if " du -sb " in cmd:
+            if isinstance(self._du, Exception):
+                raise self._du
             return _RunResult(*self._du)
-        if "cat -- regenerable.txt" in cmd:
+        if "-- regenerable.txt" in cmd:
             return _RunResult(*self._regenerable)
         return _RunResult(0)
 
@@ -439,7 +441,8 @@ async def test_archive_workdir_over_the_cap_excludes_the_listed_paths(
 
     assert _cap_commands(conn) == [
         capture_cap.du_command(_W, ["a b"]),
-        "cd /t/workdir && cat -- regenerable.txt",
+        "cd /t/workdir && [ -f regenerable.txt ] && "
+        "timeout 1 head -c 65536 -- regenerable.txt",
     ]
     # Decoded with errors="replace", so a binary list cannot raise.
     assert [kw for c, kw in zip(conn.run_commands, conn.run_kwargs) if "pigz" not in c] == [
@@ -493,3 +496,36 @@ async def test_archive_workdir_du_timeout_without_a_list_warns_and_captures_ever
     ]
     assert [(r.levelno, r.getMessage()) for r in caplog.records
             if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0])]
+
+
+async def test_archive_workdir_decision_that_raises_captures_everything(monkeypatch, caplog):
+    monkeypatch.setenv(ENV_VAR, "1")
+    data = os.urandom(300 * 1024)
+    conn = _FakeConn(pigz=True, data=data, du=ConnectionError("channel open failed"))
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        out = await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+
+    assert out == data
+    assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
+    assert notes == []
+    [record] = [r for r in caplog.records if r.name == "optio_host.archive"]
+    assert record.levelno == logging.WARNING
+    assert "channel open failed" in record.getMessage()
+
+
+async def test_archive_workdir_on_note_that_raises_does_not_stop_the_capture(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "1")
+    data = os.urandom(300 * 1024)
+    conn = _FakeConn(
+        pigz=True, data=data, du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"),
+    )
+
+    def boom(note: str) -> None:
+        raise RuntimeError("on_note exploded")
+
+    out = await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=boom))
+
+    assert out == data
+    assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1", ["big"])]

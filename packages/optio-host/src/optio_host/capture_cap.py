@@ -21,9 +21,19 @@ ENV_VAR = "OPTIO_WORKDIR_CAPTURE_MAX_MB"
 DEFAULT_MAX_MB = 100
 REGENERABLE_LIST = "regenerable.txt"
 
-# `du` gets this long (`timeout`) to measure the workdir; running out counts
-# as over the cap.
+# `du` gets this long (`timeout`) to measure the workdir, running out counting
+# as over the cap; reading the list on the host gets as long. Read at call
+# time, so tests can raise it.
 DU_TIMEOUT_S = 1
+
+# At most this much of `regenerable.txt` is read.
+LIST_MAX_BYTES = 64 * 1024
+
+# Each applied entry becomes one `--exclude=./<entry>` in the single
+# `bash -c` argument that runs the archive, and Linux caps one exec argument
+# at 128 KiB (E2BIG). Entries are applied, in order, while their arguments
+# fit in this many bytes; the rest are ignored.
+EXCLUDES_MAX_BYTES = 64 * 1024
 
 _MIB = 1024 * 1024
 
@@ -64,8 +74,9 @@ def parse_regenerable(text: str) -> list[str]:
     ` #`, which is dropped along with surrounding whitespace.
 
     `./x/` normalises to `x` (leading `./` stripped, then
-    `posixpath.normpath`). Absolute paths, entries with a `..` segment, and
-    entries that normalise to `.` (the workdir itself) are skipped.
+    `posixpath.normpath`). Absolute paths, entries with a `..` segment,
+    entries that normalise to `.` (the workdir itself), and entries
+    containing a NUL byte (no path can, and exec rejects one) are skipped.
 
     Returns the surviving entries in their original order, without
     duplicates.
@@ -87,6 +98,8 @@ def parse_regenerable(text: str) -> list[str]:
             continue
 
         path = stripped
+        if "\x00" in path:
+            continue
         if path.startswith("/"):
             continue
         if ".." in path.split("/"):
@@ -119,8 +132,16 @@ def du_command(workdir: str, patterns: list[str]) -> str:
     return f"cd {shlex.quote(workdir)} && " + " ".join(words)
 
 
-def _list_command(workdir: str) -> str:
-    return f"cd {shlex.quote(workdir)} && cat -- {shlex.quote(REGENERABLE_LIST)}"
+def list_command(workdir: str) -> str:
+    """Shell command printing at most `LIST_MAX_BYTES` of `workdir`'s
+    `regenerable.txt`, under `timeout DU_TIMEOUT_S`. Anything but a regular
+    file (or a symlink to one) fails without being opened, so a FIFO cannot
+    block it."""
+    name = shlex.quote(REGENERABLE_LIST)
+    return (
+        f"cd {shlex.quote(workdir)} && [ -f {name} ] && "
+        f"timeout {DU_TIMEOUT_S} head -c {LIST_MAX_BYTES} -- {name}"
+    )
 
 
 def _du_size(exit_code: int, stdout: str) -> tuple[int | None, str]:
@@ -151,8 +172,9 @@ async def regenerable_excludes(
     Returns `(anchored_entries, note)`. With the cap off (`0`) nothing runs
     and the result is `([], None)`. Otherwise `du_command` measures the
     workdir; at or under the cap the result is `([], None)`. Over the cap,
-    or when `du` fails (timeout included), `regenerable.txt` is read and
-    parsed: see `over_cap_excludes` for the result.
+    or when `du` fails (timeout included), `list_command` reads
+    `regenerable.txt` (a failure means an empty list): see
+    `over_cap_excludes` for the result. Exceptions from `run` propagate.
     """
     if cap_bytes == 0:
         return [], None
@@ -160,8 +182,38 @@ async def regenerable_excludes(
     size, unknown = _du_size(exit_code, stdout)
     if size is not None and size <= cap_bytes:
         return [], None
-    exit_code, text = await run(_list_command(workdir))
+    exit_code, text = await run(list_command(workdir))
     return over_cap_excludes(size, unknown, cap_bytes, text if exit_code == 0 else "")
+
+
+def _complete_lines(text: str) -> str:
+    """`text`, read with the `LIST_MAX_BYTES` limit, without a last line the
+    limit may have cut short: a cut-off `src/gen` must not exclude `./src`.
+
+    The decoded text is at least as long in UTF-8 as the bytes it came from
+    (a replacement character takes 3 bytes), so a shorter text was never
+    cut."""
+    if len(text.encode("utf-8")) < LIST_MAX_BYTES or text.endswith("\n"):
+        return text
+    return text[: text.rfind("\n") + 1]
+
+
+def _exec_cost(entry: str) -> int:
+    """Bytes that `entry` adds to the archive's `bash -c` argument: its
+    `--exclude=` argument and a separator, plus 4 for each single quote,
+    which the outer `bash -c` quoting turns into `'"'"'`."""
+    arg = f"--exclude={shlex.quote('./' + entry)}"
+    return len(arg) + 4 * arg.count("'") + 1
+
+
+def _within_exec_limit(entries: list[str]) -> list[str]:
+    """The leading `entries` whose arguments fit in `EXCLUDES_MAX_BYTES`."""
+    total = 0
+    for count, entry in enumerate(entries):
+        total += _exec_cost(entry)
+        if total > EXCLUDES_MAX_BYTES:
+            return entries[:count]
+    return entries
 
 
 def over_cap_excludes(
@@ -171,19 +223,22 @@ def over_cap_excludes(
 
     `size` is the measured size in bytes, or `None` when the measurement
     failed, `unknown` then saying why. `list_text` is `regenerable.txt`'s
-    contents, `""` when it could not be read.
+    contents as read (at most `LIST_MAX_BYTES`), `""` when it could not be
+    read; a last line the limit cut short is dropped.
 
-    Returns the parsed entries and the note: the paths left out, or, when
-    there are none, a warning that the whole workdir is captured. Sizes in
-    the note are whole MiB, rounded down.
+    Returns the entries to apply and the note: the paths left out, or, when
+    the list has none, a warning that the whole workdir is captured. Entries
+    beyond `EXCLUDES_MAX_BYTES` of arguments are ignored, and the note says
+    how many. Sizes in the note are whole MiB, rounded down.
     """
-    entries = parse_regenerable(list_text)
+    listed = parse_regenerable(_complete_lines(list_text))
+    entries = _within_exec_limit(listed)
     cap_mb = cap_bytes // _MIB
     measured = (
         f"workdir {size // _MIB} MB" if size is not None
         else f"workdir size unknown ({unknown})"
     )
-    if not entries:
+    if not listed:
         return [], (
             f"{measured} is over the {cap_mb} MB capture cap, but {REGENERABLE_LIST} "
             "is missing or empty; capturing everything"
@@ -191,6 +246,7 @@ def over_cap_excludes(
     if size is not None:
         measured += f" (cap {cap_mb} MB)"
     paths = "path" if len(entries) == 1 else "paths"
-    return entries, (
-        f"{measured}: left out {len(entries)} {paths} listed in {REGENERABLE_LIST}"
-    )
+    note = f"{measured}: left out {len(entries)} {paths} listed in {REGENERABLE_LIST}"
+    if len(entries) < len(listed):
+        note += f" ({len(listed) - len(entries)} more ignored: list too long)"
+    return entries, note

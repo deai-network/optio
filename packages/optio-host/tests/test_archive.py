@@ -1,11 +1,13 @@
 """Tests for tar.gz workdir archive helpers."""
 
+import concurrent.futures
 import io
 import os
 import tarfile
 
 import pytest
 
+from optio_host import archive as archive_mod
 from optio_host.archive import (
     DEFAULT_WORKDIR_EXCLUDES,
     consume_workdir_archive,
@@ -191,7 +193,13 @@ def test_default_workdir_excludes_has_expected_entries():
 # --- the fallback's capture decision -------------------------------------------
 
 
-def test_measure_workdir_honours_the_patterns(tmp_path):
+@pytest.fixture
+def generous_walk_budget(monkeypatch):
+    """The walk's 1 s budget, raised so a test not about it never races it."""
+    monkeypatch.setattr(archive_mod, "WALK_BUDGET_S", 60)
+
+
+def test_measure_workdir_honours_the_patterns(tmp_path, generous_walk_budget):
     (tmp_path / "keep.bin").write_bytes(bytes(1000))
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "pack").write_bytes(bytes(100_000))
@@ -209,7 +217,7 @@ def test_measure_workdir_gives_up_once_the_budget_is_spent(tmp_path):
     assert measure_workdir(str(tmp_path), [], budget_s=0) is None
 
 
-def test_fallback_decision_reads_an_unreadable_list_as_empty(tmp_path):
+def test_fallback_decision_reads_an_unreadable_list_as_empty(tmp_path, generous_walk_budget):
     (tmp_path / "keep.bin").write_bytes(bytes(1000))
     (tmp_path / "regenerable.txt").mkdir()  # open() fails on it
 
@@ -219,10 +227,67 @@ def test_fallback_decision_reads_an_unreadable_list_as_empty(tmp_path):
     assert "missing or empty" in note
 
 
-def test_fallback_decision_decodes_a_binary_list_with_replacement(tmp_path):
+def test_fallback_decision_decodes_a_binary_list_with_replacement(
+    tmp_path, generous_walk_budget,
+):
     (tmp_path / "regenerable.txt").write_bytes(b"\xff\xfe\nkeep.bin\n")
 
     entries, note = fallback_regenerable_excludes(str(tmp_path), [], 1)
 
     assert entries == ["\ufffd\ufffd", "keep.bin"]
     assert "left out 2 paths" in note
+
+
+def test_fallback_decision_counts_a_spent_walk_budget_as_over_the_cap(tmp_path, monkeypatch):
+    """A zero budget is spent before the first entry, whatever the clock reads."""
+    monkeypatch.setattr(archive_mod, "WALK_BUDGET_S", 0)
+    (tmp_path / "regenerable.txt").write_text("keep.bin\n")
+
+    entries, note = fallback_regenerable_excludes(str(tmp_path), [], 100 * 1024 * 1024)
+
+    assert entries == ["keep.bin"]
+    assert note == (
+        "workdir size unknown (walk timed out after 0 s): "
+        "left out 1 path listed in regenerable.txt"
+    )
+
+
+def _unblock_fifo(path) -> None:
+    """Give a reader stuck opening the FIFO at `path` its EOF; a no-op when
+    none is waiting (opening the write end then fails with ENXIO)."""
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+    except OSError:
+        pass
+
+
+@pytest.mark.parametrize("kind", ["fifo", "dev-zero symlink"])
+def test_fallback_decision_reads_only_a_regular_list(tmp_path, generous_walk_budget, kind):
+    # Opening a FIFO for reading blocks until a writer comes; /dev/zero never ends.
+    (tmp_path / "keep.bin").write_bytes(bytes(1000))  # over the 1-byte cap
+    path = tmp_path / "regenerable.txt"
+    if kind == "fifo":
+        os.mkfifo(path)
+    else:
+        os.symlink("/dev/zero", path)
+
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        decision = pool.submit(fallback_regenerable_excludes, str(tmp_path), [], 1)
+        try:
+            entries, note = decision.result(timeout=30)  # bounds a true hang only
+        finally:
+            if kind == "fifo":
+                _unblock_fifo(path)
+
+    assert entries == []
+    assert "missing or empty" in note
+
+
+def test_fallback_decision_reads_the_first_64_kib_of_the_list(tmp_path, generous_walk_budget):
+    # "keep.txt" straddles the 64 KiB limit: cut to "keep", it must not apply.
+    text = "big\n" + "#" * (65536 - 4 - 1 - 4) + "\n" + "keep.txt\nlater\n"
+    (tmp_path / "regenerable.txt").write_text(text)
+
+    entries, _ = fallback_regenerable_excludes(str(tmp_path), [], 1)
+
+    assert entries == ["big"]

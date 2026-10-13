@@ -1,15 +1,18 @@
 """Tests for the workdir capture cap: the setting, the regenerable list
 parser, and the capture decision (`regenerable_excludes`)."""
 
+import os
 import subprocess
 
 import pytest
 
+from optio_host import capture_cap
 from optio_host.capture_cap import (
     DEFAULT_MAX_MB,
     ENV_VAR,
     REGENERABLE_LIST,
     du_command,
+    list_command,
     parse_regenerable,
     regenerable_excludes,
     workdir_capture_max_bytes,
@@ -73,12 +76,19 @@ def test_parse_regenerable_empty_text():
     assert parse_regenerable("") == []
 
 
+def test_parse_regenerable_drops_entries_with_a_nul_byte():
+    # A POSIX path cannot contain NUL, and exec refuses an argument with one.
+    assert parse_regenerable("a\x00b\nc\n\x00\n") == ["c"]
+
+
 # --- the capture decision ------------------------------------------------------
 
 _MIB = 1024 * 1024
 _W = "/w"
 _PATTERNS = [".git", "*.pyc"]
-_LIST_COMMAND = "cd /w && cat -- regenerable.txt"
+_LIST_COMMAND = (
+    "cd /w && [ -f regenerable.txt ] && timeout 1 head -c 65536 -- regenerable.txt"
+)
 
 
 class _FakeRun:
@@ -110,7 +120,12 @@ def test_du_command_shape():
     assert du_command("/w", []) == "cd /w && timeout 1 du -sb ."
 
 
-def test_du_command_measures_without_the_excluded_paths(tmp_path):
+def test_list_command_shape():
+    assert list_command("/w") == _LIST_COMMAND
+
+
+def test_du_command_measures_without_the_excluded_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture_cap, "DU_TIMEOUT_S", 60)  # not about the timeout
     workdir = tmp_path / "w d's $HOME"
     (workdir / "skip me").mkdir(parents=True)
     (workdir / "skip me" / "blob").write_bytes(bytes(100_000))
@@ -218,3 +233,81 @@ async def test_binary_list_does_not_raise():
 
     assert entries == ["\ufffd\ufffd"]
     assert "left out 1 path" in note
+
+
+def _run_list_command(workdir: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", "-c", list_command(workdir)], capture_output=True)
+
+
+def test_list_command_reads_at_most_64_kib(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture_cap, "DU_TIMEOUT_S", 60)  # not about the timeout
+    (tmp_path / "regenerable.txt").write_bytes(b"a\n" * 50_000)
+
+    proc = _run_list_command(str(tmp_path))
+
+    assert proc.returncode == 0
+    assert proc.stdout == (b"a\n" * 50_000)[:65536]
+
+
+@pytest.mark.parametrize("kind", ["fifo", "dev-zero symlink"])
+def test_list_command_skips_what_is_not_a_regular_file(tmp_path, monkeypatch, kind):
+    # Not reaching the timeout: a FIFO would block `head` until it fires.
+    monkeypatch.setattr(capture_cap, "DU_TIMEOUT_S", 60)
+    path = tmp_path / "regenerable.txt"
+    if kind == "fifo":
+        os.mkfifo(path)
+    else:
+        os.symlink("/dev/zero", path)
+
+    proc = _run_list_command(str(tmp_path))
+
+    assert proc.returncode != 0
+    assert proc.stdout == b""
+
+
+async def test_list_with_a_nul_byte_drops_that_entry():
+    # b"big\n\x89PNG\x00\x01\xff\n", as the host's run decodes it.
+    run = _FakeRun(du=(0, f"{2 * _MIB}\t.\n"), cat=(0, "big\n\ufffdPNG\x00\x01\ufffd\n"))
+
+    entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    assert entries == ["big"]
+    assert note == "workdir 2 MB (cap 1 MB): left out 1 path listed in regenerable.txt"
+
+
+async def test_list_cut_at_the_read_limit_drops_its_cut_off_last_line():
+    # What `head -c 65536` returns from a longer list: "keep.txt" cut to
+    # "keep", which must not exclude an unrelated ./keep.
+    head = "big\n" + "#" * (65536 - 4 - 1 - 4) + "\n" + "keep"
+    assert len(head.encode()) == 65536
+    run = _FakeRun(du=(0, f"{2 * _MIB}\t.\n"), cat=(0, head))
+
+    entries, _ = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    assert entries == ["big"]
+
+
+async def test_short_list_keeps_a_last_line_without_newline():
+    run = _FakeRun(du=(0, f"{2 * _MIB}\t.\n"), cat=(0, "big\nkeep"))
+
+    entries, _ = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    assert entries == ["big", "keep"]
+
+
+async def test_entries_beyond_the_command_line_budget_are_ignored():
+    # Each entry becomes `--exclude=./<entry>` in one exec argument, which
+    # Linux caps at 128 KiB; entries are kept while they fit in 64 KiB.
+    names = [f"{i:04x}" for i in range(6000)]
+    run = _FakeRun(du=(0, f"{2 * _MIB}\t.\n"), cat=(0, "\n".join(names) + "\n"))
+
+    entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    # Each costs len("--exclude=./0000") + 1 separator = 17 bytes.
+    kept = 65536 // 17
+    assert kept == 3855
+    assert entries == names[:kept]
+    assert note == (
+        "workdir 2 MB (cap 1 MB): left out 3855 paths listed in regenerable.txt "
+        "(2145 more ignored: list too long)"
+    )

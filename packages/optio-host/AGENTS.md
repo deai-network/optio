@@ -36,8 +36,8 @@ suspend-capture decision (design:
 - `parse_regenerable(text)` sanitises the contents of `REGENERABLE_LIST`
   (`regenerable.txt`, kept by the agent at the workdir root): it drops
   comments, blank lines and ` #` notes, normalises `./x/` to `x`, and
-  skips absolute paths, any `..` segment, and `.`, keeping the original
-  order without duplicates.
+  skips absolute paths, any `..` segment, `.`, and anything containing a
+  NUL byte, keeping the original order without duplicates.
 
 ### In `archive_workdir`
 
@@ -52,18 +52,39 @@ where the workdir lives:
   `cd <workdir> && timeout 1 du -sb --exclude=… .`, with the capture's own
   exclude patterns, so what is never captured does not count. A non-zero
   exit (`timeout`'s 124 included) or a size above the cap counts as over.
-- **Over the cap:** it reads `regenerable.txt` with `cat` (a failure means an
-  empty list) and parses it with `parse_regenerable`. The archive leaves the
-  entries out as anchored, literal excludes: `./<entry>` and everything
-  under it.
+- **Over the cap:** it reads `regenerable.txt` with `list_command(workdir)`
+  and parses it with `parse_regenerable`. The archive leaves the entries out
+  as anchored, literal excludes: `./<entry>` and everything under it.
+- **The read is bounded:**
+  `[ -f regenerable.txt ] && timeout 1 head -c 65536 -- regenerable.txt`.
+  - Only a regular file (or a symlink to one) is read, so a FIFO cannot hang
+    the capture and `/dev/zero` is not read. Anything else, or a failure,
+    means an empty list.
+  - At most `LIST_MAX_BYTES` (64 KiB) is read. A last line that this limit
+    cuts short is dropped, so a cut-off `src/gen` never excludes `./src`.
+- **The entries are limited.** Each applied entry becomes an
+  `--exclude=./<entry>` in the single `bash -c` argument that runs the
+  archive, and Linux caps one exec argument at 128 KiB (E2BIG). Entries are
+  applied in order while those arguments fit in `EXCLUDES_MAX_BYTES` (64 KiB,
+  counting the outer quoting); the rest are ignored, and the note says
+  `(N more ignored: list too long)`.
 - **The hosts' `run`:** `RemoteHost` runs both commands over its SSH
   connection, and `LocalHost` under local `bash`. Both decode output with
   `errors="replace"`, so a binary list cannot raise.
 - **LocalHost's fallback** (no `tar` or `bash`) decides with
   `archive.fallback_regenerable_excludes` instead. It measures with a Python
   walk (`measure_workdir`) honouring the same patterns, under a 1 s
-  `time.monotonic()` budget (`WALK_BUDGET_S`; running out counts as over),
-  and reads the list with Python.
+  `time.monotonic()` budget (`WALK_BUDGET_S`; running out counts as over).
+  It reads the list with Python, with the same bounds: opened non-blocking,
+  only a regular file, at most 64 KiB.
+- **The timeouts are read at call time:** `DU_TIMEOUT_S` (the `du` and the
+  list read) and `WALK_BUDGET_S`, so tests patch them rather than race them.
+- **It fails safe.** Anything the decision raises is logged at WARNING on
+  `optio_host.archive`, and the capture goes ahead leaving nothing out. That
+  covers the cap setting, the measurement, the list read, and an SSH
+  channel or a `bash` spawn that fails. Losing a shutdown snapshot is worse
+  than capturing an oversized one. An `on_note` that raises is logged too,
+  and the capture goes on.
 
 **The note.** A capture that finds the workdir over the cap produces a
 one-line note. Under the cap there is none.

@@ -21,11 +21,12 @@ import fnmatch
 import io
 import os
 import shutil
+import stat
 import tarfile
 import time
 from typing import AsyncIterator, Iterable
 
-from optio_host.capture_cap import REGENERABLE_LIST, over_cap_excludes
+from optio_host.capture_cap import LIST_MAX_BYTES, REGENERABLE_LIST, over_cap_excludes
 
 
 DEFAULT_WORKDIR_EXCLUDES: list[str] = [
@@ -40,7 +41,7 @@ DEFAULT_WORKDIR_EXCLUDES: list[str] = [
 _CHUNK_SIZE = 1 << 20  # 1 MiB
 
 # How long `measure_workdir` may walk before giving up; the fallback's
-# counterpart of `du`'s `timeout`.
+# counterpart of `du`'s `timeout`. Read at call time, so tests can raise it.
 WALK_BUDGET_S = 1.0
 
 
@@ -105,15 +106,17 @@ def _build_archive_bytes(
 
 
 def measure_workdir(
-    root: str, patterns: list[str], budget_s: float = WALK_BUDGET_S,
+    root: str, patterns: list[str], budget_s: float | None = None,
 ) -> int | None:
     """Size of `root` in bytes as a capture sees it, like `du -sb`.
 
     Sums the `lstat` sizes of every entry under `root` that `patterns`
     (match-anywhere, as in `_excluded`) do not exclude, without following
     symlinks. Returns `None` once the walk has run for `budget_s` seconds of
-    `time.monotonic()`.
+    `time.monotonic()` (`None`: `WALK_BUDGET_S`).
     """
+    if budget_s is None:
+        budget_s = WALK_BUDGET_S
     deadline = time.monotonic() + budget_s
     total = 0
     for dirpath, dirnames, filenames in os.walk(root):
@@ -134,30 +137,42 @@ def measure_workdir(
     return total
 
 
+def _read_list(root: str) -> str:
+    """At most `LIST_MAX_BYTES` of `root`'s `regenerable.txt`, decoded with
+    `errors="replace"`; `""` unless it is a regular file (or a symlink to
+    one) that can be read. Opened non-blocking, so a FIFO cannot block it."""
+    try:
+        fd = os.open(os.path.join(root, REGENERABLE_LIST), os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return ""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            return fh.read(LIST_MAX_BYTES).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    finally:
+        os.close(fd)
+
+
 def fallback_regenerable_excludes(
     root: str, patterns: list[str], cap_bytes: int,
 ) -> tuple[list[str], str | None]:
     """`capture_cap.regenerable_excludes` for a host without `tar` or `bash`.
 
     The same decision and result, measured with `measure_workdir` (running
-    out of its budget counts as over the cap) and the list read with Python,
-    decoded with `errors="replace"`; an unreadable list counts as empty.
-    Blocking: run it in an executor.
+    out of its budget counts as over the cap) and the list read with Python
+    (`_read_list`: bounded, regular files only; anything else counts as an
+    empty list). Blocking: run it in an executor.
     """
     if cap_bytes == 0:
         return [], None
     size = measure_workdir(root, patterns)
     if size is not None and size <= cap_bytes:
         return [], None
-    try:
-        with open(
-            os.path.join(root, REGENERABLE_LIST), encoding="utf-8", errors="replace",
-        ) as fh:
-            text = fh.read()
-    except OSError:
-        text = ""
     return over_cap_excludes(
-        size, f"walk timed out after {WALK_BUDGET_S:g} s", cap_bytes, text,
+        size, f"walk timed out after {WALK_BUDGET_S:g} s", cap_bytes, _read_list(root),
     )
 
 

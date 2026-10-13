@@ -10,7 +10,9 @@ choose between the pipeline's compressors and the in-process fallback.
 The capture cap (``OPTIO_WORKDIR_CAPTURE_MAX_MB``) adds a ``du`` subprocess
 before the pipeline. It is off for every test here unless the test turns it
 on, so the pipeline tests keep pinning a single subprocess and the host's
-environment never leaks in; the capture-cap section turns it on.
+environment never leaks in; the capture-cap section turns it on. Its 1 s
+``du``/list-read timeout and walk budget are raised to 60 s for every test,
+none of which is about them, so no test races a real timer.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ import tarfile
 
 import pytest
 
+from optio_host import archive as archive_mod
+from optio_host import capture_cap
 from optio_host import host as host_mod
 from optio_host.capture_cap import ENV_VAR
 from optio_host.host import LocalHost
@@ -100,6 +104,12 @@ def _without(monkeypatch, *tools: str) -> None:
 @pytest.fixture(autouse=True)
 def _capture_cap_off(monkeypatch):
     monkeypatch.setenv(ENV_VAR, "0")
+
+
+@pytest.fixture(autouse=True)
+def _generous_capture_timeouts(monkeypatch):
+    monkeypatch.setattr(capture_cap, "DU_TIMEOUT_S", 60)
+    monkeypatch.setattr(archive_mod, "WALK_BUDGET_S", 60)
 
 
 @pytest.fixture
@@ -382,6 +392,165 @@ async def test_fallback_under_the_cap_captures_everything(tmp_workdir, monkeypat
 
     assert _tar_member_names(blob) == _ALL_FILES
     assert notes == []
+
+
+_LEFT_OUT_BIG = "workdir 2 MB (cap 1 MB): left out 1 path listed in regenerable.txt"
+_MISSING_LIST = (
+    "workdir 2 MB is over the 1 MB capture cap, but regenerable.txt "
+    "is missing or empty; capturing everything"
+)
+
+
+def _boom(note: str) -> None:
+    raise RuntimeError("on_note exploded")
+
+
+@pytest.mark.parametrize("missing", [None, "tar"], ids=["tar-path", "fallback"])
+async def test_list_entry_with_a_nul_byte_is_dropped(tmp_workdir, monkeypatch, missing):
+    monkeypatch.setenv(ENV_VAR, "1")
+    if missing:
+        _without(monkeypatch, missing)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir, regenerable=None)
+    _write(h.workdir, "regenerable.txt", b"big\n\x89PNG\x00\x01\xff\n")
+    notes: list[str] = []
+
+    blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES - {"big/blob.bin"}
+    assert notes == [_LEFT_OUT_BIG]
+
+
+@pytest.mark.parametrize("missing", [None, "tar"], ids=["tar-path", "fallback"])
+async def test_fifo_list_is_an_empty_list_and_does_not_hang(tmp_workdir, monkeypatch, missing):
+    monkeypatch.setenv(ENV_VAR, "1")
+    if missing:
+        _without(monkeypatch, missing)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir, regenerable=None)
+    fifo = os.path.join(h.workdir, "regenerable.txt")
+    os.mkfifo(fifo)
+    notes: list[str] = []
+
+    # 30 s bounds a true hang only: reading the FIFO would block for good.
+    # Opening its write end then gives a stuck reader EOF, so nothing is
+    # left blocked behind the test.
+    try:
+        blob = await asyncio.wait_for(
+            _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append)), 30,
+        )
+    finally:
+        try:
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        except OSError:
+            pass  # ENXIO: no reader waiting
+
+    assert _tar_member_names(blob) == _ALL_FILES - {"regenerable.txt"}
+    assert notes == [_MISSING_LIST]
+
+
+@pytest.mark.parametrize("missing", [None, "tar"], ids=["tar-path", "fallback"])
+async def test_oversized_list_applies_the_entries_in_its_first_64_kib(
+    tmp_workdir, monkeypatch, missing,
+):
+    monkeypatch.setenv(ENV_VAR, "1")
+    if missing:
+        _without(monkeypatch, missing)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir, regenerable="big\n# " + "#" * 70_000 + "\nkeep.txt\n")
+    notes: list[str] = []
+
+    blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES - {"big/blob.bin"}
+    assert notes == [_LEFT_OUT_BIG]
+
+
+async def test_list_too_long_for_one_command_line_still_captures(tmp_workdir, monkeypatch):
+    # 13001 entries as --exclude=./<entry> would be ~221 KiB in one exec
+    # argument, past Linux's 128 KiB: E2BIG, and the snapshot lost.
+    monkeypatch.setenv(ENV_VAR, "1")
+    h = _host(tmp_workdir)
+    names = [f"{i:04x}" for i in range(13000)]
+    _populate_over_cap(h.workdir, regenerable="big\n" + "\n".join(names) + "\n")
+    notes: list[str] = []
+
+    blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES - {"big/blob.bin"}
+    assert notes == [
+        "workdir 2 MB (cap 1 MB): left out 3855 paths listed in regenerable.txt "
+        "(9146 more ignored: list too long)"
+    ]
+
+
+async def test_decision_that_raises_captures_everything(tmp_workdir, monkeypatch, caplog):
+    monkeypatch.setenv(ENV_VAR, "1")
+
+    async def run_fails(cmd: str):
+        raise OSError("cannot spawn bash")
+
+    monkeypatch.setattr(host_mod, "_run_local_bash", run_fails)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES
+    assert notes == []
+    [(level, message)] = _archive_notes(caplog)
+    assert level == logging.WARNING
+    assert "cannot spawn bash" in message and "capturing everything" in message
+
+
+async def test_on_note_that_raises_does_not_stop_the_capture(tmp_workdir, monkeypatch, caplog):
+    monkeypatch.setenv(ENV_VAR, "1")
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=_boom))
+
+    assert _tar_member_names(blob) == {"keep.txt", "regenerable.txt", "b/a/node_modules/y.js"}
+    records = _archive_notes(caplog)
+    assert records[0][0] == logging.INFO
+    assert records[1][0] == logging.WARNING and "on_note exploded" in records[1][1]
+
+
+async def test_fallback_measurement_that_raises_captures_everything(
+    tmp_workdir, monkeypatch, caplog,
+):
+    monkeypatch.setenv(ENV_VAR, "1")
+    _without(monkeypatch, "tar")
+
+    def measure_fails(root, patterns, budget_s=None):
+        raise OSError("walk exploded")
+
+    monkeypatch.setattr(archive_mod, "measure_workdir", measure_fails)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES
+    assert notes == []
+    [(level, message)] = _archive_notes(caplog)
+    assert level == logging.WARNING and "walk exploded" in message
+
+
+async def test_fallback_on_note_that_raises_does_not_stop_the_capture(tmp_workdir, monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "1")
+    _without(monkeypatch, "tar")
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+
+    blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=_boom))
+
+    assert _tar_member_names(blob) == {"keep.txt", "regenerable.txt", "b/a/node_modules/y.js"}
 
 
 # --- compression ---------------------------------------------------------------

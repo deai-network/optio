@@ -16,7 +16,7 @@ etc.) live in ``optio_opencode.host_actions`` as free functions taking
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import AsyncIterator, Callable, Protocol
+from typing import AsyncIterator, Awaitable, Callable, Protocol
 
 
 @dataclass
@@ -226,7 +226,8 @@ class Host(Protocol):
     # not an async method. Callers iterate via `async for chunk in host.archive_workdir(...)`.
     # Above the capture cap (optio_host.capture_cap) it leaves out the paths
     # listed in the workdir's regenerable.txt; the decision's one-line note,
-    # if any, goes to ``on_note`` and the ``optio_host.archive`` logger.
+    # if any, goes to ``on_note`` and the ``optio_host.archive`` logger. A
+    # decision that fails leaves nothing out instead of failing the capture.
 
     async def restore_workdir(
         self, stream: AsyncIterator[bytes],
@@ -425,12 +426,42 @@ def _report_capture_note(
 ) -> None:
     """Log the capture decision's note, if any, on ``optio_host.archive`` and
     hand it to ``on_note``. A note that leaves nothing out is the
-    missing-list one, logged at WARNING; the others at INFO."""
+    missing-list one, logged at WARNING; the others at INFO. An ``on_note``
+    that raises is logged and does not stop the capture."""
     if note is None:
         return
     _archive_logger.log(_logging.INFO if anchored else _logging.WARNING, "%s", note)
     if on_note is not None:
-        on_note(note)
+        try:
+            on_note(note)
+        except Exception as exc:
+            _archive_logger.warning(
+                "workdir capture cap: on_note raised %r; capturing anyway", exc,
+                exc_info=True,
+            )
+
+
+async def _capture_excludes(
+    decide: Callable[[int], Awaitable[tuple[list[str], str | None]]],
+    on_note: Callable[[str], None] | None,
+) -> list[str]:
+    """Run the capture-cap decision fail-safe and report its note.
+
+    ``decide(cap_bytes)`` is the host's decision (``regenerable_excludes``
+    or the fallback's). Anything it raises, the cap setting included, is
+    logged at WARNING on ``optio_host.archive`` and the capture leaves
+    nothing out: losing a shutdown snapshot to the decision is worse than
+    an oversized one. Returns the entries to exclude, anchored."""
+    try:
+        anchored, note = await decide(workdir_capture_max_bytes())
+    except Exception as exc:
+        _archive_logger.warning(
+            "workdir capture cap: the decision failed (%r); capturing everything", exc,
+            exc_info=True,
+        )
+        return []
+    _report_capture_note(note, anchored, on_note)
+    return anchored
 
 
 async def _run_local_bash(cmd: str) -> tuple[int, str]:
@@ -707,11 +738,13 @@ class LocalHost:
         patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
         if shutil.which("tar") is None or shutil.which("bash") is None:
             async def _fallback() -> "AsyncIterator[bytes]":
-                anchored, note = await asyncio.get_running_loop().run_in_executor(
-                    None, fallback_regenerable_excludes,
-                    self.workdir, patterns, workdir_capture_max_bytes(),
+                loop = asyncio.get_running_loop()
+                anchored = await _capture_excludes(
+                    lambda cap: loop.run_in_executor(
+                        None, fallback_regenerable_excludes, self.workdir, patterns, cap,
+                    ),
+                    on_note,
                 )
-                _report_capture_note(note, anchored, on_note)
                 async for chunk in yield_workdir_archive(
                     self.workdir, exclude=patterns, anchored=anchored,
                 ):
@@ -720,10 +753,10 @@ class LocalHost:
             return _fallback()
 
         async def _gen() -> "AsyncIterator[bytes]":
-            anchored, note = await regenerable_excludes(
-                _run_local_bash, self.workdir, patterns, workdir_capture_max_bytes(),
+            anchored = await _capture_excludes(
+                lambda cap: regenerable_excludes(_run_local_bash, self.workdir, patterns, cap),
+                on_note,
             )
-            _report_capture_note(note, anchored, on_note)
             compressor = "pigz -1" if shutil.which("pigz") else "gzip -1"
             cmd = _archive_command(self.workdir, patterns, compressor, anchored)
             _trace(
@@ -1173,10 +1206,12 @@ class RemoteHost:
 
         async def _gen() -> "AsyncIterator[bytes]":
             assert self._conn is not None
-            anchored, note = await regenerable_excludes(
-                self._run_for_capture, self.workdir, patterns, workdir_capture_max_bytes(),
+            anchored = await _capture_excludes(
+                lambda cap: regenerable_excludes(
+                    self._run_for_capture, self.workdir, patterns, cap,
+                ),
+                on_note,
             )
-            _report_capture_note(note, anchored, on_note)
             compressor = await self._archive_compressor()
             cmd = _archive_command(self.workdir, patterns, compressor, anchored)
             _trace(
