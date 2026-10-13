@@ -844,7 +844,8 @@ export { resolveConversationArchive, forgetConversationArchive, fetchConversatio
 // single-process action targets, by _id for a 24-hex id, else by processId (a
 // duplicated processId resolves to the newest document, as the engine does).
 // findReadableProcess(col, id, access): the same lookup, additionally null when
-// the document fails `access.visibility` (not yet wired into the handlers).
+// the document fails `access.visibility`; used by getProcess, getProcessLog,
+// getProcessTree and getProcessTreeLog in place of findScopedProcess.
 export { findActionTarget, findReadableProcess } from 'optio-api';
 
 // Visibility helpers (for custom adapters). normalizeVisibility(raw): validate a
@@ -854,8 +855,12 @@ export { findActionTarget, findReadableProcess } from 'optio-api';
 // andScope; isVisible(col, doc, visibility): whether one document satisfies the
 // predicate, judged in Mongo; pruneOrphans(docs, keep?): drop tree children whose
 // parent chain doesn't resolve to a kept root. Wired into AccessHooks (the `visibility`
-// hook) and gateProcess (the single-process action gate); not yet wired into the list,
-// single-read, tree or stream handlers.
+// hook), gateProcess (the single-process action gate), and now the read handlers:
+// listProcesses ANDs it into the query and countDocuments (totalCount stays exact
+// across pages); getProcess/getProcessLog/getProcessTree/getProcessTreeLog 404 a
+// hidden process (by either id form); getProcessTree fetches only visible children
+// at each level; getProcessTreeLog prunes orphans (only when visibility is set)
+// before collecting log lines. Streams and the adapter options don't consult it yet.
 export { normalizeVisibility, visibilityToMongo, andVisibility, isVisible,
          pruneOrphans } from 'optio-api';
 
@@ -930,8 +935,11 @@ interface ExplicitOptioApiOptions {
 // `VisibilityCallback<TRequest>`; see packages/optio-api/AGENTS.md "Access scope
 // and authorization"): `Access` carries it and gateProcess (the single-process
 // action gate) checks it before authorize, 404ing a hidden process the same as an
-// out-of-scope one. It is not yet exposed as an adapter option (OptioApiOptions
-// above), and the list/single-read/tree/stream handlers don't consult it yet.
+// out-of-scope one. The read handlers (list, single reads, the tree and the tree
+// log) honour it too: a hidden process is a 404/omitted, exactly like a missing
+// one, and the tree log's orphans are pruned once visibility can create them. It
+// is not yet exposed as an adapter option (OptioApiOptions above), and the
+// streams don't consult it yet.
 ```
 
 ### Fastify Adapter

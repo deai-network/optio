@@ -198,9 +198,18 @@ and the conversation read — checks `access.visibility` right alongside
 `access.scope`, before `authorize` is asked: a hidden process is a 404 the
 same as an out-of-scope one, including when a duplicated `processId` resolves
 (as the engine does) to a newest document that is hidden while an older one
-of the same `processId` is visible. The list, single reads, trees, logs and
-streams do not consult `visibility` yet — `findReadableProcess` below is the
-building block for that, wired into the handlers in a later change.
+of the same `processId` is visible. The read handlers consult it too:
+`listProcesses` ANDs it into the query (and into `countDocuments`, via
+`findReadableProcess` and `andVisibility`/`pruneOrphans` below), so a client
+`metadataFilter` cannot widen past it and `totalCount` stays exact across
+every page; `getProcess` and `getProcessLog` 404 a hidden process, by either
+id form; `getProcessTree` 404s a hidden entry point and otherwise fetches
+only visible children at each level, so a hidden process takes its subtree
+with it; `getProcessTreeLog` 404s a hidden entry point, fetches the tree's
+processes under the condition, and — only when `access.visibility` is set —
+prunes orphans before collecting log lines, so a process left parentless by
+a hidden ancestor contributes no lines. Streams and the adapters' options do
+not consult `visibility` yet — that is a later change.
 
 Per request, `checkAuth` records the authenticated role (keyed by the native
 request object) and `accessFor(req, hooks)` resolves the hooks once into an
@@ -228,8 +237,9 @@ children whose parent chain doesn't resolve to a kept root, preserving input
 order and memoising per id. `findReadableProcess(col, id, access)` (in
 `access-scope.ts`) looks a process up by either id form under both `scope` and
 `visibility`, returning `null` for a process that fails either — the single-read
-building block the handlers use; not yet wired into any route (the handlers
-and adapters come in a later change).
+building block `getProcess`, `getProcessLog`, `getProcessTree` and
+`getProcessTreeLog` use in place of `findScopedProcess`; adapters still come
+in a later change.
 
 ## Fastify Adapter
 

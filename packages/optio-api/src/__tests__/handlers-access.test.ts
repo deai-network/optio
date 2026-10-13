@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import {
-  getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
+  getProcess, getProcessTree, getProcessLog, getProcessTreeLog, getProcessConversation,
   listProcesses, launchProcess, cancelProcess, dismissProcess, resurrectProcess, resyncProcesses,
 } from '../handlers.js';
 import type { OptioContext } from '../context.js';
 import type { Access } from '../auth.js';
+import { or, not, eq } from 'optio-contracts';
 
 const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_handlers_access';
@@ -62,6 +63,42 @@ function makeCtx(engine: any): OptioContext {
 
 function scoped(customerId: number, allow = true): Access {
   return { restricted: true, scope: { customerId }, visibility: null, authorize: vi.fn(async () => allow) };
+}
+
+/** An Access restricted only by `visibility`, with no scope; `authorize` always allows. */
+function visible(predicate: NonNullable<Access['visibility']>): Access {
+  return { restricted: true, scope: null, visibility: predicate, authorize: vi.fn(async () => true) };
+}
+
+/** Inserts one process doc with sane defaults; overrides supply the rest. */
+async function insertProcess(overrides: {
+  _id?: ObjectId;
+  processId?: string;
+  name?: string;
+  rootId?: ObjectId;
+  parentId?: ObjectId | null;
+  depth?: number;
+  metadata?: Record<string, unknown>;
+  log?: { timestamp: string; level: string; message: string }[];
+} = {}) {
+  const _id = overrides._id ?? new ObjectId();
+  const rootId = overrides.rootId ?? _id;
+  const doc = {
+    _id,
+    processId: overrides.processId ?? `p-${_id.toHexString()}`,
+    name: overrides.name ?? 'P',
+    rootId,
+    parentId: overrides.parentId ?? null,
+    depth: overrides.depth ?? 0,
+    order: 0,
+    status: { state: 'idle' },
+    progress: { percent: null },
+    cancellable: true,
+    log: overrides.log ?? [],
+    metadata: overrides.metadata ?? {},
+  };
+  await col().insertOne(doc as any);
+  return doc;
 }
 
 async function insertTree(customerId: number) {
@@ -225,5 +262,147 @@ describe('resyncProcesses', () => {
     );
     expect(tree.status).toBe(400);
     expect(engine.resync).not.toHaveBeenCalled();
+  });
+});
+
+describe('read handlers under visibility', () => {
+  // Excavator's rule, from the spec: every process that isn't a data-chat, plus
+  // the requester's own data-chats. A missing `kind` or `ownerId` follows Mongo's
+  // rules (fails closed for `eq`, matches for `not(eq(...))`).
+  const PREDICATE = or(not(eq('kind', 'data-chat')), eq('ownerId', 'u1'));
+
+  describe('listProcesses', () => {
+    it('pages through only visible processes, one per page, in _id order, with exact totals', async () => {
+      const visibleIds: string[] = [];
+      for (let i = 0; i < 3; i += 1) {
+        const v = await insertProcess({ metadata: { kind: 'other', n: i } });
+        visibleIds.push(v._id.toHexString());
+        await insertProcess({ metadata: { kind: 'data-chat', ownerId: 'someone-else' } });
+      }
+      const ctx = makeCtx(makeEngine());
+      const access = visible(PREDICATE);
+      let cursor: string | undefined;
+      const collected: string[] = [];
+      for (let i = 0; i < 5; i += 1) {
+        const page: any = await listProcesses(ctx, { prefix: PREFIX, limit: 1, cursor }, access);
+        expect(page.items).toHaveLength(1);
+        expect(page.totalCount).toBe(3);
+        collected.push(page.items[0]._id);
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+      expect(collected).toEqual(visibleIds);
+    });
+
+    it('a client metadataFilter cannot widen past visibility (Review focus 4)', async () => {
+      const visibleChat = await insertProcess({ metadata: { kind: 'data-chat', ownerId: 'u1' } });
+      await insertProcess({ metadata: { kind: 'data-chat', ownerId: 'someone-else' } });
+      const ctx = makeCtx(makeEngine());
+      const result: any = await listProcesses(
+        ctx,
+        { prefix: PREFIX, limit: 50, metadataFilter: or(eq('kind', 'data-chat')) },
+        visible(PREDICATE),
+      );
+      expect(result.totalCount).toBe(1);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]._id).toBe(visibleChat._id.toHexString());
+    });
+  });
+
+  describe('getProcess and getProcessLog', () => {
+    it('return null for a hidden process by _id and by processId; return the process for a visible one', async () => {
+      const hidden = await insertProcess({ processId: 'hidden-1', metadata: { kind: 'data-chat' } });
+      const vis = await insertProcess({ processId: 'visible-1', metadata: { kind: 'other' } });
+      const ctx = makeCtx(makeEngine());
+      const access = visible(PREDICATE);
+      const q = { prefix: PREFIX, limit: 50 };
+      for (const id of [hidden._id.toHexString(), 'hidden-1']) {
+        expect(await getProcess(ctx, q, id, access)).toBeNull();
+        expect(await getProcessLog(ctx, q, id, access)).toBeNull();
+      }
+      expect(await getProcess(ctx, q, vis._id.toHexString(), access)).not.toBeNull();
+      expect(await getProcess(ctx, q, 'visible-1', access)).not.toBeNull();
+      expect(await getProcessLog(ctx, q, 'visible-1', access)).not.toBeNull();
+    });
+  });
+
+  describe('getProcessTree and getProcessTreeLog', () => {
+    // root: visible. child: hidden. grandchild: visible on its own metadata,
+    // diverged from its (hidden) parent -- the spec's documented edge case.
+    async function insertFixture() {
+      const root = await insertProcess({
+        metadata: { kind: 'other' },
+        log: [{ timestamp: new Date(1).toISOString(), level: 'info', message: 'root' }],
+      });
+      const child = await insertProcess({
+        rootId: root._id, parentId: root._id, depth: 1,
+        metadata: { kind: 'data-chat', ownerId: 'someone-else' },
+        log: [{ timestamp: new Date(2).toISOString(), level: 'info', message: 'child' }],
+      });
+      const grandchild = await insertProcess({
+        rootId: root._id, parentId: child._id, depth: 2,
+        metadata: { kind: 'other' },
+        log: [{ timestamp: new Date(3).toISOString(), level: 'info', message: 'grandchild' }],
+      });
+      return { root, child, grandchild };
+    }
+
+    it('getProcessTree has no children for the fixture; a hidden root gives null', async () => {
+      const { root } = await insertFixture();
+      const ctx = makeCtx(makeEngine());
+      const access = visible(PREDICATE);
+      const q = { prefix: PREFIX, limit: 50 };
+      const tree: any = await getProcessTree(ctx, q, root._id.toHexString(), access);
+      expect(tree).not.toBeNull();
+      expect(tree.children).toEqual([]);
+
+      const hiddenRoot = await insertProcess({ metadata: { kind: 'data-chat' } });
+      expect(await getProcessTree(ctx, q, hiddenRoot._id.toHexString(), access)).toBeNull();
+    });
+
+    it("getProcessTreeLog returns only the root's log lines; a hidden entry gives null", async () => {
+      const { root, child } = await insertFixture();
+      const ctx = makeCtx(makeEngine());
+      const access = visible(PREDICATE);
+      const q = { prefix: PREFIX, limit: 50 };
+      const log: any = await getProcessTreeLog(ctx, q, root._id.toHexString(), access);
+      expect(log).not.toBeNull();
+      expect(log.totalCount).toBe(1);
+      expect(log.items).toHaveLength(1);
+      expect(log.items[0].message).toBe('root');
+
+      expect(await getProcessTreeLog(ctx, q, child._id.toHexString(), access)).toBeNull();
+    });
+  });
+
+  describe('getProcessConversation', () => {
+    it('answers 404 not-found for a hidden process without calling authorize', async () => {
+      const hidden = await insertProcess({ metadata: { kind: 'data-chat' } });
+      const ctx = makeCtx(makeEngine());
+      const access = visible(PREDICATE);
+      const result: any = await getProcessConversation(ctx, { prefix: PREFIX }, hidden._id.toHexString(), access);
+      expect(result.status).toBe(404);
+      expect(result.body.reason).toBe('not-found');
+      expect(access.authorize).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pruning applies only when visibility is set', () => {
+    it("without access, a tree log with a deleted middle parent keeps today's (orphan-inclusive) result", async () => {
+      const root = await insertProcess({
+        log: [{ timestamp: new Date(1).toISOString(), level: 'info', message: 'root' }],
+      });
+      const middle = await insertProcess({ rootId: root._id, parentId: root._id, depth: 1 });
+      await insertProcess({
+        rootId: root._id, parentId: middle._id, depth: 2,
+        log: [{ timestamp: new Date(3).toISOString(), level: 'info', message: 'grandchild' }],
+      });
+      // The middle doc is gone; the grandchild's parentId now dangles.
+      await col().deleteOne({ _id: middle._id });
+      const ctx = makeCtx(makeEngine());
+      const log: any = await getProcessTreeLog(ctx, { prefix: PREFIX, limit: 50 }, root._id.toHexString());
+      expect(log.totalCount).toBe(2);
+      expect(log.items.map((i: any) => i.message).sort()).toEqual(['grandchild', 'root']);
+    });
   });
 });

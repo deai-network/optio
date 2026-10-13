@@ -5,8 +5,9 @@ import type { OptioContext } from './context.js';
 import { resolveDb, resolveOptioEngine } from './resolve.js';
 import { UNRESTRICTED, type Access } from './auth.js';
 import {
-  andScope, findActionTarget, findScopedProcess, gateProcess, scopedResyncFilter,
+  andScope, findActionTarget, findReadableProcess, gateProcess, scopedResyncFilter,
 } from './access-scope.js';
+import { andVisibility, pruneOrphans } from './visibility.js';
 import { fetchConversation, type ConversationFetchResult } from './conversation-archive.js';
 import type {
   LaunchFailureReason as LaunchFailureReasonType,
@@ -58,17 +59,23 @@ export async function listProcesses(
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const { cursor, limit, rootId, state, metadataFilter } = query;
 
-  const filter: Record<string, unknown> = andScope(
-    { ...metadataFilterToMongo(metadataFilter) },
-    access.scope,
+  const filter: Record<string, unknown> = andVisibility(
+    andScope({ ...metadataFilterToMongo(metadataFilter) }, access.scope),
+    access.visibility,
   );
   if (rootId) filter.rootId = new ObjectId(rootId);
   if (state) filter['status.state'] = state;
+  // Under a visibility predicate, `totalCount` must stay exact across every
+  // page (nothing about pagination position may leak through it), so it is
+  // counted before the cursor narrows `filter` further. Without `visibility`
+  // this is the same object as before: cursor-pagination's totalCount is
+  // unchanged (today's contract, shared with `scope`-only/no-access hosts).
+  const countFilter = access.visibility ? { ...filter } : filter;
   if (cursor) filter._id = { $gt: new ObjectId(cursor) };
 
   const [items, totalCount] = await Promise.all([
     col(db, prefix).find(filter).sort({ _id: 1 }).limit(limit + 1).toArray(),
-    col(db, prefix).countDocuments(filter),
+    col(db, prefix).countDocuments(countFilter),
   ]);
   const hasNext = items.length > limit;
   if (hasNext) items.pop();
@@ -86,24 +93,31 @@ export async function getProcess(
   access: Access = UNRESTRICTED,
 ) {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const proc = await findScopedProcess(col(db, prefix), id, access.scope);
+  const proc = await findReadableProcess(col(db, prefix), id, access);
   if (!proc) return null;
   return toResponse(proc);
 }
 
-async function buildTree(db: Db, prefix: string, processId: ObjectId, maxDepth?: number, currentDepth = 0): Promise<any> {
+async function buildTree(
+  db: Db,
+  prefix: string,
+  processId: ObjectId,
+  visibility: ProcessMetadataFilter | null,
+  maxDepth?: number,
+  currentDepth = 0,
+): Promise<any> {
   const proc = await col(db, prefix).findOne({ _id: processId });
   if (!proc) return null;
 
   let children: any[] = [];
   if (maxDepth === undefined || currentDepth < maxDepth) {
     const childDocs = await col(db, prefix)
-      .find({ parentId: processId })
+      .find(andVisibility({ parentId: processId }, visibility))
       .sort({ order: 1 })
       .toArray();
 
     children = await Promise.all(
-      childDocs.map((c) => buildTree(db, prefix, c._id, maxDepth, currentDepth + 1)),
+      childDocs.map((c) => buildTree(db, prefix, c._id, visibility, maxDepth, currentDepth + 1)),
     );
     children = children.filter(Boolean);
   }
@@ -129,10 +143,12 @@ export async function getProcessTree(
   // Resolve the entry-point doc first so we can accept either id form.
   // Internal recursion in `buildTree` walks via `parentId` ObjectId
   // references and does not need the lookup helper; the whole tree shares
-  // the entry point's tenant, so the scope is checked there only.
-  const entry = await findScopedProcess(col(db, prefix), id, access.scope);
+  // the entry point's tenant, so the scope is checked there only. Below the
+  // entry point only the visibility condition is added, never scope (see
+  // AGENTS.md "Access scope and authorization").
+  const entry = await findReadableProcess(col(db, prefix), id, access);
   if (!entry) return null;
-  return buildTree(db, prefix, entry._id as ObjectId, query.maxDepth);
+  return buildTree(db, prefix, entry._id as ObjectId, access.visibility, query.maxDepth);
 }
 
 export interface PaginationQuery {
@@ -152,7 +168,7 @@ export async function getProcessLog(
   access: Access = UNRESTRICTED,
 ) {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const proc = await findScopedProcess(col(db, prefix), id, access.scope);
+  const proc = await findReadableProcess(col(db, prefix), id, access);
   if (!proc) return null;
 
   const { cursor, limit } = query;
@@ -184,15 +200,19 @@ export async function getProcessTreeLog(
   access: Access = UNRESTRICTED,
 ) {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
-  const proc = await findScopedProcess(col(db, prefix), id, access.scope);
+  const proc = await findReadableProcess(col(db, prefix), id, access);
   if (!proc) return null;
 
   const { maxDepth, cursor, limit } = query;
-  const filter: Record<string, unknown> = { rootId: proc.rootId };
+  let filter: Record<string, unknown> = { rootId: proc.rootId };
   if (maxDepth !== undefined) {
     filter.depth = { $lte: proc.depth + maxDepth };
   }
-  const allProcs = await col(db, prefix).find(filter).toArray();
+  filter = andVisibility(filter, access.visibility);
+  let allProcs = await col(db, prefix).find(filter).toArray();
+  if (access.visibility) {
+    allProcs = pruneOrphans(allProcs);
+  }
 
   const allLogs = allProcs.flatMap((p: any) =>
     p.log.map((entry: any) => ({
