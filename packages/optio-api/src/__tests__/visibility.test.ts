@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { MongoClient, ObjectId, type Collection, type Db } from 'mongodb';
-import { or, not, eq } from 'optio-contracts';
+import { or, not, eq, isIn } from 'optio-contracts';
 import {
   normalizeVisibility,
   andVisibility,
@@ -72,6 +72,36 @@ describe('normalizeVisibility', () => {
     expect(() => normalizeVisibility({ AND: [] })).toThrow(
       /^optio-api: the visibility hook returned an invalid metadata predicate/,
     );
+  });
+
+  // I1: `eq('ownerId', undefined)` passes the zod schema (`.optional()` on
+  // every leaf op), then reaches the Mongo driver as `$eq: undefined`, which
+  // the driver sends as null -- and `$eq: null` matches a missing key. A
+  // leaf with an `undefined` value must never reach `andVisibility`, however
+  // deep it is nested, so it is rejected here instead.
+  it('rejects undefined on a leaf operator nested inside or(...), naming the field', () => {
+    const predicate = or(not(eq('kind', 'data-chat')), eq('ownerId', undefined as any));
+    expect(() => normalizeVisibility(predicate)).toThrow(
+      /^optio-api: the visibility hook returned an invalid metadata predicate:.*ownerId/,
+    );
+  });
+
+  it('rejects undefined in a legacy flat map, naming the field', () => {
+    expect(() => normalizeVisibility({ ownerId: undefined })).toThrow(
+      /^optio-api: the visibility hook returned an invalid metadata predicate:.*ownerId/,
+    );
+  });
+
+  it('rejects undefined inside an `in` array', () => {
+    const predicate = isIn('ownerId', [undefined as any, 'u1']);
+    expect(() => normalizeVisibility(predicate)).toThrow(
+      /^optio-api: the visibility hook returned an invalid metadata predicate:.*ownerId/,
+    );
+  });
+
+  it('accepts a leaf null value (matches a missing key too, per MongoDB semantics)', () => {
+    const predicate = eq('ownerId', null);
+    expect(normalizeVisibility(predicate)).toEqual(predicate);
   });
 });
 

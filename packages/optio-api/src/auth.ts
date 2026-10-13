@@ -71,7 +71,12 @@ export type ScopeCallback<TRequest> =
  * once per request, together with `scope`. `null`, `undefined` and `{}`
  * mean no restriction. A missing metadata key follows MongoDB's rules: a
  * leaf like `eq('ownerId', me)` does not match it (fails closed), while
- * `ne`, `notIn` and `not(...)` do. An invalid predicate fails the request.
+ * `ne`, `notIn` and `not(...)` do. `eq(key, null)` matches a *missing* key
+ * as well as a null one (also MongoDB semantics) -- so a null or undefined
+ * user id must never reach the predicate; pass `scope`/deny access instead
+ * of building a leaf from one. An invalid predicate fails the request,
+ * including an `undefined` value anywhere in it (rejected outright, never
+ * normalized to "no restriction" the way the top-level `null` is).
  */
 export type VisibilityCallback<TRequest> =
   (req: TRequest) => ProcessMetadataFilter | null | Promise<ProcessMetadataFilter | null>;
@@ -85,6 +90,11 @@ export type VisibilityCallback<TRequest> =
 export type AuthorizeCallback<TRequest> =
   (req: TRequest, input: AuthorizeInput) => boolean | Promise<boolean>;
 
+/** The three optional per-request hooks a host may pass next to
+ *  `authenticate`: `scope` (tenant boundary), `visibility` (which processes
+ *  within the tenant may be seen) and `authorize` (which actions a seen
+ *  process allows). Each is independent; passing none leaves every request
+ *  `UNRESTRICTED`, with no extra lookups. */
 export interface AccessHooks<TRequest> {
   scope?: ScopeCallback<TRequest>;
   visibility?: VisibilityCallback<TRequest>;
@@ -101,6 +111,10 @@ export interface Access {
   /** False when the host passed no hook: handlers skip every check. */
   restricted: boolean;
   scope: ScopeFilter | null;
+  /** The resolved, normalized `visibility` predicate for this request
+   *  (`normalizeVisibility`'s result); `null` means no restriction. A
+   *  hand-built `Access` (custom adapters, tests) must set this explicitly
+   *  -- there is no default. */
   visibility: ProcessMetadataFilter | null;
   authorize(input: Omit<AuthorizeInput, 'role'>): Promise<boolean>;
 }
