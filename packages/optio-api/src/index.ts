@@ -95,7 +95,11 @@ export {
 export { and, or, not, leaf, eq, ne, isIn, notIn, exists, gt, gte, lt, lte } from 'optio-contracts';
 
 // Stream poller (for custom adapters)
-export { createListPoller, createTreePoller, type StreamPollerOptions, type TreePollerOptions, type ListPollerHandle } from './stream-poller.js';
+export {
+  createListPoller, createTreePoller, createMultiTreePoller, createSessionEventsPoller,
+  type StreamPollerOptions, type TreePollerOptions, type MultiTreePollerOptions,
+  type MultiTreeRoot, type SessionEventsPollerOptions, type ListPollerHandle,
+} from './stream-poller.js';
 
 // Multi-db discovery
 export { discoverInstances } from './discovery.js';

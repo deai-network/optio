@@ -85,6 +85,7 @@ describe.skipIf(!isReplicaSet)('live streams on a change stream (needs a replica
     const counter = { finds: 0 };
     const updates: any[] = [];
     const poller = createTreePoller({
+      visibility: null,
       db: countingDb(counter), prefix: PREFIX, rootId: mine._id.toString(), baseDepth: 0, hub,
       sendEvent: (e: any) => { if (e.type === 'update') updates.push(e); },
       onError: () => {},
@@ -107,6 +108,7 @@ describe.skipIf(!isReplicaSet)('live streams on a change stream (needs a replica
     await moveClusterTime();
     const updates: any[] = [];
     const poller = createListPoller({
+      visibility: null,
       db, prefix: PREFIX, hub,
       sendEvent: (e: any) => { if (e.type === 'update') updates.push(e); },
       onError: () => {},
@@ -127,6 +129,7 @@ describe.skipIf(!isReplicaSet)('live streams on a change stream (needs a replica
     await moveClusterTime();
     const events: any[] = [];
     const poller = createSessionEventsPoller({
+      visibility: null,
       db, prefix: PREFIX, sessionId: 's1', hub,
       sendEvent: (e: any) => events.push(e),
       onError: () => {},
@@ -156,6 +159,7 @@ describe('stopping a stream before its hub opened', () => {
     const pending = new ProcessChangeHub(source);
     const counter = { finds: 0 };
     const poller = createListPoller({
+      visibility: null,
       db: countingDb(counter), prefix: PREFIX, hub: pending,
       sendEvent: () => {}, onError: () => {},
     });

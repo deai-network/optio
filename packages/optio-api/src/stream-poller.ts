@@ -20,8 +20,9 @@ export interface StreamPollerOptions {
   scope?: ScopeFilter | null;
   /** Visibility predicate (auth.ts), resolved once at stream open like
    *  `scope`: only processes it admits are read, through `processReads`.
-   *  `null`/`undefined`: no restriction, identical queries to today. */
-  visibility?: ProcessMetadataFilter | null;
+   *  Required (M9: forgetting it would silently stream everything) --
+   *  `null`: no restriction, identical queries to today. */
+  visibility: ProcessMetadataFilter | null;
   /** The change hub to follow; default: the shared hub of (db, prefix). */
   hub?: ProcessChangeHub;
 }
@@ -286,8 +287,8 @@ export interface MultiTreePollerOptions {
   flatIds: ObjectId[];
   maxDepth?: number;
   /** Visibility predicate (auth.ts): only processes it admits are read,
-   *  through `processReads`. `null`/`undefined`: no restriction. */
-  visibility?: ProcessMetadataFilter | null;
+   *  through `processReads`. Required (M9) -- `null`: no restriction. */
+  visibility: ProcessMetadataFilter | null;
   /** The change hub to follow; default: the shared hub of (db, prefix). */
   hub?: ProcessChangeHub;
 }
@@ -436,8 +437,8 @@ export interface SessionEventsPollerOptions {
   /** Access scope (auth.ts): only processes inside it are read. */
   scope?: ScopeFilter | null;
   /** Visibility predicate (auth.ts): only processes it admits are read,
-   *  through `processReads`. `null`/`undefined`: no restriction. */
-  visibility?: ProcessMetadataFilter | null;
+   *  through `processReads`. Required (M9) -- `null`: no restriction. */
+  visibility: ProcessMetadataFilter | null;
   /** The change hub to follow; default: the shared hub of (db, prefix). */
   hub?: ProcessChangeHub;
 }

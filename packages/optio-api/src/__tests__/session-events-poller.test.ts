@@ -59,6 +59,7 @@ describe('createSessionEventsPoller', () => {
       },
     ]);
     const poller = createSessionEventsPoller({
+      visibility: null,
       db, prefix: PREFIX, sessionId: 'tok-A',
       sendEvent: (d) => events.push(d), onError: () => {},
     });
@@ -79,6 +80,7 @@ describe('createSessionEventsPoller', () => {
       sessionEvents: [{ requestId: 'r1', type: 'attention', reason: 'a' }],
     });
     const poller = createSessionEventsPoller({
+      visibility: null,
       db, prefix: PREFIX, sessionId: 'tok',
       sendEvent: (d) => events.push(d), onError: () => {},
     });

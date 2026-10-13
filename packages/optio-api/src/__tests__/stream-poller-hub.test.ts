@@ -50,15 +50,18 @@ const flush = () => vi.advanceTimersByTimeAsync(0);
 
 const ROOT = new ObjectId();
 const makers: Record<string, (db: Db, hub: ProcessChangeHub) => ListPollerHandle> = {
-  list: (db, hub) => createListPoller({ db, prefix: 'p', hub, sendEvent: () => {}, onError: () => {} }),
+  list: (db, hub) => createListPoller({ visibility: null, db, prefix: 'p', hub, sendEvent: () => {}, onError: () => {} }),
   tree: (db, hub) => createTreePoller({
+    visibility: null,
     db, prefix: 'p', hub, rootId: ROOT.toString(), baseDepth: 0, sendEvent: () => {}, onError: () => {},
   }),
   'multi-tree': (db, hub) => createMultiTreePoller({
+    visibility: null,
     db, prefix: 'p', hub, treeRoots: [{ rootId: ROOT, baseDepth: 0 }], flatIds: [],
     sendEvent: () => {}, onError: () => {},
   }),
   'session events': (db, hub) => createSessionEventsPoller({
+    visibility: null,
     db, prefix: 'p', hub, sessionId: 's1', sendEvent: () => {}, onError: () => {},
   }),
 };
@@ -133,12 +136,12 @@ describe.each(Object.keys(makers))('the %s stream with a failing hub', (kind) =>
     } as unknown as ProcessChangeHub;
     let errors = 0;
     const poller = kind === 'list'
-      ? createListPoller({ db, prefix: 'p', hub: failing, sendEvent: () => {}, onError: () => { errors++; } })
+      ? createListPoller({ visibility: null, db, prefix: 'p', hub: failing, sendEvent: () => {}, onError: () => { errors++; } })
       : kind === 'tree'
-        ? createTreePoller({ db, prefix: 'p', hub: failing, rootId: ROOT.toString(), baseDepth: 0, sendEvent: () => {}, onError: () => { errors++; } })
+        ? createTreePoller({ visibility: null, db, prefix: 'p', hub: failing, rootId: ROOT.toString(), baseDepth: 0, sendEvent: () => {}, onError: () => { errors++; } })
         : kind === 'multi-tree'
-          ? createMultiTreePoller({ db, prefix: 'p', hub: failing, treeRoots: [{ rootId: ROOT, baseDepth: 0 }], flatIds: [], sendEvent: () => {}, onError: () => { errors++; } })
-          : createSessionEventsPoller({ db, prefix: 'p', hub: failing, sessionId: 's1', sendEvent: () => {}, onError: () => { errors++; } });
+          ? createMultiTreePoller({ visibility: null, db, prefix: 'p', hub: failing, treeRoots: [{ rootId: ROOT, baseDepth: 0 }], flatIds: [], sendEvent: () => {}, onError: () => { errors++; } })
+          : createSessionEventsPoller({ visibility: null, db, prefix: 'p', hub: failing, sessionId: 's1', sendEvent: () => {}, onError: () => { errors++; } });
 
     poller.start();
     await flush();
@@ -160,6 +163,7 @@ describe('createMultiTreePoller membership', () => {
     const { db } = fakeDb([]); // the read never returns the flat id's document
     const { hub, subs } = fakeHub();
     const poller = createMultiTreePoller({
+      visibility: null,
       db, prefix: 'p', hub, treeRoots: [], flatIds: [flatId], sendEvent: () => {}, onError: () => {},
     });
 

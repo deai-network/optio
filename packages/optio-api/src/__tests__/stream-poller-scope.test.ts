@@ -55,6 +55,7 @@ describe('createListPoller scope', () => {
     const mine = await insertProc({ metadata: { customerId: 1, dataspace: 'b' } });
     const events: any[] = [];
     const poller = createListPoller({
+      visibility: null,
       db, prefix: PREFIX, onError: () => {}, sendEvent: (e) => events.push(e),
       scope: { customerId: 1 },
     });
@@ -68,6 +69,7 @@ describe('createListPoller scope', () => {
 
     const sneaky: any[] = [];
     const poller2 = createListPoller({
+      visibility: null,
       db, prefix: PREFIX, onError: () => {}, sendEvent: (e) => sneaky.push(e),
       metadataFilter: { dataspace: 'a' }, scope: { customerId: 1 },
     });
@@ -88,6 +90,7 @@ describe('createSessionEventsPoller scope', () => {
     const mine = await insertProc({ originatingSessionId: 's1', metadata: { customerId: 1 }, sessionEvents: [event] });
     const events: any[] = [];
     const poller = createSessionEventsPoller({
+      visibility: null,
       db, prefix: PREFIX, sessionId: 's1', onError: () => {}, sendEvent: (e) => events.push(e),
       scope: { customerId: 1 },
     });

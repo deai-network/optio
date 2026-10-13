@@ -60,6 +60,7 @@ describe('createTreePoller widgetData propagation', () => {
     });
 
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (data) => events.push(data),
       onError: () => {},
@@ -92,6 +93,7 @@ describe('createTreePoller widgetData propagation', () => {
     });
 
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (data) => events.push(data),
       onError: () => {},
@@ -133,6 +135,7 @@ describe('createTreePoller widgetData propagation', () => {
     });
 
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (data) => events.push(data),
       onError: () => {},
@@ -164,6 +167,7 @@ describe('createTreePoller widgetData propagation', () => {
     });
 
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (data) => events.push(data),
       onError: () => {},
@@ -198,6 +202,7 @@ describe('createTreePoller widgetData propagation', () => {
     });
 
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (data) => events.push(data),
       onError: () => {},
@@ -243,6 +248,7 @@ describe('createTreePoller widgetData propagation', () => {
     });
 
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (data) => events.push(data),
       onError: () => {},
@@ -292,6 +298,7 @@ describe('createListPoller metadataFilter', () => {
 
     const events: any[] = [];
     const poller = createListPoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (e) => events.push(e),
       onError: () => {},
@@ -311,6 +318,7 @@ describe('createListPoller metadataFilter', () => {
 
     const events: any[] = [];
     const poller = createListPoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (e) => events.push(e),
       onError: () => {},
@@ -333,6 +341,7 @@ describe('createListPoller metadataFilter', () => {
 
     const events: any[] = [];
     const poller = createListPoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (e) => events.push(e),
       onError: () => {},
@@ -360,6 +369,7 @@ describe('createMultiTreePoller', () => {
     ]);
     const { createMultiTreePoller } = await import('../stream-poller.js');
     const poller = createMultiTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (e: any) => { if (e.type === 'update') events.push(e); },
       onError: () => {},
@@ -394,6 +404,7 @@ describe('createMultiTreePoller', () => {
     ]);
     const { createMultiTreePoller } = await import('../stream-poller.js');
     const poller = createMultiTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (e: any) => { if (e.type === 'update') events.push(e); },
       onError: () => {},
@@ -420,6 +431,7 @@ describe('createMultiTreePoller', () => {
     });
     const { createMultiTreePoller } = await import('../stream-poller.js');
     const poller = createMultiTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (e: any) => { if (e.type === 'log') logs.push(e); },
       onError: () => {},
@@ -444,6 +456,7 @@ describe('createMultiTreePoller', () => {
     ]);
     const { createMultiTreePoller } = await import('../stream-poller.js');
     const poller = createMultiTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (e: any) => {
         if (e.type === 'log') logs.push(e);
@@ -490,6 +503,7 @@ describe('createTreePoller rootId propagation', () => {
       log: [],
     });
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (e: any) => { if (e.type === 'update') events.push(e); },
       onError: () => {},
@@ -524,6 +538,7 @@ describe('browserOpenRequests propagation', () => {
       log: [],
     });
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (data) => events.push(data),
       onError: () => {},
@@ -546,6 +561,7 @@ describe('browserOpenRequests propagation', () => {
       browserOpenRequests: [{ requestId: 'r2', url: 'https://y' }], cancellable: true, log: [],
     });
     const poller = createListPoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (data) => events.push(data),
       onError: () => {},
@@ -576,6 +592,7 @@ describe('autoResumeScheduled propagation', () => {
       log: [],
     });
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (data) => events.push(data),
       onError: () => {},
@@ -605,6 +622,7 @@ describe('resurrect fields propagation', () => {
     const rootId = await insertRoot({ supportsResurrect: true, hasUnsavedWork: true, resurrecting: true });
     const events: any[] = [];
     const poller = createTreePoller({
+      visibility: null,
       db, prefix: PREFIX, sendEvent: (d) => events.push(d), onError: () => {},
       rootId: rootId.toString(), baseDepth: 0,
     });
@@ -621,6 +639,7 @@ describe('resurrect fields propagation', () => {
     await insertRoot({});
     const events: any[] = [];
     const poller = createListPoller({
+      visibility: null,
       db, prefix: PREFIX, sendEvent: (e) => events.push(e), onError: () => {},
     });
     poller.start();
@@ -638,7 +657,7 @@ describe('resurrect fields propagation', () => {
       const rootId = await insertRoot({ supportsResurrect: true, hasUnsavedWork: true });
       const updates: any[] = [];
       const sendEvent = (e: any) => { if (e.type === 'update') updates.push(e); };
-      const base = { db, prefix: PREFIX, sendEvent, onError: () => {} };
+      const base = { db, prefix: PREFIX, sendEvent, onError: () => {}, visibility: null };
       const { createMultiTreePoller } = await import('../stream-poller.js');
       const poller = kind === 'list'
         ? createListPoller(base)
@@ -716,6 +735,7 @@ describe('createListPoller reads only what it sends', () => {
     const findOptions: any[] = [];
     const events: any[] = [];
     const poller = createListPoller({
+      visibility: null,
       db: recordingDb(findOptions), prefix: PREFIX,
       sendEvent: (e) => events.push(e),
       onError: () => {},
@@ -731,6 +751,7 @@ describe('createListPoller reads only what it sends', () => {
     const oid = await insertBusyProc();
     const events: any[] = [];
     const poller = createListPoller({
+      visibility: null,
       db, prefix: PREFIX,
       sendEvent: (e) => events.push(e),
       onError: () => {},
