@@ -251,6 +251,103 @@ describe('findReadableProcess', () => {
   });
 });
 
+// M8: findScopedProcess/findActionTarget already check the input's own
+// `visibility` (ProcessReads.visibility) once; findReadableProcess/
+// gateProcess used to check `access.visibility` again unconditionally,
+// a second `countDocuments` for the common case where they are the same
+// predicate. Skipped when `reads.visibility === access.visibility` (object
+// identity, or both null); kept when they differ (a plain `Collection`
+// paired with a visibility-bearing `Access`, the compatibility path).
+describe('one visibility check per lookup (M8)', () => {
+  /** Wraps `col()` to count `countDocuments` calls. */
+  function countingCollection(): { col: typeof import('mongodb').Collection.prototype; calls: { count: number } } {
+    const calls = { count: 0 };
+    const target = col();
+    const wrapped = new Proxy(target, {
+      get(obj, prop, receiver) {
+        if (prop === 'countDocuments') {
+          return (...args: any[]) => {
+            calls.count++;
+            return (obj.countDocuments as any)(...args);
+          };
+        }
+        return Reflect.get(obj, prop, receiver);
+      },
+    });
+    return { col: wrapped as any, calls };
+  }
+
+  describe('findReadableProcess', () => {
+    it('given a ProcessReads carrying the same visibility: one check, still 404/visible correctly', async () => {
+      const hidden = await insertProcess({ metadata: { ownerId: 'u2' } });
+      const visible = await insertProcess({ metadata: { ownerId: 'u1' } });
+      const visibility = eq('ownerId', 'u1');
+      const { col: spyCol, calls } = countingCollection();
+      const reads = processReadsOf(spyCol, visibility);
+      const a = { scope: null, visibility };
+
+      expect(await findReadableProcess(reads, hidden._id.toHexString(), a)).toBeNull();
+      expect(calls.count).toBe(1);
+
+      calls.count = 0;
+      expect((await findReadableProcess(reads, visible._id.toHexString(), a))?._id).toEqual(visible._id);
+      expect(calls.count).toBe(1);
+    });
+
+    it('given a plain Collection (compatibility path): one check, still 404/visible correctly', async () => {
+      const hidden = await insertProcess({ metadata: { ownerId: 'u2' } });
+      const visible = await insertProcess({ metadata: { ownerId: 'u1' } });
+      const visibility = eq('ownerId', 'u1');
+      const { col: spyCol, calls } = countingCollection();
+      const a = { scope: null, visibility };
+
+      expect(await findReadableProcess(spyCol, hidden._id.toHexString(), a)).toBeNull();
+      expect(calls.count).toBe(1);
+
+      calls.count = 0;
+      expect((await findReadableProcess(spyCol, visible._id.toHexString(), a))?._id).toEqual(visible._id);
+      expect(calls.count).toBe(1);
+    });
+  });
+
+  describe('gateProcess', () => {
+    it('given a ProcessReads carrying the same visibility: one check, still 404s a hidden process', async () => {
+      const hidden = await insertProcess({ metadata: { ownerId: 'u2' } });
+      const visibility = eq('ownerId', 'u1');
+      const { col: spyCol, calls } = countingCollection();
+      const reads = processReadsOf(spyCol, visibility);
+      const a = access(null, true, visibility);
+
+      expect(await gateProcess(reads, hidden._id.toHexString(), a, 'launch')).toEqual({ ok: false, status: 404 });
+      expect(calls.count).toBe(1);
+      expect(a.authorize).not.toHaveBeenCalled();
+    });
+
+    it('given a ProcessReads carrying the same visibility: one check on the success path too', async () => {
+      const visible = await insertProcess({ metadata: { ownerId: 'u1' } });
+      const visibility = eq('ownerId', 'u1');
+      const { col: spyCol, calls } = countingCollection();
+      const reads = processReadsOf(spyCol, visibility);
+      const a = access(null, true, visibility);
+
+      const result = await gateProcess(reads, visible._id.toHexString(), a, 'launch');
+      expect(result.ok).toBe(true);
+      expect(calls.count).toBe(1);
+    });
+
+    it('given a plain Collection (compatibility path): one check, still 404s a hidden process', async () => {
+      const hidden = await insertProcess({ metadata: { ownerId: 'u2' } });
+      const visibility = eq('ownerId', 'u1');
+      const { col: spyCol, calls } = countingCollection();
+      const a = access(null, true, visibility);
+
+      expect(await gateProcess(spyCol, hidden._id.toHexString(), a, 'launch')).toEqual({ ok: false, status: 404 });
+      expect(calls.count).toBe(1);
+      expect(a.authorize).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe('toProcessRef', () => {
   it('exposes ids, name and metadata only', async () => {
     const root = await insertProcess({ metadata: { customerId: 1 } });

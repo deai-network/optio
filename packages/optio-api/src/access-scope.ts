@@ -88,6 +88,13 @@ export async function findScopedProcess(
 /**
  * Look a process up by either id form; outside the scope or hidden by the
  * visibility predicate it is not found (the same answer as a missing one).
+ * `findScopedProcess` already checks `reads.visibility`; the explicit check
+ * here against `access.visibility` is skipped when it is the very same
+ * predicate (`reads.visibility === access.visibility`, as object identity,
+ * or both `null`) -- one `countDocuments` per lookup, not two. It still
+ * runs when they differ, e.g. a plain `Collection` given together with a
+ * visibility-bearing `access` (the compatibility path), where
+ * `reads.visibility` is `null` and carries no check of its own.
  */
 export async function findReadableProcess(
   input: Collection | ProcessReads,
@@ -97,6 +104,7 @@ export async function findReadableProcess(
   const reads = asReads(input);
   const doc = await findScopedProcess(reads, id, access.scope);
   if (!doc) return null;
+  if (reads.visibility === access.visibility) return doc;
   return (await isVisible(reads.unfiltered, doc, access.visibility)) ? doc : null;
 }
 
@@ -141,7 +149,10 @@ export async function findActionTarget(
  * (else 403). Unrestricted access skips the lookup, leaving everything to
  * the engine as before. The target is found by `findActionTarget`, so a
  * duplicated `processId` is judged by its newest document, the one the
- * engine acts on.
+ * engine acts on. `findActionTarget` already checks `reads.visibility`;
+ * the explicit check below against `access.visibility` is skipped when it
+ * is the same predicate as `reads.visibility` (object identity, or both
+ * `null`) -- see `findReadableProcess` for the same rule.
  */
 export async function gateProcess(
   input: Collection | ProcessReads,
@@ -152,10 +163,11 @@ export async function gateProcess(
   if (!access.restricted) return { ok: true, doc: null };
   const reads = asReads(input);
   const doc = await findActionTarget(reads, id);
+  const visibilityAlreadyChecked = !!doc && reads.visibility === access.visibility;
   if (
     !doc ||
     !(await inScope(reads, doc, access.scope)) ||
-    !(await isVisible(reads.unfiltered, doc, access.visibility))
+    (!visibilityAlreadyChecked && !(await isVisible(reads.unfiltered, doc, access.visibility)))
   ) {
     return { ok: false, status: 404 };
   }
