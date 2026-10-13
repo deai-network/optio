@@ -3,6 +3,7 @@ import { ProcessMetadataFilterLegacySchema } from 'optio-contracts';
 import type { ProcessMetadataFilter } from './types.js';
 import type { Access, OptioAction, ProcessRef, ScopeFilter } from './auth.js';
 import { findProcessByEitherId } from './process-id-resolver.js';
+import { isVisible } from './visibility.js';
 
 /** `{ k: v }` -> `{ 'metadata.k': v }`: exact-match equality on metadata. */
 export function scopeToMongo(scope: ScopeFilter | null): Record<string, unknown> {
@@ -57,6 +58,20 @@ export async function findScopedProcess(
   return (await inScope(col, doc, scope)) ? doc : null;
 }
 
+/**
+ * Look a process up by either id form; outside the scope or hidden by the
+ * visibility predicate it is not found (the same answer as a missing one).
+ */
+export async function findReadableProcess(
+  col: Collection,
+  id: string,
+  access: Pick<Access, 'scope' | 'visibility'>,
+): Promise<Document | null> {
+  const doc = await findScopedProcess(col, id, access.scope);
+  if (!doc) return null;
+  return (await isVisible(col, doc, access.visibility)) ? doc : null;
+}
+
 export function toProcessRef(doc: Document): ProcessRef {
   return {
     _id: doc._id.toString(),
@@ -84,10 +99,12 @@ export async function findActionTarget(col: Collection, id: string): Promise<Doc
 }
 
 /**
- * Admit a single-process action: the process must exist, be in scope (else
- * 404, its existence is not revealed) and pass `authorize` (else 403).
- * Unrestricted access skips the lookup, leaving everything to the engine as
- * before. The target is found by `findActionTarget`.
+ * Admit a single-process action: the process must exist, be in scope and
+ * visible (else 404, its existence is not revealed) and pass `authorize`
+ * (else 403). Unrestricted access skips the lookup, leaving everything to
+ * the engine as before. The target is found by `findActionTarget`, so a
+ * duplicated `processId` is judged by its newest document, the one the
+ * engine acts on.
  */
 export async function gateProcess(
   col: Collection,
@@ -97,7 +114,13 @@ export async function gateProcess(
 ): Promise<GateResult> {
   if (!access.restricted) return { ok: true, doc: null };
   const doc = await findActionTarget(col, id);
-  if (!doc || !(await inScope(col, doc, access.scope))) return { ok: false, status: 404 };
+  if (
+    !doc ||
+    !(await inScope(col, doc, access.scope)) ||
+    !(await isVisible(col, doc, access.visibility))
+  ) {
+    return { ok: false, status: 404 };
+  }
   if (!(await access.authorize({ action, process: toProcessRef(doc) }))) {
     return { ok: false, status: 403 };
   }

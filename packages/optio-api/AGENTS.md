@@ -118,16 +118,20 @@ defense in depth.
 
 ## Access scope and authorization
 
-Two optional hooks, accepted by all four adapters next to `authenticate`, let
-a multi-tenant host confine each request to its tenant's processes and decide
-individual actions. Types live in `auth.ts`; the shared enforcement in
-`access-scope.ts` and the handlers.
+Three optional hooks, accepted by all four adapters next to `authenticate`, let
+a multi-tenant host confine each request to its tenant's processes, hide
+individual processes from it, and decide individual actions. Types live in
+`auth.ts`; the shared enforcement in `access-scope.ts`, `visibility.ts` and the
+handlers.
 
 ```typescript
 type ScopeFilter = Record<string, string | number | boolean | null>;
 type ScopeCallback<TRequest> = (req: TRequest) => ScopeFilter | null | Promise<ScopeFilter | null>;
 
-type OptioAction = 'read' | 'launch' | 'cancel' | 'dismiss' | 'resurrect' | 'resync'
+type VisibilityCallback<TRequest> =
+  (req: TRequest) => ProcessMetadataFilter | null | Promise<ProcessMetadataFilter | null>;
+
+type OptioAction = 'launch' | 'cancel' | 'dismiss' | 'resurrect' | 'resync'
   | 'widget' | 'widget-control' | 'widget-upload' | 'instances';
 interface ProcessRef { _id: string; processId: string; name: string; parentId?: string; rootId: string; metadata: Record<string, unknown> }
 interface AuthorizeInput {
@@ -142,12 +146,29 @@ type AuthorizeCallback<TRequest> = (req: TRequest, input: AuthorizeInput) => boo
 `'resurrect'` is a single-process action like `'launch'`: `authorize` receives the
 target `process`. `'widget'` also gates `GET /api/processes/:id/conversation` (reading
 a suspended process's conversation record), with the target `process`.
+`OptioAction` has no `'read'` member: it was declared but never passed to
+`authorize`; a host that matched on `case 'read':` gets a compile error
+pointing it at `visibility` instead.
 
 **`scope(req)`** returns a flat exact-match metadata map, or `null` / `{}` for
 an unscoped request. A process is in scope when every key equals its
 `metadata` value (strict equality); a process whose own metadata lacks a key is
 judged by its root's; one whose root lacks it too is out (fail closed).
-Enforcement:
+
+**`visibility(req)`** returns a metadata predicate in optio's filter language
+(the same one `metadataFilter` uses — `and`/`or`/`not`/`leaf`/`eq`/`ne`/`isIn`/
+`notIn`/`exists`/`gt`/`gte`/`lt`/`lte`, re-exported by `optio-api` for hosts that
+write one), or `null` / `undefined` / `{}` for no restriction. A process is
+visible when its own `metadata` satisfies the predicate; children inherit
+their parent's metadata at creation, so there is no root fallback. A missing
+metadata key follows MongoDB's rules, deliberately: `eq('ownerId', me)` does
+not match a process without an `ownerId` (fails closed), while `ne`, `notIn`
+and `not(...)` do match it. A predicate that fails `ProcessMetadataFilterSchema`
+fails the whole request (the promise rejects) rather than passing through
+unfiltered. Excavator's rule, for illustration:
+`visibility: (req) => or(not(eq('kind', 'data-chat')), eq('ownerId', userIdOf(req)))`.
+
+`scope`'s enforcement, unchanged by `visibility`:
 
 | Route | Out of scope |
 |---|---|
@@ -159,27 +180,41 @@ Enforcement:
 | widget proxy, `widget-control`, `widget-upload` (Fastify) | the route's not-found response |
 | `POST /api/processes/resync` | runs with the client's flat filter plus the scope keys (the engine filters regenerated tasks and pruned records by it); 403 if the filter contradicts the scope, 400 for a predicate-tree filter |
 
-**`authorize(req, input)`** runs after the scope check for launch, cancel,
-dismiss, resurrect, resync, the three widget routes, the conversation read (as
+**`authorize(req, input)`** runs only after a process is confirmed in scope
+and (where checked) visible: a process the request cannot see is a 404
+*before* `authorize` is asked, not a 403. It runs for launch, cancel, dismiss,
+resurrect, resync, the three widget routes, the conversation read (as
 `'widget'`) and `GET /api/optio/instances`; `false` gives **403**
-`{ message: 'Forbidden' }` (the conversation read: `{ reason: 'forbidden', message: 'Forbidden' }`)
-and the engine is not called.
+`{ message: 'Forbidden' }` (the conversation read: `{ reason: 'forbidden',
+message: 'Forbidden' }`) and the engine is not called.
 
-Without either hook behaviour is exactly as before: commands go straight to
-the engine and no extra lookups run.
+Without any hook behaviour is exactly as before: commands go straight to
+the engine and no extra lookups run. With `scope` only or `authorize` only,
+behaviour is unchanged as well — `visibility` is strictly additive.
+
+**Where `visibility` is checked today.** `gateProcess` — the single-process
+action gate behind launch, cancel, dismiss, resurrect, the three widget routes
+and the conversation read — checks `access.visibility` right alongside
+`access.scope`, before `authorize` is asked: a hidden process is a 404 the
+same as an out-of-scope one, including when a duplicated `processId` resolves
+(as the engine does) to a newest document that is hidden while an older one
+of the same `processId` is visible. The list, single reads, trees, logs and
+streams do not consult `visibility` yet — `findReadableProcess` below is the
+building block for that, wired into the handlers in a later change.
 
 Per request, `checkAuth` records the authenticated role (keyed by the native
 request object) and `accessFor(req, hooks)` resolves the hooks once into an
-`Access` (`{ restricted, scope, authorize }`) that adapters pass to the
-handlers. The Next.js adapters carry it into the ts-rest routes through an
-`AsyncLocalStorage`, because ts-rest's Next handlers see their own request
-objects. Custom adapters: call `checkAuth`, then `accessFor`, then pass the
-`Access` as the handlers' trailing argument and use `findScopedProcess` /
-`gateProcess` / `gateInstances` for routes outside the handlers.
+`Access` (`{ restricted, scope, visibility, authorize }`) that adapters pass to
+the handlers. `hasAccessHooks(hooks)` is true when any of `scope`, `visibility`
+or `authorize` is set; `resolveAccess` and `accessFor` use it to decide whether
+to do any work at all. The Next.js adapters carry `Access` into the ts-rest
+routes through an `AsyncLocalStorage`, because ts-rest's Next handlers see
+their own request objects. Custom adapters: call `checkAuth`, then `accessFor`,
+then pass the `Access` as the handlers' trailing argument and use
+`findScopedProcess` / `findReadableProcess` / `gateProcess` / `gateInstances`
+for routes outside the handlers.
 
-**Visibility helpers (for custom adapters; `visibility.ts`).** Pure helpers for a
-forthcoming per-request `visibility` hook (a metadata predicate, next to `scope`
-and `authorize`); not yet wired into `AccessHooks` or any route.
+**Visibility helpers (for custom adapters; `visibility.ts`).**
 `normalizeVisibility(raw)` validates a hook's return value: `null`, `undefined`
 and `{}` normalize to `null` (no restriction); anything else is parsed with
 `ProcessMetadataFilterSchema` (same schema `metadataFilter` uses, so a legacy flat
@@ -190,7 +225,11 @@ a Mongo filter fragment and `$and` it into a base filter, the same shape as
 document by a Mongo count query (never a JS copy of the semantics); `null`
 admits everything without issuing a query. `pruneOrphans(docs, keep?)` drops tree
 children whose parent chain doesn't resolve to a kept root, preserving input
-order and memoising per id.
+order and memoising per id. `findReadableProcess(col, id, access)` (in
+`access-scope.ts`) looks a process up by either id form under both `scope` and
+`visibility`, returning `null` for a process that fails either — the single-read
+building block the handlers use; not yet wired into any route (the handlers
+and adapters come in a later change).
 
 ## Fastify Adapter
 

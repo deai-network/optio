@@ -842,8 +842,10 @@ export { resolveConversationArchive, forgetConversationArchive, fetchConversatio
 
 // Scope helpers (for custom adapters). findActionTarget(col, id): the document a
 // single-process action targets, by _id for a 24-hex id, else by processId (a
-// duplicated processId resolves to the newest document, as the engine does)
-export { findActionTarget } from 'optio-api';
+// duplicated processId resolves to the newest document, as the engine does).
+// findReadableProcess(col, id, access): the same lookup, additionally null when
+// the document fails `access.visibility` (not yet wired into the handlers).
+export { findActionTarget, findReadableProcess } from 'optio-api';
 
 // Visibility helpers (for custom adapters). normalizeVisibility(raw): validate a
 // visibility hook's return value (null/undefined/{} -> null, else parsed with
@@ -851,9 +853,14 @@ export { findActionTarget } from 'optio-api';
 // andVisibility: the predicate's Mongo filter fragment, ANDed into a base filter like
 // andScope; isVisible(col, doc, visibility): whether one document satisfies the
 // predicate, judged in Mongo; pruneOrphans(docs, keep?): drop tree children whose
-// parent chain doesn't resolve to a kept root. Not yet wired into any hook.
+// parent chain doesn't resolve to a kept root. Wired into AccessHooks (the `visibility`
+// hook) and gateProcess (the single-process action gate); not yet wired into the list,
+// single-read, tree or stream handlers.
 export { normalizeVisibility, visibilityToMongo, andVisibility, isVisible,
          pruneOrphans } from 'optio-api';
+
+// Predicate builders (for writing a visibility hook), re-exported from optio-contracts
+export { and, or, not, leaf, eq, ne, isIn, notIn, exists, gt, gte, lt, lte } from 'optio-api';
 
 // Layered RPC access
 //   Layer 1 (Transport cache): createOptioTransports / OptioTransports
@@ -910,11 +917,21 @@ interface ExplicitOptioApiOptions {
 // contradicting the scope is 403, a predicate tree 400.
 //
 // authorize(req, { role, action, process?, metadataFilter?, clean? }) -> boolean:
-// called after the scope check for launch/cancel/dismiss/resurrect/resync, the
-// three widget routes and instance discovery; false gives 403 { message: 'Forbidden' }.
-// action 'resurrect' is a single-process action like 'launch' (input.process set).
+// called only after a process is confirmed in scope and (where checked) visible —
+// a process the request cannot see is a 404 before authorize is asked, not a 403.
+// Runs for launch/cancel/dismiss/resurrect/resync, the three widget routes and
+// instance discovery; false gives 403 { message: 'Forbidden' }. action 'resurrect'
+// is a single-process action like 'launch' (input.process set). OptioAction has no
+// 'read' member: it was declared but never passed to authorize.
 //
 // Without scope/authorize nothing changes (no extra lookups).
+//
+// AccessHooks also gains a `visibility` hook (a per-request metadata predicate,
+// `VisibilityCallback<TRequest>`; see packages/optio-api/AGENTS.md "Access scope
+// and authorization"): `Access` carries it and gateProcess (the single-process
+// action gate) checks it before authorize, 404ing a hidden process the same as an
+// out-of-scope one. It is not yet exposed as an adapter option (OptioApiOptions
+// above), and the list/single-read/tree/stream handlers don't consult it yet.
 ```
 
 ### Fastify Adapter

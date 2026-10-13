@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
+import { eq } from 'optio-contracts';
 import {
   andScope,
+  findReadableProcess,
   findScopedProcess,
   gateInstances,
   gateProcess,
@@ -54,9 +56,13 @@ async function insertProcess(fields: Record<string, unknown> = {}) {
   return doc as any;
 }
 
-function access(scope: Access['scope'], allow: boolean | ((input: any) => boolean) = true): Access {
+function access(
+  scope: Access['scope'],
+  allow: boolean | ((input: any) => boolean) = true,
+  visibility: Access['visibility'] = null,
+): Access {
   const authorize = vi.fn(async (input: any) => (typeof allow === 'function' ? allow(input) : allow));
-  return { restricted: true, scope, authorize };
+  return { restricted: true, scope, visibility, authorize };
 }
 
 describe('scopeToMongo / andScope', () => {
@@ -157,6 +163,49 @@ describe('gateProcess', () => {
     await insertProcess({ processId: 'dup', metadata: { customerId: 1 } });
     const result = await gateProcess(col(), 'dup', access({ customerId: 1 }), 'launch');
     expect(result.ok).toBe(true);
+  });
+
+  it('404s a hidden process without asking authorize', async () => {
+    const p = await insertProcess({ metadata: { ownerId: 'u2' } });
+    const a = access(null, true, eq('ownerId', 'u1'));
+    expect(await gateProcess(col(), p._id.toHexString(), a, 'launch')).toEqual({ ok: false, status: 404 });
+    expect(a.authorize).not.toHaveBeenCalled();
+  });
+
+  it('403s a visible process that authorize denies', async () => {
+    const p = await insertProcess({ metadata: { ownerId: 'u1' } });
+    const a = access(null, false, eq('ownerId', 'u1'));
+    expect(await gateProcess(col(), p._id.toHexString(), a, 'cancel')).toEqual({ ok: false, status: 403 });
+    expect(a.authorize).toHaveBeenCalledWith({ action: 'cancel', process: toProcessRef(p) });
+  });
+
+  it('404s a duplicated processId whose newest document is hidden, even though an older one is visible', async () => {
+    await insertProcess({ processId: 'dup', metadata: { ownerId: 'u1' } });
+    await insertProcess({ processId: 'dup', metadata: { ownerId: 'u2' } });
+    const a = access(null, true, eq('ownerId', 'u1'));
+    expect(await gateProcess(col(), 'dup', a, 'launch')).toEqual({ ok: false, status: 404 });
+    expect(a.authorize).not.toHaveBeenCalled();
+  });
+});
+
+describe('findReadableProcess', () => {
+  it('is null for a hidden process, by _id and by processId', async () => {
+    const p = await insertProcess({ metadata: { ownerId: 'u2' } });
+    const a = { scope: null, visibility: eq('ownerId', 'u1') };
+    expect(await findReadableProcess(col(), p._id.toHexString(), a)).toBeNull();
+    expect(await findReadableProcess(col(), p.processId, a)).toBeNull();
+  });
+
+  it('returns the document for a visible process', async () => {
+    const p = await insertProcess({ metadata: { ownerId: 'u1' } });
+    const a = { scope: null, visibility: eq('ownerId', 'u1') };
+    expect((await findReadableProcess(col(), p._id.toHexString(), a))?._id).toEqual(p._id);
+  });
+
+  it('still applies scope', async () => {
+    const p = await insertProcess({ metadata: { customerId: 0, ownerId: 'u1' } });
+    const a = { scope: { customerId: 1 }, visibility: eq('ownerId', 'u1') };
+    expect(await findReadableProcess(col(), p._id.toHexString(), a)).toBeNull();
   });
 });
 
@@ -259,5 +308,46 @@ describe('resolveAccess / accessFor', () => {
 
   it('refuses to resolve access for a request that was never authenticated', () => {
     expect(() => accessFor({}, { scope: () => null })).toThrow(/before checkAuth/);
+  });
+
+  it('is restricted with only a visibility hook, scope null, visibility the hook predicate', async () => {
+    const predicate = eq('ownerId', 'u1');
+    const a = await resolveAccess({ visibility: () => predicate }, {}, 'operator');
+    expect(a.restricted).toBe(true);
+    expect(a.scope).toBeNull();
+    expect(a.visibility).toEqual(predicate);
+  });
+
+  it('resolves an async visibility hook', async () => {
+    const predicate = eq('ownerId', 'u1');
+    const a = await resolveAccess({ visibility: async () => predicate }, {}, 'operator');
+    expect(a.visibility).toEqual(predicate);
+  });
+
+  it('treats a null or empty-map visibility hook as no restriction', async () => {
+    const a = await resolveAccess({ visibility: () => null }, {}, 'operator');
+    expect(a.visibility).toBeNull();
+    const b = await resolveAccess({ visibility: () => ({}) }, {}, 'operator');
+    expect(b.visibility).toBeNull();
+  });
+
+  it('rejects when the visibility hook returns an invalid predicate', async () => {
+    await expect(resolveAccess({ visibility: () => ({ AND: [] } as any) }, {}, 'operator')).rejects.toThrow(
+      /invalid metadata predicate/,
+    );
+  });
+
+  it('keeps a legacy flat map from the visibility hook', async () => {
+    const a = await resolveAccess({ visibility: () => ({ ownerId: 'u1' }) }, {}, 'operator');
+    expect(a.visibility).toEqual({ ownerId: 'u1' });
+  });
+
+  it('resolves the visibility hook once per request', async () => {
+    const req = {};
+    const visibility = vi.fn(async () => eq('ownerId', 'u1'));
+    await checkAuth(req, () => 'operator', false);
+    await accessFor(req, { visibility });
+    await accessFor(req, { visibility });
+    expect(visibility).toHaveBeenCalledTimes(1);
   });
 });

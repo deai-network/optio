@@ -131,7 +131,7 @@ function restricted(
   authorize: (input: Omit<AuthorizeInput, 'role'>) => boolean,
   scope: Access['scope'] = null,
 ): Access & { authorize: ReturnType<typeof vi.fn> } {
-  return { restricted: true, scope, authorize: vi.fn(async (input) => authorize(input)) };
+  return { restricted: true, scope, visibility: null, authorize: vi.fn(async (input) => authorize(input)) };
 }
 
 const RECORD = { events: [[1, { type: 'user', text: 'hi' }], [2, { type: 'assistant', text: 'yo' }]], capturedAt: '2026-10-12T10:00:00+00:00' };

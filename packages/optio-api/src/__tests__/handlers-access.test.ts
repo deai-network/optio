@@ -61,7 +61,7 @@ function makeCtx(engine: any): OptioContext {
 }
 
 function scoped(customerId: number, allow = true): Access {
-  return { restricted: true, scope: { customerId }, authorize: vi.fn(async () => allow) };
+  return { restricted: true, scope: { customerId }, visibility: null, authorize: vi.fn(async () => allow) };
 }
 
 async function insertTree(customerId: number) {

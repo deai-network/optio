@@ -1,3 +1,6 @@
+import { normalizeVisibility } from './visibility.js';
+import type { ProcessMetadataFilter } from './types.js';
+
 export type OptioRole = 'viewer' | 'operator';
 
 export type AuthCallback<TRequest> =
@@ -30,7 +33,6 @@ export async function checkAuth<TRequest>(
 export type ScopeFilter = Record<string, string | number | boolean | null>;
 
 export type OptioAction =
-  | 'read'
   | 'launch' | 'cancel' | 'dismiss' | 'resurrect' | 'resync'
   | 'widget' | 'widget-control' | 'widget-upload'
   | 'instances';
@@ -63,26 +65,50 @@ export interface AuthorizeInput {
 export type ScopeCallback<TRequest> =
   (req: TRequest) => ScopeFilter | null | Promise<ScopeFilter | null>;
 
-/** Decides a mutating action (and instance discovery); `false` gives 403. */
+/**
+ * Which processes this request may know about: a metadata predicate in
+ * optio's filter language (the same one `metadataFilter` uses), resolved
+ * once per request, together with `scope`. `null`, `undefined` and `{}`
+ * mean no restriction. A missing metadata key follows MongoDB's rules: a
+ * leaf like `eq('ownerId', me)` does not match it (fails closed), while
+ * `ne`, `notIn` and `not(...)` do. An invalid predicate fails the request.
+ */
+export type VisibilityCallback<TRequest> =
+  (req: TRequest) => ProcessMetadataFilter | null | Promise<ProcessMetadataFilter | null>;
+
+/**
+ * Decides what a request may do to a process it can see (actions, widget
+ * access, the saved conversation), plus resync and instance discovery;
+ * `false` gives 403. A process the request cannot see is a 404 before
+ * `authorize` is asked.
+ */
 export type AuthorizeCallback<TRequest> =
   (req: TRequest, input: AuthorizeInput) => boolean | Promise<boolean>;
 
 export interface AccessHooks<TRequest> {
   scope?: ScopeCallback<TRequest>;
+  visibility?: VisibilityCallback<TRequest>;
   authorize?: AuthorizeCallback<TRequest>;
+}
+
+/** True when any of `scope`, `visibility` or `authorize` is set. */
+export function hasAccessHooks<TRequest>(hooks: AccessHooks<TRequest>): boolean {
+  return !!(hooks.scope || hooks.visibility || hooks.authorize);
 }
 
 /** Framework-agnostic access for one request; handlers take this. */
 export interface Access {
-  /** False when the host passed neither hook: handlers skip every check. */
+  /** False when the host passed no hook: handlers skip every check. */
   restricted: boolean;
   scope: ScopeFilter | null;
+  visibility: ProcessMetadataFilter | null;
   authorize(input: Omit<AuthorizeInput, 'role'>): Promise<boolean>;
 }
 
 export const UNRESTRICTED: Access = Object.freeze({
   restricted: false,
   scope: null,
+  visibility: null,
   authorize: async () => true,
 });
 
@@ -91,13 +117,15 @@ export async function resolveAccess<TRequest>(
   req: TRequest,
   role: OptioRole,
 ): Promise<Access> {
-  if (!hooks.scope && !hooks.authorize) return UNRESTRICTED;
+  if (!hasAccessHooks(hooks)) return UNRESTRICTED;
   const raw = hooks.scope ? await hooks.scope(req) : null;
   const scope = raw && Object.keys(raw).length > 0 ? raw : null;
+  const visibility = normalizeVisibility(hooks.visibility ? await hooks.visibility(req) : null);
   const authorize = hooks.authorize;
   return {
     restricted: true,
     scope,
+    visibility,
     authorize: authorize
       ? async (input) => (await authorize(req, { ...input, role })) === true
       : async () => true,
@@ -115,7 +143,7 @@ export function accessFor<TRequest extends object>(
   req: TRequest,
   hooks: AccessHooks<TRequest>,
 ): Promise<Access> {
-  if (!hooks.scope && !hooks.authorize) return Promise.resolve(UNRESTRICTED);
+  if (!hasAccessHooks(hooks)) return Promise.resolve(UNRESTRICTED);
   const cached = requestAccess.get(req);
   if (cached) return cached;
   const role = requestRoles.get(req);

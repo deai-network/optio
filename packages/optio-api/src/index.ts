@@ -35,11 +35,12 @@ export {
   type ConversationFetchResult,
 } from './conversation-archive.js';
 
-// Authentication + per-request access (scope / authorize hooks)
+// Authentication + per-request access (scope / visibility / authorize hooks)
 export {
   checkAuth,
   accessFor,
   resolveAccess,
+  hasAccessHooks,
   UNRESTRICTED,
   type OptioRole,
   type AuthCallback,
@@ -48,6 +49,7 @@ export {
   type AccessHooks,
   type ScopeCallback,
   type ScopeFilter,
+  type VisibilityCallback,
   type AuthorizeCallback,
   type AuthorizeInput,
   type OptioAction,
@@ -59,6 +61,7 @@ export {
   scopeToMongo,
   inScope,
   findScopedProcess,
+  findReadableProcess,
   gateProcess,
   findActionTarget,
   gateInstances,
@@ -78,6 +81,9 @@ export {
   isVisible,
   pruneOrphans,
 } from './visibility.js';
+
+// Predicate builders (for visibility hooks)
+export { and, or, not, leaf, eq, ne, isIn, notIn, exists, gt, gte, lt, lte } from 'optio-contracts';
 
 // Stream poller (for custom adapters)
 export { createListPoller, createTreePoller, type StreamPollerOptions, type TreePollerOptions, type ListPollerHandle } from './stream-poller.js';
