@@ -475,5 +475,7 @@ export function createSessionEventsPoller(opts: SessionEventsPollerOptions): Lis
     }
   }
 
-  return driveByChanges(opts, read, (c) => sessionRelevant(c, sessionId, members));
+  return driveByChanges(
+    opts, read, (c) => sessionRelevant(c, sessionId, members, { metadataChanges: reads.visibility !== null }),
+  );
 }

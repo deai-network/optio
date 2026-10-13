@@ -115,8 +115,19 @@ export function treeRelevant(
   }
 }
 
-/** The session-events stream of `sessionId` (`members`: the ids it read). */
-export function sessionRelevant(c: ProcessChange, sessionId: string, members: Set<string>): boolean {
+/** The session-events stream of `sessionId` (`members`: the ids it read).
+ *  With `opts.metadataChanges` (a visibility predicate is active), a
+ *  metadata change is relevant even for a non-member, since it may make a
+ *  currently-hidden process visible -- and that process may already belong
+ *  to this session (`originatingSessionId` set before it became visible),
+ *  so without this a session whose member is hidden never re-reads once it
+ *  becomes visible. */
+export function sessionRelevant(
+  c: ProcessChange,
+  sessionId: string,
+  members: Set<string>,
+  opts?: { metadataChanges?: boolean },
+): boolean {
   switch (c.op) {
     case 'invalidate':
       return true;
@@ -127,6 +138,7 @@ export function sessionRelevant(c: ProcessChange, sessionId: string, members: Se
       return false; // a deleted process has no new events to send
     case 'update':
       return c.values.originatingSessionId === sessionId
-        || (members.has(c.id) && c.fields.has('sessionEvents'));
+        || (members.has(c.id) && c.fields.has('sessionEvents'))
+        || (opts?.metadataChanges === true && c.fields.has('metadata'));
   }
 }

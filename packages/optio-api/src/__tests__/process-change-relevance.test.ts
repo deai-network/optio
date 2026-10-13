@@ -94,6 +94,20 @@ describe('sessionRelevant', () => {
   it('re-reads on invalidate', () => {
     expect(sessionRelevant(INVALIDATE, 's1', members)).toBe(true);
   });
+
+  describe('with a visibility predicate active (opts.metadataChanges)', () => {
+    it('a metadata update of a non-member is relevant (it may become visible, joining the session)', () => {
+      expect(sessionRelevant(update('z', ['metadata']), 's1', members, { metadataChanges: true }))
+        .toBe(true);
+    });
+    it('without the flag, the same metadata update stays irrelevant, as today', () => {
+      expect(sessionRelevant(update('z', ['metadata']), 's1', members)).toBe(false);
+    });
+    it('a status update of a non-member stays irrelevant even with the flag', () => {
+      expect(sessionRelevant(update('z', ['status']), 's1', members, { metadataChanges: true }))
+        .toBe(false);
+    });
+  });
 });
 
 describe('toProcessChange', () => {

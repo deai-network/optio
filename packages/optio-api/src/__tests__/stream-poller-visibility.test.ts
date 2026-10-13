@@ -90,6 +90,44 @@ describe('createSessionEventsPoller visibility', () => {
       poller.stop();
     }
   });
+
+  // I2: sessionRelevant used to treat a metadata-only update of a non-member
+  // as irrelevant, so a process that joins the session (originatingSessionId
+  // set) before it becomes visible never got re-read once its metadata made
+  // it visible -- its events were silently stuck. With the relevance fix
+  // (`metadataChanges: reads.visibility !== null`), any metadata change
+  // re-reads, catching the process once it is both a session member and
+  // visible.
+  it('re-reads and delivers events once a hidden session member becomes visible', async () => {
+    const event = { type: 'open-browser', at: new Date(0).toISOString() };
+    const hidden = await insertProc({
+      originatingSessionId: 's1', metadata: { ownerId: 'u2' }, sessionEvents: [event],
+    });
+    // A visible member of the same session, whose event arriving is the
+    // signal that the poller's first read has already happened -- so the
+    // metadata update below lands after that first read, and only the
+    // relevance-driven re-read (not a lucky race with the initial read)
+    // can be what picks hidden up.
+    const sync = await insertProc({
+      originatingSessionId: 's1', metadata: { ownerId: 'u1' }, sessionEvents: [event],
+    });
+    const events: any[] = [];
+    const poller = createSessionEventsPoller({
+      db, prefix: PREFIX, sessionId: 's1', onError: () => {}, sendEvent: (e) => events.push(e), visibility,
+    });
+    poller.start();
+    try {
+      await waitUntil(() => events.some((e) => e.processId === sync.toHexString()));
+      expect(events.some((e) => e.processId === hidden.toHexString())).toBe(false);
+
+      await col().updateOne({ _id: hidden }, { $set: { 'metadata.ownerId': 'u1' } });
+      await waitUntil(() => events.some((e) => e.processId === hidden.toHexString()));
+      const hiddenEvent = events.find((e) => e.processId === hidden.toHexString());
+      expect(hiddenEvent.events).toEqual([event]);
+    } finally {
+      poller.stop();
+    }
+  }, 120_000);
 });
 
 describe('createTreePoller visibility', () => {
