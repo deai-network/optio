@@ -204,7 +204,6 @@ def test_todo_note_survives_when_the_task_framing_is_omitted():
     assert out.index("via the `todo_write` tool") < out.index("do X")
 
 
-
 # --- the regenerable-list paragraph and resume step --------------------
 
 

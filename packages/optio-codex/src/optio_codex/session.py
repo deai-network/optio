@@ -1013,9 +1013,9 @@ async def _capture_snapshot(
     """
     exclude = effective_workdir_exclude(workdir_exclude)
 
-    # The capture-cap decision's one-line note (at most one per capture, Task
-    # 3/4) has no process-log handle at the host layer, so it is forwarded
-    # here through ctx.report_progress, same as every other milestone line.
+    # The capture-cap decision's one-line note (at most one per capture) has
+    # no process-log handle at the host layer, so it is forwarded here
+    # through ctx.report_progress, same as every other milestone line.
     def _on_note(note: str, level: str) -> None:
         ctx.report_progress(None, note, level=level)
 

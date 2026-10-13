@@ -196,7 +196,7 @@ async def test_archive_progress_exclude_passed_through_unchanged():
 
 
 async def test_archive_on_note_reaches_process_log():
-    """``on_note`` is the cap decision's one-line note (Task 3/4). The
+    """``on_note`` is the cap decision's one-line note. The
     engine's ``_stream_archive_to_blob`` must forward it to the process log
     through ``ctx.report_progress`` — the same call it already uses for
     every other milestone line in this module — so a fake host that calls
