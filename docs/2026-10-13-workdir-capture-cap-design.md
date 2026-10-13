@@ -204,3 +204,35 @@ the measurement result, not by racing a real clock.
   covered on `LocalHost`.
 - **The instructions (optio-agents):** the paragraph and the resume step appear only when the
   task supports resume and the cap is not `0`. The rendered text names the configured cap.
+
+## Implementation notes (2026-10-14)
+
+Points the implementation had to settle that this design left open, without changing any
+decision above:
+
+- **The "size unknown" note names the real cause,** not just the timeout: `du` timed out, `du`
+  failed with a non-zero exit, `du` printed no size, or (the Python fallback) the walk timed
+  out. Each gives its own `workdir size unknown (<cause>)` note.
+- **The whole capture decision fails safe, not only the measurement.** Anything it raises — a
+  bad `OPTIO_WORKDIR_CAPTURE_MAX_MB`, the `du` run, the list read, a failed SSH channel or
+  `bash` spawn — is caught, logged at WARNING on `optio_host.archive` and handed to `on_note`
+  as `capture decision failed (<exception>); capturing everything`, and the capture leaves
+  nothing out: losing a shutdown snapshot to the decision itself is worse than capturing an
+  oversized one.
+- **The list read is bounded:** `[ -f regenerable.txt ] && timeout 1 head -c 65536 --
+  regenerable.txt` (the Python fallback opens the file non-blocking and reads the same 64 KiB,
+  regular files only). A last line the limit may have cut short is dropped, so a cut-off
+  `src/gen` can never exclude `./src`.
+- **An entry containing a NUL byte is dropped,** alongside the absolute, `..` and `.` cases
+  under "Sanitising" above — no real path can contain one, and exec would reject it anyway.
+- **The excludes applied to one archive are capped at 64 KiB of `--exclude=` arguments**
+  (Linux caps one `exec` argument at 128 KiB, and the archive runs as a single `bash -c`).
+  Entries are applied in listed order while they still fit; the note names how many more were
+  dropped, e.g. `(3 more ignored: list too long)`.
+- **An invalid setting is handled differently depending on when it is read.** Read at agent
+  launch (`compose_instructions_file` → `render_resume_section`), it raises the clear error
+  under "The setting" above. Read again at capture time, inside the fail-safe decision, the
+  same error instead falls back to a full capture, by the same reasoning as any other failed
+  decision.
+- **The engines forward the note the same way as every other milestone line:**
+  `ctx.report_progress(None, note)`.
