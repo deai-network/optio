@@ -333,6 +333,10 @@ describe('read handlers under visibility', () => {
   describe('getProcessTree and getProcessTreeLog', () => {
     // root: visible. child: hidden. grandchild: visible on its own metadata,
     // diverged from its (hidden) parent -- the spec's documented edge case.
+    // sibling: a second, directly-visible child of root (T3#4: a positive
+    // case -- without it, a regression that empties every tree under
+    // visibility would pass these tests unnoticed, since every other node
+    // here is expected to disappear).
     async function insertFixture() {
       const root = await insertProcess({
         metadata: { kind: 'other' },
@@ -348,32 +352,37 @@ describe('read handlers under visibility', () => {
         metadata: { kind: 'other' },
         log: [{ timestamp: new Date(3).toISOString(), level: 'info', message: 'grandchild' }],
       });
-      return { root, child, grandchild };
+      const sibling = await insertProcess({
+        rootId: root._id, parentId: root._id, depth: 1,
+        metadata: { kind: 'other' },
+        log: [{ timestamp: new Date(4).toISOString(), level: 'info', message: 'sibling' }],
+      });
+      return { root, child, grandchild, sibling };
     }
 
-    it('getProcessTree has no children for the fixture; a hidden root gives null', async () => {
-      const { root } = await insertFixture();
+    it('getProcessTree keeps the visible sibling and drops the hidden branch; a hidden root gives null', async () => {
+      const { root, sibling } = await insertFixture();
       const ctx = makeCtx(makeEngine());
       const access = visible(PREDICATE);
       const q = { prefix: PREFIX, limit: 50 };
       const tree: any = await getProcessTree(ctx, q, root._id.toHexString(), access);
       expect(tree).not.toBeNull();
-      expect(tree.children).toEqual([]);
+      expect(tree.children.map((c: any) => c._id)).toEqual([sibling._id.toString()]);
+      expect(tree.children[0].children).toEqual([]);
 
       const hiddenRoot = await insertProcess({ metadata: { kind: 'data-chat' } });
       expect(await getProcessTree(ctx, q, hiddenRoot._id.toHexString(), access)).toBeNull();
     });
 
-    it("getProcessTreeLog returns only the root's log lines; a hidden entry gives null", async () => {
+    it("getProcessTreeLog returns the root's and the visible sibling's log lines; a hidden entry gives null", async () => {
       const { root, child } = await insertFixture();
       const ctx = makeCtx(makeEngine());
       const access = visible(PREDICATE);
       const q = { prefix: PREFIX, limit: 50 };
       const log: any = await getProcessTreeLog(ctx, q, root._id.toHexString(), access);
       expect(log).not.toBeNull();
-      expect(log.totalCount).toBe(1);
-      expect(log.items).toHaveLength(1);
-      expect(log.items[0].message).toBe('root');
+      expect(log.totalCount).toBe(2);
+      expect(log.items.map((i: any) => i.message)).toEqual(['root', 'sibling']);
 
       expect(await getProcessTreeLog(ctx, q, child._id.toHexString(), access)).toBeNull();
     });
