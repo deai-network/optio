@@ -119,7 +119,7 @@ with `metadataFilterToMongo`. Where scope applies today, it is ANDed with the sc
 | `GET /processes/:id/tree` | A hidden entry point is a 404. The tree is built downward from the entry point, fetching only visible children, so a hidden process takes its subtree with it. |
 | `GET /processes/:id/tree/log` | A hidden entry point is a 404. The tree's processes are fetched with the condition and pruned (see Trees), and only the remaining processes' log lines go in. `totalCount` counts those lines. |
 | Action gate (`gateProcess`) | The lookup includes the condition. A hidden process is a 404 before `authorize` is asked; only a visible one goes to `authorize` (403 when it refuses). This covers launch, cancel, dismiss and resurrect, the widget proxy (HTTP and WebSocket), widget-control, widget-upload, and `GET /processes/:id/conversation`. |
-| Unaffected | Resync (not per-process; bounded by `scope`), `/optio/instances`, and everything when no hooks are passed. |
+| Unaffected | Resync (not per-process; bounded by `scope`), `/optio/instances`, and everything when no hooks are passed. **A clean resync (`clean: true`) deletes every root record its scope filter matches, hidden ones included** (owner ruling 2026-10-13): the host's `authorize('resync', { clean })` decides who may run one. A plain resync only regenerates, and prunes records whose task no longer exists. |
 
 ### Trees
 
