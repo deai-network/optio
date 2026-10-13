@@ -74,9 +74,13 @@ Wording, with the cap filled in:
 
 > **Keep `./regenerable.txt` current.** List in it anything big in the workdir that you could
 > regenerate quickly and completely: dependency installs, build outputs, caches, data you can
-> download again. One path per line, relative to the workdir; a `#` note after a path is fine (e.g.
-> `frontend/node_modules  # npm ci`). When the workdir is over 100 MB at snapshot time, these
-> paths are left out of the snapshot. Never list anything holding work you could not regenerate.
+> download again. One path per line, relative to the workdir (exact paths, no wildcards); a `#`
+> note after a path is fine (e.g. `frontend/node_modules  # npm ci`). When the workdir is over
+> 100 MB at snapshot time, these paths are left out of the snapshot. Never list anything holding
+> work you could not regenerate.
+
+"(exact paths, no wildcards)" was added after the final review (2026-10-14), so the instruction
+matches the file format's "No globs" above.
 
 The resume steps (`_resume_steps`) gain one step, rendered under the same condition:
 

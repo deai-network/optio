@@ -211,6 +211,7 @@ def test_todo_note_survives_when_the_task_framing_is_omitted():
 def test_regenerable_paragraph_and_step_render_at_the_given_cap():
     out = _c(capture_max_bytes=100 * _MIB)
     assert "**Keep `./regenerable.txt` current.**" in out
+    assert "relative to the workdir (exact paths, no wildcards); a `#` note" in out
     assert "over 100 MB at snapshot time" in out
     assert (
         "If paths listed in `./regenerable.txt` are missing, regenerate "

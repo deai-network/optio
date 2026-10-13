@@ -400,10 +400,10 @@ the workdir capture cap design (`docs/2026-10-13-workdir-capture-cap-design.md`)
   > **Keep `./regenerable.txt` current.** List in it anything big in the
   > workdir that you could regenerate quickly and completely: dependency
   > installs, build outputs, caches, data you can download again. One path
-  > per line, relative to the workdir; a `#` note after a path is fine (e.g.
-  > `frontend/node_modules  # npm ci`). When the workdir is over `<C>` MB at
-  > snapshot time, these paths are left out of the snapshot. Never list
-  > anything holding work you could not regenerate.
+  > per line, relative to the workdir (exact paths, no wildcards); a `#` note
+  > after a path is fine (e.g. `frontend/node_modules  # npm ci`). When the
+  > workdir is over `<C>` MB at snapshot time, these paths are left out of
+  > the snapshot. Never list anything holding work you could not regenerate.
 
   `<C>` is the configured cap in whole MiB.
 * Under the same condition, `_resume_steps` (threaded through both
