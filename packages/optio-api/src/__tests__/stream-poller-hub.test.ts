@@ -147,3 +147,28 @@ describe.each(Object.keys(makers))('the %s stream with a failing hub', (kind) =>
     expect(state.finds).toBe(0);
   });
 });
+
+describe('createMultiTreePoller membership', () => {
+  it('keeps a requested flat id a member even when a read does not return it', async () => {
+    // No-hook behaviour, unchanged by visibility (controller ruling,
+    // 2026-10-13): a flat id the host asked for stays a member of the
+    // stream even when the current read excludes it (not found, out of
+    // scope, or hidden by visibility), so a later change to that id is
+    // still judged relevant. A false positive here only costs one extra
+    // re-read; correctness comes from the read itself.
+    const flatId = new ObjectId();
+    const { db } = fakeDb([]); // the read never returns the flat id's document
+    const { hub, subs } = fakeHub();
+    const poller = createMultiTreePoller({
+      db, prefix: 'p', hub, treeRoots: [], flatIds: [flatId], sendEvent: () => {}, onError: () => {},
+    });
+
+    poller.start();
+    await flush();
+
+    const change: ProcessChange = { op: 'update', id: flatId.toString(), fields: new Set(['status']), values: {} };
+    expect(subs[0].isRelevant(change)).toBe(true);
+
+    poller.stop();
+  });
+});

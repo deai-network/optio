@@ -332,7 +332,13 @@ export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerH
       );
       allProcs = pruneOrphans(allProcs, keep);
     }
-    members = new Set(allProcs.map((p: any) => String(p._id)));
+    // Every requested flat id stays a member regardless of whether this
+    // read returned it (no-hook behaviour, unchanged by visibility): a
+    // false positive here only costs one extra re-read, while correctness
+    // comes from the read itself (which applies visibility); a flat id
+    // becoming visible again is already caught by the metadata-change
+    // relevance fix below.
+    members = new Set([...allProcs.map((p: any) => String(p._id)), ...flatIds.map(String)]);
     const snapshot = JSON.stringify(
       allProcs.map((p: any) => ({
         id: p._id, status: p.status, progress: p.progress,
