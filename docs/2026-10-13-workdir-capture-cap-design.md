@@ -88,8 +88,11 @@ The resume steps (`_resume_steps`) gain one step, rendered under the same condit
 
 Everything happens inside optio-host's `archive_workdir`, in both host implementations
 (`LocalHost` and `RemoteHost`), including `LocalHost`'s pure-Python fallback (`archive.py`) for
-hosts without `tar` or `bash`. All seven engine wrappers already capture through it, so no engine
-wrapper changes. Its signature does not change.
+hosts without `tar` or `bash`. All seven engine wrappers already capture through it. Its only
+signature change is an optional keyword, `on_note`: a callback that receives the capture's
+one-line note. Through it, each engine wrapper forwards the note to the process log, because the
+host layer has no handle to it. That is the only engine change (an amendment made while
+planning, 2026-10-13).
 
 ### Steps
 
@@ -125,7 +128,8 @@ Duplicates are harmless.
   goes ahead as today, and the process log gets a warning.
 - **The measurement fails** for any reason other than the timeout (e.g. `du` missing): treat it
   as over the cap. That is the safe direction, and the list is still optional.
-- **Every capture that applied the list** logs one line to the process log, for example
+- **Every capture that applied the list** logs one line to the process log, through `on_note`
+  and the `optio_host.archive` logger, for example
   `workdir 214 MB (cap 100 MB): left out 3 paths listed in regenerable.txt` or
   `workdir size unknown (du timed out after 1 s): left out 3 paths …`.
 
@@ -147,8 +151,9 @@ until the agent regenerates them.
 
 ## Compatibility and release
 
-- **No API change.** `archive_workdir`'s signature is unchanged, and `compose_instructions_file`
-  only gains an optional parameter for tests.
+- **No breaking API change.** `archive_workdir` gains an optional `on_note` keyword, and
+  `compose_instructions_file` and `render_resume_section` gain an optional `capture_max_bytes`.
+  The seven engine wrappers pass `on_note`, forwarding the note to the process log.
 - **Behaviour change by default.** With the default of 100 MB, a workdir over the cap is now
   captured without the paths its agent listed. Agents learn about the list from their
   instructions, so a workdir without a list behaves as today. `OPTIO_WORKDIR_CAPTURE_MAX_MB=0`
