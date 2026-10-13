@@ -270,6 +270,13 @@ async def _drain(it) -> bytes:
     return out
 
 
+class _Notes(list):
+    """An ``on_note`` that collects each ``(note, level)`` it is handed."""
+
+    def __call__(self, note: str, level: str) -> None:
+        self.append((note, level))
+
+
 async def test_archive_workdir_reads_256_kib_blocks_until_eof():
     data = os.urandom(1024 * 1024 + 12345)
     conn = _FakeConn(pigz=True, data=data)
@@ -438,10 +445,10 @@ async def test_archive_workdir_over_the_cap_excludes_the_listed_paths(
     conn = _FakeConn(
         pigz=True, data=b"x", du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"),
     )
-    notes: list[str] = []
+    notes = _Notes()
 
     with caplog.at_level(logging.INFO, logger="optio_host.archive"):
-        await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+        await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes))
 
     assert _cap_commands(conn) == [
         capture_cap.du_command(_W, ["a b"]),
@@ -456,17 +463,19 @@ async def test_archive_workdir_over_the_cap_excludes_the_listed_paths(
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1", ["big"])]
     assert "--exclude=./big . |" in conn.created[0]
     assert "--anchored" not in conn.created[0]
-    assert notes == ["workdir 2 MB (cap 1 MB): left out 1 path listed in regenerable.txt"]
+    assert notes == [
+        ("workdir 2 MB (cap 1 MB): left out 1 path listed in regenerable.txt", "info"),
+    ]
     assert [(r.levelno, r.getMessage()) for r in caplog.records
-            if r.name == "optio_host.archive"] == [(logging.INFO, notes[0])]
+            if r.name == "optio_host.archive"] == [(logging.INFO, notes[0][0])]
 
 
 async def test_archive_workdir_under_the_cap_measures_and_captures_everything(monkeypatch):
     monkeypatch.setenv(ENV_VAR, "100")
     conn = _FakeConn(pigz=True, data=b"x", regenerable=(0, "big\n"))
-    notes: list[str] = []
+    notes = _Notes()
 
-    await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+    await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes))
 
     assert _cap_commands(conn) == [capture_cap.du_command(_W, ["a b"])]
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
@@ -476,9 +485,9 @@ async def test_archive_workdir_under_the_cap_measures_and_captures_everything(mo
 async def test_archive_workdir_cap_zero_runs_no_du(monkeypatch):
     monkeypatch.setenv(ENV_VAR, "0")
     conn = _FakeConn(pigz=True, data=b"x", du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"))
-    notes: list[str] = []
+    notes = _Notes()
 
-    await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+    await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes))
 
     assert _cap_commands(conn) == []
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
@@ -490,37 +499,39 @@ async def test_archive_workdir_du_timeout_without_a_list_warns_and_captures_ever
 ):
     monkeypatch.setenv(ENV_VAR, "1")
     conn = _FakeConn(pigz=True, data=b"x", du=(124, ""), regenerable=(1, ""))
-    notes: list[str] = []
+    notes = _Notes()
 
     with caplog.at_level(logging.INFO, logger="optio_host.archive"):
-        await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+        await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes))
 
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
-    assert notes == [
+    assert notes == [(
         "workdir size unknown (du timed out after 1 s) is over the 1 MB capture cap, "
-        "but regenerable.txt is missing or empty; capturing everything"
-    ]
+        "but regenerable.txt is missing or empty; capturing everything",
+        "warning",
+    )]
     assert [(r.levelno, r.getMessage()) for r in caplog.records
-            if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0])]
+            if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0][0])]
 
 
 async def test_archive_workdir_decision_that_raises_captures_everything(monkeypatch, caplog):
     monkeypatch.setenv(ENV_VAR, "1")
     data = os.urandom(300 * 1024)
     conn = _FakeConn(pigz=True, data=data, du=ConnectionError("channel open failed"))
-    notes: list[str] = []
+    notes = _Notes()
 
     with caplog.at_level(logging.INFO, logger="optio_host.archive"):
-        out = await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+        out = await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes))
 
     assert out == data
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
-    assert notes == [
+    assert notes == [(
         "capture decision failed (ConnectionError('channel open failed')); "
-        "capturing everything"
-    ]
+        "capturing everything",
+        "warning",
+    )]
     assert [(r.levelno, r.getMessage()) for r in caplog.records
-            if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0])]
+            if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0][0])]
 
 
 async def test_archive_workdir_failed_decision_survives_an_on_note_that_raises(monkeypatch):
@@ -528,7 +539,7 @@ async def test_archive_workdir_failed_decision_survives_an_on_note_that_raises(m
     data = os.urandom(300 * 1024)
     conn = _FakeConn(pigz=True, data=data, du=ConnectionError("channel open failed"))
 
-    def boom(note: str) -> None:
+    def boom(note: str, level: str) -> None:
         raise RuntimeError("on_note exploded")
 
     out = await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=boom))
@@ -544,7 +555,7 @@ async def test_archive_workdir_on_note_that_raises_does_not_stop_the_capture(mon
         pigz=True, data=data, du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"),
     )
 
-    def boom(note: str) -> None:
+    def boom(note: str, level: str) -> None:
         raise RuntimeError("on_note exploded")
 
     out = await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=boom))
@@ -565,18 +576,19 @@ async def test_archive_workdir_tar_neither_gnu_nor_busybox_captures_everything(
         pigz=True, data=b"x", du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"),
         tar_version=_BSDTAR + "\n",
     )
-    notes: list[str] = []
+    notes = _Notes()
 
     with caplog.at_level(logging.INFO, logger="optio_host.archive"):
-        await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+        await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes))
 
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
-    assert notes == [
+    assert notes == [(
         "regenerable.txt not applied: tar on this host is not GNU or BusyBox "
-        f"({_BSDTAR!r}); capturing everything"
-    ]
+        f"({_BSDTAR!r}); capturing everything",
+        "warning",
+    )]
     assert [(r.levelno, r.getMessage()) for r in caplog.records
-            if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0])]
+            if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0][0])]
 
 
 async def test_archive_workdir_busybox_tar_takes_the_list(monkeypatch):

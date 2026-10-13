@@ -114,18 +114,20 @@ async def test_remote_archive_over_the_cap_leaves_out_the_listed_paths(
         check=False,
     )
     assert setup.exit_status == 0, setup.stderr
-    notes: list = []
+    notes: list[tuple[str, str]] = []
 
     blob = b"".join([
         chunk async for chunk in remote_host.archive_workdir(
-            exclude=[".git"], on_note=notes.append,
+            exclude=[".git"], on_note=lambda note, level: notes.append((note, level)),
         )
     ])
 
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
         files = {m.name.removeprefix("./") for m in tf.getmembers() if m.isfile()}
     assert files == {"keep.txt", "regenerable.txt", "pkg/big/p.txt", "build1/c"}
-    assert notes == ["workdir 2 MB (cap 1 MB): left out 2 paths listed in regenerable.txt"]
+    assert notes == [
+        ("workdir 2 MB (cap 1 MB): left out 2 paths listed in regenerable.txt", "info"),
+    ]
 
 
 async def test_remote_restore_workdir_empties_then_extracts(sshd):

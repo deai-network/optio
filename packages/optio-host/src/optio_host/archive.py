@@ -26,7 +26,9 @@ import tarfile
 import time
 from typing import AsyncIterator, Iterable
 
-from optio_host.capture_cap import LIST_MAX_BYTES, REGENERABLE_LIST, over_cap_excludes
+from optio_host.capture_cap import (
+    LIST_MAX_BYTES, REGENERABLE_LIST, CaptureNote, over_cap_excludes,
+)
 
 
 DEFAULT_WORKDIR_EXCLUDES: list[str] = [
@@ -158,7 +160,7 @@ def _read_list(root: str) -> str:
 
 def fallback_regenerable_excludes(
     root: str, patterns: list[str], cap_bytes: int,
-) -> tuple[list[str], str | None]:
+) -> tuple[list[str], CaptureNote | None]:
     """`capture_cap.regenerable_excludes` for a host without `tar` or `bash`.
 
     The same decision and result, measured with `measure_workdir` (running

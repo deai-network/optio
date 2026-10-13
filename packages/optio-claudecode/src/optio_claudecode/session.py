@@ -2062,13 +2062,15 @@ async def _stream_archive_to_blob(
     change what is archived or how — purely an observing pass-through.
 
     Also forwards the capture-cap decision's one-line note (at most one per
-    capture) to the process log through ``ctx.report_progress`` — the host
-    layer has no handle to it, so each engine wrapper forwards it.
+    capture) to the process log through ``ctx.report_progress``, at the
+    level it comes with (``"info"`` or ``"warning"``) — the host layer has no
+    handle to it, so each engine wrapper forwards it.
     """
     total = 0
     last_report = start
     async for chunk in host.archive_workdir(
-        exclude, on_note=lambda note: ctx.report_progress(None, note),
+        exclude,
+        on_note=lambda note, level: ctx.report_progress(None, note, level=level),
     ):
         await wwriter.write(chunk)
         total += len(chunk)

@@ -124,10 +124,12 @@ class _FakeHost:
 class _FakeCtx:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.levels: list[str] = []
 
-    def report_progress(self, pct, message):
+    def report_progress(self, pct, message, *, level="info"):
         assert pct is None
         self.messages.append(message)
+        self.levels.append(level)
 
 
 _MB = 1024 * 1024
@@ -198,14 +200,16 @@ async def test_archive_on_note_reaches_process_log():
     engine's ``_stream_archive_to_blob`` must forward it to the process log
     through ``ctx.report_progress`` — the same call it already uses for
     every other milestone line in this module — so a fake host that calls
-    ``on_note`` mid-capture ends up with its note in ``ctx.messages``."""
+    ``on_note`` mid-capture ends up with its note in ``ctx.messages``, at
+    the level it came with (a warning stays a warning)."""
     clock = _FakeClock()
     ctx = _FakeCtx()
 
     class _NotingHost(_FakeHost):
         def archive_workdir(self, exclude, *, on_note=None):
             if on_note is not None:
-                on_note("left out 2 paths listed in regenerable.txt")
+                on_note("left out 2 paths listed in regenerable.txt", "info")
+                on_note("regenerable.txt is missing or empty", "warning")
             return super().archive_workdir(exclude, on_note=on_note)
 
     host = _NotingHost([(b"z", 1.0)], clock)
@@ -213,7 +217,9 @@ async def test_archive_on_note_reaches_process_log():
     await _stream_archive_to_blob(
         ctx, host, None, writer, start=0.0, clock=clock,
     )
-    assert "left out 2 paths listed in regenerable.txt" in ctx.messages
+    noted = list(zip(ctx.messages, ctx.levels))
+    assert ("left out 2 paths listed in regenerable.txt", "info") in noted
+    assert ("regenerable.txt is missing or empty", "warning") in noted
 
 
 # --- _capture_snapshot: the full always-on milestone sequence ------------

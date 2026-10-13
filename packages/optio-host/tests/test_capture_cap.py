@@ -165,8 +165,9 @@ async def test_over_the_cap_leaves_out_the_listed_paths():
     entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
 
     assert entries == ["a", "b"]
+    # A note is its text and the level it reaches the process log at.
     assert note == (
-        "workdir 2 MB (cap 1 MB): left out 2 paths listed in regenerable.txt"
+        "workdir 2 MB (cap 1 MB): left out 2 paths listed in regenerable.txt", "info",
     )
     assert run.commands == [du_command(_W, _PATTERNS), _LIST_COMMAND]
 
@@ -176,7 +177,9 @@ async def test_over_the_cap_with_one_entry_says_path():
 
     _, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
 
-    assert note == "workdir 3 MB (cap 1 MB): left out 1 path listed in regenerable.txt"
+    assert note == (
+        "workdir 3 MB (cap 1 MB): left out 1 path listed in regenerable.txt", "info",
+    )
 
 
 async def test_du_timeout_counts_as_over_the_cap():
@@ -187,7 +190,8 @@ async def test_du_timeout_counts_as_over_the_cap():
     assert entries == ["a", "b"]
     assert note == (
         "workdir size unknown (du timed out after 1 s): "
-        "left out 2 paths listed in regenerable.txt"
+        "left out 2 paths listed in regenerable.txt",
+        "info",
     )
 
 
@@ -197,7 +201,8 @@ async def test_other_du_failure_counts_as_over_the_cap():
     entries, note = await regenerable_excludes(run, _W, _PATTERNS, 100 * _MIB)
 
     assert entries == ["a"]
-    assert note.startswith("workdir size unknown (du failed with exit 127): ")
+    assert note.text.startswith("workdir size unknown (du failed with exit 127): ")
+    assert note.level == "info"
 
 
 async def test_over_the_cap_without_a_list_leaves_nothing_out():
@@ -208,7 +213,8 @@ async def test_over_the_cap_without_a_list_leaves_nothing_out():
     assert entries == []
     assert note == (
         "workdir 2 MB is over the 1 MB capture cap, but regenerable.txt "
-        "is missing or empty; capturing everything"
+        "is missing or empty; capturing everything",
+        "warning",
     )
 
 
@@ -220,7 +226,8 @@ async def test_du_timeout_without_a_list_leaves_nothing_out():
     assert entries == []
     assert note == (
         "workdir size unknown (du timed out after 1 s) is over the 1 MB "
-        "capture cap, but regenerable.txt is missing or empty; capturing everything"
+        "capture cap, but regenerable.txt is missing or empty; capturing everything",
+        "warning",
     )
 
 
@@ -232,7 +239,7 @@ async def test_binary_list_does_not_raise():
     entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
 
     assert entries == ["\ufffd\ufffd"]
-    assert "left out 1 path" in note
+    assert "left out 1 path" in note.text
 
 
 def _run_list_command(workdir: str) -> subprocess.CompletedProcess:
@@ -272,7 +279,9 @@ async def test_list_with_a_nul_byte_drops_that_entry():
     entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
 
     assert entries == ["big"]
-    assert note == "workdir 2 MB (cap 1 MB): left out 1 path listed in regenerable.txt"
+    assert note == (
+        "workdir 2 MB (cap 1 MB): left out 1 path listed in regenerable.txt", "info",
+    )
 
 
 async def test_list_cut_at_the_read_limit_drops_its_cut_off_last_line():
@@ -309,7 +318,8 @@ async def test_entries_beyond_the_command_line_budget_are_ignored():
     assert entries == names[:kept]
     assert note == (
         "workdir 2 MB (cap 1 MB): left out 3855 paths listed in regenerable.txt "
-        "(2145 more ignored: list too long)"
+        "(2145 more ignored: list too long)",
+        "info",
     )
 
 
@@ -355,3 +365,11 @@ def test_tar_takes_literal_excludes(version_line, applies):
 
 def test_tar_version_command():
     assert capture_cap.TAR_VERSION_COMMAND == "tar --version 2>&1 | head -1"
+
+
+def test_unknown_tar_note_is_a_warning():
+    assert capture_cap.unknown_tar_note("bsdtar 3.7.2") == (
+        "regenerable.txt not applied: tar on this host is not GNU or BusyBox "
+        "('bsdtar 3.7.2'); capturing everything",
+        "warning",
+    )

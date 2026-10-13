@@ -15,7 +15,7 @@ import os
 import posixpath
 import re
 import shlex
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, NamedTuple
 
 
 ENV_VAR = "OPTIO_WORKDIR_CAPTURE_MAX_MB"
@@ -45,10 +45,24 @@ TAR_VERSION_COMMAND = "tar --version 2>&1 | head -1"
 # escape character itself).
 _GLOB_CHARS = re.compile(r"([\\*?\[])")
 
+# The levels a note reaches the process log at (`ctx.report_progress`'s).
+INFO = "info"
+WARNING = "warning"
+
 _MIB = 1024 * 1024
 
 # `timeout`'s exit status when the command ran out of time.
 _TIMED_OUT = 124
+
+
+class CaptureNote(NamedTuple):
+    """A capture decision's one-line note, and the level the process log
+    shows it at: `WARNING` when the cap could not be applied as the agent
+    meant (a missing or empty list, a tar that cannot take it, a failed
+    decision), else `INFO`."""
+
+    text: str
+    level: str
 
 
 def workdir_capture_max_bytes() -> int:
@@ -171,7 +185,7 @@ async def regenerable_excludes(
     workdir: str,
     patterns: list[str],
     cap_bytes: int,
-) -> tuple[list[str], str | None]:
+) -> tuple[list[str], CaptureNote | None]:
     """Decide what a capture of `workdir` leaves out under the cap.
 
     `run` executes a shell command on the workdir's host and returns its exit
@@ -219,12 +233,13 @@ def tar_takes_literal_excludes(version_line: str) -> bool:
     return "GNU tar" in version_line or "busybox" in version_line.lower()
 
 
-def unknown_tar_note(version_line: str) -> str:
-    """The note of a capture over the cap whose host's tar fails
+def unknown_tar_note(version_line: str) -> CaptureNote:
+    """The note, a warning, of a capture over the cap whose host's tar fails
     `tar_takes_literal_excludes`, so nothing is left out."""
-    return (
+    return CaptureNote(
         f"{REGENERABLE_LIST} not applied: tar on this host is not GNU or "
-        f"BusyBox ({version_line!r}); capturing everything"
+        f"BusyBox ({version_line!r}); capturing everything",
+        WARNING,
     )
 
 
@@ -261,7 +276,7 @@ def _within_exec_limit(entries: list[str]) -> list[str]:
 
 def over_cap_excludes(
     size: int | None, unknown: str, cap_bytes: int, list_text: str,
-) -> tuple[list[str], str]:
+) -> tuple[list[str], CaptureNote]:
     """The result of a capture decision that found the workdir over the cap.
 
     `size` is the measured size in bytes, or `None` when the measurement
@@ -269,10 +284,11 @@ def over_cap_excludes(
     contents as read (at most `LIST_MAX_BYTES`), `""` when it could not be
     read; a last line the limit cut short is dropped.
 
-    Returns the entries to apply and the note: the paths left out, or, when
-    the list has none, a warning that the whole workdir is captured. Entries
-    beyond `EXCLUDES_MAX_BYTES` of arguments are ignored, and the note says
-    how many. Sizes in the note are whole MiB, rounded down.
+    Returns the entries to apply and the note: the paths left out (`INFO`),
+    or, when the list has none, a `WARNING` that the whole workdir is
+    captured. Entries beyond `EXCLUDES_MAX_BYTES` of arguments are ignored,
+    and the note says how many. Sizes in the note are whole MiB, rounded
+    down.
     """
     listed = parse_regenerable(_complete_lines(list_text))
     entries = _within_exec_limit(listed)
@@ -282,9 +298,10 @@ def over_cap_excludes(
         else f"workdir size unknown ({unknown})"
     )
     if not listed:
-        return [], (
+        return [], CaptureNote(
             f"{measured} is over the {cap_mb} MB capture cap, but {REGENERABLE_LIST} "
-            "is missing or empty; capturing everything"
+            "is missing or empty; capturing everything",
+            WARNING,
         )
     if size is not None:
         measured += f" (cap {cap_mb} MB)"
@@ -292,4 +309,4 @@ def over_cap_excludes(
     note = f"{measured}: left out {len(entries)} {paths} listed in {REGENERABLE_LIST}"
     if len(entries) < len(listed):
         note += f" ({len(listed) - len(entries)} more ignored: list too long)"
-    return entries, note
+    return entries, CaptureNote(note, INFO)

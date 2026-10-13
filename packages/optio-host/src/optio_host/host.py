@@ -220,14 +220,16 @@ class Host(Protocol):
         self,
         exclude: list[str] | None,
         *,
-        on_note: Callable[[str], None] | None = None,
+        on_note: Callable[[str, str], None] | None = None,
     ) -> AsyncIterator[bytes]: ...
     # NB: archive_workdir is a *plain* method that returns an AsyncIterator,
     # not an async method. Callers iterate via `async for chunk in host.archive_workdir(...)`.
     # Above the capture cap (optio_host.capture_cap) it leaves out the paths
     # listed in the workdir's regenerable.txt; the decision's one-line note,
-    # if any, goes to ``on_note`` and the ``optio_host.archive`` logger. A
-    # decision that fails leaves nothing out instead of failing the capture.
+    # if any, goes to ``on_note(note, level)`` (``level`` is ``"info"`` or
+    # ``"warning"``, for the process log) and the ``optio_host.archive``
+    # logger. A decision that fails leaves nothing out instead of failing the
+    # capture.
 
     async def restore_workdir(
         self, stream: AsyncIterator[bytes],
@@ -250,6 +252,8 @@ import time as _time
 
 from optio_host.capture_cap import (
     TAR_VERSION_COMMAND,
+    WARNING,
+    CaptureNote,
     literal_exclude,
     regenerable_excludes,
     tar_takes_literal_excludes,
@@ -422,13 +426,19 @@ def _archive_command(
 _archive_logger = _logging.getLogger("optio_host.archive")
 
 
-def _send_capture_note(note: str, on_note: Callable[[str], None] | None) -> None:
-    """Hand ``note`` to ``on_note``, if given. An ``on_note`` that raises is
-    logged and does not stop the capture."""
+# A note's level (``capture_cap.INFO`` or ``WARNING``) as a logging level.
+_LOG_LEVELS = {"info": _logging.INFO, "warning": _logging.WARNING}
+
+
+def _send_capture_note(
+    note: CaptureNote, on_note: Callable[[str, str], None] | None,
+) -> None:
+    """Hand ``note`` to ``on_note(text, level)``, if given. An ``on_note``
+    that raises is logged and does not stop the capture."""
     if on_note is None:
         return
     try:
-        on_note(note)
+        on_note(note.text, note.level)
     except Exception as exc:
         _archive_logger.warning(
             "workdir capture cap: on_note raised %r; capturing anyway", exc,
@@ -437,23 +447,20 @@ def _send_capture_note(note: str, on_note: Callable[[str], None] | None) -> None
 
 
 def _report_capture_note(
-    note: str | None,
-    anchored: list[str],
-    on_note: Callable[[str], None] | None,
+    note: CaptureNote | None,
+    on_note: Callable[[str, str], None] | None,
 ) -> None:
-    """Log the capture decision's note, if any, on ``optio_host.archive`` and
-    hand it to ``on_note``. A note that leaves nothing out (the list is
-    missing or empty, or tar is not GNU or BusyBox) is logged at WARNING; the
-    others at INFO."""
+    """Log the capture decision's note, if any, on ``optio_host.archive`` at
+    its level, and hand it to ``on_note``."""
     if note is None:
         return
-    _archive_logger.log(_logging.INFO if anchored else _logging.WARNING, "%s", note)
+    _archive_logger.log(_LOG_LEVELS[note.level], "%s", note.text)
     _send_capture_note(note, on_note)
 
 
 async def _capture_excludes(
-    decide: Callable[[int], Awaitable[tuple[list[str], str | None]]],
-    on_note: Callable[[str], None] | None,
+    decide: Callable[[int], Awaitable[tuple[list[str], CaptureNote | None]]],
+    on_note: Callable[[str, str], None] | None,
     tar_version: Callable[[], Awaitable[str]] | None = None,
 ) -> list[str]:
     """Run the capture-cap decision fail-safe and report its note.
@@ -465,7 +472,7 @@ async def _capture_excludes(
     not GNU or BusyBox (``tar_takes_literal_excludes``) leaves nothing out,
     with ``unknown_tar_note``. Anything the decision or the probe raises, the
     cap setting included, makes the note ``capture decision failed
-    (<exception>); capturing everything``, logged at WARNING on
+    (<exception>); capturing everything``, a warning, logged on
     ``optio_host.archive`` and handed to ``on_note``, and the capture leaves
     nothing out: losing a shutdown snapshot to the decision is worse than an
     oversized one. Returns the entries to exclude, anchored."""
@@ -476,11 +483,13 @@ async def _capture_excludes(
             if not tar_takes_literal_excludes(version_line):
                 anchored, note = [], unknown_tar_note(version_line)
     except Exception as exc:
-        note = f"capture decision failed ({exc!r}); capturing everything"
-        _archive_logger.warning("%s", note, exc_info=True)
+        note = CaptureNote(
+            f"capture decision failed ({exc!r}); capturing everything", WARNING,
+        )
+        _archive_logger.warning("%s", note.text, exc_info=True)
         _send_capture_note(note, on_note)
         return []
-    _report_capture_note(note, anchored, on_note)
+    _report_capture_note(note, on_note)
     return anchored
 
 
@@ -747,7 +756,7 @@ class LocalHost:
         self,
         exclude: list[str] | None,
         *,
-        on_note: Callable[[str], None] | None = None,
+        on_note: Callable[[str, str], None] | None = None,
     ) -> "AsyncIterator[bytes]":
         """Stream a gzip tar of the workdir through the same ``tar | pigz -1``
         (or ``gzip -1``) pipeline RemoteHost runs over SSH. Python ``tarfile``
@@ -758,7 +767,7 @@ class LocalHost:
         Before archiving, the capture cap (``regenerable_excludes``, with
         ``du`` under local ``bash``; the fallback walks the tree in Python
         instead) decides which paths listed in ``regenerable.txt`` to leave
-        out; its note, if any, goes to ``on_note`` and the
+        out; its note, if any, goes to ``on_note(note, level)`` and the
         ``optio_host.archive`` logger.
         """
         from optio_host.archive import (
@@ -1233,14 +1242,14 @@ class RemoteHost:
         self,
         exclude: list[str] | None,
         *,
-        on_note: Callable[[str], None] | None = None,
+        on_note: Callable[[str, str], None] | None = None,
     ) -> "AsyncIterator[bytes]":
         """Stream a gzip tar of the remote workdir (``tar | pigz -1``, or
         ``gzip -1``, over SSH). Before archiving, the capture cap
         (``regenerable_excludes``, measuring with ``du`` on the remote host)
         decides which paths listed in ``regenerable.txt`` to leave out; its
-        note, if any, goes to ``on_note`` and the ``optio_host.archive``
-        logger."""
+        note, if any, goes to ``on_note(note, level)`` and the
+        ``optio_host.archive`` logger."""
         from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
         assert self._conn is not None
         patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)

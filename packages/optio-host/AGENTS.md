@@ -42,8 +42,8 @@ suspend-capture decision (design:
 ### In `archive_workdir`
 
 `archive_workdir(exclude, *, on_note=None)` (the `Host` Protocol, `LocalHost`
-and `RemoteHost`) applies the cap before it starts the archive, on the host
-where the workdir lives:
+and `RemoteHost`; `on_note: Callable[[str, str], None] | None`) applies the
+cap before it starts the archive, on the host where the workdir lives:
 
 - **Cap `0`:** nothing is measured or read, and the archive command is the
   same as without the cap.
@@ -94,8 +94,8 @@ where the workdir lives:
 - **The timeouts are read at call time:** `DU_TIMEOUT_S` (the `du` and the
   list read) and `WALK_BUDGET_S`, so tests patch them rather than race them.
 - **It fails safe.** Anything the decision raises becomes the note
-  `capture decision failed (<exception>); capturing everything`, logged at
-  WARNING on `optio_host.archive` and handed to `on_note` like every other
+  `capture decision failed (<exception>); capturing everything`, a warning,
+  logged on `optio_host.archive` and handed to `on_note` like every other
   note, and the capture goes ahead leaving nothing out. That covers the cap
   setting, the measurement, the list read, the tar probe, and an SSH channel
   or a `bash` spawn that fails. Losing a shutdown snapshot is worse than capturing an
@@ -103,17 +103,25 @@ where the workdir lives:
   goes on.
 
 **The note.** A capture that finds the workdir over the cap produces a
-one-line note. Under the cap there is none.
+one-line note with a level, a `capture_cap.CaptureNote(text, level)`. Under
+the cap there is none.
 
-- It goes to `on_note`, when given, so the caller (an engine wrapper) can
-  forward it to the process log, which the host layer has no handle to.
-- It is always logged on the `optio_host.archive` logger:
-  - at INFO when paths were left out, e.g.
+- The level is `"info"` or `"warning"` (`capture_cap.INFO`, `WARNING`), the
+  levels of `ctx.report_progress`:
+  - `"info"` when paths were left out, e.g.
     `workdir 214 MB (cap 100 MB): left out 3 paths listed in regenerable.txt`,
     or `workdir size unknown (du timed out after 1 s): left out 3 paths …`;
-  - at WARNING when the list is missing or empty and everything is captured,
-    e.g. `workdir 214 MB is over the 100 MB capture cap, but regenerable.txt
-    is missing or empty; capturing everything`, and when the host's tar is
-    not GNU or BusyBox.
+  - `"warning"` when everything is captured because the cap could not be
+    applied: the list is missing or empty (e.g. `workdir 214 MB is over the
+    100 MB capture cap, but regenerable.txt is missing or empty; capturing
+    everything`), the host's tar is not GNU or BusyBox, or the decision
+    failed.
+- It goes to `on_note(text, level)`, when given, so the caller (an engine
+  wrapper) can forward it to the process log, which the host layer has no
+  handle to. Every engine wrapper calls
+  `ctx.report_progress(None, text, level=level)`, so a warning reaches the
+  process log as a warning.
+- It is always logged on the `optio_host.archive` logger, at INFO or
+  WARNING to match.
 
 Sizes in notes are whole MiB, rounded down.

@@ -618,7 +618,8 @@ Compound index `{processId: 1, capturedAt: -1}`. Retention: keep latest 5; older
 `LocalHost` as a local subprocess group that is killed if the capture is abandoned. Only a local host without
 `tar` or `bash` falls back to in-process `tarfile` (level 1). See `docs/2026-10-03-local-archive-throughput-design.md`.
 Above the workdir capture cap (`OPTIO_WORKDIR_CAPTURE_MAX_MB`, default 100 MiB, `0` = off) it leaves out the paths
-listed in the workdir's `regenerable.txt`; the one-line note goes to `on_note` and the `optio_host.archive` logger.
+listed in the workdir's `regenerable.txt`; the one-line note goes to `on_note(note, level)` (`level` is `"info"` or
+`"warning"`; the engines forward it with `ctx.report_progress(None, note, level=level)`) and the `optio_host.archive` logger.
 See the "Workdir capture cap" section of `packages/optio-host/AGENTS.md`.
 
 Full details: `packages/optio-opencode/AGENTS.md`.

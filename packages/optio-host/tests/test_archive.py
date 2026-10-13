@@ -224,7 +224,8 @@ def test_fallback_decision_reads_an_unreadable_list_as_empty(tmp_path, generous_
     entries, note = fallback_regenerable_excludes(str(tmp_path), [], 1)
 
     assert entries == []
-    assert "missing or empty" in note
+    assert "missing or empty" in note.text
+    assert note.level == "warning"
 
 
 def test_fallback_decision_decodes_a_binary_list_with_replacement(
@@ -235,7 +236,7 @@ def test_fallback_decision_decodes_a_binary_list_with_replacement(
     entries, note = fallback_regenerable_excludes(str(tmp_path), [], 1)
 
     assert entries == ["\ufffd\ufffd", "keep.bin"]
-    assert "left out 2 paths" in note
+    assert "left out 2 paths" in note.text
 
 
 def test_fallback_decision_counts_a_spent_walk_budget_as_over_the_cap(tmp_path, monkeypatch):
@@ -248,7 +249,8 @@ def test_fallback_decision_counts_a_spent_walk_budget_as_over_the_cap(tmp_path, 
     assert entries == ["keep.bin"]
     assert note == (
         "workdir size unknown (walk timed out after 0 s): "
-        "left out 1 path listed in regenerable.txt"
+        "left out 1 path listed in regenerable.txt",
+        "info",
     )
 
 
@@ -280,7 +282,7 @@ def test_fallback_decision_reads_only_a_regular_list(tmp_path, generous_walk_bud
                 _unblock_fifo(path)
 
     assert entries == []
-    assert "missing or empty" in note
+    assert "missing or empty" in note.text
 
 
 def test_fallback_decision_reads_the_first_64_kib_of_the_list(tmp_path, generous_walk_budget):
