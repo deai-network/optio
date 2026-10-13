@@ -62,6 +62,18 @@ describe('treeRelevant', () => {
   it('re-reads on invalidate', () => {
     expect(treeRelevant(INVALIDATE, roots, members)).toBe(true);
   });
+
+  describe('with a visibility predicate active (opts.metadataChanges)', () => {
+    it('a metadata update of a non-member is relevant', () => {
+      expect(treeRelevant(update('z', ['metadata']), roots, members, { metadataChanges: true })).toBe(true);
+    });
+    it('without the flag, the same metadata update stays irrelevant, as today', () => {
+      expect(treeRelevant(update('z', ['metadata']), roots, members)).toBe(false);
+    });
+    it('a status update of a non-member stays irrelevant even with the flag', () => {
+      expect(treeRelevant(update('z', ['status']), roots, members, { metadataChanges: true })).toBe(false);
+    });
+  });
 });
 
 describe('sessionRelevant', () => {

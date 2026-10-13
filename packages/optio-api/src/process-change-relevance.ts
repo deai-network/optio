@@ -92,8 +92,16 @@ export function listRelevant(c: ProcessChange, members: Set<string>): boolean {
 }
 
 /** A tree or multi-tree stream (`roots`: its root ids; `members`: the ids it
- *  showed in its last read, flat ids included). */
-export function treeRelevant(c: ProcessChange, roots: Set<string>, members: Set<string>): boolean {
+ *  showed in its last read, flat ids included). With `opts.metadataChanges`
+ *  (a visibility predicate is active), a metadata change is relevant even
+ *  for a non-member, since it may make a currently-hidden process visible;
+ *  today's rule (no visibility) leaves that case to the list stream only. */
+export function treeRelevant(
+  c: ProcessChange,
+  roots: Set<string>,
+  members: Set<string>,
+  opts?: { metadataChanges?: boolean },
+): boolean {
   switch (c.op) {
     case 'invalidate':
       return true;
@@ -101,8 +109,9 @@ export function treeRelevant(c: ProcessChange, roots: Set<string>, members: Set<
     case 'replace':
       return members.has(c.id) || roots.has(String(c.doc.rootId));
     case 'delete':
-    case 'update':
       return members.has(c.id);
+    case 'update':
+      return members.has(c.id) || (opts?.metadataChanges === true && c.fields.has('metadata'));
   }
 }
 

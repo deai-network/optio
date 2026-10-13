@@ -217,8 +217,10 @@ each level, so a hidden process takes its subtree with it;
 `getProcessTreeLog` 404s a hidden entry point, fetches the tree's processes
 under the condition, and — only when `reads.visibility` is set — prunes
 orphans before collecting log lines, so a process left parentless by a
-hidden ancestor contributes no lines. Streams and the adapters' options do
-not consult `visibility` yet — that is a later change.
+hidden ancestor contributes no lines. The streams (`stream-poller.ts`)
+consult it too, each building its own `ProcessReads` at creation time — see
+"Stream Poller" below. The adapters' options don't expose it yet — that is
+a later change.
 
 Per request, `checkAuth` records the authenticated role (keyed by the native
 request object) and `accessFor(req, hooks)` resolves the hooks once into an
@@ -310,12 +312,12 @@ source file and fails when:
    lookups that run only after `gateProcess` admitted the process);
 3. `.unfiltered` is used outside `access-scope.ts` and `process-reads.ts`.
 
-`stream-poller.ts` and the four `adapters/*.ts` files still name the
-collection directly and are temporarily exempt (`PENDING` in the guard test),
-pending migration of the stream poller and adapters, which will empty that
-list. A new route that reads processes therefore either goes through
-`processReads` or fails this test until its file is deliberately
-allowlisted, with a reason, in review.
+The four `adapters/*.ts` files still name the collection directly and are
+temporarily exempt (`PENDING` in the guard test), pending their migration,
+which will empty that list; `stream-poller.ts` reads only through
+`processReads` and carries no exemption. A new route that reads processes
+therefore either goes through `processReads` or fails this test until its
+file is deliberately allowlisted, with a reason, in review.
 
 ## Fastify Adapter
 
@@ -583,6 +585,7 @@ interface StreamPollerOptions {
   onError: () => void;                 // called on a failed read; the stream stops itself first
   metadataFilter?: ProcessMetadataFilter;
   scope?: ScopeFilter | null;          // access scope; $and-ed into the query
+  visibility?: ProcessMetadataFilter | null; // access.visibility; read through processReads
   hub?: ProcessChangeHub;              // default: the shared hub of (db, prefix)
 }
 
@@ -592,6 +595,24 @@ interface TreePollerOptions extends StreamPollerOptions {
   maxDepth?: number;  // relative depth limit from baseDepth
 }
 
+interface MultiTreePollerOptions {
+  db: Db; prefix: string;
+  sendEvent: (data: unknown) => void; onError: () => void;
+  treeRoots: Array<{ rootId: ObjectId; baseDepth: number }>;
+  flatIds: ObjectId[];
+  maxDepth?: number;
+  visibility?: ProcessMetadataFilter | null;
+  hub?: ProcessChangeHub;
+}
+
+interface SessionEventsPollerOptions {
+  db: Db; prefix: string; sessionId: string;
+  sendEvent: (data: unknown) => void; onError: () => void;
+  scope?: ScopeFilter | null;
+  visibility?: ProcessMetadataFilter | null;
+  hub?: ProcessChangeHub;
+}
+
 interface ListPollerHandle {
   start(): void;  // subscribes to the hub, then reads once
   stop(): void;   // unsubscribes; no read after it
@@ -599,7 +620,34 @@ interface ListPollerHandle {
 
 function createListPoller(opts: StreamPollerOptions): ListPollerHandle
 function createTreePoller(opts: TreePollerOptions): ListPollerHandle
+function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerHandle
+function createSessionEventsPoller(opts: SessionEventsPollerOptions): ListPollerHandle
 ```
+
+**`visibility`.** Every poller builds one `ProcessReads` at creation
+(`processReads(db, prefix, visibility ?? null)`) and reads only through it,
+next to the existing `scope` option of the list and session-events pollers;
+`null`/`undefined` means no restriction, with queries identical to today's.
+The tree and multi-tree pollers additionally prune orphans out of each read
+when `visibility` is set (multi-tree passes `keep` = the flat ids the read
+actually returned, since they are fetched standalone and have no ancestors
+in the same query), and recompute `members` from what is left after pruning.
+Their relevance rule becomes `treeRelevant(c, roots, members, {
+metadataChanges: visibility != null })`: with a visibility predicate active,
+a metadata change of *any* process is relevant, not only a member's, because
+it may make a currently-hidden process visible (the "relevance fix" — the
+list stream already re-reads on any metadata change; without `visibility`
+the rule is unchanged from today).
+
+**Mid-stream transitions** behave like creation and deletion do today
+(spec: "Streams"). A process becoming visible appears in the next update,
+with its full log; the entry point itself becoming hidden empties the tree
+stream (`processes: []`), as for a deleted root. A process becoming hidden
+leaves the next update together with its subtree and sends no further
+lines; lines already sent stay with the client, as they do for a deletion.
+A multi-tree stream's hidden ids are reported in `resolution`'s `missing`
+list exactly like nonexistent ones (adapter-level; unaffected by this
+change).
 
 **How a stream learns about changes** (`process-change-hub.ts`,
 `process-change-relevance.ts`; spec `docs/2026-10-09-api-change-streams-design.md`).

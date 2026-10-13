@@ -13,10 +13,9 @@ import { fileURLToPath } from 'node:url';
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-// Migrated by Task 4 / Task 5: these still name the collection directly and
-// are exempt from the three rules below until that work lands.
+// Migrated by Task 5: these still name the collection directly and are
+// exempt from the three rules below until that work lands.
 const PENDING = [
-  'stream-poller.ts',
   'adapters/fastify.ts',
   'adapters/express.ts',
   'adapters/nextjs-app.ts',

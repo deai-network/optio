@@ -956,9 +956,13 @@ interface ExplicitOptioApiOptions {
 // action gate) checks it before authorize, 404ing a hidden process the same as an
 // out-of-scope one. The read handlers (list, single reads, the tree and the tree
 // log) honour it too: a hidden process is a 404/omitted, exactly like a missing
-// one, and the tree log's orphans are pruned once visibility can create them. It
-// is not yet exposed as an adapter option (OptioApiOptions above), and the
-// streams don't consult it yet.
+// one, and the tree log's orphans are pruned once visibility can create them. The
+// streams (stream-poller.ts) honour it too: each poller takes a `visibility`
+// option alongside `scope`, reads through processReads, and -- for the tree and
+// multi-tree streams -- prunes orphans and re-reads on any metadata change (not
+// only a member's), so a process gaining or losing visibility appears or
+// disappears mid-stream like a create or delete does today. It is not yet
+// exposed as an adapter option (OptioApiOptions above).
 ```
 
 ### Fastify Adapter
@@ -1031,6 +1035,8 @@ interface StreamPollerOptions {
   prefix: string;
   sendEvent: (data: unknown) => void;
   onError: () => void;
+  scope?: ScopeFilter | null;                 // list/session-events pollers only
+  visibility?: ProcessMetadataFilter | null;   // every poller; read through processReads
 }
 
 interface TreePollerOptions extends StreamPollerOptions {
@@ -1048,7 +1054,17 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 // Sends: { type: 'update', processes: ProcessTreeItem[] }
 //        { type: 'log', entries: LogEntry[] }
 //        { type: 'log-clear' }
+
+// createMultiTreePoller / createSessionEventsPoller take the same `visibility`
+// option (MultiTreePollerOptions / SessionEventsPollerOptions); details:
+// packages/optio-api/AGENTS.md "Stream Poller".
 ```
+
+With `visibility` set, the tree and multi-tree pollers prune orphans out of
+each read and re-read on any metadata change (not only a member's), so a
+process gaining or losing visibility appears or disappears mid-stream the
+same way a create or delete does today; an entry point losing visibility
+empties the stream like a deleted root.
 
 **List stream process shape:**
 ```typescript

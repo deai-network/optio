@@ -3,6 +3,8 @@ import type { ProcessMetadataFilter } from 'optio-contracts';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import { andScope } from './access-scope.js';
 import type { ScopeFilter } from './auth.js';
+import { pruneOrphans } from './visibility.js';
+import { processReads } from './process-reads.js';
 import {
   LIST_PROJECTION, listRelevant, treeRelevant, sessionRelevant, type ProcessChange,
 } from './process-change-relevance.js';
@@ -16,6 +18,10 @@ export interface StreamPollerOptions {
   metadataFilter?: ProcessMetadataFilter;
   /** Access scope (auth.ts): only processes inside it are emitted. */
   scope?: ScopeFilter | null;
+  /** Visibility predicate (auth.ts), resolved once at stream open like
+   *  `scope`: only processes it admits are read, through `processReads`.
+   *  `null`/`undefined`: no restriction, identical queries to today. */
+  visibility?: ProcessMetadataFilter | null;
   /** The change hub to follow; default: the shared hub of (db, prefix). */
   hub?: ProcessChangeHub;
 }
@@ -93,14 +99,14 @@ function driveByChanges(
 }
 
 export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
-  const { db, prefix, sendEvent, metadataFilter, scope } = opts;
-  const col = db.collection(`${prefix}_processes`);
+  const { db, prefix, sendEvent, metadataFilter, scope, visibility } = opts;
+  const reads = processReads(db, prefix, visibility ?? null);
   const filter = andScope(metadataFilterToMongo(metadataFilter), scope ?? null);
   let members = new Set<string>();
   let lastSnapshot = '';
 
   async function read() {
-    const allProcs = await col
+    const allProcs = await reads
       .find(filter, { projection: LIST_PROJECTION })
       .sort({ depth: 1, order: 1, _id: 1 })
       .toArray();
@@ -158,8 +164,8 @@ export interface TreePollerOptions extends Omit<StreamPollerOptions, 'metadataFi
 }
 
 export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
-  const { db, prefix, sendEvent, rootId, baseDepth, maxDepth } = opts;
-  const col = db.collection(`${prefix}_processes`);
+  const { db, prefix, sendEvent, rootId, baseDepth, maxDepth, visibility } = opts;
+  const reads = processReads(db, prefix, visibility ?? null);
   const roots = new Set([rootId]);
   let members = new Set<string>();
   let lastSnapshot = '';
@@ -172,7 +178,12 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
       filter.depth = { $lte: baseDepth + maxDepth };
     }
 
-    const allProcs = await col.find(filter).sort({ depth: 1, order: 1 }).toArray();
+    let allProcs = await reads.find(filter).sort({ depth: 1, order: 1 }).toArray();
+    if (reads.visibility) {
+      // No orphans below the entry point (spec "Trees"): a child whose
+      // parent fell out of the visibility-filtered read is dropped too.
+      allProcs = pruneOrphans(allProcs);
+    }
     members = new Set(allProcs.map((p: any) => String(p._id)));
     const snapshot = JSON.stringify(
       allProcs.map((p: any) => ({
@@ -256,7 +267,9 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
     }
   }
 
-  return driveByChanges(opts, read, (c) => treeRelevant(c, roots, members));
+  return driveByChanges(
+    opts, read, (c) => treeRelevant(c, roots, members, { metadataChanges: reads.visibility !== null }),
+  );
 }
 
 export interface MultiTreeRoot {
@@ -272,14 +285,18 @@ export interface MultiTreePollerOptions {
   treeRoots: MultiTreeRoot[];
   flatIds: ObjectId[];
   maxDepth?: number;
+  /** Visibility predicate (auth.ts): only processes it admits are read,
+   *  through `processReads`. `null`/`undefined`: no restriction. */
+  visibility?: ProcessMetadataFilter | null;
   /** The change hub to follow; default: the shared hub of (db, prefix). */
   hub?: ProcessChangeHub;
 }
 
 export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerHandle {
-  const { db, prefix, sendEvent, treeRoots, flatIds, maxDepth } = opts;
-  const col = db.collection(`${prefix}_processes`);
+  const { db, prefix, sendEvent, treeRoots, flatIds, maxDepth, visibility } = opts;
+  const reads = processReads(db, prefix, visibility ?? null);
   const roots = new Set(treeRoots.map((r) => r.rootId.toString()));
+  const flatIdStrs = new Set(flatIds.map(String));
   let members = new Set<string>();
   let lastSnapshot = '';
   const lastLogCounts = new Map<string, number>();
@@ -304,8 +321,18 @@ export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerH
     if (branches.length === 0) return;
     const filter = branches.length === 1 ? branches[0] : { $or: branches };
 
-    const allProcs = await col.find(filter).sort({ depth: 1, order: 1 }).toArray();
-    members = new Set([...allProcs.map((p: any) => String(p._id)), ...flatIds.map(String)]);
+    let allProcs = await reads.find(filter).sort({ depth: 1, order: 1 }).toArray();
+    if (reads.visibility) {
+      // Flat ids are fetched standalone (no ancestors queried for them), so
+      // a fetched flat row must be kept regardless of whether its parent
+      // came back too; processes reached through a tree root still prune
+      // against each other normally.
+      const keep = new Set(
+        allProcs.filter((p: any) => flatIdStrs.has(String(p._id))).map((p: any) => String(p._id)),
+      );
+      allProcs = pruneOrphans(allProcs, keep);
+    }
+    members = new Set(allProcs.map((p: any) => String(p._id)));
     const snapshot = JSON.stringify(
       allProcs.map((p: any) => ({
         id: p._id, status: p.status, progress: p.progress,
@@ -389,7 +416,9 @@ export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerH
     }
   }
 
-  return driveByChanges(opts, read, (c) => treeRelevant(c, roots, members));
+  return driveByChanges(
+    opts, read, (c) => treeRelevant(c, roots, members, { metadataChanges: reads.visibility !== null }),
+  );
 }
 
 export interface SessionEventsPollerOptions {
@@ -400,6 +429,9 @@ export interface SessionEventsPollerOptions {
   onError: () => void;
   /** Access scope (auth.ts): only processes inside it are read. */
   scope?: ScopeFilter | null;
+  /** Visibility predicate (auth.ts): only processes it admits are read,
+   *  through `processReads`. `null`/`undefined`: no restriction. */
+  visibility?: ProcessMetadataFilter | null;
   /** The change hub to follow; default: the shared hub of (db, prefix). */
   hub?: ProcessChangeHub;
 }
@@ -410,14 +442,14 @@ export interface SessionEventsPollerOptions {
  * sessionEvents (deduped by length high-water mark per process). Read-only.
  */
 export function createSessionEventsPoller(opts: SessionEventsPollerOptions): ListPollerHandle {
-  const { db, prefix, sessionId, sendEvent, scope } = opts;
-  const col = db.collection(`${prefix}_processes`);
+  const { db, prefix, sessionId, sendEvent, scope, visibility } = opts;
+  const reads = processReads(db, prefix, visibility ?? null);
   const filter = andScope({ originatingSessionId: sessionId }, scope ?? null);
   let members = new Set<string>();
   const lastCounts = new Map<string, number>();
 
   async function read() {
-    const procs = await col
+    const procs = await reads
       .find(filter)
       .project({ sessionEvents: 1 })
       .toArray();
