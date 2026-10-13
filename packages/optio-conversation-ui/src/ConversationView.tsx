@@ -216,15 +216,20 @@ function ensureFlashStyle(): void {
   document.head.appendChild(el);
 }
 
-// Hover-revealed per-answer copy control. Scoped to the .optio-cc-answer
-// wrapper so it never leaks to global selectors.
+// Hover-revealed per-answer copy control: X's Actions.Copy in the answer
+// bubble's footer, beside the time (owner, 2026-10-14; the X port had left it
+// always visible). It shows while the answer bubble is hovered or holds focus;
+// hidden by opacity, so the keyboard still reaches it, and always shown on
+// devices without hover. Scoped to the answer bubble's class so it never leaks
+// to global selectors.
 const COPY_STYLE_ID = 'optio-cc-copy-style';
 function ensureCopyStyle(): void {
   if (typeof document === 'undefined' || document.getElementById(COPY_STYLE_ID)) return;
   const el = document.createElement('style');
   el.id = COPY_STYLE_ID;
-  el.textContent = `.optio-cc-answer .optio-cc-copy{visibility:hidden}
-  .optio-cc-answer:hover .optio-cc-copy{visibility:visible}`;
+  el.textContent = `.optio-cc-answer-bubble .optio-cc-copy{opacity:0}
+  .optio-cc-answer-bubble:hover .optio-cc-copy,.optio-cc-answer-bubble:focus-within .optio-cc-copy{opacity:1}
+  @media (hover:none){.optio-cc-answer-bubble .optio-cc-copy{opacity:1}}`;
   document.head.appendChild(el);
 }
 
@@ -1838,7 +1843,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             data-testid={item.interrupted ? 'answer-interrupted' : undefined}
             placement="start"
             style={{ alignSelf: 'stretch' }}
-            classNames={{ content: item.interrupted ? 'optio-cc-interrupted' : undefined }}
+            classNames={{ root: 'optio-cc-answer-bubble', content: item.interrupted ? 'optio-cc-interrupted' : undefined }}
             streaming={item.pending}
             loading={item.pending && item.text === ''}
             content={item.text}
@@ -1852,7 +1857,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             footer={
               <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 {timeLabel}
-                {!item.pending && <Actions.Copy data-testid="answer-copy" text={item.text} />}
+                {!item.pending && <Actions.Copy className="optio-cc-copy" data-testid="answer-copy" text={item.text} />}
               </div>
             }
             footerPlacement="outer-start"
@@ -2075,7 +2080,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
 
   return (
     <FileDownloadContext.Provider value={fileDownload ? onFileDownload : null}>
-      <XProvider bubble={{ classNames: { content: dark ? GLASS_MODE.dark : GLASS_MODE.light } }}>
+      {/* Every bubble's time sits close under it, and apart from the next row
+          (owner, 2026-10-14): X puts a full `margin` above a footer, while the
+          transcript leaves only 8 px between rows, so a time sat nearer the next
+          bubble than its own. */}
+      <XProvider
+        bubble={{
+          classNames: { content: dark ? GLASS_MODE.dark : GLASS_MODE.light },
+          styles: { footer: { marginTop: token.marginXXS, marginBottom: token.marginXS } },
+        }}
+      >
       {/* Paint our own root surface from a bg token — the widget owns its
           background (don't rely on an inherited host surface), or dark mode
           shows the light host page behind transparent divs. colorText sets a
