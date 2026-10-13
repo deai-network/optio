@@ -207,7 +207,8 @@ hooks for hosts that serve several tenants -- or several users of one tenant --
 from one optio database:
 
 ```typescript
-import { registerOptioApi, or, not, eq } from 'optio-api';
+import { registerOptioApi } from 'optio-api/fastify';
+import { or, not, eq } from 'optio-api';
 
 registerOptioApi(app, {
   ctx,
@@ -218,7 +219,12 @@ registerOptioApi(app, {
   // Hide individual processes within the tenant: a metadata predicate built
   // with the re-exported predicate builders, or null for no restriction. A
   // hidden process behaves as missing everywhere -- reads, streams and
-  // actions alike.
+  // actions alike. `eq(key, null)` matches a *missing* key too (MongoDB
+  // semantics), and an `undefined` value anywhere in the predicate is
+  // rejected outright (the request fails) rather than silently admitting
+  // everything -- so `req.user.id` must never be undefined here; this hook
+  // only runs once `authenticate` has already accepted the request, which
+  // guarantees `req.user` is set.
   visibility: (req) => or(not(eq('kind', 'data-chat')), eq('ownerId', req.user.id)),
   // Decide individual actions: launch, cancel, dismiss, resurrect (a
   // single-process action like launch), resync, the widget routes (also

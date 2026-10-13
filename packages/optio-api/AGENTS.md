@@ -164,10 +164,20 @@ visible when its own `metadata` satisfies the predicate; children inherit
 their parent's metadata at creation, so there is no root fallback. A missing
 metadata key follows MongoDB's rules, deliberately: `eq('ownerId', me)` does
 not match a process without an `ownerId` (fails closed), while `ne`, `notIn`
-and `not(...)` do match it. A predicate that fails `ProcessMetadataFilterSchema`
-fails the whole request (the promise rejects) rather than passing through
-unfiltered. Excavator's rule, for illustration:
-`visibility: (req) => or(not(eq('kind', 'data-chat')), eq('ownerId', userIdOf(req)))`.
+and `not(...)` do match it. The same MongoDB semantics make `eq(key, null)`
+match a *missing* key as well as a genuinely null one -- so a null or
+undefined user id must never reach a leaf built this way; guard the call
+(`req.user?.id` must not become `eq('ownerId', undefined)`) or deny access
+instead. `undefined` is rejected outright, never treated as "no
+restriction" the way the top-level `null`/`undefined`/`{}` is: a predicate
+with an `undefined` value anywhere in it (`eq('ownerId', undefined)`
+included, however deeply nested in `and`/`or`/`not`) fails
+`ProcessMetadataFilterSchema`'s walk and fails the whole request (the
+promise rejects) rather than passing through unfiltered -- without this
+check, `$eq: undefined` reaches the Mongo driver as `$eq: null`, matching
+every process with no `ownerId` at all. Excavator's rule, for illustration:
+`visibility: (req) => or(not(eq('kind', 'data-chat')), eq('ownerId', userIdOf(req)))`
+(guarded: `userIdOf` never returns `undefined` for an authenticated request).
 
 **Declared once, at init.** The host registers `visibility` once, with the
 adapter's other options, next to `scope` and `authorize`; clients never send
@@ -357,6 +367,32 @@ are implemented). The four `adapters/*.ts` files and `stream-poller.ts` carry
 no exemption: they read only through `processReads`. A new route that reads
 processes therefore either goes through `processReads` or fails this test
 until its file is deliberately allowlisted, with a reason, in review.
+
+**The guard is a tripwire for the common bypasses, not a proof.** It is a
+text scan, not a type or data-flow check, so it has blind spots: a
+collection name built by string concatenation (`db.collection(prefix +
+'_processes')` rather than the literal template the scan matches), an
+aliased import (`import { processCollection as pc } from './process-reads.js'`,
+or renaming `processReads`/`processReadsOf` on import), and a destructured
+`unfiltered` (`const { unfiltered } = reads;` used later, outside
+`access-scope.ts`/`process-reads.ts`, where the scan only catches
+`.unfiltered` as a property access). Review still has to catch a
+sufficiently determined bypass; the guard only catches the straightforward
+ones -- forgetting `processReads`, not working around it.
+
+## Breaking changes (0.3.0)
+
+Type-level only; nothing here changes behaviour for code that already compiles against it the
+obvious way. Spec: `docs/2026-10-13-optio-api-visibility-design.md` ("Compatibility and
+release").
+
+- `'read'` is removed from `OptioAction`: it was declared but never passed to `authorize`.
+- `Access` gains a new required `visibility` field (`ProcessMetadataFilter | null`). A hand-built
+  `Access` (custom adapters, tests) needs `visibility: null` added.
+- Every stream poller's `visibility` option becomes required -- `StreamPollerOptions` (and so
+  `TreePollerOptions`), `MultiTreePollerOptions`, `SessionEventsPollerOptions` -- so forgetting it
+  is now a compile error instead of silently streaming everything (M9). The four built-in
+  adapters already pass it; every other call site needs `visibility: null` added.
 
 ## Fastify Adapter
 
@@ -680,13 +716,30 @@ the rule is unchanged from today).
 
 **Mid-stream transitions** behave like creation and deletion do today
 (spec: "Streams"). A process becoming visible appears in the next update,
-with its full log; the entry point itself becoming hidden empties the tree
-stream (`processes: []`), as for a deleted root. A process becoming hidden
-leaves the next update together with its subtree and sends no further
-lines; lines already sent stay with the client, as they do for a deletion.
-A multi-tree stream's hidden ids are reported in `resolution`'s `missing`
-list exactly like nonexistent ones (adapter-level; unaffected by this
-change).
+with its full log; the entry point itself becoming hidden leaves the
+stream, as for a deletion. That is literally `processes: []` only when the
+entry point *is* the tree's root: the tree poller's query filters by
+`rootId`, not by the entry's own `_id`, so it reads the whole tree and then
+`pruneOrphans` walks each process's parent chain down from a `parentId`-less
+root; hiding a non-root entry only drops that entry's own subtree, leaving
+the rest of the tree (siblings, ancestors) streaming as before. A process
+becoming hidden leaves the next update together with its subtree and sends
+no further lines; lines already sent stay with the client, as they do for
+a deletion. A multi-tree stream's hidden ids are reported in `resolution`'s
+`missing` list exactly like nonexistent ones (adapter-level; unaffected by
+this change).
+
+**A visible non-root entry under a hidden root** (the root's own metadata
+no longer matches, while the entry and its subtree still do -- the
+diverged-metadata edge case) empties the tree stream and the tree log
+completely: the root itself fails the visibility-filtered read, so no
+document in the tree has a `parentId`-less (or otherwise already-kept)
+anchor for `pruneOrphans` to walk down from, and the entry's own subtree is
+pruned along with everything else, even though the entry itself is
+visible. `GET /processes/:id/tree` (REST) is unaffected by this: it reads
+the entry's own document directly, then walks down by `parentId` from
+there (`buildTree`), never up through the root, so it still returns the
+entry's subtree in full.
 
 **How a stream learns about changes** (`process-change-hub.ts`,
 `process-change-relevance.ts`; spec `docs/2026-10-09-api-change-streams-design.md`).

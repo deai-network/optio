@@ -224,8 +224,16 @@ host with `case 'read':` gets a compile error, which points it to `visibility`.
   only behave exactly as before.
 - **404 instead of 403.** A host that adds `visibility` also gets 404 instead of 403 for actions
   on processes it hides. That is intended.
-- **Breaking, type-level only.** `'read'` is removed from `OptioAction`. Hence a **minor**
-  release: optio-api 0.2.x → 0.3.0, via `make release-optio-api BUMP=minor`
+- **Breaking, type-level only.** Three changes, none of which alters runtime behaviour for a host
+  that already compiles against them the obvious way:
+  - `'read'` is removed from `OptioAction`.
+  - `Access` gains a new required `visibility` field (`ProcessMetadataFilter | null`); a
+    hand-built `Access` (custom adapters, tests) needs `visibility: null` added.
+  - Every stream poller's `visibility` option (`StreamPollerOptions`/`TreePollerOptions`,
+    `MultiTreePollerOptions`, `SessionEventsPollerOptions`) becomes required, so an adapter that
+    forgot it no longer silently streams everything; the built-in adapters already pass it, so
+    this is mechanical everywhere else (`visibility: null` for "no restriction").
+  Hence a **minor** release: optio-api 0.2.x → 0.3.0, via `make release-optio-api BUMP=minor`
   (`docs/release-cookbook.md`), on the owner's go only.
 - **Excavator.** It adopts this in its own change: bump optio-api, add its `visibility` rule, and
   stamp `ownerId` on chat processes.

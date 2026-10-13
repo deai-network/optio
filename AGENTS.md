@@ -880,8 +880,11 @@ export { normalizeVisibility, visibilityToMongo, andVisibility, isVisible,
 // same object, not a copy). The handlers build one `ProcessReads` per request and
 // read through it exclusively; a guard test (process-reads-guard.test.ts) fails the
 // build if a new read path names the collection, calls processCollection outside its
-// allowlist, or reaches `.unfiltered` outside access-scope.ts, so a route added later
-// cannot forget the rule.
+// allowlist, or reaches `.unfiltered` outside access-scope.ts. The guard is a
+// tripwire for the common bypasses (forgetting processReads), not a proof: it is a
+// text scan, so a string-concatenated collection name, an aliased import of
+// processCollection/processReads/processReadsOf, or a destructured `unfiltered`
+// used later all slip past it; review still has to catch those.
 export { processCollection, processReads, processReadsOf, type ProcessReads } from 'optio-api';
 
 // Predicate builders (for writing a visibility hook), re-exported from optio-contracts
@@ -955,7 +958,7 @@ interface ExplicitOptioApiOptions {
 // is a single-process action like 'launch' (input.process set). OptioAction has no
 // 'read' member: it was declared but never passed to authorize.
 //
-// Without scope/authorize nothing changes (no extra lookups).
+// Without scope/visibility/authorize nothing changes (no extra lookups).
 //
 // visibility(req) -> ProcessMetadataFilter | null (a per-request metadata predicate,
 // `VisibilityCallback<TRequest>`; see packages/optio-api/AGENTS.md "Access scope
@@ -963,8 +966,13 @@ interface ExplicitOptioApiOptions {
 // never send it, no route takes it as a parameter. A rule per group of processes
 // is a clause of the one predicate (typically one per `kind`, plus a catch-all for
 // everything else), e.g. or(and(eq('kind','data-chat'), eq('ownerId', me(req))),
-// not(isIn('kind', ['data-chat']))). `Access` carries it and gateProcess (the
-// single-process action gate) checks it before authorize, 404ing a hidden process
+// not(isIn('kind', ['data-chat']))). eq(key, null) matches a *missing* key too
+// (MongoDB semantics), so a null/undefined user id must never reach a leaf this
+// way; an `undefined` value anywhere in the predicate is rejected outright
+// (normalizeVisibility throws, failing the request), never treated as "no
+// restriction" the way the top-level null/undefined/{} is. `Access` carries it,
+// and gateProcess (the single-process action gate) checks it before authorize,
+// 404ing a hidden process
 // the same as an out-of-scope one. The read handlers (list, single reads, the tree
 // and the tree log) honour it too: a hidden process is a 404/omitted, exactly like
 // a missing one, and the tree log's orphans are pruned once visibility can create
@@ -1081,7 +1089,17 @@ With `visibility` set, the tree and multi-tree pollers prune orphans out of
 each read and re-read on any metadata change (not only a member's), so a
 process gaining or losing visibility appears or disappears mid-stream the
 same way a create or delete does today; an entry point losing visibility
-empties the stream like a deleted root.
+leaves the stream, as for a deletion -- literally empty (`processes: []`)
+only when the entry point is the tree's root, since the tree poller reads
+the whole tree by `rootId` and prunes by walking down from a root
+`pruneOrphans` can see; a non-root entry losing visibility only drops its
+own subtree. A *visible* non-root entry under a *hidden* root also empties
+the stream and the tree log (the root itself fails the read, breaking
+every orphan chain), even though `GET /processes/:id/tree` (REST, which
+walks down from the entry by `parentId`, never through the root) still
+returns that entry's subtree -- a documented, not compensated-for,
+diverged-metadata edge case; details: packages/optio-api/AGENTS.md
+"Stream Poller".
 
 **List stream process shape:**
 ```typescript
