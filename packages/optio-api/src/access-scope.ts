@@ -31,13 +31,18 @@ function matches(metadata: Record<string, unknown>, scope: ScopeFilter): boolean
 }
 
 /**
- * The lookups below (`inScope`, `findScopedProcess`, `findReadableProcess`,
- * `findActionTarget`, `gateProcess`) accept a `ProcessReads` or, for custom
- * adapters and compatibility, a plain `Collection` -- wrapped here with
- * `processReadsOf(col, null)`, since only its `.unfiltered` collection is
- * needed: each raw read below is followed by its own explicit visibility
- * check (`isVisible`), so these lookups never rely on `ProcessReads`'s own
- * filtering.
+ * `inScope`, `findScopedProcess`, `findReadableProcess`, `findActionTarget` and
+ * `gateProcess` accept a `ProcessReads` or, for custom adapters and
+ * compatibility, a plain `Collection` -- wrapped here with
+ * `processReadsOf(col, null)`, which carries no visibility, so a plain
+ * `Collection` sees unchanged behaviour. A lookup given a `ProcessReads`
+ * honours its `visibility`: `findScopedProcess` hides a process it excludes,
+ * and `findActionTarget` returns null for a target it excludes, never
+ * substituting another document. The only unfiltered reads left are
+ * `inScope`'s own root lookup (it judges scope only and returns no document
+ * of its own) and `findActionTarget`'s own target lookup (the newest
+ * document by `_id` or `processId`), whose result is checked against
+ * `visibility` before it is returned.
  */
 function asReads(input: Collection | ProcessReads): ProcessReads {
   return 'unfiltered' in input ? input : processReadsOf(input, null);
@@ -46,7 +51,8 @@ function asReads(input: Collection | ProcessReads): ProcessReads {
 /**
  * Whether a process is inside the scope. A process whose own metadata lacks
  * any scope key is judged by its root's metadata; one whose root lacks it too
- * is outside (fail closed).
+ * is outside (fail closed). The root lookup is unfiltered: it reads the
+ * root's metadata only to judge scope, and returns no document of its own.
  */
 export async function inScope(
   input: Collection | ProcessReads,
@@ -62,7 +68,11 @@ export async function inScope(
   return matches((root?.metadata ?? {}) as Record<string, unknown>, scope);
 }
 
-/** Look a process up by either id form; outside the scope it is not found. */
+/**
+ * Look a process up by either id form; outside the scope it is not found.
+ * Given a `ProcessReads`, a process its `visibility` excludes is not found
+ * either -- the same answer as a missing one.
+ */
 export async function findScopedProcess(
   input: Collection | ProcessReads,
   id: string,
@@ -71,7 +81,8 @@ export async function findScopedProcess(
   const reads = asReads(input);
   const doc = await findProcessByEitherId(reads.unfiltered, id);
   if (!doc) return null;
-  return (await inScope(reads, doc, scope)) ? doc : null;
+  if (!(await inScope(reads, doc, scope))) return null;
+  return (await isVisible(reads.unfiltered, doc, reads.visibility)) ? doc : null;
 }
 
 /**
@@ -107,16 +118,21 @@ export type GateResult =
 /**
  * The document a single-process action targets: by `_id` for a 24-hex id,
  * else by `processId`, where a duplicated `processId` resolves to the newest
- * document, as the engine does.
+ * document, as the engine does -- an unfiltered read, so a duplicate's
+ * visible older document is never substituted for its hidden newest one.
+ * Given a `ProcessReads`, the target found this way is then checked against
+ * its `visibility`, returning null (not the document) when it is hidden.
  */
 export async function findActionTarget(
   input: Collection | ProcessReads,
   id: string,
 ): Promise<Document | null> {
-  const col = asReads(input).unfiltered;
-  return ObjectId.isValid(id) && /^[a-f0-9]{24}$/i.test(id)
-    ? col.findOne({ _id: new ObjectId(id) })
-    : col.find({ processId: id }).sort({ _id: -1 }).limit(1).next();
+  const reads = asReads(input);
+  const doc = ObjectId.isValid(id) && /^[a-f0-9]{24}$/i.test(id)
+    ? await reads.unfiltered.findOne({ _id: new ObjectId(id) })
+    : await reads.unfiltered.find({ processId: id }).sort({ _id: -1 }).limit(1).next();
+  if (!doc) return null;
+  return (await isVisible(reads.unfiltered, doc, reads.visibility)) ? doc : null;
 }
 
 /**

@@ -198,21 +198,27 @@ see "One choke point" below) — no handler ANDs the visibility condition
 itself. `gateProcess` — the single-process action gate behind launch, cancel,
 dismiss, resurrect, the three widget routes and the conversation read —
 checks `access.visibility` right alongside `access.scope`, via an explicit
-`isVisible` check on an unfiltered read, before `authorize` is asked: a
-hidden process is a 404 the same as an out-of-scope one, including when a
-duplicated `processId` resolves (as the engine does) to a newest document
-that is hidden while an older one of the same `processId` is visible. The
-read handlers consult it too, through the `ProcessReads` each builds once
-per request: `listProcesses` ANDs it into the query and `countDocuments`, so
-a client `metadataFilter` cannot widen past it and `totalCount` stays exact
-across every page; `getProcess` and `getProcessLog` 404 a hidden process, by
-either id form; `getProcessTree` 404s a hidden entry point and otherwise
-fetches only visible children at each level, so a hidden process takes its
-subtree with it; `getProcessTreeLog` 404s a hidden entry point, fetches the
-tree's processes under the condition, and — only when `reads.visibility` is
-set — prunes orphans before collecting log lines, so a process left
-parentless by a hidden ancestor contributes no lines. Streams and the
-adapters' options do not consult `visibility` yet — that is a later change.
+`isVisible` check, before `authorize` is asked: a hidden process is a 404
+the same as an out-of-scope one, including when a duplicated `processId`
+resolves (as the engine does) to a newest document that is hidden while an
+older one of the same `processId` is visible (`findActionTarget` finds that
+newest document with an unfiltered read — so it is never substituted for an
+older, visible duplicate — and only then checks it against `visibility`,
+returning null rather than the document when it is hidden). The read
+handlers consult it too, through the `ProcessReads` each builds once per
+request: `listProcesses` ANDs it into the query and `countDocuments`, so a
+client `metadataFilter` cannot widen past it, and `totalCount` counts the
+visible matches from the cursor on — the same cursor semantics as without
+visibility (e.g. 3, then 2, then 1 across a 3-page list, never inflated by
+hidden processes interleaved between the visible ones); `getProcess` and
+`getProcessLog` 404 a hidden process, by either id form; `getProcessTree`
+404s a hidden entry point and otherwise fetches only visible children at
+each level, so a hidden process takes its subtree with it;
+`getProcessTreeLog` 404s a hidden entry point, fetches the tree's processes
+under the condition, and — only when `reads.visibility` is set — prunes
+orphans before collecting log lines, so a process left parentless by a
+hidden ancestor contributes no lines. Streams and the adapters' options do
+not consult `visibility` yet — that is a later change.
 
 Per request, `checkAuth` records the authenticated role (keyed by the native
 request object) and `accessFor(req, hooks)` resolves the hooks once into an
@@ -243,10 +249,16 @@ order and memoising per id. `findReadableProcess(reads, id, access)` (in
 building block `getProcess`, `getProcessLog`, `getProcessTree` and
 `getProcessTreeLog` use in place of `findScopedProcess`. `findScopedProcess`,
 `findReadableProcess`, `findActionTarget`, `inScope` and `gateProcess` all accept
-either a `ProcessReads` or a plain `Collection` (wrapped internally with
-`processReadsOf(col, null)`, since these lookups only ever need `.unfiltered`,
-each followed by its own explicit visibility check); adapters still come in a
-later change.
+either a `ProcessReads` or a plain `Collection`, wrapped internally with
+`processReadsOf(col, null)` (no visibility, so a plain `Collection` sees
+unchanged behaviour). Given a `ProcessReads`, a lookup honours its
+`visibility`: `findScopedProcess` hides a process it excludes, and
+`findActionTarget` returns null for a target it excludes, never substituting
+another document. The only unfiltered reads left are `inScope`'s own root
+lookup (it judges scope only and returns no document of its own) and
+`findActionTarget`'s own target lookup (the newest document by `_id` or
+`processId`), whose result is checked against `visibility` before it is
+returned; adapters still come in a later change.
 
 ### One choke point
 
@@ -277,9 +289,14 @@ caller's filter (never replacing it, so a client filter cannot widen past
 it) and, with `visibility` null, pass the caller's filter object through
 unchanged — the same reference, not a copy — so a host with no `visibility`
 hook sees identical queries to a plain `Collection`. `.unfiltered` exists for
-`access-scope.ts` alone: its lookups (scope's root fallback, the action
-gate's target lookup) need a raw read, each followed by its own explicit
-`isVisible`/`inScope` check, not `ProcessReads`'s own filtering.
+`access-scope.ts` alone, which honours a `ProcessReads`'s `visibility`
+itself rather than relying on `ProcessReads`'s own filtering: the only reads
+that stay unfiltered are scope's root lookup (`inScope`, which judges scope
+only and returns no document) and the action gate's target lookup
+(`findActionTarget`, an unfiltered lookup by `_id` or the newest `processId`
+duplicate, so a hidden newest document is never silently replaced by an
+older visible one), whose result is checked against `visibility` before it
+is returned.
 
 **The guard test** (`process-reads-guard.test.ts`) scans every non-test
 source file and fails when:
@@ -294,10 +311,11 @@ source file and fails when:
 3. `.unfiltered` is used outside `access-scope.ts` and `process-reads.ts`.
 
 `stream-poller.ts` and the four `adapters/*.ts` files still name the
-collection directly and are temporarily exempt (`PENDING` in the guard test);
-Task 4 and Task 5 migrate them and empty that list. A new route that reads
-processes therefore either goes through `processReads` or fails this test
-until its file is deliberately allowlisted, with a reason, in review.
+collection directly and are temporarily exempt (`PENDING` in the guard test),
+pending migration of the stream poller and adapters, which will empty that
+list. A new route that reads processes therefore either goes through
+`processReads` or fails this test until its file is deliberately
+allowlisted, with a reason, in review.
 
 ## Fastify Adapter
 

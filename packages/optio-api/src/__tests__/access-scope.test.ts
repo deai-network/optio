@@ -3,6 +3,7 @@ import { MongoClient, ObjectId, type Db } from 'mongodb';
 import { eq } from 'optio-contracts';
 import {
   andScope,
+  findActionTarget,
   findReadableProcess,
   findScopedProcess,
   gateInstances,
@@ -13,6 +14,7 @@ import {
   toProcessRef,
 } from '../access-scope.js';
 import { UNRESTRICTED, accessFor, checkAuth, resolveAccess, type Access } from '../auth.js';
+import { processReadsOf } from '../process-reads.js';
 
 const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_access_scope';
@@ -128,6 +130,46 @@ describe('findScopedProcess', () => {
     const p = await insertProcess({ metadata: { customerId: 0 } });
     expect(await findScopedProcess(col(), p._id.toHexString(), { customerId: 1 })).toBeNull();
     expect(await findScopedProcess(col(), new ObjectId().toHexString(), { customerId: 1 })).toBeNull();
+  });
+
+  it('given a ProcessReads, additionally hides a process its visibility excludes', async () => {
+    const hidden = await insertProcess({ metadata: { ownerId: 'u2' } });
+    const visible = await insertProcess({ metadata: { ownerId: 'u1' } });
+    const reads = processReadsOf(col(), eq('ownerId', 'u1'));
+    expect(await findScopedProcess(reads, hidden._id.toHexString(), null)).toBeNull();
+    expect((await findScopedProcess(reads, visible._id.toHexString(), null))?._id).toEqual(visible._id);
+  });
+
+  it('a plain Collection carries no visibility, so none is applied', async () => {
+    const p = await insertProcess({ metadata: { ownerId: 'u2' } });
+    expect((await findScopedProcess(col(), p._id.toHexString(), null))?._id).toEqual(p._id);
+  });
+});
+
+describe('findActionTarget', () => {
+  it('returns null for a hidden _id, given a ProcessReads', async () => {
+    const hidden = await insertProcess({ metadata: { ownerId: 'u2' } });
+    const reads = processReadsOf(col(), eq('ownerId', 'u1'));
+    expect(await findActionTarget(reads, hidden._id.toHexString())).toBeNull();
+  });
+
+  it('finds a visible target, given a ProcessReads', async () => {
+    const visible = await insertProcess({ metadata: { ownerId: 'u1' } });
+    const reads = processReadsOf(col(), eq('ownerId', 'u1'));
+    expect((await findActionTarget(reads, visible._id.toHexString()))?._id).toEqual(visible._id);
+  });
+
+  it('gives null for a duplicated processId whose newest document is hidden, never the older visible one', async () => {
+    await insertProcess({ processId: 'dup-fat', metadata: { ownerId: 'u1' } });
+    await insertProcess({ processId: 'dup-fat', metadata: { ownerId: 'u2' } });
+    const reads = processReadsOf(col(), eq('ownerId', 'u1'));
+    expect(await findActionTarget(reads, 'dup-fat')).toBeNull();
+  });
+
+  it('a plain Collection carries no visibility, so it still resolves the newest duplicate', async () => {
+    await insertProcess({ processId: 'dup-fat2', metadata: { ownerId: 'u1' } });
+    const newest = await insertProcess({ processId: 'dup-fat2', metadata: { ownerId: 'u2' } });
+    expect((await findActionTarget(col(), 'dup-fat2'))?._id).toEqual(newest._id);
   });
 });
 
