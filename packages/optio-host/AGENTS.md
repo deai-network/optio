@@ -79,12 +79,14 @@ where the workdir lives:
   only a regular file, at most 64 KiB.
 - **The timeouts are read at call time:** `DU_TIMEOUT_S` (the `du` and the
   list read) and `WALK_BUDGET_S`, so tests patch them rather than race them.
-- **It fails safe.** Anything the decision raises is logged at WARNING on
-  `optio_host.archive`, and the capture goes ahead leaving nothing out. That
-  covers the cap setting, the measurement, the list read, and an SSH
-  channel or a `bash` spawn that fails. Losing a shutdown snapshot is worse
-  than capturing an oversized one. An `on_note` that raises is logged too,
-  and the capture goes on.
+- **It fails safe.** Anything the decision raises becomes the note
+  `capture decision failed (<exception>); capturing everything`, logged at
+  WARNING on `optio_host.archive` and handed to `on_note` like every other
+  note, and the capture goes ahead leaving nothing out. That covers the cap
+  setting, the measurement, the list read, and an SSH channel or a `bash`
+  spawn that fails. Losing a shutdown snapshot is worse than capturing an
+  oversized one. An `on_note` that raises is logged too, and the capture
+  goes on.
 
 **The note.** A capture that finds the workdir over the cap produces a
 one-line note. Under the cap there is none.

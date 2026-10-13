@@ -419,6 +419,20 @@ def _archive_command(
 _archive_logger = _logging.getLogger("optio_host.archive")
 
 
+def _send_capture_note(note: str, on_note: Callable[[str], None] | None) -> None:
+    """Hand ``note`` to ``on_note``, if given. An ``on_note`` that raises is
+    logged and does not stop the capture."""
+    if on_note is None:
+        return
+    try:
+        on_note(note)
+    except Exception as exc:
+        _archive_logger.warning(
+            "workdir capture cap: on_note raised %r; capturing anyway", exc,
+            exc_info=True,
+        )
+
+
 def _report_capture_note(
     note: str | None,
     anchored: list[str],
@@ -426,19 +440,11 @@ def _report_capture_note(
 ) -> None:
     """Log the capture decision's note, if any, on ``optio_host.archive`` and
     hand it to ``on_note``. A note that leaves nothing out is the
-    missing-list one, logged at WARNING; the others at INFO. An ``on_note``
-    that raises is logged and does not stop the capture."""
+    missing-list one, logged at WARNING; the others at INFO."""
     if note is None:
         return
     _archive_logger.log(_logging.INFO if anchored else _logging.WARNING, "%s", note)
-    if on_note is not None:
-        try:
-            on_note(note)
-        except Exception as exc:
-            _archive_logger.warning(
-                "workdir capture cap: on_note raised %r; capturing anyway", exc,
-                exc_info=True,
-            )
+    _send_capture_note(note, on_note)
 
 
 async def _capture_excludes(
@@ -448,17 +454,18 @@ async def _capture_excludes(
     """Run the capture-cap decision fail-safe and report its note.
 
     ``decide(cap_bytes)`` is the host's decision (``regenerable_excludes``
-    or the fallback's). Anything it raises, the cap setting included, is
-    logged at WARNING on ``optio_host.archive`` and the capture leaves
-    nothing out: losing a shutdown snapshot to the decision is worse than
-    an oversized one. Returns the entries to exclude, anchored."""
+    or the fallback's). Anything it raises, the cap setting included, makes
+    the note ``capture decision failed (<exception>); capturing everything``,
+    logged at WARNING on ``optio_host.archive`` and handed to ``on_note``,
+    and the capture leaves nothing out: losing a shutdown snapshot to the
+    decision is worse than an oversized one. Returns the entries to exclude,
+    anchored."""
     try:
         anchored, note = await decide(workdir_capture_max_bytes())
     except Exception as exc:
-        _archive_logger.warning(
-            "workdir capture cap: the decision failed (%r); capturing everything", exc,
-            exc_info=True,
-        )
+        note = f"capture decision failed ({exc!r}); capturing everything"
+        _archive_logger.warning("%s", note, exc_info=True)
+        _send_capture_note(note, on_note)
         return []
     _report_capture_note(note, anchored, on_note)
     return anchored

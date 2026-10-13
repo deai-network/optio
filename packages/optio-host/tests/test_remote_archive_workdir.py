@@ -509,10 +509,26 @@ async def test_archive_workdir_decision_that_raises_captures_everything(monkeypa
 
     assert out == data
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
-    assert notes == []
-    [record] = [r for r in caplog.records if r.name == "optio_host.archive"]
-    assert record.levelno == logging.WARNING
-    assert "channel open failed" in record.getMessage()
+    assert notes == [
+        "capture decision failed (ConnectionError('channel open failed')); "
+        "capturing everything"
+    ]
+    assert [(r.levelno, r.getMessage()) for r in caplog.records
+            if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0])]
+
+
+async def test_archive_workdir_failed_decision_survives_an_on_note_that_raises(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "1")
+    data = os.urandom(300 * 1024)
+    conn = _FakeConn(pigz=True, data=data, du=ConnectionError("channel open failed"))
+
+    def boom(note: str) -> None:
+        raise RuntimeError("on_note exploded")
+
+    out = await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=boom))
+
+    assert out == data
+    assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
 
 
 async def test_archive_workdir_on_note_that_raises_does_not_stop_the_capture(monkeypatch):

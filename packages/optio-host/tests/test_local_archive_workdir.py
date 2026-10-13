@@ -499,10 +499,10 @@ async def test_decision_that_raises_captures_everything(tmp_workdir, monkeypatch
         blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
 
     assert _tar_member_names(blob) == _ALL_FILES
-    assert notes == []
-    [(level, message)] = _archive_notes(caplog)
-    assert level == logging.WARNING
-    assert "cannot spawn bash" in message and "capturing everything" in message
+    assert notes == [
+        "capture decision failed (OSError('cannot spawn bash')); capturing everything"
+    ]
+    assert _archive_notes(caplog) == [(logging.WARNING, notes[0])]
 
 
 async def test_on_note_that_raises_does_not_stop_the_capture(tmp_workdir, monkeypatch, caplog):
@@ -537,9 +537,10 @@ async def test_fallback_measurement_that_raises_captures_everything(
         blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
 
     assert _tar_member_names(blob) == _ALL_FILES
-    assert notes == []
-    [(level, message)] = _archive_notes(caplog)
-    assert level == logging.WARNING and "walk exploded" in message
+    assert notes == [
+        "capture decision failed (OSError('walk exploded')); capturing everything"
+    ]
+    assert _archive_notes(caplog) == [(logging.WARNING, notes[0])]
 
 
 async def test_fallback_on_note_that_raises_does_not_stop_the_capture(tmp_workdir, monkeypatch):
