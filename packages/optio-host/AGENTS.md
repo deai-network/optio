@@ -36,8 +36,9 @@ suspend-capture decision (design:
 - `parse_regenerable(text)` sanitises the contents of `REGENERABLE_LIST`
   (`regenerable.txt`, kept by the agent at the workdir root): it drops
   comments, blank lines and ` #` notes, normalises `./x/` to `x`, and
-  skips absolute paths, any `..` segment, `.`, and anything containing a
-  NUL byte, keeping the original order without duplicates.
+  skips absolute paths, any `..` segment, `.`, anything containing a NUL
+  byte, and `regenerable.txt` itself (the list is always captured), keeping
+  the original order without duplicates.
 
 ### In `archive_workdir`
 
@@ -72,8 +73,13 @@ cap before it starts the archive, on the host where the workdir lives:
 - **The read is bounded:**
   `[ -f regenerable.txt ] && timeout 1 head -c 65536 -- regenerable.txt`.
   - Only a regular file (or a symlink to one) is read, so a FIFO cannot hang
-    the capture and `/dev/zero` is not read. Anything else, or a failure,
-    means an empty list.
+    the capture and `/dev/zero` is not read.
+  - A list that cannot be read leaves nothing out, and the note says why:
+    exit 1 (the `[ -f ]` test failed) is `regenerable.txt is missing or not
+    a regular file` (`LIST_MISSING`); any other exit, e.g. 127 without
+    `timeout` or 124 when it fires, is `regenerable.txt could not be read
+    (exit N)` (`list_read_failed`). A list that is read but names no path
+    says `regenerable.txt lists no paths`.
   - At most `LIST_MAX_BYTES` (64 KiB) is read. A last line that this limit
     cuts short is dropped, so a cut-off `src/gen` never excludes `./src`.
 - **The entries are limited.** Each applied entry becomes a
@@ -90,7 +96,9 @@ cap before it starts the archive, on the host where the workdir lives:
   walk (`measure_workdir`) honouring the same patterns, under a 1 s
   `time.monotonic()` budget (`WALK_BUDGET_S`; running out counts as over).
   It reads the list with Python, with the same bounds: opened non-blocking,
-  only a regular file, at most 64 KiB.
+  only a regular file, at most 64 KiB. A missing file or one that is not
+  regular is `LIST_MISSING`; any other `OSError` is
+  `list_read_failed(<strerror>)`, e.g. `could not be read (Permission denied)`.
 - **The timeouts are read at call time:** `DU_TIMEOUT_S` (the `du` and the
   list read) and `WALK_BUDGET_S`, so tests patch them rather than race them.
 - **It fails safe.** Anything the decision raises becomes the note
@@ -112,16 +120,17 @@ the cap there is none.
     `workdir 214 MB (cap 100 MB): left out 3 paths listed in regenerable.txt`,
     or `workdir size unknown (du timed out after 1 s): left out 3 paths …`;
   - `"warning"` when everything is captured because the cap could not be
-    applied: the list is missing or empty (e.g. `workdir 214 MB is over the
-    100 MB capture cap, but regenerable.txt is missing or empty; capturing
-    everything`), the host's tar is not GNU or BusyBox, or the decision
-    failed.
+    applied: the list is missing, unreadable or names no path (e.g.
+    `workdir 214 MB is over the 100 MB capture cap, but regenerable.txt is
+    missing or not a regular file; capturing everything`), the host's tar is
+    not GNU or BusyBox, or the decision failed.
 - It goes to `on_note(text, level)`, when given, so the caller (an engine
   wrapper) can forward it to the process log, which the host layer has no
   handle to. Every engine wrapper calls
   `ctx.report_progress(None, text, level=level)`, so a warning reaches the
   process log as a warning.
 - It is always logged on the `optio_host.archive` logger, at INFO or
-  WARNING to match.
+  WARNING to match. A capture that applies the list also logs the entries
+  it leaves out there, at DEBUG: `regenerable.txt entries left out: [...]`.
 
 Sizes in notes are whole MiB, rounded down.

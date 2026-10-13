@@ -54,12 +54,20 @@ _MIB = 1024 * 1024
 # `timeout`'s exit status when the command ran out of time.
 _TIMED_OUT = 124
 
+# `list_command`'s exit status when `[ -f regenerable.txt ]` fails.
+_NOT_A_FILE = 1
+
+# Why a capture over the cap read no list, as said after "regenerable.txt"
+# in its note: the file is missing (or not a regular file), or reading it
+# failed (`list_read_failed`).
+LIST_MISSING = "is missing or not a regular file"
+
 
 class CaptureNote(NamedTuple):
     """A capture decision's one-line note, and the level the process log
     shows it at: `WARNING` when the cap could not be applied as the agent
-    meant (a missing or empty list, a tar that cannot take it, a failed
-    decision), else `INFO`."""
+    meant (a list that is missing, unreadable or names no path, a tar that
+    cannot take it, a failed decision), else `INFO`."""
 
     text: str
     level: str
@@ -99,8 +107,9 @@ def parse_regenerable(text: str) -> list[str]:
 
     `./x/` normalises to `x` (leading `./` stripped, then
     `posixpath.normpath`). Absolute paths, entries with a `..` segment,
-    entries that normalise to `.` (the workdir itself), and entries
-    containing a NUL byte (no path can, and exec rejects one) are skipped.
+    entries that normalise to `.` (the workdir itself), entries containing a
+    NUL byte (no path can, and exec rejects one), and `regenerable.txt`
+    itself (the list is always captured) are skipped.
 
     Returns the surviving entries in their original order, without
     duplicates.
@@ -132,7 +141,7 @@ def parse_regenerable(text: str) -> list[str]:
             path = path[2:]
 
         normalised = posixpath.normpath(path)
-        if normalised == ".":
+        if normalised in (".", REGENERABLE_LIST):
             continue
         if normalised in seen:
             continue
@@ -160,12 +169,19 @@ def list_command(workdir: str) -> str:
     """Shell command printing at most `LIST_MAX_BYTES` of `workdir`'s
     `regenerable.txt`, under `timeout DU_TIMEOUT_S`. Anything but a regular
     file (or a symlink to one) fails without being opened, so a FIFO cannot
-    block it."""
+    block it: the `[ -f ]` test exits 1 (`LIST_MISSING`). Other failures
+    exit otherwise, e.g. 127 without `timeout`, or 124 when it fires."""
     name = shlex.quote(REGENERABLE_LIST)
     return (
         f"cd {shlex.quote(workdir)} && [ -f {name} ] && "
         f"timeout {DU_TIMEOUT_S} head -c {LIST_MAX_BYTES} -- {name}"
     )
+
+
+def list_read_failed(detail: str) -> str:
+    """Why a capture over the cap read no list when the list is there but
+    reading it failed, `detail` saying how (e.g. `exit 127`)."""
+    return f"could not be read ({detail})"
 
 
 def _du_size(exit_code: int, stdout: str) -> tuple[int | None, str]:
@@ -197,8 +213,9 @@ async def regenerable_excludes(
     and the result is `([], None)`. Otherwise `du_command` measures the
     workdir; at or under the cap the result is `([], None)`. Over the cap,
     or when `du` fails (timeout included), `list_command` reads
-    `regenerable.txt` (a failure means an empty list): see
-    `over_cap_excludes` for the result. Exceptions from `run` propagate.
+    `regenerable.txt`: see `over_cap_excludes` for the result. A read that
+    fails leaves nothing out, its note telling a missing list (exit 1) from
+    any other failure. Exceptions from `run` propagate.
     """
     if cap_bytes == 0:
         return [], None
@@ -207,7 +224,13 @@ async def regenerable_excludes(
     if size is not None and size <= cap_bytes:
         return [], None
     exit_code, text = await run(list_command(workdir))
-    return over_cap_excludes(size, unknown, cap_bytes, text if exit_code == 0 else "")
+    if exit_code == 0:
+        return over_cap_excludes(size, unknown, cap_bytes, text)
+    unread = (
+        LIST_MISSING if exit_code == _NOT_A_FILE
+        else list_read_failed(f"exit {exit_code}")
+    )
+    return over_cap_excludes(size, unknown, cap_bytes, "", unread)
 
 
 def literal_exclude(entry: str) -> str:
@@ -275,22 +298,28 @@ def _within_exec_limit(entries: list[str]) -> list[str]:
 
 
 def over_cap_excludes(
-    size: int | None, unknown: str, cap_bytes: int, list_text: str,
+    size: int | None,
+    unknown: str,
+    cap_bytes: int,
+    list_text: str,
+    unread: str | None = None,
 ) -> tuple[list[str], CaptureNote]:
     """The result of a capture decision that found the workdir over the cap.
 
     `size` is the measured size in bytes, or `None` when the measurement
     failed, `unknown` then saying why. `list_text` is `regenerable.txt`'s
-    contents as read (at most `LIST_MAX_BYTES`), `""` when it could not be
-    read; a last line the limit cut short is dropped.
+    contents as read (at most `LIST_MAX_BYTES`); a last line the limit cut
+    short is dropped. `unread`, when the list could not be read, says why
+    (`LIST_MISSING`, or `list_read_failed(...)`), and `list_text` is then
+    ignored.
 
     Returns the entries to apply and the note: the paths left out (`INFO`),
-    or, when the list has none, a `WARNING` that the whole workdir is
-    captured. Entries beyond `EXCLUDES_MAX_BYTES` of arguments are ignored,
-    and the note says how many. Sizes in the note are whole MiB, rounded
-    down.
+    or, when there are none, a `WARNING` that the whole workdir is captured,
+    naming why (`unread`, or that the list names no paths). Entries beyond
+    `EXCLUDES_MAX_BYTES` of arguments are ignored, and the note says how
+    many. Sizes in the note are whole MiB, rounded down.
     """
-    listed = parse_regenerable(_complete_lines(list_text))
+    listed = [] if unread else parse_regenerable(_complete_lines(list_text))
     entries = _within_exec_limit(listed)
     cap_mb = cap_bytes // _MIB
     measured = (
@@ -300,7 +329,7 @@ def over_cap_excludes(
     if not listed:
         return [], CaptureNote(
             f"{measured} is over the {cap_mb} MB capture cap, but {REGENERABLE_LIST} "
-            "is missing or empty; capturing everything",
+            f"{unread or 'lists no paths'}; capturing everything",
             WARNING,
         )
     if size is not None:

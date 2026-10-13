@@ -27,7 +27,12 @@ import time
 from typing import AsyncIterator, Iterable
 
 from optio_host.capture_cap import (
-    LIST_MAX_BYTES, REGENERABLE_LIST, CaptureNote, over_cap_excludes,
+    LIST_MAX_BYTES,
+    LIST_MISSING,
+    REGENERABLE_LIST,
+    CaptureNote,
+    list_read_failed,
+    over_cap_excludes,
 )
 
 
@@ -139,21 +144,25 @@ def measure_workdir(
     return total
 
 
-def _read_list(root: str) -> str:
+def _read_list(root: str) -> tuple[str, str | None]:
     """At most `LIST_MAX_BYTES` of `root`'s `regenerable.txt`, decoded with
-    `errors="replace"`; `""` unless it is a regular file (or a symlink to
-    one) that can be read. Opened non-blocking, so a FIFO cannot block it."""
+    `errors="replace"`, as `(text, None)`; `("", why)` when it cannot be
+    read. Only a regular file (or a symlink to one) is read, `LIST_MISSING`
+    otherwise; any other failure is `list_read_failed(<strerror>)`. Opened
+    non-blocking, so a FIFO cannot block it."""
     try:
         fd = os.open(os.path.join(root, REGENERABLE_LIST), os.O_RDONLY | os.O_NONBLOCK)
-    except OSError:
-        return ""
+    except FileNotFoundError:
+        return "", LIST_MISSING
+    except OSError as exc:
+        return "", list_read_failed(exc.strerror or repr(exc))
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return ""
+            return "", LIST_MISSING
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            return fh.read(LIST_MAX_BYTES).decode("utf-8", errors="replace")
-    except OSError:
-        return ""
+            return fh.read(LIST_MAX_BYTES).decode("utf-8", errors="replace"), None
+    except OSError as exc:
+        return "", list_read_failed(exc.strerror or repr(exc))
     finally:
         os.close(fd)
 
@@ -165,8 +174,8 @@ def fallback_regenerable_excludes(
 
     The same decision and result, measured with `measure_workdir` (running
     out of its budget counts as over the cap) and the list read with Python
-    (`_read_list`: bounded, regular files only; anything else counts as an
-    empty list). Blocking: run it in an executor.
+    (`_read_list`: bounded, regular files only; a list it cannot read leaves
+    nothing out, the note saying why). Blocking: run it in an executor.
     """
     if cap_bytes == 0:
         return [], None
@@ -174,7 +183,7 @@ def fallback_regenerable_excludes(
     if size is not None and size <= cap_bytes:
         return [], None
     return over_cap_excludes(
-        size, f"walk timed out after {WALK_BUDGET_S:g} s", cap_bytes, _read_list(root),
+        size, f"walk timed out after {WALK_BUDGET_S:g} s", cap_bytes, *_read_list(root),
     )
 
 

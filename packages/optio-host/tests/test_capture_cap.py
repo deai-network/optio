@@ -81,6 +81,12 @@ def test_parse_regenerable_drops_entries_with_a_nul_byte():
     assert parse_regenerable("a\x00b\nc\n\x00\n") == ["c"]
 
 
+def test_parse_regenerable_never_lists_itself():
+    # The list must always be captured, or a resume could not find it.
+    text = "regenerable.txt\n./regenerable.txt\nkeep\nregenerable.txt/\nsub/regenerable.txt\n"
+    assert parse_regenerable(text) == ["keep", "sub/regenerable.txt"]
+
+
 # --- the capture decision ------------------------------------------------------
 
 _MIB = 1024 * 1024
@@ -206,6 +212,7 @@ async def test_other_du_failure_counts_as_over_the_cap():
 
 
 async def test_over_the_cap_without_a_list_leaves_nothing_out():
+    # Exit 1: `[ -f regenerable.txt ]` failed.
     run = _FakeRun(du=(0, f"{2 * _MIB}\t.\n"), cat=(1, ""))
 
     entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
@@ -213,7 +220,23 @@ async def test_over_the_cap_without_a_list_leaves_nothing_out():
     assert entries == []
     assert note == (
         "workdir 2 MB is over the 1 MB capture cap, but regenerable.txt "
-        "is missing or empty; capturing everything",
+        "is missing or not a regular file; capturing everything",
+        "warning",
+    )
+
+
+@pytest.mark.parametrize("exit_code", [127, 124])
+async def test_over_the_cap_with_a_list_read_that_fails_names_the_failure(exit_code):
+    # 127: `timeout` (or `head`) is not installed; 124: the read timed out.
+    # Neither means the list is missing.
+    run = _FakeRun(du=(0, f"{2 * _MIB}\t.\n"), cat=(exit_code, ""))
+
+    entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    assert entries == []
+    assert note == (
+        "workdir 2 MB is over the 1 MB capture cap, but regenerable.txt "
+        f"could not be read (exit {exit_code}); capturing everything",
         "warning",
     )
 
@@ -226,7 +249,7 @@ async def test_du_timeout_without_a_list_leaves_nothing_out():
     assert entries == []
     assert note == (
         "workdir size unknown (du timed out after 1 s) is over the 1 MB "
-        "capture cap, but regenerable.txt is missing or empty; capturing everything",
+        "capture cap, but regenerable.txt lists no paths; capturing everything",
         "warning",
     )
 
@@ -256,20 +279,35 @@ def test_list_command_reads_at_most_64_kib(tmp_path, monkeypatch):
     assert proc.stdout == (b"a\n" * 50_000)[:65536]
 
 
-@pytest.mark.parametrize("kind", ["fifo", "dev-zero symlink"])
+@pytest.mark.parametrize("kind", ["missing", "fifo", "dev-zero symlink"])
 def test_list_command_skips_what_is_not_a_regular_file(tmp_path, monkeypatch, kind):
     # Not reaching the timeout: a FIFO would block `head` until it fires.
     monkeypatch.setattr(capture_cap, "DU_TIMEOUT_S", 60)
     path = tmp_path / "regenerable.txt"
     if kind == "fifo":
         os.mkfifo(path)
-    else:
+    elif kind == "dev-zero symlink":
         os.symlink("/dev/zero", path)
 
     proc = _run_list_command(str(tmp_path))
 
-    assert proc.returncode != 0
+    # 1, which the decision reads as "missing or not a regular file".
+    assert proc.returncode == 1
     assert proc.stdout == b""
+
+
+def test_list_command_without_timeout_installed_exits_127(tmp_path):
+    (tmp_path / "regenerable.txt").write_text("big\n")
+    empty_path = tmp_path / "bin"
+    empty_path.mkdir()
+
+    proc = subprocess.run(
+        ["/bin/bash", "-c", list_command(str(tmp_path))],
+        capture_output=True, env={"PATH": str(empty_path)},
+    )
+
+    # Not 1: the decision tells this from a missing list.
+    assert proc.returncode == 127
 
 
 async def test_list_with_a_nul_byte_drops_that_entry():

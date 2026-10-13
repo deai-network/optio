@@ -507,7 +507,7 @@ async def test_archive_workdir_du_timeout_without_a_list_warns_and_captures_ever
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
     assert notes == [(
         "workdir size unknown (du timed out after 1 s) is over the 1 MB capture cap, "
-        "but regenerable.txt is missing or empty; capturing everything",
+        "but regenerable.txt is missing or not a regular file; capturing everything",
         "warning",
     )]
     assert [(r.levelno, r.getMessage()) for r in caplog.records

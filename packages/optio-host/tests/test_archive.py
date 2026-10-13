@@ -217,15 +217,64 @@ def test_measure_workdir_gives_up_once_the_budget_is_spent(tmp_path):
     assert measure_workdir(str(tmp_path), [], budget_s=0) is None
 
 
-def test_fallback_decision_reads_an_unreadable_list_as_empty(tmp_path, generous_walk_budget):
+_MISSING = (
+    "workdir 0 MB is over the 0 MB capture cap, but regenerable.txt "
+    "is missing or not a regular file; capturing everything",
+    "warning",
+)
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory"])
+def test_fallback_decision_without_a_list_file_says_it_is_missing(
+    tmp_path, generous_walk_budget, kind,
+):
     (tmp_path / "keep.bin").write_bytes(bytes(1000))
-    (tmp_path / "regenerable.txt").mkdir()  # open() fails on it
+    if kind == "directory":
+        (tmp_path / "regenerable.txt").mkdir()
 
     entries, note = fallback_regenerable_excludes(str(tmp_path), [], 1)
 
     assert entries == []
-    assert "missing or empty" in note.text
-    assert note.level == "warning"
+    assert note == _MISSING
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable files")
+def test_fallback_decision_with_an_unreadable_list_names_the_failure(
+    tmp_path, generous_walk_budget,
+):
+    (tmp_path / "keep.bin").write_bytes(bytes(1000))
+    (tmp_path / "regenerable.txt").write_text("keep.bin\n")
+    os.chmod(tmp_path / "regenerable.txt", 0)
+
+    entries, note = fallback_regenerable_excludes(str(tmp_path), [], 1)
+
+    assert entries == []
+    assert note == (
+        "workdir 0 MB is over the 0 MB capture cap, but regenerable.txt "
+        "could not be read (Permission denied); capturing everything",
+        "warning",
+    )
+
+
+def test_fallback_decision_with_a_list_of_no_paths_says_so(tmp_path, generous_walk_budget):
+    (tmp_path / "regenerable.txt").write_text("# nothing yet\n/abs\n")
+
+    entries, note = fallback_regenerable_excludes(str(tmp_path), [], 1)
+
+    assert entries == []
+    assert note == (
+        "workdir 0 MB is over the 0 MB capture cap, but regenerable.txt "
+        "lists no paths; capturing everything",
+        "warning",
+    )
+
+
+def test_fallback_decision_never_leaves_out_the_list_itself(tmp_path, generous_walk_budget):
+    (tmp_path / "regenerable.txt").write_text("regenerable.txt\nkeep.bin\n")
+
+    entries, _ = fallback_regenerable_excludes(str(tmp_path), [], 1)
+
+    assert entries == ["keep.bin"]
 
 
 def test_fallback_decision_decodes_a_binary_list_with_replacement(
@@ -282,7 +331,7 @@ def test_fallback_decision_reads_only_a_regular_list(tmp_path, generous_walk_bud
                 _unblock_fifo(path)
 
     assert entries == []
-    assert "missing or empty" in note.text
+    assert note == _MISSING
 
 
 def test_fallback_decision_reads_the_first_64_kib_of_the_list(tmp_path, generous_walk_budget):

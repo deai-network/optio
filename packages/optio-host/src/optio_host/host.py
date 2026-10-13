@@ -251,6 +251,7 @@ import signal as _signal
 import time as _time
 
 from optio_host.capture_cap import (
+    REGENERABLE_LIST,
     TAR_VERSION_COMMAND,
     WARNING,
     CaptureNote,
@@ -475,7 +476,8 @@ async def _capture_excludes(
     (<exception>); capturing everything``, a warning, logged on
     ``optio_host.archive`` and handed to ``on_note``, and the capture leaves
     nothing out: losing a shutdown snapshot to the decision is worse than an
-    oversized one. Returns the entries to exclude, anchored."""
+    oversized one. The entries applied are logged at DEBUG on
+    ``optio_host.archive``. Returns the entries to exclude, anchored."""
     try:
         anchored, note = await decide(workdir_capture_max_bytes())
         if anchored and tar_version is not None:
@@ -490,6 +492,8 @@ async def _capture_excludes(
         _send_capture_note(note, on_note)
         return []
     _report_capture_note(note, on_note)
+    if anchored:
+        _archive_logger.debug("%s entries left out: %r", REGENERABLE_LIST, anchored)
     return anchored
 
 

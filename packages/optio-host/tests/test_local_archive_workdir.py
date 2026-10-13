@@ -324,7 +324,7 @@ _LEFT_OUT_BIG = (
 )
 _MISSING_LIST = (
     "workdir 2 MB is over the 1 MB capture cap, but regenerable.txt "
-    "is missing or empty; capturing everything",
+    "is missing or not a regular file; capturing everything",
     "warning",
 )
 
@@ -439,6 +439,42 @@ async def test_fallback_under_the_cap_captures_everything(tmp_workdir, monkeypat
 
 def _boom(note: str, level: str) -> None:
     raise RuntimeError("on_note exploded")
+
+
+@pytest.mark.parametrize("missing", [None, "tar"], ids=["tar-path", "fallback"])
+async def test_the_list_is_captured_even_when_it_lists_itself(
+    tmp_workdir, monkeypatch, missing,
+):
+    monkeypatch.setenv(ENV_VAR, "1")
+    if missing:
+        _without(monkeypatch, missing)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir, regenerable="big\n./regenerable.txt\n")
+    notes = _Notes()
+
+    blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes))
+
+    assert _tar_member_names(blob) == _ALL_FILES - {"big/blob.bin"}
+    assert notes == [_LEFT_OUT_BIG]
+
+
+@pytest.mark.parametrize("missing", [None, "tar"], ids=["tar-path", "fallback"])
+async def test_the_entries_left_out_are_logged_at_debug(
+    tmp_workdir, monkeypatch, caplog, missing,
+):
+    monkeypatch.setenv(ENV_VAR, "1")
+    if missing:
+        _without(monkeypatch, missing)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+
+    with caplog.at_level(logging.DEBUG, logger="optio_host.archive"):
+        await _drain(h.archive_workdir(_CAP_EXCLUDE))
+
+    assert _archive_notes(caplog) == [
+        (logging.INFO, "workdir 2 MB (cap 1 MB): left out 2 paths listed in regenerable.txt"),
+        (logging.DEBUG, "regenerable.txt entries left out: ['big', 'a/node_modules']"),
+    ]
 
 
 @pytest.mark.parametrize("missing", [None, "tar"], ids=["tar-path", "fallback"])
@@ -653,6 +689,20 @@ async def test_tar_flavour_is_probed_once_per_host(tmp_workdir, monkeypatch):
         }
 
     assert open(marker).read() == "probe\n"
+
+
+async def test_no_entries_are_logged_when_the_list_is_not_applied(
+    tmp_workdir, monkeypatch, caplog,
+):
+    monkeypatch.setenv(ENV_VAR, "1")
+    _fake_tar(tmp_workdir, monkeypatch, _BSDTAR)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+
+    with caplog.at_level(logging.DEBUG, logger="optio_host.archive"):
+        await _drain(h.archive_workdir(_CAP_EXCLUDE))
+
+    assert [level for level, _ in _archive_notes(caplog)] == [logging.WARNING]
 
 
 # --- compression ---------------------------------------------------------------
