@@ -65,17 +65,11 @@ export async function listProcesses(
   );
   if (rootId) filter.rootId = new ObjectId(rootId);
   if (state) filter['status.state'] = state;
-  // Under a visibility predicate, `totalCount` must stay exact across every
-  // page (nothing about pagination position may leak through it), so it is
-  // counted before the cursor narrows `filter` further. Without `visibility`
-  // this is the same object as before: cursor-pagination's totalCount is
-  // unchanged (today's contract, shared with `scope`-only/no-access hosts).
-  const countFilter = access.visibility ? { ...filter } : filter;
   if (cursor) filter._id = { $gt: new ObjectId(cursor) };
 
   const [items, totalCount] = await Promise.all([
     col(db, prefix).find(filter).sort({ _id: 1 }).limit(limit + 1).toArray(),
-    col(db, prefix).countDocuments(countFilter),
+    col(db, prefix).countDocuments(filter),
   ]);
   const hasNext = items.length > limit;
   if (hasNext) items.pop();

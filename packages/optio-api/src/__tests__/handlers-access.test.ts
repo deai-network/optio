@@ -272,7 +272,7 @@ describe('read handlers under visibility', () => {
   const PREDICATE = or(not(eq('kind', 'data-chat')), eq('ownerId', 'u1'));
 
   describe('listProcesses', () => {
-    it('pages through only visible processes, one per page, in _id order, with exact totals', async () => {
+    it('pages through only visible processes, one per page, in _id order, totalCount counting from the cursor on', async () => {
       const visibleIds: string[] = [];
       for (let i = 0; i < 3; i += 1) {
         const v = await insertProcess({ metadata: { kind: 'other', n: i } });
@@ -283,10 +283,14 @@ describe('read handlers under visibility', () => {
       const access = visible(PREDICATE);
       let cursor: string | undefined;
       const collected: string[] = [];
+      // totalCount counts the still-matching (visible) processes from the cursor on, same as
+      // today's (visibility-free) cursor semantics: 3 on the first page, then 2, then 1 --
+      // never inflated by the hidden processes interleaved between them.
+      const expectedTotals = [3, 2, 1];
       for (let i = 0; i < 5; i += 1) {
         const page: any = await listProcesses(ctx, { prefix: PREFIX, limit: 1, cursor }, access);
         expect(page.items).toHaveLength(1);
-        expect(page.totalCount).toBe(3);
+        expect(page.totalCount).toBe(expectedTotals[i]);
         collected.push(page.items[0]._id);
         if (!page.nextCursor) break;
         cursor = page.nextCursor;
