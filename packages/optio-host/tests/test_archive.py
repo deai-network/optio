@@ -1,6 +1,8 @@
 """Tests for tar.gz workdir archive helpers."""
 
+import io
 import os
+import tarfile
 
 import pytest
 
@@ -26,6 +28,22 @@ def _populate(root: str) -> None:
         fh.write(b"\xff\xff")
     with open(os.path.join(root, "mod.pyc"), "wb") as fh:
         fh.write(b"\xff\xff")
+
+
+def _populate_anchored(root: str) -> None:
+    def write(relpath: str, content: str) -> None:
+        path = os.path.join(root, relpath)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(content)
+
+    os.makedirs(root, exist_ok=True)
+    write("node_modules/a.js", "a")
+    write("pkg/node_modules/b.js", "b")
+    write("build[1]/x", "x")
+    write("buildx/y", "y")
+    write("keep.txt", "k")
+    write(".git/HEAD", "ref: refs/heads/main\n")
 
 
 async def _gather(stream) -> bytes:
@@ -98,6 +116,65 @@ async def test_consume_empties_destination_first(tmp_path):
 
     assert not (dst / "stale.txt").exists()
     assert (dst / "hello.txt").read_text() == "hi"
+
+
+def _tar_member_names(blob: bytes) -> set[str]:
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        return {m.name.removeprefix("./") for m in tf.getmembers() if m.isfile()}
+
+
+async def test_anchored_entry_excludes_root_but_keeps_nested_match(tmp_path):
+    """node_modules listed anchored must drop ./node_modules but keep ./pkg/node_modules.
+
+    `exclude` here is `[".git"]`, not the module defaults: `DEFAULT_WORKDIR_EXCLUDES`
+    already contains "node_modules" as a match-anywhere glob, which would strip
+    `pkg/node_modules` on its own and mask what this test is checking (the new
+    anchored, root-only semantics), so it is kept out of this fixture's excludes.
+    """
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    _populate_anchored(str(src))
+
+    blob = await _gather(
+        yield_workdir_archive(str(src), exclude=[".git"], anchored=["node_modules", "build[1]"])
+    )
+    await consume_workdir_archive(await _replay(blob), str(dst))
+
+    assert not (dst / "node_modules").exists()
+    assert (dst / "pkg" / "node_modules" / "b.js").read_text() == "b"
+    assert (dst / "keep.txt").read_text() == "k"
+    assert not (dst / ".git").exists()
+
+
+async def test_anchored_entry_with_glob_characters_is_taken_literally(tmp_path):
+    """`build[1]` must be excluded (and everything under it) as a literal name,
+    never expanded as a glob; `buildx` (which `build[1]` as a glob would not
+    match either way) stays as a sanity check that only the literal dir went."""
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    _populate_anchored(str(src))
+
+    blob = await _gather(
+        yield_workdir_archive(str(src), exclude=[".git"], anchored=["node_modules", "build[1]"])
+    )
+    await consume_workdir_archive(await _replay(blob), str(dst))
+
+    assert not (dst / "build[1]").exists()
+    assert (dst / "buildx" / "y").read_text() == "y"
+
+
+async def test_anchored_none_or_empty_matches_todays_members(tmp_path):
+    """With `anchored` empty/omitted, the fallback produces exactly today's members."""
+    src = tmp_path / "src"
+    _populate(str(src))
+
+    blob_omitted = await _gather(yield_workdir_archive(str(src), exclude=None))
+    blob_empty = await _gather(yield_workdir_archive(str(src), exclude=None, anchored=[]))
+    blob_none = await _gather(yield_workdir_archive(str(src), exclude=None, anchored=None))
+
+    names = _tar_member_names(blob_omitted)
+    assert names == _tar_member_names(blob_empty)
+    assert names == _tar_member_names(blob_none)
 
 
 def test_default_workdir_excludes_has_expected_entries():

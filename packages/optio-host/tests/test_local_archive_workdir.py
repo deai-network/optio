@@ -14,7 +14,9 @@ import asyncio
 import io
 import logging
 import os
+import shlex
 import shutil
+import subprocess
 import tarfile
 
 import pytest
@@ -43,6 +45,20 @@ def _populate(root: str) -> None:
     _write(root, "__pycache__/mod.cpython-311.pyc", b"\xff\xff")
     _write(root, "mod.pyc", b"\xff\xff")
     _write(root, "run.log", "log")
+
+
+def _populate_anchored(root: str) -> None:
+    _write(root, "node_modules/a.js", "a")
+    _write(root, "pkg/node_modules/b.js", "b")
+    _write(root, "build[1]/x", "x")
+    _write(root, "buildx/y", "y")
+    _write(root, "keep.txt", "k")
+    _write(root, ".git/HEAD", "ref: refs/heads/main\n")
+
+
+def _tar_member_names(blob: bytes) -> set[str]:
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        return {m.name.removeprefix("./") for m in tf.getmembers() if m.isfile()}
 
 
 def _host(tmp_workdir: str, name: str = "src") -> LocalHost:
@@ -188,6 +204,43 @@ async def test_symlinks_are_stored_as_symlinks_not_followed(tmp_workdir):
     await dst.restore_workdir(replay())
     assert os.readlink(os.path.join(dst.workdir, "dir_link")) == "data"
     assert open(os.path.join(dst.workdir, "dir_link", "inner.txt")).read() == "inner"
+
+
+# --- anchored excludes -------------------------------------------------------
+
+
+def test_archive_command_anchored_excludes_are_literal_and_root_only(tmp_workdir):
+    workdir = os.path.join(tmp_workdir, "src")
+    _populate_anchored(workdir)
+
+    cmd = host_mod._archive_command(
+        workdir, [".git"], "gzip -1", ["node_modules", "build[1]"],
+    )
+    proc = subprocess.run(cmd, shell=True, capture_output=True)
+
+    assert proc.returncode == 0, proc.stderr
+    names = _tar_member_names(proc.stdout)
+    assert names == {"pkg/node_modules/b.js", "buildx/y", "keep.txt"}
+
+
+def test_archive_command_without_anchored_matches_todays_string(tmp_workdir):
+    """Pin: no `anchored` arg, or an empty one, reproduces today's exact command."""
+    workdir = os.path.join(tmp_workdir, "src")
+    patterns = [".git", "node_modules"]
+    compressor = "gzip -1"
+
+    excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)
+    script = (
+        f"set -o pipefail; cd {shlex.quote(workdir)} && "
+        f"tar cf - {excludes} . | {compressor}"
+    )
+    expected = f"bash -c {shlex.quote(script)}"
+
+    assert host_mod._archive_command(workdir, patterns, compressor) == expected
+    assert (
+        host_mod._archive_command(workdir, patterns, compressor)
+        == host_mod._archive_command(workdir, patterns, compressor, [])
+    )
 
 
 # --- compression ---------------------------------------------------------------

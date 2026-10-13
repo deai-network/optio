@@ -369,18 +369,40 @@ async def _read_tail(reader, limit: int) -> bytes:
     return tail
 
 
-def _archive_command(workdir: str, patterns: list[str], compressor: str) -> str:
+def _archive_command(
+    workdir: str,
+    patterns: list[str],
+    compressor: str,
+    anchored: list[str] = (),
+) -> str:
     """Shell command that writes a gzip tar of ``workdir`` to stdout.
 
     ``compressor`` is ``"pigz -1"`` or ``"gzip -1"``; both emit gzip, so
     either host's ``restore_workdir`` reads either. Runs under ``bash``
     explicitly (the remote login shell, or the local ``/bin/sh``, may be dash)
     so ``pipefail`` carries a tar failure through the pipe into the exit status.
+
+    ``patterns`` keep the existing match-anywhere glob semantics (GNU tar's
+    default, unanchored). ``anchored`` entries are different: each excludes
+    exactly ``./<entry>`` (and, when it is a directory, everything under it),
+    taken literally with no globbing. The archived tree is rooted at ``.``
+    (tar member names are ``./…``), so ``--exclude`` options are emitted in
+    this order: the existing patterns first (unaffected), then
+    ``--anchored --no-wildcards`` to switch tar's matching mode, then one
+    literal ``--exclude=./<entry>`` per anchored entry. ``--exclude`` options
+    are positional in GNU tar, so patterns parsed before the mode switch keep
+    their original (unanchored, glob) meaning.
     """
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)
+    anchored_opts = ""
+    if anchored:
+        anchored_excludes = " ".join(
+            f"--exclude={shlex.quote('./' + entry)}" for entry in anchored
+        )
+        anchored_opts = f" --anchored --no-wildcards {anchored_excludes}"
     script = (
         f"set -o pipefail; cd {shlex.quote(workdir)} && "
-        f"tar cf - {excludes} . | {compressor}"
+        f"tar cf - {excludes}{anchored_opts} . | {compressor}"
     )
     return f"bash -c {shlex.quote(script)}"
 

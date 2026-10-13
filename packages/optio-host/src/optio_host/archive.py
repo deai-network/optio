@@ -52,11 +52,29 @@ def _excluded(relpath: str, patterns: list[str]) -> bool:
     return False
 
 
-def _build_archive_bytes(root: str, patterns: list[str]) -> bytes:
+def _anchored_excluded(relpath: str, anchored: list[str]) -> bool:
+    """Return True if `relpath` is one of `anchored`'s entries, or lies under
+    one, taken as a literal path from the root (no globbing, no per-segment
+    matching): `node_modules` excludes `./node_modules` and everything under
+    it, but not `./pkg/node_modules`.
+    """
+    for entry in anchored:
+        if relpath == entry or relpath.startswith(entry + os.sep):
+            return True
+    return False
+
+
+def _build_archive_bytes(
+    root: str, patterns: list[str], anchored: list[str] = (),
+) -> bytes:
     """Build the entire tar.gz in memory and return it as bytes.
 
     Level 1, not tarfile's default 9: level 9 is ~7x slower for ~10% smaller
     output, and a snapshot capture runs against the cancel grace.
+
+    `patterns` keep the existing match-anywhere glob semantics. `anchored`
+    entries are literal paths from `root`: an entry excludes itself and,
+    when it is a directory, everything under it (see `_anchored_excluded`).
     """
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as tar:
@@ -65,10 +83,13 @@ def _build_archive_bytes(root: str, patterns: list[str]) -> bytes:
             dirnames[:] = [
                 d for d in dirnames
                 if not _excluded(os.path.join(rel_dir, d) if rel_dir != "." else d, patterns)
+                and not _anchored_excluded(
+                    os.path.join(rel_dir, d) if rel_dir != "." else d, anchored,
+                )
             ]
             for name in filenames:
                 rel = os.path.join(rel_dir, name) if rel_dir != "." else name
-                if _excluded(rel, patterns):
+                if _excluded(rel, patterns) or _anchored_excluded(rel, anchored):
                     continue
                 tar.add(os.path.join(dirpath, name), arcname=rel, recursive=False)
     return buf.getvalue()
@@ -77,11 +98,20 @@ def _build_archive_bytes(root: str, patterns: list[str]) -> bytes:
 async def yield_workdir_archive(
     root: str,
     exclude: Iterable[str] | None = None,
+    anchored: Iterable[str] | None = None,
 ) -> AsyncIterator[bytes]:
-    """Yield 1 MiB chunks of the gzipped tar of `root`."""
+    """Yield 1 MiB chunks of the gzipped tar of `root`.
+
+    `exclude` keeps its existing match-anywhere glob semantics (`None` means
+    the defaults). `anchored` entries are literal, root-relative paths with
+    no globbing; `None` or empty excludes none beyond `exclude`.
+    """
     patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
+    anchored_list = [] if anchored is None else list(anchored)
     loop = asyncio.get_event_loop()
-    blob = await loop.run_in_executor(None, _build_archive_bytes, root, patterns)
+    blob = await loop.run_in_executor(
+        None, _build_archive_bytes, root, patterns, anchored_list,
+    )
     for offset in range(0, len(blob), _CHUNK_SIZE):
         yield blob[offset : offset + _CHUNK_SIZE]
 
