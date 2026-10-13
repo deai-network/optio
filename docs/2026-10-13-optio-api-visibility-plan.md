@@ -61,6 +61,9 @@ it.
 - With no hooks passed, behaviour is unchanged: `UNRESTRICTED`, no lookups, no extra conditions.
   With `scope` only or `authorize` only, behaviour is unchanged as well.
 - Visibility is evaluated only inside Mongo queries, never by a JavaScript copy of the semantics.
+- From Task 3b on, every process read whose result can reach a response goes through
+  `processReads` (`src/process-reads.ts`). The guard test `process-reads-guard.test.ts` enforces
+  this. No code outside `process-reads.ts` applies `andVisibility` itself.
 - A hidden process answers exactly as a missing one: 404, absent, or in `missing`. On actions it
   is 404, before `authorize` is asked.
 - Tree reads below the entry point add only the visibility condition, never scope. Orphan pruning
@@ -287,6 +290,96 @@ The inputs most likely to bite a host, each pinned by a test in the task named:
 
 - [ ] **Step 5: Commit** with the message: `feat(optio-api): read handlers honour visibility (exact list totals, 404 for hidden, pruned trees)`.
 
+### Task 3b: one choke point for process reads (`src/process-reads.ts`, added 2026-10-13)
+
+The owner's review: the rule is declared once, so inside optio it must not depend on each route
+remembering to apply it. Spec: "One choke point" and decision 6. Task 3 is already committed
+(it applies `andVisibility` in `handlers.ts` directly); this task moves that into the choke point.
+
+**Files:**
+- Create: `packages/optio-api/src/process-reads.ts`
+- Create: `packages/optio-api/src/__tests__/process-reads.test.ts`
+- Create: `packages/optio-api/src/__tests__/process-reads-guard.test.ts`
+- Modify:
+  - `src/handlers.ts` and `src/access-scope.ts`;
+  - `src/widget-proxy-core.ts`, `src/agent-input.ts`, `src/discovery.ts` and
+    `src/process-change-hub.ts` (each uses `processCollection(db, prefix)` instead of naming the
+    collection);
+  - `src/index.ts`.
+- Docs: both AGENTS.md files (the choke point, for custom-adapter authors and for anyone adding
+  a route).
+
+**Interfaces:**
+- Consumes:
+  - `andVisibility`, `pruneOrphans` (Task 1);
+  - `Access.visibility`, `findReadableProcess`, `gateProcess` (Task 2).
+- Produces, exactly as in the spec's "One choke point":
+  - `processCollection`, `ProcessReads`, `processReads` and `processReadsOf`, all exported from
+    `index.ts`.
+  - `ProcessReads.unfiltered`, for `access-scope.ts` alone.
+  - The `access-scope.ts` lookups (`findScopedProcess`, `findReadableProcess`,
+    `findActionTarget`, `inScope`, `gateProcess`) accept `Collection | ProcessReads` as their
+    first parameter. A `Collection` is wrapped with `processReadsOf(col, null)` where only
+    unfiltered reads are needed. Raw reads inside access-scope go through `.unfiltered`, each
+    followed by its existing explicit visibility check.
+  - The guard test's `PENDING` list holds `stream-poller.ts` and `adapters/*.ts` for now.
+    Task 4 and Task 5 empty it.
+
+- [ ] **Step 1: Write the failing tests.**
+  - **`process-reads.test.ts`, on real Mongo, with its own `DB_NAME`.** With visibility
+    `eq('ownerId', 'u1')`:
+    - `find({})` returns only the u1 processes;
+    - `findOne({ _id: <u2 id> })` gives null;
+    - `countDocuments({})` counts only u1;
+    - a caller filter is ANDed, not replaced: `find({ 'metadata.ownerId': 'u2' })` is empty.
+    
+    With `null` visibility, `find`, `findOne` and `countDocuments` receive the caller's filter
+    object itself. Use a collection stub that records the argument and assert identity.
+  - **`process-reads-guard.test.ts`.** Read every `.ts` file under `src`, excluding
+    `__tests__`, and assert the spec's three rules:
+    1. no file but `process-reads.ts` matches `/\$\{[^}]*\}_processes/`;
+    2. `processCollection(` appears only in `process-reads.ts`, `process-change-hub.ts`,
+       `discovery.ts`, `widget-proxy-core.ts`, `agent-input.ts` and the `PENDING` files. The
+       allowlist is a `Record<file, reason>` with the spec's reasons;
+    3. `.unfiltered` appears only in `access-scope.ts`, `process-reads.ts` and the `PENDING`
+       files.
+    
+    `PENDING` = `['stream-poller.ts', 'adapters/fastify.ts', 'adapters/express.ts', 'adapters/nextjs-app.ts', 'adapters/nextjs-pages.ts']`,
+    commented "migrated by Task 4 / Task 5". The `PENDING` files are exempt from rules 1–3.
+
+- [ ] **Step 2: Run the tests and see them fail**, into `/tmp/vis-tests/t3b-red.log`. Expected:
+  `process-reads.js` is missing. The guard flags `handlers.ts`, `widget-proxy-core.ts`,
+  `agent-input.ts`, `discovery.ts` and `process-change-hub.ts`.
+
+- [ ] **Step 3: Implement.**
+  - **`process-reads.ts`:**
+    - `processReads(db, prefix, v)` is `processReadsOf(processCollection(db, prefix), v)`;
+    - each method calls `andVisibility(filter, v)` and the collection's own method;
+    - with `v` null, it passes the filter object through.
+  - **`handlers.ts`:**
+    - drop its `col()` helper;
+    - each handler builds `const reads = processReads(db, prefix, access.visibility)` once and
+      uses it for every read;
+    - remove every direct `andVisibility` call. The list filter is `andScope(...)` plus the
+      `rootId`, `state` and cursor keys; `reads` adds the visibility;
+    - `buildTree` takes `reads` instead of `db, prefix, visibility`;
+    - the tree log prunes when `reads.visibility` is set;
+    - gates and lookups are passed `reads`.
+  - **`access-scope.ts`:** accept `Collection | ProcessReads` as described above. The lookups'
+    behaviour does not change. All Task 2 tests must keep passing untouched.
+  - **The other four modules:** replace the template with `processCollection(db, prefix)`.
+
+- [ ] **Step 4: Run the tests and see them pass**, into `/tmp/vis-tests/t3b-green.log`, together
+  with `handlers-access.test.ts`, `handlers.test.ts`, `access-scope.test.ts`,
+  `visibility.test.ts`, the widget-proxy-core and agent-input tests if they exist, and
+  `process-change-hub.test.ts`. Then run `tsc`. Expected: all pass.
+
+- [ ] **Step 5: Docs and commit.**
+  - In both AGENTS.md files, document the choke point: every read that can reach a response
+    goes through `processReads`; the guard test enforces it; a new read path either uses it
+    or is allowlisted with a reason.
+  - Commit with the message: `refactor(optio-api): one choke point for process reads (processReads + guard test)`.
+
 ### Task 4: the streams (`stream-poller.ts`, `process-change-relevance.ts`)
 
 **Files:**
@@ -299,8 +392,11 @@ The inputs most likely to bite a host, each pinned by a test in the task named:
   (the option lists)
 
 **Interfaces:**
-- Consumes: `andVisibility`, `pruneOrphans` (Task 1).
+- Consumes: `pruneOrphans` (Task 1); `processReads` (Task 3b). The pollers never call
+  `andVisibility` themselves.
 - Produces:
+  - `stream-poller.ts` is removed from the guard test's `PENDING` list. After this task it
+    passes the guard's rules.
   - `treeRelevant(c, roots, members, opts?: { metadataChanges?: boolean })`. With
     `metadataChanges`, an `update` whose `fields` include `metadata` is relevant even for a
     non-member.
@@ -329,10 +425,11 @@ The inputs most likely to bite a host, each pinned by a test in the task named:
 - [ ] **Step 2: Run the tests and see them fail**, into `/tmp/vis-tests/t4-red.log`.
 
 - [ ] **Step 3: Implement.**
-  - **List poller:** its filter becomes `andVisibility(andScope(...), visibility ?? null)`.
-  - **Session-events poller:** the same change to its filter.
+  - **Every poller** builds `const reads = processReads(db, prefix, visibility ?? null)` at
+    creation and does all its reads through it. The list and session-events filters stay
+    `andScope(...)`.
   - **Tree poller and multi-tree poller:**
-    - every read's query is wrapped with `andVisibility(…, visibility ?? null)`;
+    - every read goes through `reads`;
     - when `visibility` is set, the fetched docs go through `pruneOrphans` before the snapshot,
       the update and the log scan. Multi-tree passes `keep` = the flat ids that were fetched;
     - `members` is computed from the pruned set;
@@ -358,9 +455,12 @@ The inputs most likely to bite a host, each pinned by a test in the task named:
 
 **Interfaces:**
 - Consumes: `VisibilityCallback`, `hasAccessHooks`, `findReadableProcess` (Task 2);
-  `isVisible` (Task 1); the poller `visibility` options (Task 4).
-- Produces: each adapter's options gain `visibility?: VisibilityCallback<Req>`, documented
-  "Hide processes from a request (see auth.ts)".
+  `processReads` and `ProcessReads` (Task 3b); the poller `visibility` options (Task 4).
+- Produces:
+  - Each adapter's options gain `visibility?: VisibilityCallback<Req>`, documented "Hide
+    processes from a request (see auth.ts)".
+  - The adapters are removed from the guard test's `PENDING` list, which ends empty. Remove the
+    constant and its exemption.
 
 - [ ] **Step 1: Write the failing tests.** Extend the `hooks()` of `fastify-access.test.ts` and
   `adapters-access.test.ts` with
@@ -388,9 +488,12 @@ The inputs most likely to bite a host, each pinned by a test in the task named:
 
 - [ ] **Step 3: Implement, in each adapter:**
   - Add the `visibility` option and put it in the `hooks` object.
+  - **Reads:** every process read goes through
+    `const reads = processReads(db, prefix, access.visibility)`. Gates get `reads`.
   - **Tree-stream open and multi-tree `resolveOne`:**
-    - fastify and express use `findReadableProcess(col, id, access)`;
-    - nextjs-app and nextjs-pages keep their `findOne({ _id })` and add `&& await isVisible(col, found, access.visibility)`.
+    - fastify and express use `findReadableProcess(reads, id, access)`;
+    - nextjs-app and nextjs-pages keep their `_id`-only lookup, as `reads.findOne({ _id })`,
+      followed by `inScope(reads, found, access.scope)`.
   - Pass `visibility: access.visibility` to every poller they create: list, tree, multi-tree,
     session-events.
   - **nextjs-app and nextjs-pages:** `currentAccess()` uses `hasAccessHooks(hooks)`.
@@ -416,7 +519,10 @@ The inputs most likely to bite a host, each pinned by a test in the task named:
   - single reads, tree entry points and actions give 404;
   - trees are pruned of orphans, with the divergent-metadata edge case;
   - the streams, including mid-stream transitions;
-  - what is unaffected (resync, instances, no-hook hosts).
+  - what is unaffected (resync, instances, no-hook hosts);
+  - that the hook is declared once, at init, and per-group rules are clauses of the one
+    predicate, with the spec's per-`kind` example (spec, "Semantics");
+  - the choke point (spec, "One choke point").
   
   Fill any gap, and remove any remaining mention of the `'read'` action:
   `command grep -rn "'read'" packages/optio-api AGENTS.md`.

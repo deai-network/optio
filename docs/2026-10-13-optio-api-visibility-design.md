@@ -43,6 +43,11 @@ decides actions only.
    including actions: 404 where today a refused action gets 403.
 5. **`'read'` is removed from `OptioAction`.** It was declared but never passed to `authorize`.
    Keeping it would invite the reading the brief made.
+6. **One choke point for process reads** (added in review, 2026-10-13). The rule is declared
+   once by the host. Inside optio it must not depend on every route remembering to apply it,
+   because a route added later could forget. Every read whose result can reach a response goes
+   through one accessor, `processReads`, which always ANDs the condition in. A guard test fails
+   the build when code reads the collection any other way (see "One choke point").
 
 ## The hook
 
@@ -87,6 +92,18 @@ export interface AccessHooks<TRequest> {
 - **Excavator's rule, for illustration** (the change itself is excavator's, not part of this
   work):
   `visibility: (req) => or(not(eq('kind', 'data-chat')), eq('ownerId', userIdOf(req)))`.
+- **Declared once.** The host registers the hook once, with the adapter's other options. Clients
+  never send it, and no route takes it as a parameter. It is a function of the request only so
+  that a rule can name the requesting user; a rule that doesn't depend on the user ignores `req`.
+- **Rules per group of processes** are clauses of the one predicate, typically one per `kind`,
+  plus a last clause that decides everything else, including processes with no `kind`:
+  ```ts
+  visibility: (req) => or(
+    and(eq('kind', 'data-chat'), eq('ownerId', me(req))),     // chats: their owner only
+    and(eq('kind', 'report'), isIn('teamId', teams(req))),    // reports: the user's teams
+    not(isIn('kind', ['data-chat', 'report'])),                // everything else: visible
+  )
+  ```
 
 ## Where it applies
 
@@ -151,6 +168,49 @@ The pollers take the visibility predicate as an option (next to the existing `sc
 the list and session-events pollers). The adapters only pass it through. The filtering, pruning
 and relevance logic live in `stream-poller.ts` and `process-change-relevance.ts`.
 
+## One choke point
+
+`src/process-reads.ts` is the only module that names the `{prefix}_processes` collection and the
+only one that applies the visibility condition:
+
+```ts
+export function processCollection(db: Db, prefix: string): Collection;
+
+/** Reads of one request: every query ANDs the request's visibility condition. */
+export interface ProcessReads {
+  readonly visibility: ProcessMetadataFilter | null;
+  find(filter: Filter<Document>, options?: FindOptions): FindCursor<WithId<Document>>;
+  findOne(filter: Filter<Document>, options?: FindOptions): Promise<WithId<Document> | null>;
+  countDocuments(filter: Filter<Document>, options?: CountDocumentsOptions): Promise<number>;
+  /** The collection without the condition, for access-scope.ts alone (scope's root lookup and the
+   *  action gate's target lookup, each followed by an explicit visibility check). */
+  readonly unfiltered: Collection;
+}
+export function processReads(db: Db, prefix: string, visibility: ProcessMetadataFilter | null): ProcessReads;
+export function processReadsOf(col: Collection, visibility: ProcessMetadataFilter | null): ProcessReads;
+```
+
+- **Null visibility.** With `visibility` null, every method passes the caller's filter through
+  unchanged, so hosts without the hook see identical queries.
+- **Callers.** The handlers, the stream pollers and the adapters read processes only through
+  `ProcessReads`.
+- **Lookup helpers.** `access-scope.ts`'s lookups (`findScopedProcess`, `findReadableProcess`,
+  `findActionTarget`, `inScope`, `gateProcess`) accept a `ProcessReads` or, for custom adapters
+  and compatibility, a plain `Collection`.
+- **The guard test** (`process-reads-guard.test.ts`) scans the non-test sources and fails when:
+  1. any file other than `process-reads.ts` names a processes collection (a template ending in
+     `_processes`);
+  2. `processCollection(` is called outside its allowlist. Each allowed file carries its reason
+     in the test:
+     - `process-change-hub.ts`: a change stream, which serves no documents;
+     - `discovery.ts`: instance discovery, gated by `'instances'`;
+     - `widget-proxy-core.ts` and `agent-input.ts`: upstream lookups that run only after
+       `gateProcess` admitted the process;
+  3. `.unfiltered` is used outside `access-scope.ts` and `process-reads.ts`.
+
+A new route that reads processes therefore either goes through `processReads` or fails the build
+until its file is deliberately allowlisted, with a reason, in review.
+
 ## `authorize` after this change
 
 `authorize` decides what a request may **do** to a process it can see, plus resync and instance
@@ -210,5 +270,9 @@ wall-clock dependence: streams are awaited by condition with a generous ceiling.
 - **Adapters (fastify, express, nextjs-pages, nextjs-app).** `visibility` is passed through: a
   hidden process is a 404 on a single read and at tree-stream open, and a malformed predicate is
   a 500.
+- **The choke point.**
+  - `processReads` ANDs the condition into `find`, `findOne` and `countDocuments`, and passes
+    the filter through untouched when the visibility is null.
+  - The guard test enforces its three rules.
 - **Unchanged.** The existing action, scope and no-hooks tests stay as they are; the only edit is
   removing `'read'` where a test uses it.
