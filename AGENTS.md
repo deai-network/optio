@@ -865,7 +865,8 @@ export { findActionTarget, findReadableProcess } from 'optio-api';
 // fetches only visible children at each level; getProcessTreeLog prunes orphans,
 // only when visibility is set, before collecting log lines) -- goes through the one
 // choke point below, `processReads`, so no handler ANDs the condition itself.
-// Streams and the adapter options don't consult it yet.
+// The streams and all four adapters honour it too (see the visibility(req)
+// comment and "Stream Poller" below).
 export { normalizeVisibility, visibilityToMongo, andVisibility, isVisible,
          pruneOrphans } from 'optio-api';
 

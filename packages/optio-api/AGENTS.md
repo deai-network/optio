@@ -351,12 +351,12 @@ source file and fails when:
    lookups that run only after `gateProcess` admitted the process);
 3. `.unfiltered` is used outside `access-scope.ts` and `process-reads.ts`.
 
-The four `adapters/*.ts` files still name the collection directly and are
-temporarily exempt (`PENDING` in the guard test), pending their migration,
-which will empty that list; `stream-poller.ts` reads only through
-`processReads` and carries no exemption. A new route that reads processes
-therefore either goes through `processReads` or fails this test until its
-file is deliberately allowlisted, with a reason, in review.
+The guard scans every non-test source file except `process-reads.ts` itself
+(which is where the collection is named and `processCollection(`/`.unfiltered`
+are implemented). The four `adapters/*.ts` files and `stream-poller.ts` carry
+no exemption: they read only through `processReads`. A new route that reads
+processes therefore either goes through `processReads` or fails this test
+until its file is deliberately allowlisted, with a reason, in review.
 
 ## Fastify Adapter
 
