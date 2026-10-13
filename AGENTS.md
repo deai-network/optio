@@ -845,6 +845,16 @@ export { resolveConversationArchive, forgetConversationArchive, fetchConversatio
 // duplicated processId resolves to the newest document, as the engine does)
 export { findActionTarget } from 'optio-api';
 
+// Visibility helpers (for custom adapters). normalizeVisibility(raw): validate a
+// visibility hook's return value (null/undefined/{} -> null, else parsed with
+// ProcessMetadataFilterSchema, throwing on an invalid predicate); visibilityToMongo /
+// andVisibility: the predicate's Mongo filter fragment, ANDed into a base filter like
+// andScope; isVisible(col, doc, visibility): whether one document satisfies the
+// predicate, judged in Mongo; pruneOrphans(docs, keep?): drop tree children whose
+// parent chain doesn't resolve to a kept root. Not yet wired into any hook.
+export { normalizeVisibility, visibilityToMongo, andVisibility, isVisible,
+         pruneOrphans } from 'optio-api';
+
 // Layered RPC access
 //   Layer 1 (Transport cache): createOptioTransports / OptioTransports
 //   Layer 2 (Optio context):   createOptioContext / OptioContext / resolveOptioEngine

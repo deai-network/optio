@@ -70,6 +70,15 @@ export {
 
 export type { ProcessMetadataFilter } from './types.js';
 
+// Visibility helpers (for custom adapters)
+export {
+  normalizeVisibility,
+  visibilityToMongo,
+  andVisibility,
+  isVisible,
+  pruneOrphans,
+} from './visibility.js';
+
 // Stream poller (for custom adapters)
 export { createListPoller, createTreePoller, type StreamPollerOptions, type TreePollerOptions, type ListPollerHandle } from './stream-poller.js';
 

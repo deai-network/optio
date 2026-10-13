@@ -177,6 +177,21 @@ objects. Custom adapters: call `checkAuth`, then `accessFor`, then pass the
 `Access` as the handlers' trailing argument and use `findScopedProcess` /
 `gateProcess` / `gateInstances` for routes outside the handlers.
 
+**Visibility helpers (for custom adapters; `visibility.ts`).** Pure helpers for a
+forthcoming per-request `visibility` hook (a metadata predicate, next to `scope`
+and `authorize`); not yet wired into `AccessHooks` or any route.
+`normalizeVisibility(raw)` validates a hook's return value: `null`, `undefined`
+and `{}` normalize to `null` (no restriction); anything else is parsed with
+`ProcessMetadataFilterSchema` (same schema `metadataFilter` uses, so a legacy flat
+map works as equality), throwing on an invalid predicate.
+`visibilityToMongo(visibility)` / `andVisibility(base, visibility)` translate it to
+a Mongo filter fragment and `$and` it into a base filter, the same shape as
+`scopeToMongo` / `andScope`. `isVisible(col, doc, visibility)` judges a single
+document by a Mongo count query (never a JS copy of the semantics); `null`
+admits everything without issuing a query. `pruneOrphans(docs, keep?)` drops tree
+children whose parent chain doesn't resolve to a kept root, preserving input
+order and memoising per id.
+
 ## Fastify Adapter
 
 Imported from `optio-api/fastify`.
