@@ -24,8 +24,8 @@ For the log/deliverables coordination protocol, the keyword parser, and
 
 ## Workdir capture cap
 
-`optio_host.capture_cap` holds the setting and the list parser that the
-suspend-capture decision builds on (design:
+`optio_host.capture_cap` holds the setting, the list parser and the
+suspend-capture decision (design:
 `docs/2026-10-13-workdir-capture-cap-design.md`).
 
 - `workdir_capture_max_bytes()` reads `OPTIO_WORKDIR_CAPTURE_MAX_MB` — "MB"
@@ -39,6 +39,43 @@ suspend-capture decision builds on (design:
   skips absolute paths, any `..` segment, and `.`, keeping the original
   order without duplicates.
 
-Applying the cap to an actual capture — measuring the workdir with `du`,
-reading `regenerable.txt` off the (possibly remote) host, and excluding the
-listed paths — is a later change.
+### In `archive_workdir`
+
+`archive_workdir(exclude, *, on_note=None)` (the `Host` Protocol, `LocalHost`
+and `RemoteHost`) applies the cap before it starts the archive, on the host
+where the workdir lives:
+
+- **Cap `0`:** nothing is measured or read, and the archive command is the
+  same as without the cap.
+- **Otherwise** `regenerable_excludes(run, workdir, patterns, cap_bytes)`
+  runs `du_command(workdir, patterns)`, i.e.
+  `cd <workdir> && timeout 1 du -sb --exclude=… .`, with the capture's own
+  exclude patterns, so what is never captured does not count. A non-zero
+  exit (`timeout`'s 124 included) or a size above the cap counts as over.
+- **Over the cap:** it reads `regenerable.txt` with `cat` (a failure means an
+  empty list) and parses it with `parse_regenerable`. The archive leaves the
+  entries out as anchored, literal excludes: `./<entry>` and everything
+  under it.
+- **The hosts' `run`:** `RemoteHost` runs both commands over its SSH
+  connection, and `LocalHost` under local `bash`. Both decode output with
+  `errors="replace"`, so a binary list cannot raise.
+- **LocalHost's fallback** (no `tar` or `bash`) decides with
+  `archive.fallback_regenerable_excludes` instead. It measures with a Python
+  walk (`measure_workdir`) honouring the same patterns, under a 1 s
+  `time.monotonic()` budget (`WALK_BUDGET_S`; running out counts as over),
+  and reads the list with Python.
+
+**The note.** A capture that finds the workdir over the cap produces a
+one-line note. Under the cap there is none.
+
+- It goes to `on_note`, when given, so the caller (an engine wrapper) can
+  forward it to the process log, which the host layer has no handle to.
+- It is always logged on the `optio_host.archive` logger:
+  - at INFO when paths were left out, e.g.
+    `workdir 214 MB (cap 100 MB): left out 3 paths listed in regenerable.txt`,
+    or `workdir size unknown (du timed out after 1 s): left out 3 paths …`;
+  - at WARNING when the list is missing or empty and everything is captured,
+    e.g. `workdir 214 MB is over the 100 MB capture cap, but regenerable.txt
+    is missing or empty; capturing everything`.
+
+Sizes in notes are whole MiB, rounded down.

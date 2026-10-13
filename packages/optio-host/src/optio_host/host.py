@@ -217,10 +217,16 @@ class Host(Protocol):
         ...
 
     def archive_workdir(
-        self, exclude: list[str] | None,
+        self,
+        exclude: list[str] | None,
+        *,
+        on_note: Callable[[str], None] | None = None,
     ) -> AsyncIterator[bytes]: ...
     # NB: archive_workdir is a *plain* method that returns an AsyncIterator,
     # not an async method. Callers iterate via `async for chunk in host.archive_workdir(...)`.
+    # Above the capture cap (optio_host.capture_cap) it leaves out the paths
+    # listed in the workdir's regenerable.txt; the decision's one-line note,
+    # if any, goes to ``on_note`` and the ``optio_host.archive`` logger.
 
     async def restore_workdir(
         self, stream: AsyncIterator[bytes],
@@ -240,6 +246,8 @@ import shlex
 import shutil
 import signal as _signal
 import time as _time
+
+from optio_host.capture_cap import regenerable_excludes, workdir_capture_max_bytes
 
 _trace_logger = _logging.getLogger("optio_core.cancel_trace")
 _CANCEL_TRACE = os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
@@ -405,6 +413,37 @@ def _archive_command(
         f"tar cf - {excludes}{anchored_opts} . | {compressor}"
     )
     return f"bash -c {shlex.quote(script)}"
+
+
+_archive_logger = _logging.getLogger("optio_host.archive")
+
+
+def _report_capture_note(
+    note: str | None,
+    anchored: list[str],
+    on_note: Callable[[str], None] | None,
+) -> None:
+    """Log the capture decision's note, if any, on ``optio_host.archive`` and
+    hand it to ``on_note``. A note that leaves nothing out is the
+    missing-list one, logged at WARNING; the others at INFO."""
+    if note is None:
+        return
+    _archive_logger.log(_logging.INFO if anchored else _logging.WARNING, "%s", note)
+    if on_note is not None:
+        on_note(note)
+
+
+async def _run_local_bash(cmd: str) -> tuple[int, str]:
+    """Run ``cmd`` under local ``bash``: the capture decision's ``run``.
+    Returns the exit status and stdout, decoded with ``errors="replace"``."""
+    proc = await asyncio.create_subprocess_exec(
+        "bash", "-c", cmd,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    return proc.returncode, stdout.decode("utf-8", errors="replace")
 
 
 def _scrub_env(proc_env: dict, patterns: "list[str] | None") -> None:
@@ -645,22 +684,48 @@ class LocalHost:
         )
 
     def archive_workdir(
-        self, exclude: list[str] | None,
+        self,
+        exclude: list[str] | None,
+        *,
+        on_note: Callable[[str], None] | None = None,
     ) -> "AsyncIterator[bytes]":
         """Stream a gzip tar of the workdir through the same ``tar | pigz -1``
         (or ``gzip -1``) pipeline RemoteHost runs over SSH. Python ``tarfile``
         at level 9, buffered whole in memory, took 62 s for a 743 MiB workdir
         against a 30 s cancel grace (docs/2026-10-03-local-archive-throughput-design.md);
         it remains only as the fallback for hosts without ``tar`` or ``bash``.
+
+        Before archiving, the capture cap (``regenerable_excludes``, with
+        ``du`` under local ``bash``; the fallback walks the tree in Python
+        instead) decides which paths listed in ``regenerable.txt`` to leave
+        out; its note, if any, goes to ``on_note`` and the
+        ``optio_host.archive`` logger.
         """
-        from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES, yield_workdir_archive
-        if shutil.which("tar") is None or shutil.which("bash") is None:
-            return yield_workdir_archive(self.workdir, exclude=exclude)
+        from optio_host.archive import (
+            DEFAULT_WORKDIR_EXCLUDES, fallback_regenerable_excludes, yield_workdir_archive,
+        )
         patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
+        if shutil.which("tar") is None or shutil.which("bash") is None:
+            async def _fallback() -> "AsyncIterator[bytes]":
+                anchored, note = await asyncio.get_running_loop().run_in_executor(
+                    None, fallback_regenerable_excludes,
+                    self.workdir, patterns, workdir_capture_max_bytes(),
+                )
+                _report_capture_note(note, anchored, on_note)
+                async for chunk in yield_workdir_archive(
+                    self.workdir, exclude=patterns, anchored=anchored,
+                ):
+                    yield chunk
+
+            return _fallback()
 
         async def _gen() -> "AsyncIterator[bytes]":
+            anchored, note = await regenerable_excludes(
+                _run_local_bash, self.workdir, patterns, workdir_capture_max_bytes(),
+            )
+            _report_capture_note(note, anchored, on_note)
             compressor = "pigz -1" if shutil.which("pigz") else "gzip -1"
-            cmd = _archive_command(self.workdir, patterns, compressor)
+            cmd = _archive_command(self.workdir, patterns, compressor, anchored)
             _trace(
                 "LocalHost.archive_workdir START workdir=%s compressor=%s excludes=%r",
                 self.workdir, compressor, patterns,
@@ -1081,17 +1146,39 @@ class RemoteHost:
             self._compressor = "pigz -1" if probe.exit_status == 0 else "gzip -1"
         return self._compressor
 
+    async def _run_for_capture(self, cmd: str) -> tuple[int, str]:
+        """The capture decision's ``run``: ``cmd`` over the connection, its
+        exit status (``-1`` when none arrived) and its stdout, decoded with
+        ``errors="replace"``."""
+        assert self._conn is not None
+        result = await self._conn.run(cmd, check=False, errors="replace")
+        exit_code = result.exit_status if result.exit_status is not None else -1
+        return exit_code, result.stdout or ""
+
     def archive_workdir(
-        self, exclude: list[str] | None,
+        self,
+        exclude: list[str] | None,
+        *,
+        on_note: Callable[[str], None] | None = None,
     ) -> "AsyncIterator[bytes]":
+        """Stream a gzip tar of the remote workdir (``tar | pigz -1``, or
+        ``gzip -1``, over SSH). Before archiving, the capture cap
+        (``regenerable_excludes``, measuring with ``du`` on the remote host)
+        decides which paths listed in ``regenerable.txt`` to leave out; its
+        note, if any, goes to ``on_note`` and the ``optio_host.archive``
+        logger."""
         from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
         assert self._conn is not None
         patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
 
         async def _gen() -> "AsyncIterator[bytes]":
             assert self._conn is not None
+            anchored, note = await regenerable_excludes(
+                self._run_for_capture, self.workdir, patterns, workdir_capture_max_bytes(),
+            )
+            _report_capture_note(note, anchored, on_note)
             compressor = await self._archive_compressor()
-            cmd = _archive_command(self.workdir, patterns, compressor)
+            cmd = _archive_command(self.workdir, patterns, compressor, anchored)
             _trace(
                 "archive_workdir START workdir=%s compressor=%s excludes=%r",
                 self.workdir, compressor, patterns,

@@ -1,4 +1,7 @@
-"""Tests for the workdir capture cap setting and the regenerable list parser."""
+"""Tests for the workdir capture cap: the setting, the regenerable list
+parser, and the capture decision (`regenerable_excludes`)."""
+
+import subprocess
 
 import pytest
 
@@ -6,7 +9,9 @@ from optio_host.capture_cap import (
     DEFAULT_MAX_MB,
     ENV_VAR,
     REGENERABLE_LIST,
+    du_command,
     parse_regenerable,
+    regenerable_excludes,
     workdir_capture_max_bytes,
 )
 
@@ -66,3 +71,150 @@ def test_parse_regenerable_sanitises():
 
 def test_parse_regenerable_empty_text():
     assert parse_regenerable("") == []
+
+
+# --- the capture decision ------------------------------------------------------
+
+_MIB = 1024 * 1024
+_W = "/w"
+_PATTERNS = [".git", "*.pyc"]
+_LIST_COMMAND = "cd /w && cat -- regenerable.txt"
+
+
+class _FakeRun:
+    """Stands in for a host's `run`: answers the decision's `du` with `du` and
+    its read of the list with `cat`, recording every command."""
+
+    def __init__(
+        self,
+        du: tuple[int, str] = (0, "4096\t.\n"),
+        cat: tuple[int, str] = (1, ""),
+    ) -> None:
+        self.du = du
+        self.cat = cat
+        self.commands: list[str] = []
+
+    async def __call__(self, cmd: str) -> tuple[int, str]:
+        self.commands.append(cmd)
+        if cmd == du_command(_W, _PATTERNS):
+            return self.du
+        if cmd == _LIST_COMMAND:
+            return self.cat
+        raise AssertionError(f"unexpected command {cmd!r}")
+
+
+def test_du_command_shape():
+    assert du_command("/w d", ["a b", "*.pyc"]) == (
+        "cd '/w d' && timeout 1 du -sb --exclude='a b' --exclude='*.pyc' ."
+    )
+    assert du_command("/w", []) == "cd /w && timeout 1 du -sb ."
+
+
+def test_du_command_measures_without_the_excluded_paths(tmp_path):
+    workdir = tmp_path / "w d's $HOME"
+    (workdir / "skip me").mkdir(parents=True)
+    (workdir / "skip me" / "blob").write_bytes(bytes(100_000))
+    (workdir / "keep").write_bytes(bytes(1000))
+
+    def size(patterns: list[str]) -> int:
+        proc = subprocess.run(
+            ["bash", "-c", du_command(str(workdir), patterns)],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return int(proc.stdout.split()[0])
+
+    assert 1000 <= size(["skip me"]) < 100_000
+    assert size([]) >= 101_000
+
+
+async def test_cap_zero_runs_nothing():
+    run = _FakeRun()
+
+    assert await regenerable_excludes(run, _W, _PATTERNS, 0) == ([], None)
+    assert run.commands == []
+
+
+@pytest.mark.parametrize("size", [1000, 2000])
+async def test_under_or_at_the_cap_leaves_nothing_out(size):
+    run = _FakeRun(du=(0, f"{size}\t.\n"), cat=(0, "a\n"))
+
+    assert await regenerable_excludes(run, _W, _PATTERNS, 2000) == ([], None)
+    assert run.commands == [du_command(_W, _PATTERNS)]
+
+
+async def test_over_the_cap_leaves_out_the_listed_paths():
+    # 2.5 MiB: the note's sizes are whole MiB, rounded down.
+    run = _FakeRun(du=(0, f"{2 * _MIB + _MIB // 2}\t.\n"), cat=(0, "a\nb\n"))
+
+    entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    assert entries == ["a", "b"]
+    assert note == (
+        "workdir 2 MB (cap 1 MB): left out 2 paths listed in regenerable.txt"
+    )
+    assert run.commands == [du_command(_W, _PATTERNS), _LIST_COMMAND]
+
+
+async def test_over_the_cap_with_one_entry_says_path():
+    run = _FakeRun(du=(0, f"{3 * _MIB}\t.\n"), cat=(0, "a\n"))
+
+    _, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    assert note == "workdir 3 MB (cap 1 MB): left out 1 path listed in regenerable.txt"
+
+
+async def test_du_timeout_counts_as_over_the_cap():
+    run = _FakeRun(du=(124, ""), cat=(0, "a\nb\n"))
+
+    entries, note = await regenerable_excludes(run, _W, _PATTERNS, 100 * _MIB)
+
+    assert entries == ["a", "b"]
+    assert note == (
+        "workdir size unknown (du timed out after 1 s): "
+        "left out 2 paths listed in regenerable.txt"
+    )
+
+
+async def test_other_du_failure_counts_as_over_the_cap():
+    run = _FakeRun(du=(127, ""), cat=(0, "a\n"))
+
+    entries, note = await regenerable_excludes(run, _W, _PATTERNS, 100 * _MIB)
+
+    assert entries == ["a"]
+    assert note.startswith("workdir size unknown (du failed with exit 127): ")
+
+
+async def test_over_the_cap_without_a_list_leaves_nothing_out():
+    run = _FakeRun(du=(0, f"{2 * _MIB}\t.\n"), cat=(1, ""))
+
+    entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    assert entries == []
+    assert note == (
+        "workdir 2 MB is over the 1 MB capture cap, but regenerable.txt "
+        "is missing or empty; capturing everything"
+    )
+
+
+async def test_du_timeout_without_a_list_leaves_nothing_out():
+    run = _FakeRun(du=(124, ""), cat=(0, "# nothing yet\n"))
+
+    entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    assert entries == []
+    assert note == (
+        "workdir size unknown (du timed out after 1 s) is over the 1 MB "
+        "capture cap, but regenerable.txt is missing or empty; capturing everything"
+    )
+
+
+async def test_binary_list_does_not_raise():
+    # What a binary regenerable.txt looks like once the host's run has
+    # decoded it with errors="replace".
+    run = _FakeRun(du=(0, f"{2 * _MIB}\t.\n"), cat=(0, "\ufffd\ufffd\n"))
+
+    entries, note = await regenerable_excludes(run, _W, _PATTERNS, _MIB)
+
+    assert entries == ["\ufffd\ufffd"]
+    assert "left out 1 path" in note

@@ -613,10 +613,13 @@ Compound index `{processId: 1, capturedAt: -1}`. Retention: keep latest 5; older
 
 **Host method additions** (both `LocalHost` and `RemoteHost`):
 `launch_opencode(..., env=None)`, `opencode_import(db_path, session_json)`, `opencode_export(db_path, session_id) -> bytes`,
-`archive_workdir(exclude) -> AsyncIterator[bytes]`, `restore_workdir(stream)`, `remove_file(path)`.
+`archive_workdir(exclude, *, on_note=None) -> AsyncIterator[bytes]`, `restore_workdir(stream)`, `remove_file(path)`.
 `archive_workdir` streams `tar | pigz -1` (`gzip -1` without pigz) on both hosts: `RemoteHost` over SSH,
 `LocalHost` as a local subprocess group that is killed if the capture is abandoned. Only a local host without
 `tar` or `bash` falls back to in-process `tarfile` (level 1). See `docs/2026-10-03-local-archive-throughput-design.md`.
+Above the workdir capture cap (`OPTIO_WORKDIR_CAPTURE_MAX_MB`, default 100 MiB, `0` = off) it leaves out the paths
+listed in the workdir's `regenerable.txt`; the one-line note goes to `on_note` and the `optio_host.archive` logger.
+See the "Workdir capture cap" section of `packages/optio-host/AGENTS.md`.
 
 Full details: `packages/optio-opencode/AGENTS.md`.
 

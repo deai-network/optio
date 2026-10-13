@@ -15,6 +15,11 @@ fix without a live SSH connection:
 
 The docker-gated round trip over a real sshd lives in optio-opencode's
 test_host_remote_resume.py.
+
+The capture cap (``OPTIO_WORKDIR_CAPTURE_MAX_MB``) is off for every test here
+unless the test turns it on, so the host's environment never leaks in; the
+capture-cap section turns it on and answers its ``du`` and ``cat`` through
+the fake connection's ``run``.
 """
 
 from __future__ import annotations
@@ -29,7 +34,9 @@ import tarfile
 
 import pytest
 
+from optio_host import capture_cap
 from optio_host import host as host_mod
+from optio_host.capture_cap import ENV_VAR
 from optio_host.host import RemoteHost
 from optio_host.types import SSHConfig
 
@@ -178,8 +185,9 @@ class _FakeProc:
 
 
 class _RunResult:
-    def __init__(self, exit_status: int) -> None:
+    def __init__(self, exit_status: int, stdout: str = "") -> None:
         self.exit_status = exit_status
+        self.stdout = stdout
 
 
 class _FakeConn:
@@ -193,6 +201,8 @@ class _FakeConn:
         stall_stdout_until_stderr_drained: bool = False,
         stdout_gate: asyncio.Event | None = None,
         exit_status_arrives_early: bool = False,
+        du: tuple[int, str] = (0, "4096\t.\n"),
+        regenerable: tuple[int, str] = (1, ""),
     ):
         self._pigz = pigz
         self._data = data
@@ -201,14 +211,22 @@ class _FakeConn:
         self._stall = stall_stdout_until_stderr_drained
         self._stdout_gate = stdout_gate
         self._early = exit_status_arrives_early
+        self._du = du
+        self._regenerable = regenerable
         self.run_commands: list[str] = []
+        self.run_kwargs: list[dict] = []
         self.created: list[str] = []
         self.procs: list[_FakeProc] = []
 
-    async def run(self, cmd: str, check: bool = False) -> _RunResult:
+    async def run(self, cmd: str, check: bool = False, **kwargs) -> _RunResult:
         self.run_commands.append(cmd)
+        self.run_kwargs.append(kwargs)
         if "command -v pigz" in cmd:
             return _RunResult(0 if self._pigz else 1)
+        if " du -sb " in cmd:
+            return _RunResult(*self._du)
+        if "cat -- regenerable.txt" in cmd:
+            return _RunResult(*self._regenerable)
         return _RunResult(0)
 
     async def create_process(self, cmd: str, encoding=None) -> _FakeProc:
@@ -223,6 +241,11 @@ class _FakeConn:
         )
         self.procs.append(proc)
         return proc
+
+
+@pytest.fixture(autouse=True)
+def _capture_cap_off(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "0")
 
 
 def _host(conn: _FakeConn) -> RemoteHost:
@@ -389,3 +412,84 @@ async def test_archive_workdir_start_trace_names_workdir_and_compressor(
     assert "workdir=/t/workdir" in start[0]
     assert "compressor=pigz -1" in start[0]
     assert "bash -c" not in start[0]
+
+
+# --- capture cap ---------------------------------------------------------------
+
+_MIB = 1024 * 1024
+_W = "/t/workdir"
+
+
+def _cap_commands(conn: _FakeConn) -> list[str]:
+    """The commands the capture decision ran (everything but the pigz probe)."""
+    return [c for c in conn.run_commands if "pigz" not in c]
+
+
+async def test_archive_workdir_over_the_cap_excludes_the_listed_paths(
+    monkeypatch, caplog,
+):
+    monkeypatch.setenv(ENV_VAR, "1")
+    conn = _FakeConn(
+        pigz=True, data=b"x", du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"),
+    )
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+
+    assert _cap_commands(conn) == [
+        capture_cap.du_command(_W, ["a b"]),
+        "cd /t/workdir && cat -- regenerable.txt",
+    ]
+    # Decoded with errors="replace", so a binary list cannot raise.
+    assert [kw for c, kw in zip(conn.run_commands, conn.run_kwargs) if "pigz" not in c] == [
+        {"errors": "replace"}, {"errors": "replace"},
+    ]
+    assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1", ["big"])]
+    assert "--anchored --no-wildcards --exclude=./big" in conn.created[0]
+    assert notes == ["workdir 2 MB (cap 1 MB): left out 1 path listed in regenerable.txt"]
+    assert [(r.levelno, r.getMessage()) for r in caplog.records
+            if r.name == "optio_host.archive"] == [(logging.INFO, notes[0])]
+
+
+async def test_archive_workdir_under_the_cap_measures_and_captures_everything(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "100")
+    conn = _FakeConn(pigz=True, data=b"x", regenerable=(0, "big\n"))
+    notes: list[str] = []
+
+    await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+
+    assert _cap_commands(conn) == [capture_cap.du_command(_W, ["a b"])]
+    assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
+    assert notes == []
+
+
+async def test_archive_workdir_cap_zero_runs_no_du(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "0")
+    conn = _FakeConn(pigz=True, data=b"x", du=(0, f"{2 * _MIB}\t.\n"), regenerable=(0, "big\n"))
+    notes: list[str] = []
+
+    await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+
+    assert _cap_commands(conn) == []
+    assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
+    assert notes == []
+
+
+async def test_archive_workdir_du_timeout_without_a_list_warns_and_captures_everything(
+    monkeypatch, caplog,
+):
+    monkeypatch.setenv(ENV_VAR, "1")
+    conn = _FakeConn(pigz=True, data=b"x", du=(124, ""), regenerable=(1, ""))
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        await _drain(_host(conn).archive_workdir(exclude=["a b"], on_note=notes.append))
+
+    assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
+    assert notes == [
+        "workdir size unknown (du timed out after 1 s) is over the 1 MB capture cap, "
+        "but regenerable.txt is missing or empty; capturing everything"
+    ]
+    assert [(r.levelno, r.getMessage()) for r in caplog.records
+            if r.name == "optio_host.archive"] == [(logging.WARNING, notes[0])]

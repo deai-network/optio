@@ -9,6 +9,8 @@ import pytest
 from optio_host.archive import (
     DEFAULT_WORKDIR_EXCLUDES,
     consume_workdir_archive,
+    fallback_regenerable_excludes,
+    measure_workdir,
     yield_workdir_archive,
 )
 
@@ -184,3 +186,43 @@ def test_default_workdir_excludes_has_expected_entries():
     assert ".venv" in DEFAULT_WORKDIR_EXCLUDES
     assert "*.pyc" in DEFAULT_WORKDIR_EXCLUDES
     assert ".DS_Store" in DEFAULT_WORKDIR_EXCLUDES
+
+
+# --- the fallback's capture decision -------------------------------------------
+
+
+def test_measure_workdir_honours_the_patterns(tmp_path):
+    (tmp_path / "keep.bin").write_bytes(bytes(1000))
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "pack").write_bytes(bytes(100_000))
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "mod.pyc").write_bytes(bytes(50_000))
+
+    assert 1000 <= measure_workdir(str(tmp_path), [".git", "*.pyc"]) < 50_000
+    assert measure_workdir(str(tmp_path), []) >= 151_000
+
+
+def test_measure_workdir_gives_up_once_the_budget_is_spent(tmp_path):
+    """A zero budget is spent before the first entry, whatever the clock reads."""
+    (tmp_path / "keep.bin").write_bytes(bytes(1000))
+
+    assert measure_workdir(str(tmp_path), [], budget_s=0) is None
+
+
+def test_fallback_decision_reads_an_unreadable_list_as_empty(tmp_path):
+    (tmp_path / "keep.bin").write_bytes(bytes(1000))
+    (tmp_path / "regenerable.txt").mkdir()  # open() fails on it
+
+    entries, note = fallback_regenerable_excludes(str(tmp_path), [], 1)
+
+    assert entries == []
+    assert "missing or empty" in note
+
+
+def test_fallback_decision_decodes_a_binary_list_with_replacement(tmp_path):
+    (tmp_path / "regenerable.txt").write_bytes(b"\xff\xfe\nkeep.bin\n")
+
+    entries, note = fallback_regenerable_excludes(str(tmp_path), [], 1)
+
+    assert entries == ["\ufffd\ufffd", "keep.bin"]
+    assert "left out 2 paths" in note

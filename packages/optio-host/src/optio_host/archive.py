@@ -9,7 +9,9 @@ responsive.
 `consume_workdir_archive` backs `LocalHost.restore_workdir`.
 `yield_workdir_archive` is only `LocalHost.archive_workdir`'s fallback for a
 host without `tar` or `bash`; normally both hosts stream `tar | pigz -1` (or
-`gzip -1`), RemoteHost over SSH and LocalHost as a local subprocess.
+`gzip -1`), RemoteHost over SSH and LocalHost as a local subprocess. That
+fallback makes its capture-cap decision with `fallback_regenerable_excludes`,
+which measures with a Python walk (`measure_workdir`) instead of `du`.
 """
 
 from __future__ import annotations
@@ -20,7 +22,10 @@ import io
 import os
 import shutil
 import tarfile
+import time
 from typing import AsyncIterator, Iterable
+
+from optio_host.capture_cap import REGENERABLE_LIST, over_cap_excludes
 
 
 DEFAULT_WORKDIR_EXCLUDES: list[str] = [
@@ -33,6 +38,10 @@ DEFAULT_WORKDIR_EXCLUDES: list[str] = [
 ]
 
 _CHUNK_SIZE = 1 << 20  # 1 MiB
+
+# How long `measure_workdir` may walk before giving up; the fallback's
+# counterpart of `du`'s `timeout`.
+WALK_BUDGET_S = 1.0
 
 
 def _excluded(relpath: str, patterns: list[str]) -> bool:
@@ -93,6 +102,63 @@ def _build_archive_bytes(
                     continue
                 tar.add(os.path.join(dirpath, name), arcname=rel, recursive=False)
     return buf.getvalue()
+
+
+def measure_workdir(
+    root: str, patterns: list[str], budget_s: float = WALK_BUDGET_S,
+) -> int | None:
+    """Size of `root` in bytes as a capture sees it, like `du -sb`.
+
+    Sums the `lstat` sizes of every entry under `root` that `patterns`
+    (match-anywhere, as in `_excluded`) do not exclude, without following
+    symlinks. Returns `None` once the walk has run for `budget_s` seconds of
+    `time.monotonic()`.
+    """
+    deadline = time.monotonic() + budget_s
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+
+        def rel(name: str) -> str:
+            return os.path.join(rel_dir, name) if rel_dir != "." else name
+
+        dirnames[:] = [d for d in dirnames if not _excluded(rel(d), patterns)]
+        kept = dirnames + [f for f in filenames if not _excluded(rel(f), patterns)]
+        for name in kept:
+            if time.monotonic() >= deadline:
+                return None
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def fallback_regenerable_excludes(
+    root: str, patterns: list[str], cap_bytes: int,
+) -> tuple[list[str], str | None]:
+    """`capture_cap.regenerable_excludes` for a host without `tar` or `bash`.
+
+    The same decision and result, measured with `measure_workdir` (running
+    out of its budget counts as over the cap) and the list read with Python,
+    decoded with `errors="replace"`; an unreadable list counts as empty.
+    Blocking: run it in an executor.
+    """
+    if cap_bytes == 0:
+        return [], None
+    size = measure_workdir(root, patterns)
+    if size is not None and size <= cap_bytes:
+        return [], None
+    try:
+        with open(
+            os.path.join(root, REGENERABLE_LIST), encoding="utf-8", errors="replace",
+        ) as fh:
+            text = fh.read()
+    except OSError:
+        text = ""
+    return over_cap_excludes(
+        size, f"walk timed out after {WALK_BUDGET_S:g} s", cap_bytes, text,
+    )
 
 
 async def yield_workdir_archive(

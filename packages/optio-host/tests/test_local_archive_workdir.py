@@ -6,6 +6,11 @@ grace, so the snapshot never landed (see
 docs/2026-10-03-local-archive-throughput-design.md). These tests pin the
 replacement against real local processes; only ``shutil.which`` is faked, to
 choose between the pipeline's compressors and the in-process fallback.
+
+The capture cap (``OPTIO_WORKDIR_CAPTURE_MAX_MB``) adds a ``du`` subprocess
+before the pipeline. It is off for every test here unless the test turns it
+on, so the pipeline tests keep pinning a single subprocess and the host's
+environment never leaks in; the capture-cap section turns it on.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ import tarfile
 import pytest
 
 from optio_host import host as host_mod
+from optio_host.capture_cap import ENV_VAR
 from optio_host.host import LocalHost
 
 
@@ -89,6 +95,11 @@ def _without(monkeypatch, *tools: str) -> None:
         return real_which(cmd, *args, **kwargs)
 
     monkeypatch.setattr(host_mod.shutil, "which", which)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cap_off(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "0")
 
 
 @pytest.fixture
@@ -241,6 +252,136 @@ def test_archive_command_without_anchored_matches_todays_string(tmp_workdir):
         host_mod._archive_command(workdir, patterns, compressor)
         == host_mod._archive_command(workdir, patterns, compressor, [])
     )
+
+
+# --- capture cap -------------------------------------------------------------
+
+_MIB = 1024 * 1024
+
+# Explicit, without node_modules: DEFAULT_WORKDIR_EXCLUDES' match-anywhere
+# node_modules would hide whether the listed a/node_modules stays anchored.
+_CAP_EXCLUDE = [".git"]
+
+_ALL_FILES = {
+    "big/blob.bin", "keep.txt", "regenerable.txt",
+    "a/node_modules/x.js", "b/a/node_modules/y.js",
+}
+
+
+def _populate_over_cap(root: str, regenerable: str | None = "big\na/node_modules\n") -> None:
+    _write(root, "big/blob.bin", bytes(2 * _MIB))
+    _write(root, "keep.txt", "k")
+    _write(root, "a/node_modules/x.js", "x")
+    _write(root, "b/a/node_modules/y.js", "y")
+    if regenerable is not None:
+        _write(root, "regenerable.txt", regenerable)
+
+
+def _archive_notes(caplog) -> list[tuple[int, str]]:
+    return [(r.levelno, r.getMessage()) for r in caplog.records
+            if r.name == "optio_host.archive"]
+
+
+async def test_over_the_cap_leaves_out_the_listed_paths(tmp_workdir, monkeypatch, caplog):
+    monkeypatch.setenv(ENV_VAR, "1")
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert not [n for n in _members(blob) if n == "big" or n.startswith("big/")]
+    assert _tar_member_names(blob) == {"keep.txt", "regenerable.txt", "b/a/node_modules/y.js"}
+    assert notes == ["workdir 2 MB (cap 1 MB): left out 2 paths listed in regenerable.txt"]
+    assert _archive_notes(caplog) == [(logging.INFO, notes[0])]
+
+
+async def test_under_the_cap_captures_everything(tmp_workdir, monkeypatch, caplog):
+    monkeypatch.setenv(ENV_VAR, "100")
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES
+    assert notes == []
+    assert _archive_notes(caplog) == []
+
+
+async def test_cap_zero_runs_no_du_and_todays_command(tmp_workdir, monkeypatch, spawned):
+    monkeypatch.setenv(ENV_VAR, "0")
+    _without(monkeypatch, "pigz")
+    real_regenerable_excludes = host_mod.regenerable_excludes
+
+    async def no_run(cmd: str):
+        raise AssertionError(f"the capture cap ran {cmd!r} with the cap off")
+
+    async def guarded(run, workdir, patterns, cap_bytes):
+        return await real_regenerable_excludes(no_run, workdir, patterns, cap_bytes)
+
+    monkeypatch.setattr(host_mod, "regenerable_excludes", guarded)
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+    notes: list[str] = []
+
+    blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES
+    assert notes == []
+    assert [args for args, _ in spawned] == [
+        ("/bin/sh", "-c", host_mod._archive_command(h.workdir, _CAP_EXCLUDE, "gzip -1")),
+    ]
+
+
+async def test_over_the_cap_without_a_list_captures_everything_and_warns(
+    tmp_workdir, monkeypatch, caplog,
+):
+    monkeypatch.setenv(ENV_VAR, "1")
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir, regenerable=None)
+    notes: list[str] = []
+
+    with caplog.at_level(logging.INFO, logger="optio_host.archive"):
+        blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES - {"regenerable.txt"}
+    assert notes == [
+        "workdir 2 MB is over the 1 MB capture cap, but regenerable.txt "
+        "is missing or empty; capturing everything"
+    ]
+    assert _archive_notes(caplog) == [(logging.WARNING, notes[0])]
+
+
+async def test_fallback_over_the_cap_leaves_out_the_listed_paths(
+    tmp_workdir, monkeypatch, spawned,
+):
+    monkeypatch.setenv(ENV_VAR, "1")
+    _without(monkeypatch, "tar")
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+    notes: list[str] = []
+
+    blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert spawned == []
+    assert _tar_member_names(blob) == {"keep.txt", "regenerable.txt", "b/a/node_modules/y.js"}
+    assert notes == ["workdir 2 MB (cap 1 MB): left out 2 paths listed in regenerable.txt"]
+
+
+async def test_fallback_under_the_cap_captures_everything(tmp_workdir, monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "100")
+    _without(monkeypatch, "tar")
+    h = _host(tmp_workdir)
+    _populate_over_cap(h.workdir)
+    notes: list[str] = []
+
+    blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes.append))
+
+    assert _tar_member_names(blob) == _ALL_FILES
+    assert notes == []
 
 
 # --- compression ---------------------------------------------------------------
