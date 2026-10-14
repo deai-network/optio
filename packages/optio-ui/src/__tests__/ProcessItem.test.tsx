@@ -10,10 +10,10 @@ i18n.init({ lng: 'en', resources: { en: { translation: {} } } });
 
 const MESSAGE = 'Resurrecting: saving the unsaved work…';
 
-function renderItem(process: any) {
+function renderItem(process: any, onCancel?: (id: string) => void) {
   return render(
     <I18nextProvider i18n={i18n}>
-      <ProcessItem process={{ _id: '1', name: 'P', ...process }} />
+      <ProcessItem process={{ _id: '1', name: 'P', ...process }} onCancel={onCancel} />
     </I18nextProvider>,
   );
 }
@@ -32,3 +32,22 @@ describe('ProcessItem progress message', () => {
     expect(screen.queryByText(`— ${MESSAGE}`)).toBeNull();
   });
 });
+
+describe('ProcessItem: the stop button', () => {
+  const running = { status: { state: 'running' }, progress: { percent: null }, cancellable: true };
+
+  it('a resumable process is suspended: "Suspend", a pause icon, not red', () => {
+    renderItem({ ...running, supportsResume: true }, () => {});
+    const button = screen.getByRole('button', { name: 'Suspend' });
+    expect(button.className).not.toContain('ant-btn-dangerous');
+    expect(button.querySelector('.anticon-pause-circle')).not.toBeNull();
+  });
+
+  it('other processes are cancelled: "Cancel", red', () => {
+    renderItem(running, () => {});
+    const button = screen.getByRole('button', { name: 'processes.cancel' });
+    expect(button.className).toContain('ant-btn-dangerous');
+    expect(button.querySelector('.anticon-close-circle')).not.toBeNull();
+  });
+});
+

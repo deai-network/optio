@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Tree, Progress, Button, Tooltip, Typography, Checkbox } from 'antd';
-import { CloseCircleOutlined } from '@ant-design/icons';
+import { CloseCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
 import { isActive as isProcessActive, isResurrecting } from '../process-state.js';
@@ -60,12 +61,14 @@ function treeNodeToDataNode(
   onCancel: ((id: string) => void) | undefined,
   onLaunch: ((id: string, opts?: { resume?: boolean }) => void) | undefined,
   onResurrect: ((id: string) => void) | undefined,
-  t: (key: string) => string,
+  t: TFunction,
 ): DataNode {
   const isActive = isProcessActive(node);
   // A resurrect runs while the state stays failed; show its progress message.
   const showsProgressMessage = isActive || isResurrecting(node);
   const isCancellable = isActive && node.cancellable;
+  const suspends = Boolean(node.supportsResume);
+  const stopLabel = suspends ? t('processes.suspend', 'Suspend') : t('processes.cancel');
   const hasPercent = node.progress.percent != null;
 
   return {
@@ -80,7 +83,11 @@ function treeNodeToDataNode(
           <Text style={{ whiteSpace: 'nowrap' }}>{node.name}</Text>
         )}
         <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', minWidth: 120, justifyContent: 'flex-end' }}>
-          <ProcessStatusBadge state={node.status.state} error={node.status.error} runningSince={node.status.runningSince} autoResumeScheduled={node.autoResumeScheduled} />
+          <ProcessStatusBadge
+            state={node.status.state} error={node.status.error} runningSince={node.status.runningSince}
+            autoResumeScheduled={node.autoResumeScheduled}
+            supportsResume={node.supportsResume} hasSavedState={node.hasSavedState}
+          />
           {/* Progress bar visibility rules (keep consistent across ProcessList,
               RecentProcesses):
               - active with percent: determinate bar
@@ -108,12 +115,15 @@ function treeNodeToDataNode(
             <Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{Math.round(node.progress.percent!)}%</Text>
           )}
           {isCancellable && onCancel && (
-            <Tooltip title={t('processes.cancel')}>
+            // A process whose task can resume is suspended (its state is
+            // saved), not cancelled: no danger color.
+            <Tooltip title={stopLabel}>
               <Button
                 type="text"
                 size="small"
-                danger
-                icon={<CloseCircleOutlined />}
+                danger={!suspends}
+                aria-label={stopLabel}
+                icon={suspends ? <PauseCircleOutlined /> : <CloseCircleOutlined />}
                 onClick={(e) => {
                   e.stopPropagation();
                   onCancel(node._id);

@@ -26,6 +26,10 @@ interface ProcessUpdate {
   /** Stamped for automatic resume after an engine restart (cancelled,
    *  state-saved top-level process). Surfaced as a badge indicator. */
   autoResumeScheduled?: boolean;
+  /** The task can resume: stopping it suspends it (its state is saved). */
+  supportsResume?: boolean;
+  /** A saved state exists (a cancelled, resumable process is suspended). */
+  hasSavedState?: boolean;
 }
 
 export interface ProcessTreeNode extends ProcessUpdate {

@@ -61,12 +61,28 @@ interface ProcessStatusBadgeProps {
   autoResumeScheduled?: boolean;
   /** Extra class on the status tag, e.g. a host app's tag look. */
   className?: string;
+  /** The task can resume: stopping it suspends it (its state is saved), so
+   *  the stop reads "Suspending". */
+  supportsResume?: boolean;
+  /** A saved state exists: a cancelled, resumable process is "Suspended". */
+  hasSavedState?: boolean;
 }
 
-export function ProcessStatusBadge({ state, error, runningSince, size = 'small', autoResumeScheduled, className }: ProcessStatusBadgeProps) {
+// Stopping a process whose task can resume saves its state: it is suspended,
+// not cancelled, and shown so, in a calm color (owner, 2026-10-14).
+const STOPPING_STATES = new Set(['cancel_requested', 'cancelling']);
+const SUSPEND_COLOR = 'blue';
+
+export function ProcessStatusBadge({
+  state, error, runningSince, size = 'small', autoResumeScheduled, className, supportsResume, hasSavedState,
+}: ProcessStatusBadgeProps) {
   const { t } = useTranslation();
-  const color = STATUS_COLORS[state] ?? 'default';
-  const label = t(`status.${state}`, state);
+  const suspending = Boolean(supportsResume) && STOPPING_STATES.has(state);
+  const suspended = Boolean(supportsResume && hasSavedState) && state === 'cancelled';
+  const color = suspending || suspended ? SUSPEND_COLOR : STATUS_COLORS[state] ?? 'default';
+  const label = suspending ? t('status.suspending', 'Suspending')
+    : suspended ? t('status.suspended', 'Suspended')
+      : t(`status.${state}`, state);
   const isActive = isActiveState(state);
   const elapsed = useElapsed(runningSince, isActive);
 

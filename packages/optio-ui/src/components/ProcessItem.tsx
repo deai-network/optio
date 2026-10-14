@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Button, Progress, Tooltip, Typography } from 'antd';
 import type { ButtonProps, ProgressProps } from 'antd';
-import { CloseCircleOutlined } from '@ant-design/icons';
+import { CloseCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { HighlightedText } from '@quaesitor-textus/core';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
@@ -66,6 +66,8 @@ export function ProcessItem({
   // only feedback, so the message shows then too.
   const showsProgressMessage = isActive || isResurrecting(process);
   const isCancellable = !readonly && isProcessCancellable(process);
+  const suspends = Boolean(process.supportsResume);
+  const stopLabel = suspends ? t('processes.suspend', 'Suspend') : t('processes.cancel');
   const hasPercent = process.progress?.percent != null;
   const tokens = SIZE_TOKENS[size];
 
@@ -114,6 +116,8 @@ export function ProcessItem({
         runningSince={process.status?.runningSince}
         size={size}
         autoResumeScheduled={process.autoResumeScheduled}
+        supportsResume={process.supportsResume}
+        hasSavedState={process.hasSavedState}
       />
       {!readonly && (
         <LaunchControls
@@ -126,12 +130,17 @@ export function ProcessItem({
         />
       )}
       {isCancellable && onCancel && (
-        <Tooltip title={t('processes.cancel')}>
+        // A process whose task can resume is suspended (its state is saved),
+        // not cancelled: no danger color.
+        <Tooltip title={stopLabel}>
           <Button
             type="text"
             size={tokens.button}
-            danger
-            icon={<CloseCircleOutlined style={tokens.iconFontSize ? { fontSize: tokens.iconFontSize } : undefined} />}
+            danger={!suspends}
+            aria-label={stopLabel}
+            icon={suspends
+              ? <PauseCircleOutlined style={tokens.iconFontSize ? { fontSize: tokens.iconFontSize } : undefined} />
+              : <CloseCircleOutlined style={tokens.iconFontSize ? { fontSize: tokens.iconFontSize } : undefined} />}
             onClick={(e) => { e.preventDefault(); onCancel(process._id); }}
           />
         </Tooltip>

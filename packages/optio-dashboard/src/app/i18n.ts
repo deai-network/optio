@@ -8,6 +8,7 @@ i18n.use(initReactI18next).init({
       translation: {
         'processes.launch': 'Launch',
         'processes.cancel': 'Cancel',
+        'processes.suspend': 'Suspend',
         'processes.filterAll': 'All',
         'processes.filterActive': 'Active',
         'processes.filterHideCompleted': 'Hide completed',
@@ -22,6 +23,8 @@ i18n.use(initReactI18next).init({
         'status.cancel_requested': 'Cancel requested',
         'status.cancelling': 'Cancelling',
         'status.cancelled': 'Cancelled',
+        'status.suspending': 'Suspending',
+        'status.suspended': 'Suspended',
         'common.noData': 'No data',
       },
     },
