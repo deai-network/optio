@@ -1,4 +1,4 @@
-import React, { useContext, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
 import { ConfigProvider, theme as antdTheme } from 'antd';
 import { registerWidget, type WidgetProps } from 'optio-ui';
 import { ClaudeCodeView } from './claudecode/ClaudeCodeView.js';
@@ -50,6 +50,13 @@ export function ConversationWidget({ ownTheme, wideness, setBusy, ...props }: Co
 
 function ConversationWidgetBody({ ownTheme, ...props }: Omit<ConversationWidgetProps, 'wideness' | 'setBusy'>) {
   const protocol = (props.process as any)?.widgetData?.protocol ?? 'claudecode';
+  // The views that do not apply their backlog in one step yet are ready at
+  // once (WidgetProps.onReady): a resume hands over to them immediately.
+  const onReadyRef = useRef(props.onReady);
+  onReadyRef.current = props.onReady;
+  useEffect(() => {
+    if (protocol !== 'claudecode') onReadyRef.current?.();
+  }, [protocol]);
 
   const dispatchedView = (extra: { themeMode?: 'light' | 'dark'; onToggleTheme?: () => void }) => {
     const viewProps = { ...props, ...extra } as WidgetProps;

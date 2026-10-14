@@ -13,17 +13,27 @@ import { NativeSpinner } from '../spinners/NativeSpinner.js';
 import { dismissResumeSend, useResumeSend } from './resumeAndSend.js';
 import { ResumeSendNotice } from './ResumeSendNotice.js';
 
-interface ChatAction {
+interface ChatEvent {
   ev: unknown;
   seq: number;
 }
+
+// One event, or a backlog applied in one step (one render).
+type ChatAction = ChatEvent | { batch: ChatEvent[] };
+
+// A backlog-start without its backlog-end, or a connection whose listener sends
+// no markers, is applied after this long (docs/2026-10-14-conversation-backlog-
+// batch-design.md, section 3).
+const BACKLOG_FALLBACK_MS = 2000;
 
 // thinkingRows: see ReduceOptions (the task's thinkingVerbosity is "visible").
 const WAIT_FOR_RESUME_SEND = 'Your earlier message is still waiting for the session; send this one once it has gone.';
 
 function chatReducer(thinkingRows: boolean) {
-  return (state: ChatState, action: ChatAction): ChatState =>
+  const one = (state: ChatState, action: ChatEvent): ChatState =>
     reduceEvent(state, action.ev, action.seq, undefined, { thinkingRows });
+  return (state: ChatState, action: ChatAction): ChatState =>
+    ('batch' in action ? action.batch.reduce(one, state) : one(state, action));
 }
 
 export function ClaudeCodeView(props: WidgetProps) {
@@ -39,6 +49,11 @@ export function ClaudeCodeView(props: WidgetProps) {
     ...initialChatState, controls: initialControls, customControls: initialCustomControls,
   });
   const localSeqRef = useRef(0);
+  // Whether the first backlog has been applied: until then the host's
+  // placeholder stands in for the conversation.
+  const [loaded, setLoaded] = useState(false);
+  const onReadyRef = useRef(props.onReady);
+  onReadyRef.current = props.onReady;
   // The custom controls' values as the engine last sent them (widgetData,
   // then every x-optio-control-update carrying customControls), and how many
   // such updates named each control: a failed pick puts its control back to
@@ -60,6 +75,39 @@ export function ClaudeCodeView(props: WidgetProps) {
   useEffect(() => {
     console.info('[optio-conversation-ui] claudecode conversation widget activated:', `${widgetProxyUrl}events`);
     const es = new EventSource(`${widgetProxyUrl}events`);
+    // The listener frames each connection's replay with backlog-start /
+    // backlog-end: what comes between is collected and applied in one
+    // dispatch. A message before any backlog-start comes from a listener
+    // without markers and goes live at once, as before.
+    let phase: 'connecting' | 'collecting' | 'live' = 'connecting';
+    let buffer: ChatEvent[] = [];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const disarm = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    };
+    const goLive = () => {
+      disarm();
+      if (buffer.length > 0) dispatch({ batch: buffer });
+      buffer = [];
+      phase = 'live';
+      setLoaded(true);
+    };
+    const arm = () => {
+      disarm();
+      timer = setTimeout(goLive, BACKLOG_FALLBACK_MS);
+    };
+    es.onopen = () => {
+      if (phase === 'connecting') arm();
+    };
+    es.addEventListener('backlog-start', () => {
+      phase = 'collecting';
+      buffer = [];
+      arm();
+    });
+    es.addEventListener('backlog-end', () => {
+      if (phase !== 'live') goLive();
+    });
     es.onmessage = (ev: MessageEvent) => {
       let parsed: unknown;
       try {
@@ -78,10 +126,25 @@ export function ClaudeCodeView(props: WidgetProps) {
       // The reducer sniffs the runtime model from system/init & message.model
       // and folds it into the model control (only while the control has no
       // value yet — an operator pick wins).
-      dispatch({ ev: parsed, seq: Number(ev.lastEventId) });
+      const item = { ev: parsed, seq: Number(ev.lastEventId) };
+      if (phase === 'collecting') {
+        buffer.push(item);
+        return;
+      }
+      if (phase === 'connecting') goLive();
+      dispatch(item);
     };
-    return () => es.close();
+    return () => {
+      disarm();
+      es.close();
+    };
   }, [widgetProxyUrl, engineCustom]);
+
+  // Ready once the first backlog shows (WidgetProps.onReady: a resume keeps
+  // the saved view until then).
+  useEffect(() => {
+    if (loaded) onReadyRef.current?.();
+  }, [loaded]);
 
   // The optimistic local-user echo (dispatched on a successful send) sets
   // state.busy immediately, so busy is purely reducer-driven — no separate
@@ -176,7 +239,14 @@ export function ClaudeCodeView(props: WidgetProps) {
   // session (resumeAndSend.ts); one that could not be sent comes back.
   const resumeSend = useResumeSend(props.process._id);
 
+  // Until the first backlog is applied, the host's placeholder; the
+  // conversation stays mounted, hidden, so that it is already scrolled to its
+  // end when it shows.
+  const waiting = !loaded && props.placeholder !== undefined;
   return (
+    <>
+    {waiting && props.placeholder}
+    <div style={{ display: waiting ? 'none' : 'contents' }}>
     <SpinnerScope name={`optio:process:${props.process._id}`}>
       <ControlErrorSlot.Provider value={controlErrorSink}>
         <ConversationView
@@ -270,5 +340,7 @@ export function ClaudeCodeView(props: WidgetProps) {
         />
       </ControlErrorSlot.Provider>
     </SpinnerScope>
+    </div>
+    </>
   );
 }

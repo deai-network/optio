@@ -14,6 +14,8 @@ import { OpencodeView } from '../opencode/OpencodeView.js';
 class FakeEventSource {
   onmessage: ((ev: MessageEvent) => void) | null = null;
   constructor(public url: string) {}
+  // A listener without the backlog markers: the view goes live on the first message.
+  addEventListener() {}
   close() {}
 }
 

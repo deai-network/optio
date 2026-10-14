@@ -24,6 +24,8 @@ class MockEventSource {
     this.url = url;
     MockEventSource.last = this;
   }
+  // A listener without the backlog markers: the view goes live on the first message.
+  addEventListener() {}
   close() {}
 }
 
