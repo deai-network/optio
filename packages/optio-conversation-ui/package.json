@@ -33,6 +33,7 @@
   "dependencies": {
     "@ant-design/x": "^2.9.0",
     "@ant-design/x-markdown": "^2.9.0",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "optio-agents-ui": "workspace:*",
     "optio-ui": "workspace:*",
     "react-syntax-highlighter": "^16.1.1"
@@ -49,7 +50,6 @@
     "@types/katex": "^0.16.8",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@types/react-syntax-highlighter": "^15.5.13",
     "antd": "^6.6.5",
     "jsdom": "^29.0.1",
     "react": "^19.2.4",

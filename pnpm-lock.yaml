@@ -260,6 +260,9 @@ importers:
       '@ant-design/x-markdown':
         specifier: ^2.9.0
         version: 2.9.0(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@types/react-syntax-highlighter':
+        specifier: ^15.5.13
+        version: 15.5.13
       optio-agents-ui:
         specifier: workspace:*
         version: link:../optio-agents-ui
@@ -285,9 +288,6 @@ importers:
       '@types/react-dom':
         specifier: ^19.0.0
         version: 19.2.3(@types/react@19.2.14)
-      '@types/react-syntax-highlighter':
-        specifier: ^15.5.13
-        version: 15.5.13
       antd:
         specifier: ^6.6.5
         version: 6.6.5(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
