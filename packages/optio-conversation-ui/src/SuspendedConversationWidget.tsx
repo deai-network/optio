@@ -42,6 +42,15 @@ function Note({ text }: { text: string }) {
   );
 }
 
+// The host's placeholder (WidgetProps.placeholder), filling the widget's area.
+function HostPlaceholder({ testId, children }: { testId: string; children: ReactNode }) {
+  return (
+    <div data-testid={testId} style={{ width: '100%', height: '100%' }}>
+      {children}
+    </div>
+  );
+}
+
 export function SuspendedConversationWidget(props: WidgetProps) {
   const { process } = props;
   // optio-ui keeps this variant on screen while the process resumes, until
@@ -100,6 +109,11 @@ export function SuspendedConversationWidget(props: WidgetProps) {
 
   if (error) {
     if (reason === 'no-conversation' || reason === 'no-conversation-support') {
+      // Nothing was saved to show: while the session resumes, the host's
+      // stand-in until the live conversation takes over.
+      if (resuming && props.placeholder !== undefined) {
+        return <HostPlaceholder testId="optio-conversation-suspended-resuming">{props.placeholder}</HostPlaceholder>;
+      }
       return <Note text={NO_RECORD_NOTE} />;
     }
     // Everything else (read-failed, engine-unavailable, forbidden, not-found,
@@ -128,11 +142,7 @@ export function SuspendedConversationWidget(props: WidgetProps) {
   // The host's stand-in while the record loads (WidgetProps.placeholder),
   // else the loading line.
   if (props.placeholder !== undefined) {
-    return (
-      <div data-testid="optio-conversation-suspended-loading" style={{ width: '100%', height: '100%' }}>
-        {props.placeholder}
-      </div>
-    );
+    return <HostPlaceholder testId="optio-conversation-suspended-loading">{props.placeholder}</HostPlaceholder>;
   }
   return (
     <Surface testId="optio-conversation-suspended-loading">

@@ -571,6 +571,19 @@ describe('SuspendedConversationWidget: while the session resumes', () => {
   // ready; the relaunch has cleared widgetData and stoppedAt meanwhile.
   const resumingProcess = (state = 'running') => ({ status: { state }, widgetData: null });
 
+  it.each(['no-conversation', 'no-conversation-support'])(
+    "with no saved record (%s), the host's placeholder stands in while the session resumes, not the note",
+    (reason) => {
+      useProcessConversation.mockReturnValue(failed(404, { reason, message: 'x' }));
+      const props = { ...widgetProps(), placeholder: <div data-testid="host-card" /> };
+      const { rerender } = render(wrap(<SuspendedConversationWidget {...props} />));
+      expect(screen.getByTestId('optio-conversation-suspended-note')).toBeTruthy();
+      rerender(wrap(<SuspendedConversationWidget {...props} process={{ ...props.process, ...resumingProcess() }} />));
+      expect(screen.getByTestId('host-card')).toBeTruthy();
+      expect(screen.queryByTestId('optio-conversation-suspended-note')).toBeNull();
+    },
+  );
+
   it('keeps the replay, with the settings and record it had, and puts a spinner panel in place of the input', () => {
     useProcessConversation.mockReturnValue(loaded(RECORD));
     const props = widgetProps({ widgetData: { protocol: 'claudecode', toolVerbosity: 'silent' } });
