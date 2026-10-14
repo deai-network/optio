@@ -534,3 +534,22 @@ async def test_launch_process_with_unregistered_id_fails(mongo_db):
 
     proc = await get_process_by_process_id(mongo_db, "test", "ghost")
     assert proc["status"]["state"] == "failed"
+
+
+async def test_launch_records_the_launch_mode(mongo_db):
+    """The process row says whether its run resumes saved state or starts
+    fresh (`launchMode`), so a view can tell a resume from a restart."""
+    async def my_task(ctx):
+        await asyncio.sleep(0)
+
+    task = TaskInstance(execute=my_task, process_id="mode", name="Mode")
+    await upsert_process(mongo_db, "test", task)
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([task])
+
+    await executor.launch_process("mode", session_id=None)
+    assert (await get_process_by_process_id(mongo_db, "test", "mode"))["launchMode"] == "fresh"
+    await executor.launch_process("mode", resume=True, session_id=None)
+    assert (await get_process_by_process_id(mongo_db, "test", "mode"))["launchMode"] == "resume"
+    await executor.launch_process("mode", session_id=None)
+    assert (await get_process_by_process_id(mongo_db, "test", "mode"))["launchMode"] == "fresh"

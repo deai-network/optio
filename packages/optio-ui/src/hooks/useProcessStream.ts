@@ -7,6 +7,10 @@ interface ProcessUpdate {
   /** The process's stable id (e.g. `<dataspace>__analyze_<sourceId>_<agent>`);
    *  sent by every stream. */
   processId?: string;
+  /** How its latest run started: restoring saved state (`'resume'`) or
+   *  anew (`'fresh'`); sent by the tree streams. Absent: never launched, or
+   *  launched before optio recorded it. */
+  launchMode?: 'resume' | 'fresh';
   _id: string;
   parentId: string | null;
   name: string;

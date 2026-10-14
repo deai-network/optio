@@ -196,6 +196,7 @@ class Executor:
         await relaunch_reset(
             self._db, self._prefix, proc["_id"], ProcessStatus(state="scheduled"),
             ("event", "State changed to scheduled"),
+            launch_mode="resume" if resume else "fresh",
         )
         # A launch rebuilds the workdir: whatever unsaved work a failed run
         # left there is gone from now on (Resurrect no longer applies).

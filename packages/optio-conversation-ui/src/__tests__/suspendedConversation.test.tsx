@@ -571,6 +571,17 @@ describe('SuspendedConversationWidget: while the session resumes', () => {
   // ready; the relaunch has cleared widgetData and stoppedAt meanwhile.
   const resumingProcess = (state = 'running') => ({ status: { state }, widgetData: null });
 
+  it('a restart (launchMode fresh) says it starts a new session, a resume that it resumes', () => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    const props = widgetProps();
+    const { rerender } = render(wrap(<SuspendedConversationWidget {...props} />));
+    rerender(wrap(<SuspendedConversationWidget {...props} process={{ ...props.process, ...resumingProcess(), launchMode: 'fresh' }} />));
+    expect(screen.getByTestId('optio-replay-resuming').textContent).toContain('Starting a new session…');
+    expect(screen.getByTestId('optio-replay-resuming').textContent).not.toContain('Resuming');
+    rerender(wrap(<SuspendedConversationWidget {...props} process={{ ...props.process, ...resumingProcess(), launchMode: 'resume' }} />));
+    expect(screen.getByTestId('optio-replay-resuming').textContent).toContain('Resuming the session…');
+  });
+
   it("first mounted while already resuming (the relaunch cleared stoppedAt: 409 not-suspended), the host's placeholder", () => {
     // The host showed something else while the chat was suspended (no saved
     // record), so this view mounts only once the chat resumes.

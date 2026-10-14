@@ -187,7 +187,9 @@ export function ClaudeCodeReplayView({
         // A send still waiting for the resume locks the composer; a failed one
         // puts its text back (draft), with the reason in the notice.
         composeWhenClosed={canResume && pending?.phase !== 'resuming'}
-        inputReplacement={resuming ? <ResumingPanel pending={pending} /> : undefined}
+        inputReplacement={resuming
+          ? <ResumingPanel pending={pending} fresh={(process as any)?.launchMode === 'fresh'} />
+          : undefined}
         confirmSend={asks ? confirmSend : undefined}
         draft={pending?.phase === 'failed' ? pending.text : undefined}
         // While resuming, the panel says it instead.

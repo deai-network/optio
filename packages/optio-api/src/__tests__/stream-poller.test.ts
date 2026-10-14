@@ -215,6 +215,36 @@ describe('createTreePoller widgetData propagation', () => {
     expect(update.processes[0].processId).toBe('ds__analyze_src1_claudecode');
   });
 
+  it('includes launchMode in the update event payload', async () => {
+    const events: any[] = [];
+    const rootId = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: rootId,
+      processId: 'p', name: 'P',
+      rootId, parentId: null,
+      depth: 0, order: 0,
+      status: { state: 'scheduled' },
+      progress: { percent: null },
+      cancellable: true,
+      launchMode: 'fresh',
+      log: [],
+    });
+
+    const poller = createTreePoller({
+      visibility: null,
+      db, prefix: PREFIX,
+      sendEvent: (data) => events.push(data),
+      onError: () => {},
+      rootId: rootId.toString(),
+      baseDepth: 0,
+    });
+    poller.start();
+    await waitUntil(() => events.some((e) => e.type === 'update'));
+    poller.stop();
+
+    expect(events.find((e) => e.type === 'update').processes[0].launchMode).toBe('fresh');
+  });
+
   it('fires an update event when ONLY metadata changes', async () => {
     const events: any[] = [];
     const rootId = new ObjectId();
@@ -395,7 +425,7 @@ describe('createMultiTreePoller', () => {
     await db.collection(`${PREFIX}_processes`).insertMany([
       { _id: rootA, processId: 'pA', name: 'A', rootId: rootA, parentId: null, depth: 0, order: 0, status: { state: 'running' }, progress: {}, cancellable: true, log: [] },
       { _id: childA, processId: 'pAC', name: 'A-child', rootId: rootA, parentId: rootA, depth: 1, order: 0, status: { state: 'done' }, progress: {}, cancellable: false, log: [] },
-      { _id: rootB, processId: 'pB', name: 'B', rootId: rootB, parentId: null, depth: 0, order: 0, status: { state: 'running' }, progress: {}, cancellable: true, log: [] },
+      { _id: rootB, processId: 'pB', name: 'B', rootId: rootB, parentId: null, depth: 0, order: 0, status: { state: 'running' }, progress: {}, cancellable: true, launchMode: 'resume', log: [] },
     ]);
     const { createMultiTreePoller } = await import('../stream-poller.js');
     const poller = createMultiTreePoller({
@@ -423,6 +453,7 @@ describe('createMultiTreePoller', () => {
     expect(rowA.rootId).toBe(rootA.toString());
     expect(rowAC.rootId).toBe(rootA.toString());
     expect(rowB.rootId).toBe(rootB.toString());
+    expect(rowB.launchMode).toBe('resume');
   });
 
   it('flat ids fetch only the named row, not descendants', async () => {

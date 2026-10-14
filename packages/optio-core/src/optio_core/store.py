@@ -495,6 +495,7 @@ async def clear_result_fields(
 async def relaunch_reset(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
     status: ProcessStatus, log: tuple[str, str] | None,
+    *, launch_mode: str | None = None,
 ) -> None:
     """Reset the previous run's result fields and set `status`, in one update.
 
@@ -505,12 +506,19 @@ async def relaunch_reset(
     `expireAt` is removed: the TTL monitor must not delete a running (or
     dismissed) record; a terminal state sets it again.
     Spec: docs/2026-10-09-process-indexes-design.md
+
+    `launch_mode` ("resume" or "fresh"), when given, is recorded as
+    `launchMode`: whether the run restores saved state, as decided at the
+    launch (a resume without saved state is fresh), so that a view can tell
+    a resume from a restart. Spec: docs/2026-10-14-conversation-backlog-batch-design.md
     """
     # The whole `status` replaces the `status.*` resets: to_dict() writes every
     # field, and one $set may not hold both `status` and `status.<x>`.
     fields = {k: v for k, v in _reset_fields().items() if not k.startswith("status.")}
     fields["status"] = status.to_dict()
     fields["log"] = [_log_entry(*log)] if log is not None else []
+    if launch_mode is not None:
+        fields["launchMode"] = launch_mode
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
         {"$set": fields, "$unset": {"expireAt": ""}},
