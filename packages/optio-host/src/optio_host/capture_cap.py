@@ -196,6 +196,15 @@ def _du_size(exit_code: int, stdout: str) -> tuple[int | None, str]:
         return None, "du printed no size"
 
 
+def under_cap_note(size: int, cap_bytes: int) -> CaptureNote:
+    """The note of a capture at or under the cap: nothing is left out."""
+    return CaptureNote(
+        f"workdir {size // _MIB} MB, under the {cap_bytes // _MIB} MB cap: "
+        "capturing everything",
+        INFO,
+    )
+
+
 async def regenerable_excludes(
     run: Callable[[str], Awaitable[tuple[int, str]]],
     workdir: str,
@@ -211,7 +220,8 @@ async def regenerable_excludes(
 
     Returns `(anchored_entries, note)`. With the cap off (`0`) nothing runs
     and the result is `([], None)`. Otherwise `du_command` measures the
-    workdir; at or under the cap the result is `([], None)`. Over the cap,
+    workdir; at or under the cap the result is `([], under_cap_note(...))`, an INFO
+    note that nothing is left out. Over the cap,
     or when `du` fails (timeout included), `list_command` reads
     `regenerable.txt`: see `over_cap_excludes` for the result. A read that
     fails leaves nothing out, its note telling a missing list (exit 1) from
@@ -222,7 +232,7 @@ async def regenerable_excludes(
     exit_code, stdout = await run(du_command(workdir, patterns))
     size, unknown = _du_size(exit_code, stdout)
     if size is not None and size <= cap_bytes:
-        return [], None
+        return [], under_cap_note(size, cap_bytes)
     exit_code, text = await run(list_command(workdir))
     if exit_code == 0:
         return over_cap_excludes(size, unknown, cap_bytes, text)

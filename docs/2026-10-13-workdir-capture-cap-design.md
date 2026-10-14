@@ -203,7 +203,7 @@ the measurement result, not by racing a real clock.
   size injected:**
   - over the cap with a list: the listed paths are absent from the archive and everything else is
     present;
-  - under the cap: everything is present;
+  - under the cap: everything is present, with the note `workdir <N> MB, under the <C> MB cap: capturing everything`;
   - a measurement timeout: the list is applied;
   - over the cap without a list: a full capture and a warning;
   - cap `0`: no measurement at all.
@@ -276,3 +276,4 @@ Settled after the final review (2026-10-14):
   the cases under "Sanitising" above, so the list is always captured.
 - **The entries left out are logged** at DEBUG on `optio_host.archive` whenever the list is
   applied.
+- **Every capture with the cap on reports its decision** (2026-10-14, after the live test): under the cap the note is `workdir <N> MB, under the <C> MB cap: capturing everything`, at INFO, through `on_note` and the `optio_host.archive` logger, so the process log always shows what the capture decided. Cap `0` stays silent.

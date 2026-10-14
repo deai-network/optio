@@ -479,7 +479,7 @@ async def test_archive_workdir_under_the_cap_measures_and_captures_everything(mo
 
     assert _cap_commands(conn) == [capture_cap.du_command(_W, ["a b"])]
     assert conn.created == [host_mod._archive_command(_W, ["a b"], "pigz -1")]
-    assert notes == []
+    assert len(notes) == 1 and "under the" in str(notes[0]) and "capturing everything" in str(notes[0])
 
 
 async def test_archive_workdir_cap_zero_runs_no_du(monkeypatch):

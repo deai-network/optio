@@ -160,7 +160,7 @@ async def test_cap_zero_runs_nothing():
 async def test_under_or_at_the_cap_leaves_nothing_out(size):
     run = _FakeRun(du=(0, f"{size}\t.\n"), cat=(0, "a\n"))
 
-    assert await regenerable_excludes(run, _W, _PATTERNS, 2000) == ([], None)
+    assert await regenerable_excludes(run, _W, _PATTERNS, 2000) == ([], capture_cap.under_cap_note(size, 2000))
     assert run.commands == [du_command(_W, _PATTERNS)]
 
 

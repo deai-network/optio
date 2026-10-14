@@ -361,8 +361,8 @@ async def test_under_the_cap_captures_everything(tmp_workdir, monkeypatch, caplo
         blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes))
 
     assert _tar_member_names(blob) == _ALL_FILES
-    assert notes == []
-    assert _archive_notes(caplog) == []
+    assert len(notes) == 1 and "under the" in str(notes[0]) and "capturing everything" in str(notes[0])
+    assert len(_archive_notes(caplog)) == 1
 
 
 async def test_cap_zero_runs_no_du_and_todays_command(tmp_workdir, monkeypatch, spawned):
@@ -434,7 +434,7 @@ async def test_fallback_under_the_cap_captures_everything(tmp_workdir, monkeypat
     blob = await _drain(h.archive_workdir(_CAP_EXCLUDE, on_note=notes))
 
     assert _tar_member_names(blob) == _ALL_FILES
-    assert notes == []
+    assert len(notes) == 1 and "under the" in str(notes[0]) and "capturing everything" in str(notes[0])
 
 
 def _boom(note: str, level: str) -> None:

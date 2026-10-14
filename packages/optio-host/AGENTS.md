@@ -28,6 +28,10 @@ For the log/deliverables coordination protocol, the keyword parser, and
 suspend-capture decision (design:
 `docs/2026-10-13-workdir-capture-cap-design.md`).
 
+Every capture with the cap on reports one note, through `on_note` and the
+`optio_host.archive` logger; under the cap it is `workdir <N> MB, under the
+<C> MB cap: capturing everything` (INFO). Cap `0` is silent.
+
 - `workdir_capture_max_bytes()` reads `OPTIO_WORKDIR_CAPTURE_MAX_MB` — "MB"
   here is MiB (1,048,576 bytes), compared against `du -sb` bytes. Unset or
   empty gives the default, `DEFAULT_MAX_MB` = 100 MiB; `"0"` turns the cap

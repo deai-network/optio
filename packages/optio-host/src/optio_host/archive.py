@@ -27,6 +27,7 @@ import time
 from typing import AsyncIterator, Iterable
 
 from optio_host.capture_cap import (
+    under_cap_note,
     LIST_MAX_BYTES,
     LIST_MISSING,
     REGENERABLE_LIST,
@@ -181,7 +182,7 @@ def fallback_regenerable_excludes(
         return [], None
     size = measure_workdir(root, patterns)
     if size is not None and size <= cap_bytes:
-        return [], None
+        return [], under_cap_note(size, cap_bytes)
     return over_cap_excludes(
         size, f"walk timed out after {WALK_BUDGET_S:g} s", cap_bytes, *_read_list(root),
     )
