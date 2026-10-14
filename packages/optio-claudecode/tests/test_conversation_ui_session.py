@@ -205,7 +205,11 @@ async def _read_until(resp, predicate, timeout: float = 60.0) -> dict:
             buf += chunk
             while b"\n\n" in buf:
                 frame, buf = buf.split(b"\n\n", 1)
-                data = [l[5:] for l in frame.split(b"\n") if l.startswith(b"data:")]
+                lines = frame.split(b"\n")
+                # Named frames (backlog-start / backlog-end) are not events.
+                if any(l.startswith(b"event:") for l in lines):
+                    continue
+                data = [l[5:] for l in lines if l.startswith(b"data:")]
                 if not data:
                     continue
                 event = json.loads(b"".join(data).strip())

@@ -85,7 +85,8 @@ async def listener():
 
 
 async def _read_events(resp, n, timeout=60):
-    """Parse n SSE data frames from an open aiohttp response."""
+    """Parse n SSE data frames from an open aiohttp response. Named frames
+    (the backlog-start / backlog-end markers) are not events and are skipped."""
     out = []
     buf = b""
 
@@ -98,9 +99,39 @@ async def _read_events(resp, n, timeout=60):
             buf += chunk
             while b"\n\n" in buf:
                 frame, buf = buf.split(b"\n\n", 1)
-                data = [l[5:] for l in frame.split(b"\n") if l.startswith(b"data:")]
+                lines = frame.split(b"\n")
+                if any(l.startswith(b"event:") for l in lines):
+                    continue
+                data = [l[5:] for l in lines if l.startswith(b"data:")]
                 if data:
                     out.append(json.loads(b"".join(data).strip()))
+
+    await asyncio.wait_for(_go(), timeout)
+    return out
+
+
+async def _read_frames(resp, n, timeout=60):
+    """The next n SSE frames from an open aiohttp response, as (event name or
+    None, id or None, parsed data); keep-alive comments are skipped."""
+    out = []
+    buf = b""
+
+    async def _go():
+        nonlocal buf
+        while len(out) < n:
+            chunk = await resp.content.read(1024)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n\n" in buf and len(out) < n:
+                frame, buf = buf.split(b"\n\n", 1)
+                fields = {}
+                for line in frame.split(b"\n"):
+                    name, _, value = line.partition(b":")
+                    if name in (b"event", b"id", b"data"):
+                        fields[name.decode()] = value.strip().decode()
+                if "data" in fields:
+                    out.append((fields.get("event"), fields.get("id"), json.loads(fields["data"])))
 
     await asyncio.wait_for(_go(), timeout)
     return out
@@ -130,6 +161,43 @@ async def test_last_event_id_resume(listener):
         async with s.get(f"{url}/events", headers=headers) as resp:
             events = await _read_events(resp, 1)
             assert events[0]["n"] == 2  # seq 1 skipped
+
+
+async def test_backlog_markers_frame_the_replay(listener):
+    conv, lst, url = listener
+    conv.fire({"type": "user", "n": 1})
+    conv.fire({"type": "result", "n": 2})
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+            frames = await _read_frames(resp, 4)
+            assert [(e, i) for e, i, _ in frames] == [
+                ("backlog-start", None), (None, "1"), (None, "2"), ("backlog-end", None)]
+            assert frames[0][2] == {"after": 0}
+            assert frames[3][2] == {"seq": 2}
+            conv.fire({"type": "result", "n": 3})
+            live = await _read_frames(resp, 1)
+            assert live[0][:2] == (None, "3")
+
+
+async def test_backlog_markers_with_an_empty_buffer(listener):
+    conv, lst, url = listener
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+            frames = await _read_frames(resp, 2)
+            assert frames == [("backlog-start", None, {"after": 0}), ("backlog-end", None, {"seq": 0})]
+
+
+async def test_backlog_markers_on_a_reconnect(listener):
+    conv, lst, url = listener
+    conv.fire({"type": "user", "n": 1})    # seq 1
+    conv.fire({"type": "result", "n": 2})  # seq 2
+    async with aiohttp.ClientSession() as s:
+        headers = {**_auth("pw"), "Last-Event-ID": "1"}
+        async with s.get(f"{url}/events", headers=headers) as resp:
+            frames = await _read_frames(resp, 3)
+            assert [(e, i) for e, i, _ in frames] == [("backlog-start", None), (None, "2"), ("backlog-end", None)]
+            assert frames[0][2] == {"after": 1}
+            assert frames[2][2] == {"seq": 2}
 
 
 async def test_send_interrupt_forwarding_and_closed(listener):

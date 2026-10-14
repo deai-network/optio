@@ -465,16 +465,25 @@ class ConversationListener:
         if raw_last.isdigit():
             last_id = int(raw_last)
 
+        async def send_marker(name: str, data: dict) -> None:
+            # Named, and without an id: line, so the browser's Last-Event-ID
+            # stays on the last real event (docs/2026-10-14-conversation-
+            # backlog-batch-design.md, section 1).
+            await resp.write(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode("utf-8"))
+
         queue: asyncio.Queue = asyncio.Queue()
         # Subscribe BEFORE replay so no event falls between replay and tail;
         # the seq check below dedupes any overlap.
         self._subscribers.add(queue)
         try:
             sent_through = last_id
+            # The replay is framed, so the widget can apply it in one step.
+            await send_marker("backlog-start", {"after": last_id})
             for seq, event in list(self._buffer):
                 if seq > sent_through:
                     await send_item(seq, event)
                     sent_through = seq
+            await send_marker("backlog-end", {"seq": sent_through})
             while True:
                 try:
                     item = await asyncio.wait_for(
