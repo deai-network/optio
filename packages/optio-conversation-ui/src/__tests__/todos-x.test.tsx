@@ -10,10 +10,10 @@ import { ConversationView, type ConversationViewProps } from '../ConversationVie
 // data-status, and for a described task the info icon and the click that
 // opens the detail panel).
 
-function view(todos: ConversationViewProps['todos']) {
+function view(todos: ConversationViewProps['todos'], closed = false) {
   const props: ConversationViewProps = {
-    state: { items: [{ kind: 'user', text: 'hi', seq: 1 }], busy: false, closed: false, controls: [] },
-    closed: false, busy: false, toolVerbosity: 'verbose', thinkingVerbosity: 'visible',
+    state: { items: [{ kind: 'user', text: 'hi', seq: 1 }], busy: false, closed, controls: [] },
+    closed, busy: false, toolVerbosity: 'verbose', thinkingVerbosity: 'visible',
     showFileUpload: false, maxUploadBytes: 1, fileDownload: false,
     onSend: vi.fn(async () => true), onInterrupt: vi.fn(), onPermission: vi.fn(), onFileDownload: vi.fn(),
     todos,
@@ -53,6 +53,13 @@ describe('the task list as an X ThoughtChain', () => {
     view([{ id: '1', text: 'Write', status: 'in_progress' }]);
     expect(statusOf(nodes()[0])).toBe('loading');
     expect(nodes()[0].querySelector('[class*="motion-blink"]')).not.toBeNull();
+  });
+
+  it('in a closed conversation (a suspended session) a task in progress neither spins nor blinks', () => {
+    view([{ id: '1', text: 'Write', status: 'in_progress' }], true);
+    expect(statusOf(nodes()[0])).not.toBe('loading');
+    expect(nodes()[0].querySelector('[class*="motion-blink"]')).toBeNull();
+    expect(screen.queryByTestId('conversation-todo-spinner')).toBeNull();
   });
 
   // X draws its connecting line beside a node's body, below the title row; a

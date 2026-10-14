@@ -661,7 +661,8 @@ describe('ClaudeCodeReplayView', () => {
       [1, { type: 'assistant', timestamp: at(0), message: { role: 'assistant', id: 'm1', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'sleep 1' } }] } }],
       [2, { type: 'system', subtype: 'task_started', task_id: 'b1', tool_use_id: 't9', is_backgrounded: true }],
     ];
-    // The todo list's in-progress step carries a spinner inside the scope.
+    // The todo list's in-progress step carries no spinner: a suspended
+    // session runs nothing (owner, 2026-10-14).
     render(lent(
       <ClaudeCodeReplayView
         process={process()}
@@ -671,7 +672,7 @@ describe('ClaudeCodeReplayView', () => {
       />,
     ));
     const keys = calls.map((c) => c.spinnerKey);
-    expect(keys).toContain('optio:process:p1/optio:todo:td1');
+    expect(keys).not.toContain('optio:process:p1/optio:todo:td1');
     expect(keys.every((k) => k.startsWith('optio:process:p1/'))).toBe(true);
   });
 });

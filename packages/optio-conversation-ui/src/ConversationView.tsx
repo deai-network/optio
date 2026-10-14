@@ -1646,13 +1646,15 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // One task as a ThoughtChain node: X's status icon (completed: success; a
   // label ending in "(failed)": error; cancelled: abort; in progress: X's
   // loading icon, or the app's lent spinner as the node's icon, blinking, as a
-  // running tool row; pending: X's plain node icon). The title carries the
+  // running tool row, but not once the conversation is closed (a suspended
+  // session runs nothing): then X's plain node icon; pending: X's plain node
+  // icon). The title carries the
   // row: its label, and for a described task the info icon and the click that
   // opens the detail panel (highlighted while selected).
   function todoChainItem(todo: ConversationTodo): ThoughtChainItemType {
     const { failed, label } = taskRowLabel(todo.text);
     const description = todo.description?.trim() ? todo.description : undefined;
-    const running = todo.status === 'in_progress' && !failed;
+    const running = todo.status === 'in_progress' && !failed && !closed;
     const slot = running && lentSpinner !== undefined;
     const status = slot ? undefined
       : running ? 'loading'
