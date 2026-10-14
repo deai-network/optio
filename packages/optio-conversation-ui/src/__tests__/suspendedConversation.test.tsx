@@ -571,6 +571,16 @@ describe('SuspendedConversationWidget: while the session resumes', () => {
   // ready; the relaunch has cleared widgetData and stoppedAt meanwhile.
   const resumingProcess = (state = 'running') => ({ status: { state }, widgetData: null });
 
+  it("first mounted while already resuming (the relaunch cleared stoppedAt: 409 not-suspended), the host's placeholder", () => {
+    // The host showed something else while the chat was suspended (no saved
+    // record), so this view mounts only once the chat resumes.
+    useProcessConversation.mockReturnValue(failed(409, { reason: 'not-suspended', message: 'x' }));
+    const base = widgetProps();
+    render(wrap(<SuspendedConversationWidget {...base} placeholder={<div data-testid="host-card" />}
+      process={{ ...base.process, ...resumingProcess(), status: { state: 'running', stoppedAt: null } }} />));
+    expect(screen.getByTestId('host-card')).toBeTruthy();
+  });
+
   it.each(['no-conversation', 'no-conversation-support'])(
     "with no saved record (%s), the host's placeholder stands in while the session resumes, not the note",
     (reason) => {

@@ -85,8 +85,15 @@ export function SuspendedConversationWidget(props: WidgetProps) {
   const reason: unknown = error?.body?.reason;
   const body = conversation.data?.body;
   // The process resumed while this view was open, before the record was
-  // read: render nothing; the live widget takes over once it is ready.
-  if (reason === 'not-suspended' && !body) return null;
+  // read (or this view mounted only once it resumed: the relaunch cleared
+  // stoppedAt): the host's stand-in, else nothing, until the live widget
+  // takes over.
+  if (reason === 'not-suspended' && !body) {
+    if (resuming && props.placeholder !== undefined) {
+      return <HostPlaceholder testId="optio-conversation-suspended-resuming">{props.placeholder}</HostPlaceholder>;
+    }
+    return null;
+  }
   if (body) {
     return (
       <ClaudeCodeReplayView
