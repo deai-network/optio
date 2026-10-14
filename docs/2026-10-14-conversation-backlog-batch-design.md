@@ -77,10 +77,13 @@ Nothing else changes.
 
 ### 3. optio-conversation-ui: `ClaudeCodeView`
 
-- **Collecting.** The view starts out collecting; a `backlog-start` (a reconnect) sets it
-  collecting again. While collecting, messages go to a buffer instead of being
-  dispatched. The custom-controls bookkeeping in the message handler runs for every
-  message at once, as now.
+- **Collecting.** From a `backlog-start` (the first frame of every connection, a
+  reconnect's included) to its `backlog-end`, messages go to a buffer instead of being
+  dispatched. A message before any `backlog-start` comes from a listener without markers:
+  it is dispatched at once and the view goes live, as today (amended while planning,
+  2026-10-14: with markers nothing changes, and streams and test doubles without them
+  keep today's behaviour). The custom-controls bookkeeping in the message handler runs
+  for every message at once, as now.
 - **Applying.** On `backlog-end`, one dispatch of `{ batch: [{ ev, seq }, ...] }` folds the
   buffer through `reduceEvent` in order: the state that one dispatch per event would
   give, in one render. Then the view is live: later messages dispatch one by one.
