@@ -784,3 +784,28 @@ describe('registerConversationWidget', () => {
     expect(screen.getByTestId('theme-toggle')).toBeTruthy();
   });
 });
+
+describe('SuspendedConversationWidget: ready for a suspend handover', () => {
+  // optio-ui keeps a just-suspended process's live widget on screen until
+  // this view shows something final (WidgetProps.onReady).
+  it('calls onReady once the saved conversation shows, not while it loads', () => {
+    const onReady = vi.fn();
+    useProcessConversation.mockReturnValue(pending());
+    const { rerender } = render(wrap(<SuspendedConversationWidget {...widgetProps()} onReady={onReady} />));
+    expect(onReady).not.toHaveBeenCalled();
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    rerender(wrap(<SuspendedConversationWidget {...widgetProps()} onReady={onReady} />));
+    expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['the no-record note', { protocol: 'claudecode' }, failed(404, { reason: 'no-conversation', message: 'x' })],
+    ['a failed read', { protocol: 'claudecode' }, failed(500, { reason: 'read-failed', message: 'x' })],
+    ['another protocol', { protocol: 'grok' }, pending()],
+  ])('calls onReady for %s', (_, widgetData, query) => {
+    const onReady = vi.fn();
+    useProcessConversation.mockReturnValue(query);
+    render(wrap(<SuspendedConversationWidget {...widgetProps({ widgetData })} onReady={onReady} />));
+    expect(onReady).toHaveBeenCalledTimes(1);
+  });
+});

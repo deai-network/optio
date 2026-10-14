@@ -420,13 +420,17 @@ describe('useProcessWidgetState: the resume handover', () => {
   // (docs/2026-10-14-conversation-backlog-batch-design.md, section 4).
   let liveMounts = 0;
   let liveOnReady: (() => void) | undefined;
+  let suspendedOnReady: (() => void) | undefined;
   let lastMode: string | null = null;
   const Live = (props: any) => {
     useEffect(() => { liveMounts += 1; }, []);
     liveOnReady = props.onReady;
     return <div data-testid="live" />;
   };
-  const Suspended = () => <div data-testid="suspended" />;
+  const Suspended = (props: any) => {
+    suspendedOnReady = props.onReady;
+    return <div data-testid="suspended" />;
+  };
   const resumedLive = (overrides: Record<string, unknown> = {}) =>
     baseTree({ supportsResume: true, hasSavedState: true, widgetData: { protocol: 'claudecode' }, ...overrides });
   function Host({ t, placeholder }: { t: any; placeholder?: ReactNode }) {
@@ -487,6 +491,8 @@ describe('useProcessWidgetState: the resume handover', () => {
     expect(lastMode).toBe('live');
     view.rerender(<Host t={suspendedTree()} />);
     expect(lastMode).toBe('suspended');
+    // The suspended view shows once ready (the suspend handover).
+    act(() => suspendedOnReady!());
     view.rerender(<Host t={resumedLive()} />);
     expect(lastMode).toBe('resuming');
     act(() => first());
@@ -527,5 +533,104 @@ describe('useProcessWidgetState: the resume handover', () => {
     expect(lastMode).toBe('live');
     expect(liveOnReady).toBeUndefined();
     expect(slotOf('live').style.display).toBe('contents');
+  });
+});
+
+describe('useProcessWidgetState: the suspend handover', () => {
+  // A process shown live that gets suspended keeps its live widget on screen
+  // while the suspended variant mounts hidden; it takes over on its onReady,
+  // or after the 10 s safety net (the resume handover, in reverse).
+  let suspendedMounts = 0;
+  let suspendedOnReady: (() => void) | undefined;
+  let liveMounts = 0;
+  let liveOnReady: (() => void) | undefined;
+  let lastMode: string | null = null;
+  const Live = (props: any) => {
+    useEffect(() => { liveMounts += 1; }, []);
+    liveOnReady = props.onReady;
+    return <div data-testid="live" />;
+  };
+  const Suspended = (props: any) => {
+    useEffect(() => { suspendedMounts += 1; }, []);
+    suspendedOnReady = props.onReady;
+    return <div data-testid="suspended" />;
+  };
+  function Host({ t }: { t: any }) {
+    const result = useProcessWidgetState(t);
+    lastMode = result?.mode ?? null;
+    return <>{result?.widget}</>;
+  }
+  const slotOf = (testId: string) => screen.getByTestId(testId).parentElement as HTMLElement;
+  function suspend() {
+    const view = render(<Host t={baseTree()} />);
+    view.rerender(<Host t={suspendedTree()} />);
+    return view;
+  }
+
+  beforeEach(() => {
+    suspendedMounts = 0;
+    suspendedOnReady = undefined;
+    liveMounts = 0;
+    lastMode = null;
+    registerWidget('my-widget', Live, { suspended: Suspended });
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('keeps the live widget on screen and mounts the suspended variant hidden', () => {
+    suspend();
+    expect(lastMode).toBe('suspended');
+    expect(slotOf('live').style.display).toBe('contents');
+    expect(slotOf('suspended').style.display).toBe('none');
+    expect(slotOf('suspended').hasAttribute('inert')).toBe(true);
+    expect(typeof suspendedOnReady).toBe('function');
+    expect(liveMounts).toBe(1);
+  });
+
+  it("the suspended variant's onReady shows it without remounting it and drops the live one", () => {
+    suspend();
+    act(() => suspendedOnReady!());
+    expect(lastMode).toBe('suspended');
+    expect(screen.queryByTestId('live')).toBeNull();
+    expect(slotOf('suspended').style.display).toBe('contents');
+    expect(suspendedMounts).toBe(1);
+  });
+
+  it('shows the suspended variant after 10 s without onReady', () => {
+    vi.useFakeTimers();
+    suspend();
+    act(() => { vi.advanceTimersByTime(9_999); });
+    expect(screen.getByTestId('live')).toBeTruthy();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.queryByTestId('live')).toBeNull();
+    expect(suspendedMounts).toBe(1);
+  });
+
+  it('a suspended process shown first (not live before) shows its suspended variant at once', () => {
+    render(<Host t={suspendedTree()} />);
+    expect(screen.queryByTestId('live')).toBeNull();
+    expect(slotOf('suspended').style.display).toBe('contents');
+    expect(suspendedOnReady).toBeUndefined();
+  });
+
+  it('a late onReady from the suspend handover does not release the next one', () => {
+    const view = suspend();
+    const first = suspendedOnReady!;
+    act(() => first());
+    expect(screen.queryByTestId('live')).toBeNull();
+    // Resumed (the live widget takes over once ready), then suspended again:
+    // a new suspend handover, which the old onReady does not release.
+    view.rerender(<Host t={baseTree({ supportsResume: true, hasSavedState: true })} />);
+    act(() => liveOnReady!());
+    expect(lastMode).toBe('live');
+    view.rerender(<Host t={suspendedTree()} />);
+    act(() => first());
+    expect(slotOf('live').style.display).toBe('contents');
+    expect(slotOf('suspended').style.display).toBe('none');
+  });
+
+  it('resumed again during the suspend handover: no hidden suspended variant is left', () => {
+    const view = suspend();
+    view.rerender(<Host t={baseTree({ supportsResume: true, hasSavedState: true, widgetData: null })} />);
+    expect(screen.queryByTestId('suspended')).toBeNull();
   });
 });

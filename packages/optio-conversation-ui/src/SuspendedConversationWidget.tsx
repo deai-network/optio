@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { Alert, Button, Typography, theme } from 'antd';
 import { isActive, isSuspended, useProcessConversation, type WidgetProps } from 'optio-ui';
 import { useSpinnerKey, useVultusComponents } from 'vultus-antd';
@@ -78,6 +78,16 @@ export function SuspendedConversationWidget(props: WidgetProps) {
     enabled: replayable,
     stoppedAt,
   });
+  // Ready once this view shows something final (the record, a note, an
+  // error): optio-ui keeps a just-suspended process's live widget on screen
+  // until then (WidgetProps.onReady).
+  const settled = !replayable || Boolean(conversation.data?.body)
+    || (Boolean(conversation.error) && conversation.error?.body?.reason !== 'not-suspended');
+  const onReadyRef = useRef(props.onReady);
+  onReadyRef.current = props.onReady;
+  useEffect(() => {
+    if (settled) onReadyRef.current?.();
+  }, [settled]);
 
   if (!replayable) return <Note text={OTHER_PROTOCOL_NOTE} />;
 
