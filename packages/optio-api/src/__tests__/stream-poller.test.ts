@@ -185,6 +185,36 @@ describe('createTreePoller widgetData propagation', () => {
     });
   });
 
+  it('includes processId in the update event payload, as the list and multi-tree streams do', async () => {
+    const events: any[] = [];
+    const rootId = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: rootId,
+      processId: 'ds__analyze_src1_claudecode', name: 'P',
+      rootId, parentId: null,
+      depth: 0, order: 0,
+      status: { state: 'idle' },
+      progress: { percent: null },
+      cancellable: true,
+      log: [],
+    });
+
+    const poller = createTreePoller({
+      visibility: null,
+      db, prefix: PREFIX,
+      sendEvent: (data) => events.push(data),
+      onError: () => {},
+      rootId: rootId.toString(),
+      baseDepth: 0,
+    });
+    poller.start();
+    await waitUntil(() => events.some((e) => e.type === 'update'));
+    poller.stop();
+
+    const update = events.find((e) => e.type === 'update');
+    expect(update.processes[0].processId).toBe('ds__analyze_src1_claudecode');
+  });
+
   it('fires an update event when ONLY metadata changes', async () => {
     const events: any[] = [];
     const rootId = new ObjectId();

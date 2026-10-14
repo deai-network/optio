@@ -209,6 +209,7 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
           _id: p._id.toString(),
           parentId: p.parentId?.toString() ?? null,
           rootId: p.rootId?.toString() ?? null,
+          processId: p.processId,
           name: p.name,
           status: p.status,
           progress: p.progress,

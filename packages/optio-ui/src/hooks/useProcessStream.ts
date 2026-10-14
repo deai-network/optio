@@ -4,6 +4,9 @@ import { MultiProcessStreamContext } from '../context/MultiProcessStreamContext.
 import { handleBrowserOpenRequests } from '../handlers/browserOpen.js';
 
 interface ProcessUpdate {
+  /** The process's stable id (e.g. `<dataspace>__analyze_<sourceId>_<agent>`);
+   *  sent by every stream. */
+  processId?: string;
   _id: string;
   parentId: string | null;
   name: string;
