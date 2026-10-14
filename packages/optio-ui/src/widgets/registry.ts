@@ -19,6 +19,11 @@ export interface WidgetProps {
    *  state of its own (e.g. the suspended conversation's fetch) shows it
    *  there. Absent: the widget's own loading indicator. */
   placeholder?: ReactNode;
+  /** Given to a live widget only while it takes over from the suspended
+   *  variant (a resume): it is mounted hidden, and shown once it calls this,
+   *  i.e. once it shows the process (for the conversation: its backlog
+   *  applied). Absent otherwise. See useProcessWidgetState. */
+  onReady?: () => void;
 }
 
 export type WidgetComponent = ComponentType<WidgetProps>;

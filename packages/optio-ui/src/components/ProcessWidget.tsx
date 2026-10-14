@@ -1,6 +1,6 @@
-import { useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useReducer, useRef, type CSSProperties, type ReactNode } from 'react';
 import { useOptioBaseUrl, useOptioPrefix, useOptioDatabase } from '../context/useOptioContext.js';
-import { getWidget, getSuspendedWidget } from '../widgets/registry.js';
+import { getWidget, getSuspendedWidget, type WidgetComponent } from '../widgets/registry.js';
 import { isActive, isWidgetLive, isSuspended } from '../process-state.js';
 import type { ProcessTreeNode } from '../hooks/useProcessStream.js';
 
@@ -56,6 +56,37 @@ export interface UseProcessWidgetOptions {
   placeholder?: ReactNode;
 }
 
+// How long a resumed process's live widget may stay hidden without calling
+// onReady before it is shown anyway (a safety net: the conversation widget
+// always reports; docs/2026-10-14-conversation-backlog-batch-design.md, section 4).
+const HANDOVER_TIMEOUT_MS = 10_000;
+
+type SlotKey = 'suspended' | 'live' | 'placeholder';
+interface Slot { key: SlotKey; node: ReactNode; shown: boolean }
+
+const SHOWN: CSSProperties = { display: 'contents' };
+const HIDDEN: CSSProperties = { display: 'none' };
+
+/** The hook's widgets in keyed slots: a shown slot adds no box (the host's
+ *  layout is as without it), a hidden one is out of layout, inert and out of
+ *  the accessibility tree. The keys keep a widget mounted while its slot goes
+ *  from hidden to shown. */
+function WidgetSlots({ slots }: { slots: Slot[] }) {
+  return (
+    <>
+      {slots.map((slot) => (
+        <div
+          key={slot.key}
+          style={slot.shown ? SHOWN : HIDDEN}
+          {...(slot.shown ? {} : { inert: true, 'aria-hidden': true })}
+        >
+          {slot.node}
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function useProcessWidgetState(
   tree: ProcessTreeNode | null | undefined,
   options?: UseProcessWidgetOptions,
@@ -67,62 +98,93 @@ export function useProcessWidgetState(
   // _id), if any: set where a suspended or resuming widget is returned,
   // cleared on every other outcome.
   const shownSuspended = useRef<string | null>(null);
-  const none = () => {
-    shownSuspended.current = null;
-    return null;
-  };
+  // The resume handover: which handover is on (its process and a generation,
+  // so a stale onReady from an earlier one is ignored), and whether its live
+  // widget has been released (onReady, or the safety net).
+  const handover = useRef<{ id: string; gen: number } | null>(null);
+  const handoverGen = useRef(0);
+  const released = useRef(false);
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const release = useCallback((id: string, gen: number) => {
+    const on = handover.current;
+    if (!on || on.id !== id || on.gen !== gen || released.current) return;
+    released.current = true;
+    rerender();
+  }, []);
 
-  if (!tree) return none();
+  const result = decideWidget();
+  const pending = handover.current && !released.current ? handover.current : null;
+  const pendingId = pending?.id ?? null;
+  const pendingGen = pending?.gen ?? 0;
+  useEffect(() => {
+    if (pendingId === null) return;
+    const timer = setTimeout(() => release(pendingId, pendingGen), HANDOVER_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [pendingId, pendingGen, release]);
+  return result;
 
-  const widgetName = (tree as any).uiWidget as string | undefined;
-  if (!widgetName) return none();
-
-  const live = isWidgetLive(tree as any);
-  const suspended = !live && isSuspended(tree as any);
-  const widgetDataReady = (tree as any).widgetData != null;
-  // Resuming: this hook showed the process suspended, and it has since been
-  // launched, but its live widget is not ready yet. Keep the suspended
-  // variant until it is (or the run ends).
-  const resuming = !suspended
-    && shownSuspended.current === tree._id
-    && isActive(tree as any)
-    && !(live && widgetDataReady);
-  // On its way: an active process whose widget is not ready yet gets the
-  // caller's placeholder, if the widget can show once it is.
-  if (!resuming && isActive(tree as any) && !(live && widgetDataReady)) {
-    if (options?.placeholder === undefined || !getWidget(widgetName)) return none();
-    shownSuspended.current = null;
-    return { mode: 'waiting', widget: options.placeholder };
+  function endHandover() {
+    handover.current = null;
+    released.current = false;
   }
-  if (!live && !suspended && !resuming) return none();
-  if (!widgetDataReady && !resuming) return none();
 
-  const Widget = live && !resuming ? getWidget(widgetName) : getSuspendedWidget(widgetName);
-  if (!Widget) {
-    if (live) {
-      console.warn(`[optio-ui] No widget registered under name "${widgetName}"; falling back to default rendering.`);
+  function decideWidget(): UseProcessWidgetStateResult | null {
+    const none = () => {
+      shownSuspended.current = null;
+      endHandover();
+      return null;
+    };
+
+    if (!tree) return none();
+
+    const widgetName = (tree as any).uiWidget as string | undefined;
+    if (!widgetName) return none();
+
+    const live = isWidgetLive(tree as any);
+    const suspended = !live && isSuspended(tree as any);
+    const widgetDataReady = (tree as any).widgetData != null;
+    const latched = !suspended && shownSuspended.current === tree._id && isActive(tree as any);
+    // Resuming: this hook showed the process suspended, and it has since been
+    // launched, but its live widget is not ready yet. Keep the suspended
+    // variant until it is (or the run ends).
+    const resuming = latched && !(live && widgetDataReady);
+    // Handing over: the live widget is available, but mounts hidden beside the
+    // suspended variant until it reports ready (or the safety net fires).
+    const handingOver = latched && live && widgetDataReady;
+    // On its way: an active process whose widget is not ready yet gets the
+    // caller's placeholder, if the widget can show once it is.
+    if (!latched && isActive(tree as any) && !(live && widgetDataReady)) {
+      if (options?.placeholder === undefined || !getWidget(widgetName)) return none();
+      shownSuspended.current = null;
+      endHandover();
+      return { mode: 'waiting', widget: <WidgetSlots slots={[{ key: 'placeholder', node: options.placeholder, shown: true }]} /> };
     }
-    return none();
-  }
+    if (!live && !suspended && !resuming && !handingOver) return none();
+    if (!widgetDataReady && !resuming) return none();
 
-  if (!database) {
-    console.warn(
-      `[optio-ui] Widget "${widgetName}" requested but database is unknown ` +
-      `(no explicit database on <OptioProvider> and instance discovery has not resolved); ` +
-      `falling back to default rendering.`,
-    );
-    return none();
-  }
+    const Live = getWidget(widgetName);
+    const Suspended = getSuspendedWidget(widgetName);
+    const Widget = live && !resuming && !handingOver ? Live : Suspended;
+    if (!Widget || (handingOver && !Live)) {
+      if (live && !resuming) {
+        console.warn(`[optio-ui] No widget registered under name "${widgetName}"; falling back to default rendering.`);
+      }
+      return none();
+    }
 
-  const widgetProxyUrl =
-    `${baseUrl}/api/widget/${encodeURIComponent(database)}/${encodeURIComponent(prefix)}/${tree._id}/`;
+    if (!database) {
+      console.warn(
+        `[optio-ui] Widget "${widgetName}" requested but database is unknown ` +
+        `(no explicit database on <OptioProvider> and instance discovery has not resolved); ` +
+        `falling back to default rendering.`,
+      );
+      return none();
+    }
 
-  const mode = resuming ? 'resuming' : live ? 'live' : 'suspended';
-  shownSuspended.current = mode === 'live' ? null : tree._id;
-  return {
-    mode,
-    widget: (
-      <Widget
+    const widgetProxyUrl =
+      `${baseUrl}/api/widget/${encodeURIComponent(database)}/${encodeURIComponent(prefix)}/${tree._id}/`;
+    const element = (Component: WidgetComponent, extra?: { onReady: () => void }) => (
+      <Component
         process={tree as any}
         apiBaseUrl={baseUrl}
         widgetProxyUrl={widgetProxyUrl}
@@ -131,9 +193,43 @@ export function useProcessWidgetState(
         {...(options?.readOnly ? { readOnly: true } : {})}
         {...(options?.hideEmptyRuns ? { hideEmptyRuns: true } : {})}
         {...(options?.placeholder !== undefined ? { placeholder: options.placeholder } : {})}
+        {...extra}
       />
-    ),
-  };
+    );
+
+    if (handingOver) {
+      const id = tree._id;
+      if (!handover.current || handover.current.id !== id) {
+        handoverGen.current += 1;
+        handover.current = { id, gen: handoverGen.current };
+        released.current = false;
+      }
+      if (!released.current) {
+        const { gen } = handover.current;
+        return {
+          mode: 'resuming',
+          widget: (
+            <WidgetSlots
+              slots={[
+                { key: 'suspended', node: element(Suspended!), shown: true },
+                { key: 'live', node: element(Live!, { onReady: () => release(id, gen) }), shown: false },
+              ]}
+            />
+          ),
+        };
+      }
+      // Released: the live widget takes over; the latch is spent.
+      shownSuspended.current = null;
+      endHandover();
+      return { mode: 'live', widget: <WidgetSlots slots={[{ key: 'live', node: element(Live!), shown: true }]} /> };
+    }
+
+    const mode = resuming ? 'resuming' : live ? 'live' : 'suspended';
+    shownSuspended.current = mode === 'live' ? null : tree._id;
+    endHandover();
+    const key: SlotKey = mode === 'live' ? 'live' : 'suspended';
+    return { mode, widget: <WidgetSlots slots={[{ key, node: element(Widget), shown: true }]} /> };
+  }
 }
 
 /**

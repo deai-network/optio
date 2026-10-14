@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { isValidElement } from 'react';
-import { renderHook, render, screen, cleanup } from '@testing-library/react';
+import { isValidElement, useEffect, type ReactNode } from 'react';
+import { act, renderHook, render, screen, cleanup } from '@testing-library/react';
 import { registerWidget, _clearWidgetRegistry } from '../widgets/registry.js';
 
 const mockBaseUrl = vi.fn(() => 'http://host');
@@ -299,14 +299,26 @@ describe('useProcessWidgetState: a resume keeps the suspended variant on screen'
     expect(screen.getByTestId('suspended')).toBeTruthy();
   });
 
-  it('hands over to the live widget once its widgetData arrives', () => {
-    const h = hook(suspendedTree());
-    h.rerender({ t: resumed() });
-    h.rerender({ t: resumed({ widgetData: { protocol: 'claudecode' } }) });
-    expect(h.result.current?.mode).toBe('live');
+  it('hands over to the live widget once it is ready, and the latch is then spent', () => {
+    let onReady: (() => void) | undefined;
+    _clearWidgetRegistry();
+    registerWidget('my-widget', (props: any) => { onReady = props.onReady; return <div data-testid="live" />; },
+      { suspended: Suspended });
+    let mode: string | null = null;
+    function Host({ t }: { t: any }) {
+      const result = useProcessWidgetState(t);
+      mode = result?.mode ?? null;
+      return <>{result?.widget}</>;
+    }
+    const { rerender } = render(<Host t={suspendedTree()} />);
+    rerender(<Host t={resumed()} />);
+    rerender(<Host t={resumed({ widgetData: { protocol: 'claudecode' } })} />);
+    expect(mode).toBe('resuming');
+    act(() => onReady!());
+    expect(mode).toBe('live');
     // The latch is spent: a later gap shows nothing, as before.
-    h.rerender({ t: resumed() });
-    expect(h.result.current).toBeNull();
+    rerender(<Host t={resumed()} />);
+    expect(mode).toBeNull();
   });
 
   it('a run that ends before the live widget is ready falls back to nothing', () => {
@@ -399,5 +411,121 @@ describe('useProcessWidgetState: a placeholder while the widget is on its way', 
     expect('placeholder' in captured).toBe(false);
     rerender(<Host withCard />);
     expect(captured.placeholder).toBe(card);
+  });
+});
+
+describe('useProcessWidgetState: the resume handover', () => {
+  // A resumed process's live widget mounts hidden beside the suspended variant
+  // and takes over on WidgetProps.onReady, or after the 10 s safety net
+  // (docs/2026-10-14-conversation-backlog-batch-design.md, section 4).
+  let liveMounts = 0;
+  let liveOnReady: (() => void) | undefined;
+  let lastMode: string | null = null;
+  const Live = (props: any) => {
+    useEffect(() => { liveMounts += 1; }, []);
+    liveOnReady = props.onReady;
+    return <div data-testid="live" />;
+  };
+  const Suspended = () => <div data-testid="suspended" />;
+  const resumedLive = (overrides: Record<string, unknown> = {}) =>
+    baseTree({ supportsResume: true, hasSavedState: true, widgetData: { protocol: 'claudecode' }, ...overrides });
+  function Host({ t, placeholder }: { t: any; placeholder?: ReactNode }) {
+    const result = useProcessWidgetState(t, placeholder !== undefined ? { placeholder } : undefined);
+    lastMode = result?.mode ?? null;
+    return <>{result?.widget}</>;
+  }
+  const slotOf = (testId: string) => screen.getByTestId(testId).parentElement as HTMLElement;
+  function handover(placeholder?: ReactNode) {
+    const view = render(<Host t={suspendedTree()} placeholder={placeholder} />);
+    view.rerender(<Host t={resumedLive()} placeholder={placeholder} />);
+    return view;
+  }
+
+  beforeEach(() => {
+    liveMounts = 0;
+    liveOnReady = undefined;
+    lastMode = null;
+    registerWidget('my-widget', Live, { suspended: Suspended });
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('mounts the live widget hidden next to the shown suspended variant', () => {
+    handover();
+    expect(lastMode).toBe('resuming');
+    expect(slotOf('suspended').style.display).toBe('contents');
+    expect(slotOf('live').style.display).toBe('none');
+    expect(slotOf('live').hasAttribute('inert')).toBe(true);
+    expect(typeof liveOnReady).toBe('function');
+  });
+
+  it('onReady shows the live widget without remounting it and drops the suspended one', () => {
+    handover();
+    act(() => liveOnReady!());
+    expect(lastMode).toBe('live');
+    expect(screen.queryByTestId('suspended')).toBeNull();
+    expect(slotOf('live').style.display).toBe('contents');
+    expect(slotOf('live').hasAttribute('inert')).toBe(false);
+    expect(liveMounts).toBe(1);
+  });
+
+  it('shows the live widget after 10 s without onReady', () => {
+    vi.useFakeTimers();
+    handover();
+    act(() => { vi.advanceTimersByTime(9_999); });
+    expect(lastMode).toBe('resuming');
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(lastMode).toBe('live');
+    expect(screen.queryByTestId('suspended')).toBeNull();
+    expect(liveMounts).toBe(1);
+  });
+
+  it('a late onReady changes nothing, and the next resume waits for its own', () => {
+    const view = handover();
+    const first = liveOnReady!;
+    act(() => first());
+    act(() => first());
+    expect(lastMode).toBe('live');
+    view.rerender(<Host t={suspendedTree()} />);
+    expect(lastMode).toBe('suspended');
+    view.rerender(<Host t={resumedLive()} />);
+    expect(lastMode).toBe('resuming');
+    act(() => first());
+    expect(lastMode).toBe('resuming');
+    expect(slotOf('live').style.display).toBe('none');
+  });
+
+  it('suspended again during the handover: the suspended variant, no hidden live widget', () => {
+    const view = handover();
+    view.rerender(<Host t={suspendedTree()} />);
+    expect(lastMode).toBe('suspended');
+    expect(screen.getByTestId('suspended')).toBeTruthy();
+    expect(screen.queryByTestId('live')).toBeNull();
+  });
+
+  it('failed during the handover: nothing', () => {
+    vi.useFakeTimers();
+    const view = handover();
+    view.rerender(<Host t={resumedLive({ status: { state: 'failed' } })} />);
+    expect(lastMode).toBeNull();
+    expect(screen.queryByTestId('live')).toBeNull();
+    expect(screen.queryByTestId('suspended')).toBeNull();
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(lastMode).toBeNull();
+  });
+
+  it('a new placeholder element during the handover does not remount the live widget', () => {
+    const view = handover(<div data-testid="card-1" />);
+    view.rerender(<Host t={resumedLive()} placeholder={<div data-testid="card-2" />} />);
+    expect(liveMounts).toBe(1);
+    act(() => liveOnReady!());
+    expect(lastMode).toBe('live');
+    expect(liveMounts).toBe(1);
+  });
+
+  it('gives onReady only during a handover', () => {
+    render(<Host t={baseTree()} />);
+    expect(lastMode).toBe('live');
+    expect(liveOnReady).toBeUndefined();
+    expect(slotOf('live').style.display).toBe('contents');
   });
 });
