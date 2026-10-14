@@ -902,13 +902,13 @@ describe('ConversationView steering', () => {
   // Resume marker (owner request 2026-10-08): where the session was captured
   // and resumed. Since the X switch an X Bubble.Divider, solid (owner-approved
   // 2026-10-12; it replaced the zig-zag band).
-  it('a resumed item renders as a solid X divider labelled "Session has been saved and resumed."', () => {
+  it('a resumed item renders as a solid X divider labelled "Session suspended and resumed."', () => {
     renderView(makeProps({ state: makeState([
       { kind: 'assistant', text: 'before', pending: false, seq: 1, msgId: 'm1' },
       { kind: 'resumed', seq: 2 },
     ]) }));
     const marker = screen.getByTestId('resume-band');
-    expect(marker.textContent).toBe('Session has been saved and resumed.');
+    expect(marker.textContent).toBe('Session suspended and resumed.');
     const divider = marker.querySelector('.ant-bubble-divider .ant-divider');
     expect(divider).not.toBeNull();
     expect(divider!.classList.contains('ant-divider-dashed')).toBe(false);

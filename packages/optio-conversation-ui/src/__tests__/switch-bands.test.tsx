@@ -139,25 +139,25 @@ describe('resume band naming the mode', () => {
   const resumeText = () => screen.getByTestId('resume-band').textContent;
   const withControls = { customControls: [SPEED, TONE], onCustomControlChange: vi.fn(async () => null) };
 
-  it('"Session has been saved and resumed in <label> mode."', () => {
+  it('"Session suspended and resumed in <label> mode."', () => {
     renderView(makeProps({ ...withControls, state: makeState([
       { kind: 'resumed', seq: 1, options: [{ control: 'speed', option: 'extensive' }] },
     ]) }));
-    expect(resumeText()).toBe('Session has been saved and resumed in extensive mode.');
+    expect(resumeText()).toBe('Session suspended and resumed in extensive mode.');
   });
 
   it('several controls: the labels joined with ", "', () => {
     renderView(makeProps({ ...withControls, state: makeState([
       { kind: 'resumed', seq: 1, options: [{ control: 'speed', option: 'fast' }, { control: 'tone', option: 'concise' }] },
     ]) }));
-    expect(resumeText()).toBe('Session has been saved and resumed in fast, concise mode.');
+    expect(resumeText()).toBe('Session suspended and resumed in fast, concise mode.');
   });
 
   it('in the UI language', () => {
     renderView(makeProps({ ...withControls, state: makeState([
       { kind: 'resumed', seq: 1, options: [{ control: 'speed', option: 'extensive' }] },
     ]) }), huHU);
-    expect(resumeText()).toBe('Session has been saved and resumed in alapos mode.');
+    expect(resumeText()).toBe('Session suspended and resumed in alapos mode.');
   });
 
   it.each([
@@ -165,7 +165,7 @@ describe('resume band naming the mode', () => {
     ['an unknown option', [{ control: 'speed', option: 'turbo' }]],
   ])('the text as before with %s', (_, options) => {
     renderView(makeProps({ ...withControls, state: makeState([{ kind: 'resumed', seq: 1, ...(options ? { options } : {}) }]) }));
-    expect(resumeText()).toBe('Session has been saved and resumed.');
+    expect(resumeText()).toBe('Session suspended and resumed.');
   });
 });
 
@@ -280,7 +280,7 @@ describe('ClaudeCodeView switch bands', () => {
     );
     expect(bandTexts()).toEqual(['Switched to fast mode.', 'Model switched.']);
     const resume = screen.getByTestId('resume-band');
-    expect(resume.textContent).toBe('Session has been saved and resumed in fast mode.');
+    expect(resume.textContent).toBe('Session suspended and resumed in fast mode.');
     const [, generic] = screen.getAllByTestId('switch-band');
     expect(generic.compareDocumentPosition(resume) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -318,7 +318,7 @@ describe('ClaudeCodeReplayView switch bands', () => {
       ...turn,
       { type: 'x-optio-resumed', customControls: [{ id: 'speed', value: 'fast' }] },
     ]);
-    expect(screen.getByTestId('resume-band').textContent).toBe('Session has been saved and resumed in fast mode.');
+    expect(screen.getByTestId('resume-band').textContent).toBe('Session suspended and resumed in fast mode.');
     expect(screen.queryByTestId('custom-control-speed')).toBeNull();
   });
 });

@@ -50,7 +50,7 @@ export interface ClaudeCodeReplayViewProps {
   onToggleTheme?: () => void;
 }
 
-const SUSPENDED_CLOSED_LABEL = 'Session has been saved';
+const SUSPENDED_CLOSED_LABEL = 'Session suspended';
 const CONFIRM_TITLE = 'Resume the session?';
 const CONFIRM_TEXT = 'This session is currently suspended. Sending this message will resume it. Is this what you want?';
 const CONFIRM_OK = 'Resume and send';

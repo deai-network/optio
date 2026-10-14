@@ -32,7 +32,7 @@ export function switchBandText(
   return `Model switched to ${option?.label ?? item.model}.`;
 }
 
-// A resume band: "Session has been saved and resumed in <option> mode." for
+// A resume band: "Session suspended and resumed in <option> mode." for
 // the task-defined options the resumed run launched with (several joined
 // with ", "); without one `customControls` has, the text as before.
 export function resumeBandText(
@@ -43,8 +43,8 @@ export function resumeBandText(
     .filter((label): label is string => label !== undefined)
     .map((label) => label.toLowerCase());
   return labels.length > 0
-    ? `Session has been saved and resumed in ${labels.join(', ')} mode.`
-    : 'Session has been saved and resumed.';
+    ? `Session suspended and resumed in ${labels.join(', ')} mode.`
+    : 'Session suspended and resumed.';
 }
 
 export function SwitchBandText({ item, controls, customControls }: {

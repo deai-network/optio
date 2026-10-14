@@ -146,7 +146,7 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
     const done = screen.getByTestId('tool-call').closest('.ant-thought-chain-node') as HTMLElement;
     expect(done.querySelector('.ant-thought-chain-node-title')!.textContent).toBe('Bash');
 
-    expect(screen.getByTestId('conversation-closed').textContent).toBe('Session has been saved');
+    expect(screen.getByTestId('conversation-closed').textContent).toBe('Session suspended');
     // One divider: the closing event's own "conversation ended (suspended)" row is not shown.
     expect(screen.queryByText(/conversation ended/)).toBeNull();
 
@@ -205,7 +205,7 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
   it('an empty record still renders the closed, read-only view', () => {
     useProcessConversation.mockReturnValue(loaded([]));
     render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
-    expect(screen.getByTestId('conversation-closed').textContent).toBe('Session has been saved');
+    expect(screen.getByTestId('conversation-closed').textContent).toBe('Session suspended');
     expect(reduceSpy.mock.calls.map((c) => c[2])).toEqual([1]);
   });
 
@@ -272,7 +272,7 @@ describe('SuspendedConversationWidget: the claudecode replay', () => {
   it('the resume band of a once-resumed session renders its label', () => {
     useProcessConversation.mockReturnValue(loaded([...RECORD, [6, { type: 'x-optio-resumed' }]]));
     render(wrap(<SuspendedConversationWidget {...widgetProps()} />));
-    expect(screen.getByTestId('resume-band').textContent).toBe('Session has been saved and resumed.');
+    expect(screen.getByTestId('resume-band').textContent).toBe('Session suspended and resumed.');
   });
 
   it('a leftover permission card stays visible but inert: Approve and Deny send nothing', () => {
