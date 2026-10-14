@@ -90,9 +90,11 @@ Nothing else changes.
   step.
 - **Ready.** Once the first backlog is applied and rendered, the view calls
   `WidgetProps.onReady` (section 4), if given.
-- **Fallback.** If no `backlog-end` follows within 2 s of a start (the stream opening, or a
-  `backlog-start`), the view applies what it has and goes live: an older listener, or a
-  proxy that drops named events, must not leave the card up forever.
+- **Fallback.** If no `backlog-end` follows within 2 s of a start, the view applies what it
+  has and goes live: an older listener, or a proxy that drops named events, must not leave
+  the card up forever. A start is the connection being established (`EventSource` `open`),
+  the first message, or a `backlog-start`; not the creation of the `EventSource`, so a
+  listener slow to accept never reveals an empty view (owner, 2026-10-14).
 - **Scrolling.** `ConversationView` does not change: the backlog grows it once, and its
   ResizeObserver pins to the bottom once, before the frame is painted.
 
@@ -108,8 +110,10 @@ over at once, as today.
 - **`useProcessWidgetState`.** Today, when a resumed process's live widget becomes
   available (widget-live with `widgetData`), the hook switches from `'resuming'` to
   `'live'`. Instead it first mounts the live widget hidden next to the shown suspended
-  variant, with `onReady`; the mode stays `'resuming'`. On `onReady`, or 5 s after the live
-  widget mounted, it shows the live widget and drops the suspended one (mode `'live'`).
+  variant, with `onReady`; the mode stays `'resuming'`. On `onReady`, or 10 s after the live
+  widget mounted (a safety net only: `ClaudeCodeView` always reports), it shows the live
+  widget and drops the suspended one (mode `'live'`). The goal (owner, 2026-10-14): the
+  saved view stays until the live view is really ready.
 - **No remount.** The live widget must stay mounted across that switch, or it would
   reconnect and replay again. The hook returns its widgets in keyed slots: a shown slot
   is a `display: contents` wrapper (no box, so the host's layout is as today), a hidden
@@ -134,12 +138,13 @@ over at once, as today.
 - **`ClaudeCodeView` (vitest):** nothing is dispatched before the end; the placeholder
   shows until the first end; one batch gives the same items as one dispatch per event;
   live dispatch after the end; a reconnect keeps the conversation on screen and applies
-  the catch-up at its end; the 2 s fallback (fake timers); without a placeholder, the
+  the catch-up at its end; the 2 s fallback (fake timers), armed by `open` or the first
+  message, not by creating the `EventSource`; without a placeholder, the
   empty conversation; `onReady` after the first backlog.
 - **`useProcessWidgetState` (vitest):** during a resume, the live widget mounts hidden while
   the suspended variant stays shown and the mode stays `'resuming'`; `onReady` shows the
   live widget without remounting it (a mount counter) and drops the suspended one; the
-  5 s timeout; without a handover, hosts render the same widgets as before (a shown slot
+  10 s timeout; without a handover, hosts render the same widgets as before (a shown slot
   adds no box).
 - **Dispatcher:** the other protocol views call `onReady` at mount.
 - **Live:** the event-stream measurement shows both markers arriving through Vite; the
