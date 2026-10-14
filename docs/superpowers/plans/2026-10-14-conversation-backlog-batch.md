@@ -41,11 +41,10 @@
 **Interfaces:**
 - Produces: the wire format in Global Constraints. Later tasks rely only on it.
 
-- [ ] **Step 1: Worktree on the branch**
+- [ ] **Step 1: The isolated layout** (owner revision, 2026-10-14)
 
-`~/deai/optio` is detached on another branch for the owner's test, so `csillag/backlog-batch` is free:
-`git -C ~/deai/optio worktree add ~/optio-backlog csillag/backlog-batch`.
-Test command used below (run in `~/optio-backlog/packages/optio-claudecode`):
+Tasks 1, 3 and 4 run in `~/wt-backlog/deai/{excavator,optio,unitas}`: git worktrees of the live repos (optio on `csillag/backlog-batch`, Excavator on `csillag/widget-placeholder`, unitas on `origin/main`) with one `pnpm install --frozen-lockfile` from `~/wt-backlog/deai/excavator`. The live checkouts are not touched. In Task 3 and 4 commands, `~/deai/optio` and `~/deai/excavator` mean the layout's `~/wt-backlog/deai/optio` and `~/wt-backlog/deai/excavator`.
+Test command used below (run in `~/wt-backlog/deai/optio/packages/optio-claudecode`):
 `PYTHONPATH=src:../optio-agents/src ~/deai/optio/.venv/bin/python -m pytest -q -p no:cacheprovider <files>`
 
 - [ ] **Step 2: Keep the existing helpers about data events**
@@ -85,7 +84,7 @@ Write `event: backlog-start\ndata: {json.dumps({"after": last_id})}\n\n` after s
 
 Expected: all PASS.
 
-- [ ] **Step 7: Commit** (in `~/optio-backlog`, on `csillag/backlog-batch`)
+- [ ] **Step 7: Commit** (in `~/wt-backlog/deai/optio`, on `csillag/backlog-batch`)
 
 ```bash
 git add packages/optio-claudecode
@@ -96,8 +95,10 @@ git commit -m "feat(optio-claudecode): frame each connection's replay with backl
 
 **Files:** none.
 
+Runs after Tasks 1, 3 and 4.
+
 - [ ] **Step 1: Wait for the owner** to finish the `csillag/workdir-capture-cap` live test and give the go-ahead: the switch restarts the engine once (their branch and Task 1 are Python).
-- [ ] **Step 2:** `git -C ~/deai/optio worktree remove ~/optio-backlog`, then `git -C ~/deai/optio checkout csillag/backlog-batch` and `git -C ~/deai/excavator checkout csillag/widget-placeholder`.
+- [ ] **Step 2:** release the branches (`git -C ~/wt-backlog/deai/optio switch --detach`, `git -C ~/wt-backlog/deai/excavator switch --detach`), then `git -C ~/deai/optio checkout csillag/backlog-batch` and `git -C ~/deai/excavator checkout csillag/widget-placeholder`.
 - [ ] **Step 3: Verify** the engine log shows `Shutdown complete`, then `Source tools MCP server:`; `sh /tmp/excavator_login_check.sh` prints `sign-in 200`; Vite's checker prints `Found 0 errors`. `python3 /tmp/wp_measure_events.py <a live conversation's _id> 10`, extended to print named events, shows `backlog-start` first and `backlog-end` after the replay. (The current view ignores them.)
 
 ### Task 3: optio-ui keeps the saved view until the live one is ready
