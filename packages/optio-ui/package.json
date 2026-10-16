@@ -46,7 +46,7 @@
     "react": ">=18",
     "react-dom": ">=18",
     "react-i18next": ">=15",
-    "vultus-core": ">=0.4.0"
+    "vultus-core": ">=0.5.3"
   },
   "devDependencies": {
     "@ant-design/icons": "^6.3.4",
@@ -63,6 +63,6 @@
     "react-i18next": "^17.0.0",
     "typescript": "^5.7.0",
     "vitest": "^3.2.4",
-    "vultus-core": "^0.4.0"
+    "vultus-core": "^0.5.3"
   }
 }
