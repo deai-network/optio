@@ -1359,6 +1359,18 @@ describe('ConversationView message timestamps', () => {
     expect(screen.getByTestId('message-time').textContent).toBe('16:29');
   });
 
+  it('a time label shows the date once the day it was sent has ended', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 23, 59, 30).getTime());
+    const ts = new Date(2026, 8, 14, 23, 58).getTime();
+    renderView(makeProps({ state: makeState([{ kind: 'user', text: 'hi', seq: 1, timestamp: ts }]) }));
+    expect(screen.getByTestId('message-time').textContent).toBe('23:58');
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(screen.getByTestId('message-time').textContent).toBe('14 Sep 23:58');
+  });
+
   it('a message without a known timestamp renders no time label', () => {
     renderView(makeProps({ state: makeState([{ kind: 'user', text: 'hi', seq: 1 }]) }));
     expect(screen.queryByTestId('message-time')).toBeNull();

@@ -1,4 +1,4 @@
-import { Fragment, forwardRef, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, forwardRef, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Popover, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken, UploadFile } from 'antd';
 import {
@@ -25,6 +25,7 @@ import { useDarkTheme } from './themeMode.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 import { formatDuration } from './duration.js';
+import { useToday } from './dayClock.js';
 import {
   formatMessageTime, formatMessageTimeFull, formatMessageTimeInterval, formatMessageTimeIntervalFull,
 } from './messageTime.js';
@@ -707,6 +708,8 @@ function renderToolInput(input: unknown, preview: string | undefined): React.Rea
   return null;
 }
 
+type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
+
 // Unified tool lifecycle across reducers that report completion differently:
 //  - ACP (grok/cursor/kimi): the ChatItem `status` field (running|done|failed).
 //  - codex: folds item/completed `status` + `exitCode` into `input`.
@@ -913,34 +916,71 @@ function renderBackgroundLine(
   );
 }
 
+// A tool call's elapsed time ("42s"), or null without a start. Frozen once the
+// call ended; while it runs (no endedAt) the caller re-renders once a second
+// on its own, so the 1 s tick reaches only the running rows' small leaves.
+function useElapsed(startedAt: number | undefined, endedAt: number | undefined): string | null {
+  const running = startedAt !== undefined && endedAt === undefined;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+  return startedAt === undefined ? null : formatDuration((endedAt ?? now) - startedAt);
+}
+
+// The elapsed time on a tool row's line, after its summary (`separator`).
+function ToolElapsed({ startedAt, endedAt, separator }: {
+  startedAt: number | undefined; endedAt: number | undefined; separator: string;
+}) {
+  const elapsed = useElapsed(startedAt, endedAt);
+  return elapsed ? <span data-testid="tool-elapsed">{`${separator}${elapsed}`}</span> : null;
+}
+
+// A background job's muted line at the quiet verbosities (silent,
+// description-while-active): running, or its outcome once finished.
+const BackgroundToolRow = memo(function BackgroundToolRow({ item, token }: { item: ToolItem; token: GlobalToken }) {
+  const { finished, failed } = toolLifecycle(item);
+  const elapsed = useElapsed(item.startedAt, item.endedAt);
+  return finished ? renderBackgroundLine(item, failed, elapsed, token) : renderBackgroundRunning(item, elapsed, token);
+});
+
 // Capitalize a level label ("high" -> "High") for the segmented/slider marks.
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // Small grey time under a user/assistant/error bubble (Fix 4, owner ruling
-// 2026-09-14: "all messages need a timestamp"). `now` is read once per render
-// by the caller (formatMessageTime itself is pure, see messageTime.ts).
-// Absent entirely when the item carries no known timestamp — never invented
-// (e.g. a still-queued bubble in a replay, or any row that isn't a message).
-function renderTimeLabel(timestamp: number | undefined, now: number, token: GlobalToken): React.ReactNode {
-  if (timestamp === undefined) return null;
+// 2026-09-14: "all messages need a timestamp"). formatMessageTime itself is
+// pure (see messageTime.ts); the label hands it today's date from the coarse
+// day clock (dayClock.ts), which changes only at midnight, so the label
+// re-renders then and not on every render of its row.
+function MessageTime({ timestamp, token }: { timestamp: number; token: GlobalToken }) {
+  const today = useToday();
   return (
     <div
       data-testid="message-time"
       title={formatMessageTimeFull(timestamp)}
       style={{ fontSize: 11, color: token.colorTextTertiary, marginTop: 2 }}
     >
-      {formatMessageTime(timestamp, now)}
+      {formatMessageTime(timestamp, today)}
     </div>
   );
+}
+
+// Absent entirely when the item carries no known timestamp — never invented
+// (e.g. a still-queued bubble in a replay, or any row that isn't a message).
+function renderTimeLabel(timestamp: number | undefined, token: GlobalToken): React.ReactNode {
+  return timestamp === undefined ? null : <MessageTime timestamp={timestamp} token={token} />;
 }
 
 // The summary the agent continues from after a compaction (owner ruling
 // 2026-10-08): kept, as an X Think (Ant Design X experiment) titled with the
 // summary's first line; the rest, as markdown, is its collapsed content.
-function CompactSummaryRow({ item, now, token }: {
-  item: Extract<ChatItem, { kind: 'summary' }>; now: number; token: GlobalToken;
+const CompactSummaryRow = memo(function CompactSummaryRow({ item, token }: {
+  item: Extract<ChatItem, { kind: 'summary' }>; token: GlobalToken;
 }) {
   const [first, ...rest] = item.text.split('\n');
   const body = rest.join('\n').trim();
@@ -949,10 +989,10 @@ function CompactSummaryRow({ item, now, token }: {
       <Think data-testid="compaction-summary" title={first} defaultExpanded={false}>
         {body !== '' ? <AnswerBlock text={body} /> : null}
       </Think>
-      {renderTimeLabel(item.timestamp, now, token)}
+      {renderTimeLabel(item.timestamp, token)}
     </div>
   );
-}
+});
 
 // Fix 12 (owner ruling 2026-09-14): the assistant-only variant of
 // renderTimeLabel above, showing a "HH:MM - HH:MM" interval when the
@@ -965,19 +1005,21 @@ function CompactSummaryRow({ item, now, token }: {
 // very first message of a conversation, replayed with no marker, may resolve
 // no start): with none, the label and title fall back to the single end
 // time, same as renderTimeLabel.
-function renderTimeLabelRange(
-  start: number | undefined, end: number | undefined, now: number, token: GlobalToken,
-): React.ReactNode {
-  if (end === undefined) return null;
+function MessageTimeRange({ start, end, token }: { start: number | undefined; end: number; token: GlobalToken }) {
+  const today = useToday();
   return (
     <div
       data-testid="message-time"
       title={formatMessageTimeIntervalFull(start, end)}
       style={{ fontSize: 11, color: token.colorTextTertiary, marginTop: 2 }}
     >
-      {start === undefined ? formatMessageTime(end, now) : formatMessageTimeInterval(start, end, now)}
+      {start === undefined ? formatMessageTime(end, today) : formatMessageTimeInterval(start, end, today)}
     </div>
   );
+}
+
+function renderTimeLabelRange(start: number | undefined, end: number | undefined, token: GlobalToken): React.ReactNode {
+  return end === undefined ? null : <MessageTimeRange start={start} end={end} token={token} />;
 }
 
 // Fix 4 review round 1: the time label is a SIBLING below the bubble, never a
@@ -1326,25 +1368,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // the same way as finished ones. Silent does not use this.
   const [toolOpen, setToolOpen] = useState<Map<number, boolean>>(() => new Map());
 
-  // The wall clock for message-time formatting (Fix 4): read fresh at each
-  // render — the formatter itself is pure and never reads the clock (see
-  // messageTime.ts). Distinct from the ticking `now` below (which only
-  // updates while a timed tool row is running): a message time only needs to
-  // be current as of render, not to tick.
-  const renderedAt = Date.now();
-
-  // Live elapsed counters: tick once a second while any timed tool row is
-  // still running (no endedAt); no interval otherwise.
-  const [now, setNow] = useState(() => Date.now());
-  const counting = state.items.some(
-    (i) => i.kind === 'tool' && i.startedAt !== undefined && i.endedAt === undefined,
-  );
-  useEffect(() => {
-    if (!counting) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [counting]);
   const inputRef = useRef<React.ComponentRef<typeof Sender>>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const pasteSeq = useRef(0);
@@ -1730,8 +1753,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   function toolChainItem(item: Extract<ChatItem, { kind: 'tool' }>): ThoughtChainItemType {
     const { finished, failed } = toolLifecycle(item);
     const stopped = item.status === 'stopped';
-    const elapsed =
-      item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
     let summary = toolSummary(item.input);
     if (failed && item.result) summary = item.result.split('\n')[0].slice(0, 160);
     else if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
@@ -1755,7 +1776,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
         >
           {line}
-          {elapsed ? <span data-testid="tool-elapsed">{`${line ? ' · ' : ''}${elapsed}`}</span> : null}
+          <ToolElapsed startedAt={item.startedAt} endedAt={item.endedAt} separator={line ? ' · ' : ''} />
         </span>
       ),
       collapsible: hasContent,
@@ -1817,7 +1838,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                   </div>
                 </>
               )}
-              footer={renderTimeLabel(item.timestamp, renderedAt, token)}
+              footer={renderTimeLabel(item.timestamp, token)}
               footerPlacement="outer-end"
             />
           );
@@ -1830,13 +1851,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             classNames={{ content: GLASS_USER }}
             styles={{ content: BUBBLE_TEXT }}
             content={item.text}
-            footer={renderTimeLabel(item.timestamp, renderedAt, token)}
+            footer={renderTimeLabel(item.timestamp, token)}
             footerPlacement="outer-end"
           />
         );
       case 'assistant': {
         const ellipsis = withInterruptEllipsis(item.text, item.interrupted);
-        const timeLabel = renderTimeLabelRange(item.timestamp, item.endTimestamp, renderedAt, token);
+        const timeLabel = renderTimeLabelRange(item.timestamp, item.endTimestamp, token);
         return (
           <Bubble
             key={item.seq}
@@ -1929,7 +1950,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               styles={{ content: BUBBLE_TEXT }}
               content={item.text}
             />
-            {renderTimeLabel(item.timestamp, renderedAt, token)}
+            {renderTimeLabel(item.timestamp, token)}
           </div>
         );
       case 'thinking': {
@@ -1944,19 +1965,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         );
       }
       case 'tool': {
-        const { finished, failed } = toolLifecycle(item);
-        const stopped = item.status === 'stopped';
-        const elapsed =
-          item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
         // Silent: no ordinary tool row. A background job still leaves its
         // muted line, including while it is running. description-while-active
         // sends only its finished tools here (renderTranscript): the same, a
         // finished background job's line and nothing else.
         if (toolVerbosity === 'silent' || toolVerbosity === 'description-while-active') {
           if (!item.background) return null;
-          return finished
-            ? renderBackgroundLine(item, failed, elapsed, token)
-            : renderBackgroundRunning(item, elapsed, token);
+          return <BackgroundToolRow key={item.seq} item={item} token={token} />;
         }
 
         // Every other level: rendered as part of a ThoughtChain by
@@ -2030,7 +2045,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           >
             {item.text}
           </div>,
-          renderTimeLabel(item.timestamp, renderedAt, token),
+          renderTimeLabel(item.timestamp, token),
         );
       case 'closed':
         return renderDivider(`closed-${item.seq}`, undefined, `conversation ended${item.reason ? ` (${item.reason})` : ''}`, 'solid');
@@ -2052,7 +2067,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           ? renderDivider(`compacting-${item.seq}`, 'compaction-start-band', 'Context is being compacted.', 'dashed')
           : renderDivider(`compacted-${item.seq}`, 'compaction-end-band', 'Context has been compacted.', 'dashed');
       case 'summary':
-        return <CompactSummaryRow key={item.seq} item={item} now={renderedAt} token={token} />;
+        return <CompactSummaryRow key={item.seq} item={item} token={token} />;
     }
   }
 
