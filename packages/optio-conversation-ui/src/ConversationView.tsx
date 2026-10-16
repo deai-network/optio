@@ -1,4 +1,6 @@
-import { Fragment, forwardRef, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+  Fragment, forwardRef, memo, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore,
+} from 'react';
 import { Alert, Button, Input, Popover, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken, UploadFile } from 'antd';
 import {
@@ -26,6 +28,7 @@ import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 import { formatDuration } from './duration.js';
 import { useToday } from './dayClock.js';
+import { useStableCallback } from './stableCallback.js';
 import {
   formatMessageTime, formatMessageTimeFull, formatMessageTimeInterval, formatMessageTimeIntervalFull,
 } from './messageTime.js';
@@ -1293,6 +1296,312 @@ export function ConversationPlaceholder({ title, icon, description, minHeight, w
   );
 }
 
+// ---------------------------------------------------------------------------
+// The composer.
+
+/** The composer's text. The view keeps it, so that it outlives the composer
+ *  while an inputReplacement stands in for it (the composer unmounts), and so
+ *  that a keystroke re-renders the composer alone: the Composer subscribes. */
+interface ComposerText {
+  get(): string;
+  set(value: string): void;
+  subscribe(listener: () => void): () => void;
+}
+
+function createComposerText(initial: string): ComposerText {
+  let value = initial;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => value,
+    set: (next) => {
+      if (next === value) return;
+      value = next;
+      for (const listener of [...listeners]) listener();
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+interface ComposerProps {
+  text: ComposerText;
+  inputRef: React.RefObject<React.ComponentRef<typeof Sender> | null>;
+  // Where files dragged onto the conversation land (its root).
+  dropContainer: React.RefObject<HTMLDivElement | null>;
+  uploads: UploadFile[];
+  busy: boolean;
+  closed: boolean;
+  inputClosed: boolean;
+  steerable: boolean;
+  sending: boolean;
+  interrupting: boolean;
+  showFileUpload: boolean;
+  controls?: SessionControl[];
+  onControlChange?: (id: string, value: string | boolean) => void;
+  customControls?: CustomControl[];
+  onCustomControlChange?: (id: string, value: string) => Promise<string | null>;
+  // Disables the session and custom controls (busy, or the session closed).
+  controlsDisabled: boolean;
+  onSubmit: (kind: 'send' | 'steer') => Promise<void>;
+  onInterrupt: () => Promise<void>;
+  onUploads: (next: UploadFile[]) => void;
+  onPasteFiles: (files: File[]) => void;
+  onError: (error: string | null) => void;
+}
+
+// The input and its toolbar. Its props are stable but for the state they
+// show; its text is the view's ComposerText, so typing re-renders this alone.
+const Composer = memo(function Composer({
+  text: store, inputRef, dropContainer, uploads, busy, closed, inputClosed, steerable, sending, interrupting,
+  showFileUpload, controls, onControlChange, customControls, onCustomControlChange, controlsDisabled,
+  onSubmit, onInterrupt, onUploads, onPasteFiles, onError,
+}: ComposerProps) {
+  const text = useSyncExternalStore(store.subscribe, store.get, store.get);
+  // The session controls' labels hide (optio-cc-compact) when the toolbar
+  // would overflow with them, and when even the compact toolbar overflows the
+  // controls collapse into a Settings button (optio-cc-collapsed). Measured
+  // without the classes and put back as needed, before paint, on every
+  // resize and controls change.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return undefined;
+    const fit = () => {
+      el.classList.remove('optio-cc-compact', 'optio-cc-collapsed');
+      if (el.scrollWidth <= el.clientWidth) return;
+      el.classList.add('optio-cc-compact');
+      if (el.scrollWidth > el.clientWidth) el.classList.add('optio-cc-collapsed');
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [controls, customControls]);
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      // Cmd/Ctrl-Enter interrupts and sends while the agent works; Enter
+      // sends (when ready, if busy), and so does Cmd/Ctrl-Enter when idle.
+      void onSubmit((e.metaKey || e.ctrlKey) && steerable ? 'steer' : 'send');
+    } else if (e.key === 'Escape' && busy && !closed) {
+      // Same guard as the Interrupt button: only while a turn is running.
+      e.preventDefault();
+      void onInterrupt();
+    }
+  }
+
+  // Fix 18 (owner addition 2026-09-15): every other input-bar button is now a
+  // vultus action, so Interrupt becomes one too — a danger ActionStatus fed
+  // to vultus's ActionButton, same shape as barAction above. `pending`
+  // mirrors `interrupting`, so ActionButton's antd Button renders the
+  // `loading` spinner (see ActionButton.tsx) instead of Fix 6's old
+  // 'Interrupting…' label swap; the view's interrupt() still runs the same
+  // ref-guarded fire-once/error logic, just invoked through `fire`.
+  // Fix 20: `icon` gives idle Interrupt a stop icon; antd swaps it for the
+  // loading spinner while `pending`, in the same slot (see InterruptStopIcon
+  // above), which is what makes the fixed-width workaround unnecessary.
+  const interruptAction: ActionStatus = {
+    id: 'interrupt',
+    label: 'Interrupt',
+    icon: <InterruptStopIcon />,
+    variant: 'danger',
+    pending: interrupting,
+    disabled: !busy || closed,
+    invisible: false,
+    errors: [],
+    fire: () => void onInterrupt(),
+    firePromise: async () => onInterrupt(),
+  };
+
+  // Ant Design X experiment (owner-approved 2026-10-12): the composer is an X
+  // Sender. Our textarea fills its input slot (SenderTextArea), today's
+  // toolbar is its footer, attached files show in its header, and its own
+  // send button is off (suffix={false}): our keys and buttons carry send /
+  // send when ready / interrupt and send.
+  return (
+    <Sender
+      ref={inputRef}
+      components={{ input: SenderTextArea }}
+      classNames={{ input: 'optio-cc-flash' }}
+      // See-through and unpadded (owner, 2026-10-12): a host theme that
+      // fills inputs (daeo-style) made it a box of its own inside the
+      // Sender, its text flush left (X zeroes the inline padding) and set
+      // low. The Sender's padding alone frames the text.
+      styles={{ input: { backgroundColor: 'transparent', paddingTop: 0, paddingBottom: 0 } }}
+      value={text}
+      onChange={(value) => store.set(value)}
+      // Our keys only (Enter, Cmd/Ctrl-Enter, Esc): returning false keeps
+      // X's own Enter-submits out of it.
+      onKeyDown={(e) => {
+        onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>);
+        return false;
+      }}
+      onPasteFile={showFileUpload ? (files) => onPasteFiles(Array.from(files)) : undefined}
+      placeholder={
+        steerable
+          ? 'Message agent…  (Enter: send when ready, ⌘/Ctrl+Enter: interrupt and send, Shift+Enter: newline)'
+          : 'Message agent…  (Enter to send, Shift+Enter for newline)'
+      }
+      autoSize={{ minRows: 2, maxRows: 8 }}
+      disabled={inputClosed}
+      suffix={false}
+      header={uploads.length > 0 ? (
+        // X Attachments' list (a card per file: icon by extension, size,
+        // a remove button; its own button to add more), shown while
+        // there are files: empty, X would show its upload placeholder.
+        <Sender.Header title="Attachments" open closable={false}>
+          <div data-testid="attach-chips">
+            <Attachments
+              items={uploads}
+              beforeUpload={() => false}
+              onChange={({ fileList }) => onUploads(fileList)}
+              multiple
+              disabled={closed}
+            />
+          </div>
+        </Sender.Header>
+      ) : undefined}
+      footer={
+        /* Sender's footer: a single-height toolbar — model + attach on the left,
+            Send/Interrupt pushed right. All size="small" so heights match. */
+        <div ref={toolbarRef} data-testid="session-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {(customControls?.length && onCustomControlChange) || (controls && onControlChange) ? (
+            <>
+              {/* The task's own controls (custom) first, then the built-in
+                  ones; both collapse into the Settings popover together. */}
+              <span className="optio-cc-inline-controls">
+                {customControls?.length && onCustomControlChange ? (
+                  <CustomControls
+                    controls={customControls}
+                    disabled={controlsDisabled}
+                    onChange={onCustomControlChange}
+                    onError={onError}
+                  />
+                ) : null}
+                {controls && onControlChange ? (
+                  <SessionControls
+                    controls={controls}
+                    disabled={controlsDisabled}
+                    onChange={onControlChange}
+                  />
+                ) : null}
+              </span>
+              {/* When even the compact toolbar is too wide (optio-cc-collapsed),
+                  the controls collapse into this button, which opens them,
+                  labelled, above the composer. */}
+              <span className="optio-cc-settings-button">
+                <Popover
+                  trigger="click"
+                  placement="topLeft"
+                  rootClassName="optio-cc-settings-popover"
+                  content={
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+                      {customControls?.length && onCustomControlChange ? (
+                        <CustomControls
+                          controls={customControls}
+                          disabled={controlsDisabled}
+                          onChange={onCustomControlChange}
+                          onError={onError}
+                        />
+                      ) : null}
+                      {controls && onControlChange ? (
+                        <SessionControls
+                          controls={controls}
+                          disabled={controlsDisabled}
+                          onChange={onControlChange}
+                        />
+                      ) : null}
+                    </div>
+                  }
+                >
+                  <Button size="small" aria-label="Session settings" icon={<SettingsIcon />}>
+                    Settings
+                  </Button>
+                </Popover>
+              </span>
+            </>
+          ) : null}
+          {/* The actions: one group, pushed right. minWidth 0 lets it shrink
+              like the flat row did (the send slot gives way first). */}
+          <div className="optio-cc-toolbar-actions" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 'auto', minWidth: 0 }}>
+            {showFileUpload && (
+              // X Attachments around the paperclip: its click opens X's file
+              // picker, and files dragged anywhere onto the conversation land
+              // in its drop area.
+              <Attachments
+                items={uploads}
+                beforeUpload={() => false}
+                onChange={({ fileList }) => onUploads(fileList)}
+                multiple
+                disabled={closed}
+                getDropContainer={() => dropContainer.current}
+                placeholder={{ title: 'Drop files here' }}
+              >
+                <Tooltip title="Attach files">
+                  <Button size="small" data-testid="attach-button" disabled={closed}>
+                    📎
+                  </Button>
+                </Tooltip>
+              </Attachments>
+            )}
+            {/* Fix 10: always the one vultus multi-action button, never a
+                separate plain Send button — idle shows only 'Send'; busy and
+                steerable shows [Send when ready | Interrupt and send]. An
+                engine without onSteer (steerable stays false even while
+                busy) keeps showing plain 'Send' behaviour. Visibility
+                toggles which actions CombinedActionButton renders — with one
+                visible it renders a plain button, so idle and a non-steering
+                engine look identical to before. keepOriginalDefault keeps
+                the main half on 'Send when ready' after the menu action
+                fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
+                the footprint so it never resizes across any of that; the red
+                Interrupt beside it stops and sends nothing. Each
+                action's `icon` (plane / clock / bolt) plus iconPlacement="end"
+                puts that icon on the right of the label; align="end" right-
+                aligns every state's label within the fixed width, on the
+                main half and — since iconPlacement="end" also reaches
+                each open-list row — the row's own icon (after its
+                label) too. */}
+            <span
+              data-testid="conversation-send-combined"
+              className="optio-cc-send-btn"
+              style={{ width: SEND_BUTTON_WIDTH }}
+            >
+              <CombinedActionButton
+                size="small"
+                keepOriginalDefault
+                iconPlacement="end"
+                align="end"
+                actions={[
+                  barAction('send', 'Send', 'primary', sending || !text || inputClosed, () => void onSubmit('send'), steerable, <SendPlaneIcon />),
+                  barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void onSubmit('send'), !steerable, <SendWhenReadyClockIcon />),
+                  barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void onSubmit('steer'), !steerable, <InterruptAndSendBoltIcon />),
+                ]}
+              />
+            </span>
+            {/* Fix 18 (owner addition): Interrupt is now a vultus action
+                (danger ActionStatus above) instead of a plain antd Button —
+                it renders the same red button, but its own `pending` state
+                drives ActionButton's antd `loading` spinner rather than
+                swapping the label. Fix 20: the action's `icon` (a stop
+                square) occupies the same slot antd's spinner takes over
+                while pending, so the button's width no longer needs to be
+                reserved — this wrapper only keeps the stable test id. Fix
+                22: iconPlacement="end" puts that icon on the right of the
+                label, matching every other send-bar action. */}
+            <span data-testid="conversation-interrupt">
+              <ActionButton action={interruptAction} size="small" iconPlacement="end" />
+            </span>
+          </div>
+        </div>
+      }
+    />
+  );
+});
+
 export function ConversationView(props: ConversationViewProps): React.JSX.Element {
   // The app's lent spinner (vultus-core slot), if any: a running ThoughtChain
   // tool node shows it instead of X's own loading icon.
@@ -1316,11 +1625,15 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     onFileDownload,
   } = props;
 
-  const [text, setText] = useState(props.draft ?? '');
+  // The composer's text (see ComposerText). Put into the input when it changes
+  // to a non-empty value, the draft goes below text already typed.
+  const [composerText] = useState(() => createComposerText(props.draft ?? ''));
   useEffect(() => {
     const draft = props.draft;
-    if (draft) setText((typed) => (typed.trim() && typed !== draft ? `${typed}\n\n${draft}` : draft));
-  }, [props.draft]);
+    if (!draft) return;
+    const typed = composerText.get();
+    composerText.set(typed.trim() && typed !== draft ? `${typed}\n\n${draft}` : draft);
+  }, [props.draft, composerText]);
   // Whether the input takes text: not after the conversation closed, unless
   // the view sends through a resume (composeWhenClosed).
   const inputClosed = closed && !props.composeWhenClosed;
@@ -1371,26 +1684,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const inputRef = useRef<React.ComponentRef<typeof Sender>>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const pasteSeq = useRef(0);
-  // The session controls' labels hide (optio-cc-compact) when the toolbar
-  // would overflow with them, and when even the compact toolbar overflows the
-  // controls collapse into a Settings button (optio-cc-collapsed). Measured
-  // without the classes and put back as needed, before paint, on every
-  // resize and controls change.
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const el = toolbarRef.current;
-    if (!el) return undefined;
-    const fit = () => {
-      el.classList.remove('optio-cc-compact', 'optio-cc-collapsed');
-      if (el.scrollWidth <= el.clientWidth) return;
-      el.classList.add('optio-cc-compact');
-      if (el.scrollWidth > el.clientWidth) el.classList.add('optio-cc-collapsed');
-    };
-    fit();
-    const observer = new ResizeObserver(fit);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [props.controls, props.customControls]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -1422,29 +1715,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       setInterrupting(false);
     }
   }
-
-  // Fix 18 (owner addition 2026-09-15): every other input-bar button is now a
-  // vultus action, so Interrupt becomes one too — a danger ActionStatus fed
-  // to vultus's ActionButton, same shape as barAction above. `pending`
-  // mirrors `interrupting`, so ActionButton's antd Button renders the
-  // `loading` spinner (see ActionButton.tsx) instead of Fix 6's old
-  // 'Interrupting…' label swap; `interrupt()` above still runs the same
-  // ref-guarded fire-once/error logic, just invoked through `fire`.
-  // Fix 20: `icon` gives idle Interrupt a stop icon; antd swaps it for the
-  // loading spinner while `pending`, in the same slot (see InterruptStopIcon
-  // above), which is what makes the fixed-width workaround unnecessary.
-  const interruptAction: ActionStatus = {
-    id: 'interrupt',
-    label: 'Interrupt',
-    icon: <InterruptStopIcon />,
-    variant: 'danger',
-    pending: interrupting,
-    disabled: !busy || closed,
-    invisible: false,
-    errors: [],
-    fire: () => void interrupt(),
-    firePromise: async () => interrupt(),
-  };
 
   // On mount: install the flash keyframes + copy hover rule and focus the input
   // so the operator can type immediately without clicking. The widget mounts
@@ -1568,7 +1838,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   }
 
   async function submit(kind: 'send' | 'steer') {
-    const body = text;
+    const body = composerText.get();
     if (!body || sending || sendingNowRef.current || submittingRef.current || inputClosed) return;
     const deliver = kind === 'steer' ? props.onSteer : onSend;
     if (!deliver) return;
@@ -1579,7 +1849,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       if (props.confirmSend && !(await props.confirmSend(body))) return;
       const ok = await deliver(body, attachments);
       if (ok === true) {
-        setText('');
+        composerText.set('');
         setUploads([]);
       } else {
         setError(ok && typeof ok === 'object' ? ok.error : 'Send failed — retry.');
@@ -1623,18 +1893,18 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     }
   }
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      // Cmd/Ctrl-Enter interrupts and sends while the agent works; Enter
-      // sends (when ready, if busy), and so does Cmd/Ctrl-Enter when idle.
-      void submit((e.metaKey || e.ctrlKey) && steerable ? 'steer' : 'send');
-    } else if (e.key === 'Escape' && busy && !closed) {
-      // Same guard as the Interrupt button: only while a turn is running.
-      e.preventDefault();
-      void interrupt();
-    }
-  }
+  // Stable callbacks for the composer (useStableCallback): an engine view
+  // passes new callbacks on every wire event.
+  const onControlChangeStable = useStableCallback(
+    (id: string, value: string | boolean) => props.onControlChange?.(id, value),
+  );
+  const onCustomControlChangeStable = useStableCallback(
+    (id: string, value: string) => props.onCustomControlChange?.(id, value) ?? Promise.resolve(null),
+  );
+  const onSubmit = useStableCallback(submit);
+  const onInterruptStable = useStableCallback(interrupt);
+  const onUploads = useStableCallback(takeUploads);
+  const onPasteFiles = useStableCallback(attachFiles);
 
   // Ant Design X experiment: tool rows are X ThoughtChain nodes. A run of
   // consecutive tool calls is one chain (its line links the steps); any other
@@ -2229,187 +2499,28 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               style={{ marginBottom: 4 }}
             />
           )}
-          {/* Ant Design X experiment (owner-approved 2026-10-12): the composer is
-              an X Sender. Our textarea fills its input slot (SenderTextArea),
-              today's toolbar is its footer, attached files show in its header,
-              and its own send button is off (suffix={false}): our keys and
-              buttons carry send / send when ready / interrupt and send. */}
-          <Sender
-            ref={inputRef}
-            components={{ input: SenderTextArea }}
-            classNames={{ input: 'optio-cc-flash' }}
-            // See-through and unpadded (owner, 2026-10-12): a host theme that
-            // fills inputs (daeo-style) made it a box of its own inside the
-            // Sender, its text flush left (X zeroes the inline padding) and set
-            // low. The Sender's padding alone frames the text.
-            styles={{ input: { backgroundColor: 'transparent', paddingTop: 0, paddingBottom: 0 } }}
-            value={text}
-            onChange={(value) => setText(value)}
-            // Our keys only (Enter, Cmd/Ctrl-Enter, Esc): returning false keeps
-            // X's own Enter-submits out of it.
-            onKeyDown={(e) => {
-              onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>);
-              return false;
-            }}
-            onPasteFile={showFileUpload ? (files) => attachFiles(Array.from(files)) : undefined}
-            placeholder={
-              steerable
-                ? 'Message agent…  (Enter: send when ready, ⌘/Ctrl+Enter: interrupt and send, Shift+Enter: newline)'
-                : 'Message agent…  (Enter to send, Shift+Enter for newline)'
-            }
-            autoSize={{ minRows: 2, maxRows: 8 }}
-            disabled={inputClosed}
-            suffix={false}
-            header={uploads.length > 0 ? (
-              // X Attachments' list (a card per file: icon by extension, size,
-              // a remove button; its own button to add more), shown while
-              // there are files: empty, X would show its upload placeholder.
-              <Sender.Header title="Attachments" open closable={false}>
-                <div data-testid="attach-chips">
-                  <Attachments
-                    items={uploads}
-                    beforeUpload={() => false}
-                    onChange={({ fileList }) => takeUploads(fileList)}
-                    multiple
-                    disabled={closed}
-                  />
-                </div>
-              </Sender.Header>
-            ) : undefined}
-            footer={
-              /* Sender's footer: a single-height toolbar — model + attach on the left,
-                  Send/Interrupt pushed right. All size="small" so heights match. */
-              <div ref={toolbarRef} data-testid="session-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {(props.customControls?.length && props.onCustomControlChange) || (props.controls && props.onControlChange) ? (
-                  <>
-                    {/* The task's own controls (custom) first, then the built-in
-                        ones; both collapse into the Settings popover together. */}
-                    <span className="optio-cc-inline-controls">
-                      {props.customControls?.length && props.onCustomControlChange ? (
-                        <CustomControls
-                          controls={props.customControls}
-                          disabled={props.busy || props.state.closed}
-                          onChange={props.onCustomControlChange}
-                          onError={setError}
-                        />
-                      ) : null}
-                      {props.controls && props.onControlChange ? (
-                        <SessionControls
-                          controls={props.controls}
-                          disabled={props.busy || props.state.closed}
-                          onChange={props.onControlChange}
-                        />
-                      ) : null}
-                    </span>
-                    {/* When even the compact toolbar is too wide (optio-cc-collapsed),
-                        the controls collapse into this button, which opens them,
-                        labelled, above the composer. */}
-                    <span className="optio-cc-settings-button">
-                      <Popover
-                        trigger="click"
-                        placement="topLeft"
-                        rootClassName="optio-cc-settings-popover"
-                        content={
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
-                            {props.customControls?.length && props.onCustomControlChange ? (
-                              <CustomControls
-                                controls={props.customControls}
-                                disabled={props.busy || props.state.closed}
-                                onChange={props.onCustomControlChange}
-                                onError={setError}
-                              />
-                            ) : null}
-                            {props.controls && props.onControlChange ? (
-                              <SessionControls
-                                controls={props.controls}
-                                disabled={props.busy || props.state.closed}
-                                onChange={props.onControlChange}
-                              />
-                            ) : null}
-                          </div>
-                        }
-                      >
-                        <Button size="small" aria-label="Session settings" icon={<SettingsIcon />}>
-                          Settings
-                        </Button>
-                      </Popover>
-                    </span>
-                  </>
-                ) : null}
-                {/* The actions: one group, pushed right. minWidth 0 lets it shrink
-                    like the flat row did (the send slot gives way first). */}
-                <div className="optio-cc-toolbar-actions" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 'auto', minWidth: 0 }}>
-                  {showFileUpload && (
-                    // X Attachments around the paperclip: its click opens X's file
-                    // picker, and files dragged anywhere onto the conversation land
-                    // in its drop area.
-                    <Attachments
-                      items={uploads}
-                      beforeUpload={() => false}
-                      onChange={({ fileList }) => takeUploads(fileList)}
-                      multiple
-                      disabled={closed}
-                      getDropContainer={() => rootRef.current}
-                      placeholder={{ title: 'Drop files here' }}
-                    >
-                      <Tooltip title="Attach files">
-                        <Button size="small" data-testid="attach-button" disabled={closed}>
-                          📎
-                        </Button>
-                      </Tooltip>
-                    </Attachments>
-                  )}
-                  {/* Fix 10: always the one vultus multi-action button, never a
-                      separate plain Send button — idle shows only 'Send'; busy and
-                      steerable shows [Send when ready | Interrupt and send]. An
-                      engine without onSteer (steerable stays false even while
-                      busy) keeps showing plain 'Send' behaviour. Visibility
-                      toggles which actions CombinedActionButton renders — with one
-                      visible it renders a plain button, so idle and a non-steering
-                      engine look identical to before. keepOriginalDefault keeps
-                      the main half on 'Send when ready' after the menu action
-                      fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
-                      the footprint so it never resizes across any of that; the red
-                      Interrupt beside it stops and sends nothing. Each
-                      action's `icon` (plane / clock / bolt) plus iconPlacement="end"
-                      puts that icon on the right of the label; align="end" right-
-                      aligns every state's label within the fixed width, on the
-                      main half and — since iconPlacement="end" also reaches
-                      each open-list row — the row's own icon (after its
-                      label) too. */}
-                  <span
-                    data-testid="conversation-send-combined"
-                    className="optio-cc-send-btn"
-                    style={{ width: SEND_BUTTON_WIDTH }}
-                  >
-                    <CombinedActionButton
-                      size="small"
-                      keepOriginalDefault
-                      iconPlacement="end"
-                      align="end"
-                      actions={[
-                        barAction('send', 'Send', 'primary', sending || !text || inputClosed, () => void submit('send'), steerable, <SendPlaneIcon />),
-                        barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable, <SendWhenReadyClockIcon />),
-                        barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer'), !steerable, <InterruptAndSendBoltIcon />),
-                      ]}
-                    />
-                  </span>
-                  {/* Fix 18 (owner addition): Interrupt is now a vultus action
-                      (danger ActionStatus above) instead of a plain antd Button —
-                      it renders the same red button, but its own `pending` state
-                      drives ActionButton's antd `loading` spinner rather than
-                      swapping the label. Fix 20: the action's `icon` (a stop
-                      square) occupies the same slot antd's spinner takes over
-                      while pending, so the button's width no longer needs to be
-                      reserved — this wrapper only keeps the stable test id. Fix
-                      22: iconPlacement="end" puts that icon on the right of the
-                      label, matching every other send-bar action. */}
-                  <span data-testid="conversation-interrupt">
-                    <ActionButton action={interruptAction} size="small" iconPlacement="end" />
-                  </span>
-                </div>
-              </div>
-            }
+          <Composer
+            text={composerText}
+            inputRef={inputRef}
+            dropContainer={rootRef}
+            uploads={uploads}
+            busy={busy}
+            closed={closed}
+            inputClosed={inputClosed}
+            steerable={steerable}
+            sending={sending}
+            interrupting={interrupting}
+            showFileUpload={showFileUpload}
+            controls={props.controls}
+            onControlChange={props.onControlChange ? onControlChangeStable : undefined}
+            customControls={props.customControls}
+            onCustomControlChange={props.onCustomControlChange ? onCustomControlChangeStable : undefined}
+            controlsDisabled={props.busy || props.state.closed}
+            onSubmit={onSubmit}
+            onInterrupt={onInterruptStable}
+            onUploads={onUploads}
+            onPasteFiles={onPasteFiles}
+            onError={setError}
           />
           </>)}
           </div>

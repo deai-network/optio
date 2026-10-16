@@ -145,6 +145,19 @@ afterEach(() => {
 });
 
 describe('ConversationView render isolation (40 rows)', () => {
+  it('a keystroke in the composer re-renders no transcript row', () => {
+    const items = makeItems(N);
+    render(view(makeProps(makeState(items))));
+    expect(counts.answer).toBeGreaterThan(0);
+    expect(counts.code).toBeGreaterThan(0);
+
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    reset();
+    fireEvent.change(box, { target: { value: 'h' } });
+    expect(box.value).toBe('h');
+    expect(counted0()).toEqual({ answer: 0, code: 0, bubble: 0, chain: 0 });
+  });
+
   it('a tick of a running tool row re-renders only that row', () => {
     const items = makeItems(N);
     const r = render(view(makeProps(makeState(items))));

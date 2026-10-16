@@ -538,6 +538,25 @@ describe('ConversationView sending through a resume (the suspended replay)', () 
     expect(box().value).toBe('my follow-up\n\nthe unsent one');
   });
 
+  it('inputReplacement: the text typed before it is back after it', () => {
+    const r = renderView(makeProps());
+    fireEvent.change(box(), { target: { value: 'half a thought' } });
+    rerenderView(r, makeProps({ inputReplacement: <div data-testid="the-replacement" /> }));
+    expect(screen.getByTestId('the-replacement')).toBeTruthy();
+    expect(screen.queryByTestId('conversation-input-box')).toBeNull();
+    rerenderView(r, makeProps());
+    expect(box().value).toBe('half a thought');
+  });
+
+  it('inputReplacement: a draft that comes back meanwhile goes below the typed text, once', () => {
+    const r = renderView(makeProps());
+    fireEvent.change(box(), { target: { value: 'my follow-up' } });
+    rerenderView(r, makeProps({ inputReplacement: <div /> }));
+    rerenderView(r, makeProps({ inputReplacement: <div />, draft: 'the unsent one' }));
+    rerenderView(r, makeProps({ draft: 'the unsent one' }));
+    expect(box().value).toBe('my follow-up\n\nthe unsent one');
+  });
+
   it('notice: rendered above the input', () => {
     renderView(makeProps({ notice: <div data-testid="the-notice">waiting</div> }));
     expect(screen.getByTestId('the-notice').textContent).toBe('waiting');
