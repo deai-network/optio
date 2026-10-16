@@ -1,4 +1,4 @@
-import { useContext } from 'react';
+import { memo, useContext } from 'react';
 import { Typography } from 'antd';
 import { Mermaid } from '@ant-design/x';
 import XMarkdown, { type ComponentProps } from '@ant-design/x-markdown';
@@ -70,9 +70,16 @@ function Link({ href, children }: ComponentProps<{ href?: string }>) {
 
 const COMPONENTS = { code: Code, a: Link };
 
+// XMarkdown is memoized, and so is its renderer on `streaming`: a new object
+// here on every render re-ran the whole answer's sanitizing and parsing and
+// re-created every code block in it.
+const STREAMING = { hasNextChunk: true, enableAnimation: true, tail: true };
+const STREAMED = { hasNextChunk: false, enableAnimation: true, tail: true };
+
 /** `pending`: the text is still streaming in (XMarkdown animates it and shows
- *  its tail cursor). */
-export function AnswerBlock({ text, pending = false }: { text: string; pending?: boolean }) {
+ *  its tail cursor). Memoized: an answer renders again only when its text,
+ *  its pending state or the theme changes. */
+export const AnswerBlock = memo(function AnswerBlock({ text, pending = false }: { text: string; pending?: boolean }) {
   const dark = useDarkTheme();
   return (
     <XMarkdown
@@ -82,7 +89,7 @@ export function AnswerBlock({ text, pending = false }: { text: string; pending?:
       config={CONFIG}
       components={COMPONENTS}
       dompurifyConfig={PURIFY}
-      streaming={{ hasNextChunk: pending, enableAnimation: true, tail: true }}
+      streaming={pending ? STREAMING : STREAMED}
     />
   );
-}
+});
