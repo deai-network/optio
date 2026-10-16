@@ -1,5 +1,5 @@
 import {
-  Fragment, forwardRef, memo, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore,
+  forwardRef, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore,
 } from 'react';
 import { Alert, Button, Input, Popover, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken, UploadFile } from 'antd';
@@ -878,6 +878,8 @@ function QuestionCard({
   );
 }
 
+const QuestionRow = memo(QuestionCard);
+
 function renderBackgroundRunning(
   item: Extract<ChatItem, { kind: 'tool' }>,
   elapsed: string | null,
@@ -1297,6 +1299,492 @@ export function ConversationPlaceholder({ title, icon, description, minHeight, w
 }
 
 // ---------------------------------------------------------------------------
+// The transcript's rows. Each is a memoized component with explicit props: its
+// item(s), and only the view-wide values it reads. A reducer keeps an
+// unchanged item's object, and the view hands rows stable callbacks
+// (useStableCallback), so a keystroke, a tick, a streaming delta to another
+// row or a busy/idle toggle re-renders none of them.
+
+// A marker across the transcript (conversation ended, resumed, switched,
+// compacted): an X Bubble.Divider (Ant Design X experiment), its text in the
+// middle. Keyed apart from the row that may draw it (a resume notice, a
+// compaction summary), which carries the same seq.
+function renderDivider(
+  key: string, testId: string | undefined, label: React.ReactNode, variant: 'solid' | 'dashed',
+) {
+  return (
+    <div key={key} data-testid={testId} style={{ alignSelf: 'stretch' }}>
+      <Bubble.Divider content={label} dividerProps={{ variant, plain: true }} />
+    </div>
+  );
+}
+
+// Ant Design X experiment (owner request 2026-10-08): user messages and
+// answers are X Bubbles. Bubble places itself (start/end), so these rows
+// stretch across the column; our time labels go in its footer slot. Variant
+// and shape are X's defaults (filled), as in X's own templates.
+//
+// A user message. A queued one (a Send when ready the agent has not taken
+// yet; the reducer keeps it pinned at the bottom) is dashed and muted, and
+// offers Send now while `steerable`. The view passes `steerable` and
+// `sending` to queued rows only (false to the others), so toggling them
+// re-renders no other row.
+const UserRow = memo(function UserRow({ item, token, steerable, sending, onSendNow }: {
+  item: Extract<ChatItem, { kind: 'user' }>;
+  token: GlobalToken;
+  steerable: boolean;
+  sending: boolean;
+  onSendNow: (upTo?: string) => Promise<void>;
+}) {
+  const queuedContent = useCallback((text: string) => (
+    <>
+      {text}
+      <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
+        Queued — the agent reads it when ready
+        {steerable ? (
+          <>
+            {' · '}
+            <Button
+              type="link"
+              size="small"
+              data-testid="queued-send-now"
+              disabled={sending}
+              style={{ padding: 0, height: 'auto', fontSize: 12 }}
+              onClick={() => void onSendNow(item.queueId)}
+            >
+              Send now
+            </Button>
+          </>
+        ) : null}
+      </div>
+    </>
+  ), [token, steerable, sending, onSendNow, item.queueId]);
+  if (item.queued) {
+    return (
+      <Bubble
+        data-testid="queued-bubble"
+        placement="end"
+        variant="outlined"
+        style={{ alignSelf: 'stretch' }}
+        classNames={{ content: GLASS_USER }}
+        styles={{ content: { ...BUBBLE_TEXT, borderStyle: 'dashed', opacity: 0.6 } }}
+        content={item.text}
+        contentRender={queuedContent}
+        footer={renderTimeLabel(item.timestamp, token)}
+        footerPlacement="outer-end"
+      />
+    );
+  }
+  return (
+    <Bubble
+      placement="end"
+      style={{ alignSelf: 'stretch' }}
+      classNames={{ content: GLASS_USER }}
+      styles={{ content: BUBBLE_TEXT }}
+      content={item.text}
+      footer={renderTimeLabel(item.timestamp, token)}
+      footerPlacement="outer-end"
+    />
+  );
+});
+
+// An answer: its markdown (AnswerBlock), the files it links, and its time and
+// hover-revealed copy action in the footer.
+const AnswerRow = memo(function AnswerRow({ item, token }: {
+  item: Extract<ChatItem, { kind: 'assistant' }>;
+  token: GlobalToken;
+}) {
+  const { markdownText, trailingSpan } = withInterruptEllipsis(item.text, item.interrupted);
+  const contentRender = useCallback(() => (
+    <div className="optio-cc-answer">
+      <AnswerBlock text={markdownText} pending={item.pending} />
+      <AnswerFiles text={item.text} />
+      {trailingSpan && <span data-testid="answer-interrupt-ellipsis">{ELLIPSIS}</span>}
+    </div>
+  ), [markdownText, trailingSpan, item.pending, item.text]);
+  const footer = useMemo(() => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      {renderTimeLabelRange(item.timestamp, item.endTimestamp, token)}
+      {!item.pending && <Actions.Copy className="optio-cc-copy" data-testid="answer-copy" text={item.text} />}
+    </div>
+  ), [item.timestamp, item.endTimestamp, item.pending, item.text, token]);
+  return (
+    <Bubble
+      // An answer the operator interrupted keeps its text and gets a
+      // jagged bottom edge (the class is installed on mount).
+      data-testid={item.interrupted ? 'answer-interrupted' : undefined}
+      placement="start"
+      style={{ alignSelf: 'stretch' }}
+      classNames={{ root: 'optio-cc-answer-bubble', content: item.interrupted ? 'optio-cc-interrupted' : undefined }}
+      streaming={item.pending}
+      loading={item.pending && item.text === ''}
+      content={item.text}
+      contentRender={contentRender}
+      footer={footer}
+      footerPlacement="outer-start"
+    />
+  );
+});
+
+const ActivityRow = memo(function ActivityRow({ item, token }: {
+  item: Extract<ChatItem, { kind: 'activity' }>;
+  token: GlobalToken;
+}) {
+  // A muted note ("⏹ Interrupted by you", an undelivered message): one
+  // quiet centred line, not a bubble.
+  if (item.muted) {
+    return (
+      <div data-testid="activity-muted" style={{ alignSelf: 'center', color: token.colorTextTertiary, fontSize: 12 }}>
+        {item.text}
+      </div>
+    );
+  }
+  // Harness System: messages — neither the user nor the agent, so render
+  // a centered bubble in a distinct (lavender) colour, set apart from the
+  // right-aligned user and left-aligned assistant bubbles. Fix 9, owner
+  // ruling 2026-09-14: these rows show their time too, as a sibling
+  // below the bubble (same small grey label as withTimeLabel's three
+  // bubbles). Not routed through that helper (it is keyed to the
+  // 'flex-end'/'flex-start'/'stretch' alignments the three message
+  // kinds use), but built the same way it is: the wrapper div below is
+  // this row's containing block, sized against the definite-width
+  // transcript column, so IT carries the `maxWidth: '80%'` cap (fix 9
+  // review round 1). The bubble itself must stay uncapped — capping
+  // both would resolve the bubble's 80% against the wrapper's already
+  // shrunk-to-fit width and compound far below 80%, wrapping short
+  // text that fits on one line (invisible in jsdom, real in a
+  // browser). This wrapper renders for every non-muted activity row
+  // regardless of whether it has a timestamp; the cap living here
+  // keeps that identical to today's width even when renderTimeLabel
+  // below renders nothing.
+  //
+  // Fix 14, owner ruling 2026-09-15 (manual-test finding): a "System: "
+  // row -- flagged `item.system` by the reducer, since an untimed
+  // background-task/upload-notice row shares this same branch and a
+  // timestamp alone can't tell them apart (chat.ts) -- is styled more
+  // like a user message: the user bubble's own corner radius, and its
+  // time label right-aligned like the one under a user bubble. Position
+  // is otherwise unchanged: the bubble keeps its own `alignSelf:
+  // 'center'` below regardless, so only the (narrower) label's place
+  // within the column moves when `alignItems` turns 'flex-end'.
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignSelf: 'center',
+        alignItems: item.system ? 'flex-end' : 'center',
+        maxWidth: '80%',
+      }}
+    >
+      {/* X's Bubble.System (Ant Design X experiment): centred, its own
+          size and shape; the glass tinted with the theme's purple. No
+          maxWidth here — the wrapper above caps the row's width against
+          the transcript column; see the comment there. */}
+      <Bubble.System
+        data-testid="activity-bubble"
+        classNames={{ content: GLASS_SYSTEM }}
+        styles={{ content: BUBBLE_TEXT }}
+        content={item.text}
+      />
+      {renderTimeLabel(item.timestamp, token)}
+    </div>
+  );
+});
+
+// Reasoning trace, task-gated (thinkingVerbosity; the view leaves the row out
+// when hidden): an X Think (Ant Design X experiment), expanded, collapsible,
+// left-aligned like the assistant.
+const ThinkingRow = memo(function ThinkingRow({ item }: { item: Extract<ChatItem, { kind: 'thinking' }> }) {
+  return (
+    <Think data-testid="thinking" title="Reasoning" defaultExpanded style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
+      <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.text}</div>
+    </Think>
+  );
+});
+
+const PermissionRow = memo(function PermissionRow({ item, token, onPermission }: {
+  item: Extract<ChatItem, { kind: 'permission' }>;
+  token: GlobalToken;
+  onPermission: ConversationViewProps['onPermission'];
+}) {
+  // Once answered, hide the dialog entirely — the conversation proceeds.
+  if (item.answered !== null) return null;
+  return (
+    <div
+      data-testid="permission-card"
+      style={{
+        alignSelf: 'stretch',
+        border: `1px solid ${token.colorWarning}`,
+        background: token.colorWarningBg,
+        borderRadius: 8,
+        padding: 8,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+      }}
+    >
+      {/* The input as X code blocks, like an expanded tool row; its
+          description (left out there) heads the card instead. */}
+      <div>
+        Permission requested: <strong>{item.toolName}</strong>
+        {inputDescription(item.input) ? ` · ${inputDescription(item.input)}` : ''}
+      </div>
+      {renderToolInput(item.input, item.preview)}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button
+          size="small"
+          type="primary"
+          data-testid="permission-approve"
+          onClick={() => onPermission(item.requestId, 'allow')}
+        >
+          Approve
+        </Button>
+        <Button
+          size="small"
+          danger
+          data-testid="permission-deny"
+          onClick={() => onPermission(item.requestId, 'deny')}
+        >
+          Deny
+        </Button>
+      </div>
+    </div>
+  );
+});
+
+const ErrorRow = memo(function ErrorRow({ item, token }: { item: Extract<ChatItem, { kind: 'error' }>; token: GlobalToken }) {
+  return withTimeLabel(
+    item.seq,
+    'stretch',
+    'flex-start',
+    <div
+      data-testid="conversation-error-item"
+      style={{
+        background: token.colorErrorBg,
+        border: `1px solid ${token.colorErrorBorder}`,
+        color: token.colorErrorText,
+        borderRadius: 8,
+        padding: '8px 12px',
+        whiteSpace: 'pre-wrap',
+      }}
+    >
+      {item.text}
+    </div>,
+    renderTimeLabel(item.timestamp, token),
+  );
+});
+
+// The bands across the transcript. Only the resume and switch bands name
+// controls, so only they get `controls` and `customControls`.
+const BandRow = memo(function BandRow({ item, controls, customControls }: {
+  item: Extract<ChatItem, { kind: 'closed' | 'resumed' | 'switched' | 'compacting' | 'compacted' }>;
+  controls?: SessionControl[];
+  customControls?: CustomControl[];
+}) {
+  switch (item.kind) {
+    case 'closed':
+      return renderDivider(`closed-${item.seq}`, undefined, `conversation ended${item.reason ? ` (${item.reason})` : ''}`, 'solid');
+    // Resume marker (owner request 2026-10-08): the session was captured
+    // here and resumed later; it names the mode the resumed run runs in.
+    case 'resumed':
+      return renderDivider(`resumed-${item.seq}`, 'resume-band',
+        <ResumeBandText item={item} customControls={customControls} />, 'solid');
+    // Switch marker (owner request 2026-10-12), the same divider: the
+    // model or a task-defined control's option was switched here.
+    case 'switched':
+      return renderDivider(`switched-${item.seq}`, 'switch-band',
+        <SwitchBandText item={item} controls={controls} customControls={customControls} />, 'solid');
+    // Compaction markers (owner request 2026-10-08), around the summary.
+    case 'compacting':
+      return renderDivider(`compacting-${item.seq}`, 'compaction-start-band', 'Context is being compacted.', 'dashed');
+    case 'compacted':
+      return renderDivider(`compacted-${item.seq}`, 'compaction-end-band', 'Context has been compacted.', 'dashed');
+  }
+});
+
+// Ant Design X experiment: tool rows are X ThoughtChain nodes, and a run of
+// consecutive tool calls is one chain (its line links the steps).
+//
+// One tool call as a ThoughtChain node: X's status icon for running / done /
+// failed / stopped, the tool name as title, our one-line summary and elapsed
+// time as description, and the input and result as its collapsible content.
+// `slotSpinner`: the app lends a spinner (vultus-core slot), which a running
+// call shows as its icon (X shows a status icon over any icon, so no status
+// then) in place of X's own.
+function toolChainItem(item: ToolItem, slotSpinner: boolean): ThoughtChainItemType {
+  const { finished, failed } = toolLifecycle(item);
+  const stopped = item.status === 'stopped';
+  let summary = toolSummary(item.input);
+  if (failed && item.result) summary = item.result.split('\n')[0].slice(0, 160);
+  else if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
+  // Summary, then a finished background job's outcome, then the elapsed
+  // time: " · " between whichever are present.
+  const line = [summary, item.background && finished ? item.result : ''].filter(Boolean).join(' · ');
+  const detail = renderToolInput(item.input, item.preview);
+  const hasContent = detail !== null || !!item.result;
+  const slot = !finished && !stopped && slotSpinner;
+  return {
+    key: String(item.seq),
+    status: slot ? undefined : !finished ? 'loading' : stopped ? 'abort' : failed ? 'error' : 'success',
+    ...(slot ? { icon: <SlotSpinner localKey={`optio:tool:${item.callId ?? item.seq}`} /> } : {}),
+    blink: !finished,
+    title: item.name,
+    description: (
+      <span
+        data-testid="tool-call"
+        data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
+      >
+        {line}
+        <ToolElapsed startedAt={item.startedAt} endedAt={item.endedAt} separator={line ? ' · ' : ''} />
+      </span>
+    ),
+    collapsible: hasContent,
+    content: hasContent ? (
+      <>
+        {detail}
+        {item.result ? (
+          <div data-testid="tool-result" style={{ marginTop: 8 }}>
+            <CodeBlock lang={looksLikeJson(item.result) ? 'json' : 'log'} title="output" maxHeight={TOOL_CODE_MAX_HEIGHT}>
+              {item.result}
+            </CodeBlock>
+          </div>
+        ) : null}
+      </>
+    ) : undefined,
+  };
+}
+
+// Equal props: the same values, an array prop element by element (a chain's
+// run and open states are new arrays on every render of the view).
+function sameElementwise(a: object, b: object): boolean {
+  const pa = a as Record<string, unknown>;
+  const pb = b as Record<string, unknown>;
+  const keys = Object.keys(pa);
+  if (keys.length !== Object.keys(pb).length) return false;
+  return keys.every((k) => {
+    const x = pa[k];
+    const y = pb[k];
+    return Object.is(x, y)
+      || (Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => Object.is(v, y[i])));
+  });
+}
+
+// A run of consecutive tool calls as one X ThoughtChain. `open`: whether each
+// call is expanded, in run order. Open/closed stays the view's (its toolOpen
+// and the verbosity default), so a verbosity change re-opens or closes the
+// untouched rows; `onToggle` reports X's expand changes for the run's calls.
+const ToolChain = memo(function ToolChain({ run, open, slotSpinner, onToggle }: {
+  run: ToolItem[];
+  open: boolean[];
+  slotSpinner: boolean;
+  onToggle: (run: ToolItem[], expandedKeys: string[]) => void;
+}) {
+  return (
+    <ThoughtChain
+      data-testid="tool-chain"
+      items={run.map((item) => toolChainItem(item, slotSpinner))}
+      expandedKeys={run.filter((_, i) => open[i]).map((t) => String(t.seq))}
+      onExpand={(keys) => onToggle(run, keys)}
+    />
+  );
+}, sameElementwise);
+
+// One task as a ThoughtChain node: X's status icon (completed: success; a
+// label ending in "(failed)": error; cancelled: abort; in progress: X's
+// loading icon, or the app's lent spinner as the node's icon, blinking, as a
+// running tool row, but not once the conversation is closed (a suspended
+// session runs nothing): then X's plain node icon; pending: X's plain node
+// icon). The title carries the
+// row: its label, and for a described task the info icon and the click that
+// opens the detail panel (highlighted while selected).
+function todoChainItem(todo: ConversationTodo, { selected, closed, slotSpinner, token, onSelect }: {
+  selected: boolean;
+  closed: boolean;
+  slotSpinner: boolean;
+  token: GlobalToken;
+  onSelect: (id: string) => void;
+}): ThoughtChainItemType {
+  const { failed, label } = taskRowLabel(todo.text);
+  const description = todo.description?.trim() ? todo.description : undefined;
+  const running = todo.status === 'in_progress' && !failed && !closed;
+  const slot = running && slotSpinner;
+  const status = slot ? undefined
+    : running ? 'loading'
+    : failed ? 'error'
+    : todo.status === 'completed' ? 'success'
+    : todo.status === 'cancelled' ? 'abort'
+    : undefined;
+  const title = description ? (
+    <button
+      type="button"
+      data-testid="conversation-todo"
+      data-status={todo.status}
+      onClick={() => onSelect(todo.id)}
+      style={{
+        padding: '1px 4px',
+        border: 'none',
+        borderRadius: 4,
+        background: selected ? token.colorPrimaryBg : 'transparent',
+        textAlign: 'left',
+        font: 'inherit',
+        color: 'inherit',
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+      <Tooltip title="Click for details" mouseEnterDelay={0}>
+        <span style={{ display: 'inline-flex', verticalAlign: 'text-bottom' }}>
+          <TaskInfoIcon color={token.colorTextSecondary} />
+        </span>
+      </Tooltip>
+    </button>
+  ) : (
+    <span data-testid="conversation-todo" data-status={todo.status}>{label}</span>
+  );
+  return {
+    key: todo.id,
+    status,
+    ...(slot ? {
+      icon: (
+        <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex' }}>
+          <SlotSpinner localKey={`optio:todo:${todo.id}`} />
+        </span>
+      ),
+    } : {}),
+    blink: running,
+    title,
+  };
+}
+
+// X draws its line beside a node's body, below its title row; a task node is
+// title-only, so each gets room below its title, and the chain no gap, so the
+// line runs into the next task's icon.
+const TODO_CHAIN_STYLES = { root: { gap: 0 }, item: { paddingBottom: 10 } };
+
+// The task list as one X ThoughtChain. `todos` is compared by content by the
+// view (an engine view builds a new array from widgetData on every render).
+const TodoChain = memo(function TodoChain({ todos, selectedTodoId, detailOpen, closed, slotSpinner, token, onSelect }: {
+  todos: ConversationTodo[];
+  selectedTodoId: string | null;
+  detailOpen: boolean;
+  closed: boolean;
+  slotSpinner: boolean;
+  token: GlobalToken;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <ThoughtChain
+      data-testid="conversation-todos-chain"
+      items={todos.map((todo) => todoChainItem(todo, {
+        selected: detailOpen && todo.id === selectedTodoId, closed, slotSpinner, token, onSelect,
+      }))}
+      styles={TODO_CHAIN_STYLES}
+    />
+  );
+});
+
+// ---------------------------------------------------------------------------
 // The composer.
 
 /** The composer's text. The view keeps it, so that it outlives the composer
@@ -1620,9 +2108,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     nativeSpinner,
     onSend,
     onInterrupt,
-    onPermission,
-    onQuestion,
-    onFileDownload,
   } = props;
 
   // The composer's text (see ComposerText). Put into the input when it changes
@@ -1893,8 +2378,18 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     }
   }
 
-  // Stable callbacks for the composer (useStableCallback): an engine view
-  // passes new callbacks on every wire event.
+  // Stable callbacks for the rows and the composer (useStableCallback): an
+  // engine view passes new callbacks on every wire event.
+  const onSendNow = useStableCallback(sendQueuedNow);
+  const onPermissionStable = useStableCallback(
+    (requestId: string, behavior: 'allow' | 'deny') => props.onPermission(requestId, behavior),
+  );
+  const onQuestionStable = useStableCallback(
+    (...args: Parameters<NonNullable<ConversationViewProps['onQuestion']>>) => props.onQuestion?.(...args),
+  );
+  const onFileDownloadStable = useStableCallback(
+    (relpath: string, filename: string) => props.onFileDownload(relpath, filename),
+  );
   const onControlChangeStable = useStableCallback(
     (id: string, value: string | boolean) => props.onControlChange?.(id, value),
   );
@@ -1905,24 +2400,44 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const onInterruptStable = useStableCallback(interrupt);
   const onUploads = useStableCallback(takeUploads);
   const onPasteFiles = useStableCallback(attachFiles);
+  const onToggleRun = useCallback((run: ToolItem[], expandedKeys: string[]) => setToolOpen((prev) => {
+    const next = new Map(prev);
+    for (const t of run) next.set(t.seq, expandedKeys.includes(String(t.seq)));
+    return next;
+  }), []);
+  const slotSpinner = lentSpinner !== undefined;
 
   // Ant Design X experiment: tool rows are X ThoughtChain nodes. A run of
-  // consecutive tool calls is one chain (its line links the steps); any other
-  // item ends the run. Silent keeps its own rendering (renderItem).
+  // consecutive tool calls is one chain (ToolChain); any other item ends the
+  // run. Silent keeps its own rendering (transcriptRow).
   function renderTranscript(items: ChatItem[]): React.ReactNode[] {
     const out: React.ReactNode[] = [];
     // A chain is keyed by its first call (tools-<seq>); every other row by
     // transcriptKeys (kind and seq: one event can yield several rows).
     const keys = transcriptKeys(items);
-    let run: Extract<ChatItem, { kind: 'tool' }>[] = [];
+    // description-while-active, description-only, and verbose share one
+    // collapsible tool row: verbose starts open, the description levels
+    // closed; a toolOpen entry overrides that.
+    const isOpen = (seq: number) => (toolOpen.has(seq) ? toolOpen.get(seq)! : toolVerbosity === 'verbose');
+    let run: ToolItem[] = [];
     const flush = () => {
-      if (run.length > 0) out.push(renderToolChain(run));
+      if (run.length > 0) {
+        out.push(
+          <ToolChain
+            key={`tools-${run[0].seq}`}
+            run={run}
+            open={run.map((t) => isOpen(t.seq))}
+            slotSpinner={slotSpinner}
+            onToggle={onToggleRun}
+          />,
+        );
+      }
       run = [];
     };
     items.forEach((item, i) => {
       // description-while-active shows a tool only while it runs: a finished
-      // one leaves the chain (renderItem gives a finished background job its
-      // muted outcome line, as at silent, and nothing else).
+      // one leaves the chain (transcriptRow gives a finished background job
+      // its muted outcome line, as at silent, and nothing else).
       const hidden = item.kind === 'tool' && toolVerbosity === 'description-while-active'
         && toolLifecycle(item).finished;
       if (item.kind === 'tool' && toolVerbosity !== 'silent' && !hidden) {
@@ -1930,433 +2445,78 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         return;
       }
       flush();
-      out.push(<Fragment key={keys[i]}>{renderItem(item)}</Fragment>);
+      out.push(transcriptRow(item, keys[i]));
     });
     flush();
     return out;
   }
 
-  // One task as a ThoughtChain node: X's status icon (completed: success; a
-  // label ending in "(failed)": error; cancelled: abort; in progress: X's
-  // loading icon, or the app's lent spinner as the node's icon, blinking, as a
-  // running tool row, but not once the conversation is closed (a suspended
-  // session runs nothing): then X's plain node icon; pending: X's plain node
-  // icon). The title carries the
-  // row: its label, and for a described task the info icon and the click that
-  // opens the detail panel (highlighted while selected).
-  function todoChainItem(todo: ConversationTodo): ThoughtChainItemType {
-    const { failed, label } = taskRowLabel(todo.text);
-    const description = todo.description?.trim() ? todo.description : undefined;
-    const running = todo.status === 'in_progress' && !failed && !closed;
-    const slot = running && lentSpinner !== undefined;
-    const status = slot ? undefined
-      : running ? 'loading'
-      : failed ? 'error'
-      : todo.status === 'completed' ? 'success'
-      : todo.status === 'cancelled' ? 'abort'
-      : undefined;
-    const selected = detailOpen && todo.id === selectedTodoId;
-    const title = description ? (
-      <button
-        type="button"
-        data-testid="conversation-todo"
-        data-status={todo.status}
-        onClick={() => setSelectedTodoId(todo.id)}
-        style={{
-          padding: '1px 4px',
-          border: 'none',
-          borderRadius: 4,
-          background: selected ? token.colorPrimaryBg : 'transparent',
-          textAlign: 'left',
-          font: 'inherit',
-          color: 'inherit',
-          cursor: 'pointer',
-        }}
-      >
-        {label}
-                      <Tooltip title="Click for details" mouseEnterDelay={0}>
-                        <span style={{ display: 'inline-flex', verticalAlign: 'text-bottom' }}>
-                          <TaskInfoIcon color={token.colorTextSecondary} />
-                        </span>
-                      </Tooltip>
-      </button>
-    ) : (
-      <span data-testid="conversation-todo" data-status={todo.status}>{label}</span>
-    );
-    return {
-      key: todo.id,
-      status,
-      ...(slot ? {
-        icon: (
-          <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex' }}>
-            <SlotSpinner localKey={`optio:todo:${todo.id}`} />
-          </span>
-        ),
-      } : {}),
-      blink: running,
-      title,
-    };
-  }
-
-  function renderToolChain(run: Extract<ChatItem, { kind: 'tool' }>[]): React.ReactNode {
-    const isOpen = (seq: number) => (toolOpen.has(seq) ? toolOpen.get(seq)! : toolVerbosity === 'verbose');
-    return (
-      <ThoughtChain
-        key={`tools-${run[0].seq}`}
-        data-testid="tool-chain"
-        items={run.map(toolChainItem)}
-        // Open/closed stays ours (toolOpen + the verbosity default), so a
-        // verbosity change re-opens or closes the untouched rows.
-        expandedKeys={run.filter((t) => isOpen(t.seq)).map((t) => String(t.seq))}
-        onExpand={(keys) => setToolOpen((prev) => {
-          const next = new Map(prev);
-          for (const t of run) next.set(t.seq, keys.includes(String(t.seq)));
-          return next;
-        })}
-      />
-    );
-  }
-
-  // One tool call as a ThoughtChain node: X's status icon for running / done /
-  // failed / stopped, the tool name as title, our one-line summary and elapsed
-  // time as description, and the input and result as its collapsible content.
-  function toolChainItem(item: Extract<ChatItem, { kind: 'tool' }>): ThoughtChainItemType {
-    const { finished, failed } = toolLifecycle(item);
-    const stopped = item.status === 'stopped';
-    let summary = toolSummary(item.input);
-    if (failed && item.result) summary = item.result.split('\n')[0].slice(0, 160);
-    else if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
-    // Summary, then a finished background job's outcome, then the elapsed
-    // time: " · " between whichever are present.
-    const line = [summary, item.background && finished ? item.result : ''].filter(Boolean).join(' · ');
-    const detail = renderToolInput(item.input, item.preview);
-    const hasContent = detail !== null || !!item.result;
-    // Running with a lent spinner: the slot spinner as the node's icon (X
-    // shows a status icon over any icon, so no status then); else X's own.
-    const slot = !finished && !stopped && lentSpinner !== undefined;
-    return {
-      key: String(item.seq),
-      status: slot ? undefined : !finished ? 'loading' : stopped ? 'abort' : failed ? 'error' : 'success',
-      ...(slot ? { icon: <SlotSpinner localKey={`optio:tool:${item.callId ?? item.seq}`} /> } : {}),
-      blink: !finished,
-      title: item.name,
-      description: (
-        <span
-          data-testid="tool-call"
-          data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
-        >
-          {line}
-          <ToolElapsed startedAt={item.startedAt} endedAt={item.endedAt} separator={line ? ' · ' : ''} />
-        </span>
-      ),
-      collapsible: hasContent,
-      content: hasContent ? (
-        <>
-          {detail}
-          {item.result ? (
-            <div data-testid="tool-result" style={{ marginTop: 8 }}>
-              <CodeBlock lang={looksLikeJson(item.result) ? 'json' : 'log'} title="output" maxHeight={TOOL_CODE_MAX_HEIGHT}>
-                {item.result}
-              </CodeBlock>
-            </div>
-          ) : null}
-        </>
-      ) : undefined,
-    };
-  }
-
-  function renderItem(item: ChatItem) {
+  // Any row but a tool chain, given the view-wide values its kind reads.
+  function transcriptRow(item: ChatItem, key: string): React.ReactNode {
     switch (item.kind) {
-      // Ant Design X experiment (owner request 2026-10-08): user messages and
-      // answers are X Bubbles. Bubble places itself (start/end), so these rows
-      // stretch across the column; our time labels go in its footer slot.
-      // Variant and shape are X's defaults (filled), as in X's own templates.
       case 'user':
-        // A Send when ready the agent has not taken yet: dashed and muted; the
-        // reducer keeps it pinned at the bottom.
-        if (item.queued) {
-          return (
-            <Bubble
-              key={item.seq}
-              data-testid="queued-bubble"
-              placement="end"
-              variant="outlined"
-              style={{ alignSelf: 'stretch' }}
-              classNames={{ content: GLASS_USER }}
-              styles={{ content: { ...BUBBLE_TEXT, borderStyle: 'dashed', opacity: 0.6 } }}
-              content={item.text}
-              contentRender={(text) => (
-                <>
-                  {text}
-                  <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
-                    Queued — the agent reads it when ready
-                    {steerable ? (
-                      <>
-                        {' · '}
-                        <Button
-                          type="link"
-                          size="small"
-                          data-testid="queued-send-now"
-                          disabled={sending}
-                          style={{ padding: 0, height: 'auto', fontSize: 12 }}
-                          onClick={() => void sendQueuedNow(item.queueId)}
-                        >
-                          Send now
-                        </Button>
-                      </>
-                    ) : null}
-                  </div>
-                </>
-              )}
-              footer={renderTimeLabel(item.timestamp, token)}
-              footerPlacement="outer-end"
-            />
-          );
-        }
         return (
-          <Bubble
-            key={item.seq}
-            placement="end"
-            style={{ alignSelf: 'stretch' }}
-            classNames={{ content: GLASS_USER }}
-            styles={{ content: BUBBLE_TEXT }}
-            content={item.text}
-            footer={renderTimeLabel(item.timestamp, token)}
-            footerPlacement="outer-end"
+          <UserRow
+            key={key}
+            item={item}
+            token={token}
+            steerable={item.queued ? steerable : false}
+            sending={item.queued ? sending : false}
+            onSendNow={onSendNow}
           />
         );
-      case 'assistant': {
-        const ellipsis = withInterruptEllipsis(item.text, item.interrupted);
-        const timeLabel = renderTimeLabelRange(item.timestamp, item.endTimestamp, token);
-        return (
-          <Bubble
-            key={item.seq}
-            // An answer the operator interrupted keeps its text and gets a
-            // jagged bottom edge (the class is installed on mount).
-            data-testid={item.interrupted ? 'answer-interrupted' : undefined}
-            placement="start"
-            style={{ alignSelf: 'stretch' }}
-            classNames={{ root: 'optio-cc-answer-bubble', content: item.interrupted ? 'optio-cc-interrupted' : undefined }}
-            streaming={item.pending}
-            loading={item.pending && item.text === ''}
-            content={item.text}
-            contentRender={() => (
-              <div className="optio-cc-answer">
-                <AnswerBlock text={ellipsis.markdownText} pending={item.pending} />
-                <AnswerFiles text={item.text} />
-                {ellipsis.trailingSpan && <span data-testid="answer-interrupt-ellipsis">{ELLIPSIS}</span>}
-              </div>
-            )}
-            footer={
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                {timeLabel}
-                {!item.pending && <Actions.Copy className="optio-cc-copy" data-testid="answer-copy" text={item.text} />}
-              </div>
-            }
-            footerPlacement="outer-start"
-          />
-        );
-      }
+      case 'assistant':
+        return <AnswerRow key={key} item={item} token={token} />;
       case 'activity':
-        // A muted note ("⏹ Interrupted by you", an undelivered message): one
-        // quiet centred line, not a bubble.
-        if (item.muted) {
-          return (
-            <div
-              key={item.seq}
-              data-testid="activity-muted"
-              style={{ alignSelf: 'center', color: token.colorTextTertiary, fontSize: 12 }}
-            >
-              {item.text}
-            </div>
-          );
-        }
-        // Harness System: messages — neither the user nor the agent, so render
-        // a centered bubble in a distinct (lavender) colour, set apart from the
-        // right-aligned user and left-aligned assistant bubbles. Fix 9, owner
-        // ruling 2026-09-14: these rows show their time too, as a sibling
-        // below the bubble (same small grey label as withTimeLabel's three
-        // bubbles). Not routed through that helper (it is keyed to the
-        // 'flex-end'/'flex-start'/'stretch' alignments the three message
-        // kinds use), but built the same way it is: the wrapper div below is
-        // this row's containing block, sized against the definite-width
-        // transcript column, so IT carries the `maxWidth: '80%'` cap (fix 9
-        // review round 1). The bubble itself must stay uncapped — capping
-        // both would resolve the bubble's 80% against the wrapper's already
-        // shrunk-to-fit width and compound far below 80%, wrapping short
-        // text that fits on one line (invisible in jsdom, real in a
-        // browser). This wrapper renders for every non-muted activity row
-        // regardless of whether it has a timestamp; the cap living here
-        // keeps that identical to today's width even when renderTimeLabel
-        // below renders nothing.
-        //
-        // Fix 14, owner ruling 2026-09-15 (manual-test finding): a "System: "
-        // row -- flagged `item.system` by the reducer, since an untimed
-        // background-task/upload-notice row shares this same branch and a
-        // timestamp alone can't tell them apart (chat.ts) -- is styled more
-        // like a user message: the user bubble's own corner radius, and its
-        // time label right-aligned like the one under a user bubble. Position
-        // is otherwise unchanged: the bubble keeps its own `alignSelf:
-        // 'center'` below regardless, so only the (narrower) label's place
-        // within the column moves when `alignItems` turns 'flex-end'.
-        return (
-          <div
-            key={item.seq}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignSelf: 'center',
-              alignItems: item.system ? 'flex-end' : 'center',
-              maxWidth: '80%',
-            }}
-          >
-            {/* X's Bubble.System (Ant Design X experiment): centred, its own
-                size and shape; the glass tinted with the theme's purple. No
-                maxWidth here — the wrapper above caps the row's width against
-                the transcript column; see the comment there. */}
-            <Bubble.System
-              data-testid="activity-bubble"
-              classNames={{ content: GLASS_SYSTEM }}
-              styles={{ content: BUBBLE_TEXT }}
-              content={item.text}
-            />
-            {renderTimeLabel(item.timestamp, token)}
-          </div>
-        );
-      case 'thinking': {
-        // Reasoning trace, task-gated (thinkingVerbosity): an X Think (Ant
-        // Design X experiment), expanded, collapsible, left-aligned like the
-        // assistant.
-        if (thinkingVerbosity === 'hidden') return null;
-        return (
-          <Think key={item.seq} data-testid="thinking" title="Reasoning" defaultExpanded style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
-            <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.text}</div>
-          </Think>
-        );
-      }
-      case 'tool': {
+        return <ActivityRow key={key} item={item} token={token} />;
+      case 'thinking':
+        return thinkingVerbosity === 'hidden' ? null : <ThinkingRow key={key} item={item} />;
+      case 'tool':
         // Silent: no ordinary tool row. A background job still leaves its
         // muted line, including while it is running. description-while-active
         // sends only its finished tools here (renderTranscript): the same, a
-        // finished background job's line and nothing else.
-        if (toolVerbosity === 'silent' || toolVerbosity === 'description-while-active') {
-          if (!item.background) return null;
-          return <BackgroundToolRow key={item.seq} item={item} token={token} />;
+        // finished background job's line and nothing else. Every other level
+        // renders its tools in a ToolChain, never through here.
+        if ((toolVerbosity === 'silent' || toolVerbosity === 'description-while-active') && item.background) {
+          return <BackgroundToolRow key={key} item={item} token={token} />;
         }
-
-        // Every other level: rendered as part of a ThoughtChain by
-        // renderTranscript, never through here.
         return null;
-      }
       case 'question':
-        return (
-          <QuestionCard key={item.seq} item={item} token={token} onQuestion={onQuestion} />
-        );
+        return <QuestionRow key={key} item={item} token={token} onQuestion={onQuestionStable} />;
       case 'permission':
-        // Once answered, hide the dialog entirely — the conversation proceeds.
-        if (item.answered !== null) return null;
-        return (
-          <div
-            key={item.seq}
-            data-testid="permission-card"
-            style={{
-              alignSelf: 'stretch',
-              border: `1px solid ${token.colorWarning}`,
-              background: token.colorWarningBg,
-              borderRadius: 8,
-              padding: 8,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 6,
-            }}
-          >
-            {/* The input as X code blocks, like an expanded tool row; its
-                description (left out there) heads the card instead. */}
-            <div>
-              Permission requested: <strong>{item.toolName}</strong>
-              {inputDescription(item.input) ? ` · ${inputDescription(item.input)}` : ''}
-            </div>
-            {renderToolInput(item.input, item.preview)}
-            <div style={{ display: 'flex', gap: 8 }}>
-              <Button
-                size="small"
-                type="primary"
-                data-testid="permission-approve"
-                onClick={() => onPermission(item.requestId, 'allow')}
-              >
-                Approve
-              </Button>
-              <Button
-                size="small"
-                danger
-                data-testid="permission-deny"
-                onClick={() => onPermission(item.requestId, 'deny')}
-              >
-                Deny
-              </Button>
-            </div>
-          </div>
-        );
+        return <PermissionRow key={key} item={item} token={token} onPermission={onPermissionStable} />;
       case 'error':
-        return withTimeLabel(
-          item.seq,
-          'stretch',
-          'flex-start',
-          <div
-            data-testid="conversation-error-item"
-            style={{
-              background: token.colorErrorBg,
-              border: `1px solid ${token.colorErrorBorder}`,
-              color: token.colorErrorText,
-              borderRadius: 8,
-              padding: '8px 12px',
-              whiteSpace: 'pre-wrap',
-            }}
-          >
-            {item.text}
-          </div>,
-          renderTimeLabel(item.timestamp, token),
-        );
-      case 'closed':
-        return renderDivider(`closed-${item.seq}`, undefined, `conversation ended${item.reason ? ` (${item.reason})` : ''}`, 'solid');
+        return <ErrorRow key={key} item={item} token={token} />;
       case 'resumed':
+        return <BandRow key={key} item={item} customControls={props.customControls} />;
       case 'switched':
-        // Resume marker (owner request 2026-10-08): the session was captured
-        // here and resumed later; it names the mode the resumed run runs in.
-        // Switch marker (owner request 2026-10-12), the same divider: the
-        // model or a task-defined control's option was switched here.
-        return item.kind === 'resumed'
-          ? renderDivider(`resumed-${item.seq}`, 'resume-band',
-            <ResumeBandText item={item} customControls={props.customControls} />, 'solid')
-          : renderDivider(`switched-${item.seq}`, 'switch-band',
-            <SwitchBandText item={item} controls={props.controls} customControls={props.customControls} />, 'solid');
+        return <BandRow key={key} item={item} controls={props.controls} customControls={props.customControls} />;
+      case 'closed':
       case 'compacting':
       case 'compacted':
-        // Compaction markers (owner request 2026-10-08), around the summary.
-        return item.kind === 'compacting'
-          ? renderDivider(`compacting-${item.seq}`, 'compaction-start-band', 'Context is being compacted.', 'dashed')
-          : renderDivider(`compacted-${item.seq}`, 'compaction-end-band', 'Context has been compacted.', 'dashed');
+        return <BandRow key={key} item={item} />;
       case 'summary':
-        return <CompactSummaryRow key={item.seq} item={item} token={token} />;
+        return <CompactSummaryRow key={key} item={item} token={token} />;
     }
   }
 
-  // A marker across the transcript (conversation ended, resumed, switched,
-  // compacted):
-  // an X Bubble.Divider (Ant Design X experiment), its text in the middle.
-  // Keyed apart from the row that may draw it (a resume notice, a compaction
-  // summary), which carries the same seq.
-  function renderDivider(
-    key: string, testId: string | undefined, label: React.ReactNode, variant: 'solid' | 'dashed',
-  ) {
-    return (
-      <div key={key} data-testid={testId} style={{ alignSelf: 'stretch' }}>
-        <Bubble.Divider content={label} dividerProps={{ variant, plain: true }} />
-      </div>
-    );
-  }
+  // Every bubble's time sits close under it, and apart from the next row
+  // (owner, 2026-10-14): X puts a full `margin` above a footer, while the
+  // transcript leaves only 8 px between rows, so a time sat nearer the next
+  // bubble than its own. Memoized: a new object here re-rendered every X
+  // component below, memoized or not.
+  const bubbleConfig = useMemo(() => ({
+    classNames: { content: dark ? GLASS_MODE.dark : GLASS_MODE.light },
+    styles: { footer: { marginTop: token.marginXXS, marginBottom: token.marginXS } },
+  }), [dark, token.marginXXS, token.marginXS]);
 
-  const selectedTodo = props.todos?.find((todo) => todo.id === selectedTodoId);
+  // The task list, compared by content: an engine view builds a new array
+  // from its widget data on every render.
+  const todosKey = JSON.stringify(props.todos ?? null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const todos = useMemo(() => props.todos, [todosKey]);
+
+  const selectedTodo = todos?.find((todo) => todo.id === selectedTodoId);
   const selectedDescription = selectedTodo?.description?.trim()
     ? selectedTodo.description
     : undefined;
@@ -2366,17 +2526,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const detailOpen = todosOpen && selectedDescription !== undefined;
 
   return (
-    <FileDownloadContext.Provider value={fileDownload ? onFileDownload : null}>
-      {/* Every bubble's time sits close under it, and apart from the next row
-          (owner, 2026-10-14): X puts a full `margin` above a footer, while the
-          transcript leaves only 8 px between rows, so a time sat nearer the next
-          bubble than its own. */}
-      <XProvider
-        bubble={{
-          classNames: { content: dark ? GLASS_MODE.dark : GLASS_MODE.light },
-          styles: { footer: { marginTop: token.marginXXS, marginBottom: token.marginXS } },
-        }}
-      >
+    <FileDownloadContext.Provider value={fileDownload ? onFileDownloadStable : null}>
+      <XProvider bubble={bubbleConfig}>
       {/* Paint our own root surface from a bg token — the widget owns its
           background (don't rely on an inherited host surface), or dark mode
           shows the light host page behind transparent divs. colorText sets a
@@ -2526,7 +2677,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           </div>
         </div>
         </div>
-        {props.todos && props.todos.length > 0 && (
+        {todos && todos.length > 0 && (
           <>
           <div
             data-testid="conversation-todos"
@@ -2606,14 +2757,15 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             </span>
             {/* Ant Design X experiment (owner-approved 2026-10-12): the task list
                 is one X ThoughtChain, like the tool calls: a node per task,
-                linked by X's line, with X's status icons. X draws that line
-                beside a node's body, below its title row; a task node is
-                title-only, so each gets room below its title, and the chain no
-                gap, so the line runs into the next task's icon. */}
-            <ThoughtChain
-              data-testid="conversation-todos-chain"
-              items={props.todos.map(todoChainItem)}
-              styles={{ root: { gap: 0 }, item: { paddingBottom: 10 } }}
+                linked by X's line, with X's status icons. */}
+            <TodoChain
+              todos={todos}
+              selectedTodoId={selectedTodoId}
+              detailOpen={detailOpen}
+              closed={closed}
+              slotSpinner={slotSpinner}
+              token={token}
+              onSelect={setSelectedTodoId}
             />
             </div>
           </div>

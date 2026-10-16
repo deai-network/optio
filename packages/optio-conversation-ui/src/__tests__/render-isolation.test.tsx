@@ -179,4 +179,35 @@ describe('ConversationView render isolation (40 rows)', () => {
     expect({ answer: after.answer, code: after.code, bubble: after.bubble }).toEqual({ answer: 0, code: 0, bubble: 0 });
     expect(after.chain).toBeLessThanOrEqual(1);
   });
+
+  it('a streaming delta re-renders only the last answer, and only its changed code block', () => {
+    const items = makeItems(N);
+    const head = 'Two blocks:\n\n```ts\nexport const a: number = 1;\n```\n\nand the script:\n\n```python\nprint("one")\n';
+    const streaming: ChatItem = { kind: 'assistant', seq: N + 1, msgId: 'live', pending: true, timestamp: T0, text: head };
+    const r = render(view(makeProps(makeState([...items, streaming]), { busy: true })));
+    const codeText = () => Array.from(document.querySelectorAll('.ant-codeHighlighter-code')).map((b) => b.textContent ?? '');
+    expect(codeText().some((t) => t.includes('print("one")'))).toBe(true);
+
+    reset();
+    act(() => {
+      r.rerender(view(makeProps(makeState([...items, { ...streaming, text: `${head}print("two")\n` }]), { busy: true })));
+    });
+    expect(codeText().some((t) => t.includes('print("two")'))).toBe(true);
+    expect(counted0()).toEqual({ answer: 1, code: 1, bubble: 1, chain: 0 });
+  });
+
+  it('a busy/idle toggle re-renders no answer', () => {
+    const items = makeItems(N);
+    const r = render(view(makeProps(makeState(items))));
+
+    reset();
+    act(() => { r.rerender(view(makeProps(makeState(items, { busy: true }), { busy: true }))); });
+    expect(screen.getByText('working…')).toBeTruthy();
+    expect(counted0()).toEqual({ answer: 0, code: 0, bubble: 0, chain: 0 });
+
+    reset();
+    act(() => { r.rerender(view(makeProps(makeState(items)))); });
+    expect(screen.queryByText('working…')).toBeNull();
+    expect(counted0()).toEqual({ answer: 0, code: 0, bubble: 0, chain: 0 });
+  });
 });
