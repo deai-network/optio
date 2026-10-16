@@ -630,7 +630,7 @@ function InterruptAndSendBoltIcon() {
   );
 }
 
-// Ant Design X experiment: a tool row's details as X CodeHighlighter blocks.
+// Ant Design X experiment: a tool row's details as code blocks (CodeBlock, in X's chrome).
 // A shell command is bash, an edit a diff, a written file in its file's
 // language; the remaining input fields (or all of them, for any other tool)
 // are JSON. Fields the row's one-line summary already shows (description) are
@@ -2218,20 +2218,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     return () => timers.forEach(clearTimeout);
   }, []);
 
-  // Global Escape-to-interrupt: a window-level handler so the operator can stop
-  // a running turn from anywhere in the widget, not only from the input box.
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && props.busy && !props.closed) {
-        e.preventDefault();
-        void interrupt();
-      }
-    };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.busy, props.closed]);
-
   // Auto-scroll to the bottom while streaming, unless the operator scrolled up.
   //
   // A plain effect on state.items is not enough: partial-text deltas and
@@ -2400,6 +2386,21 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const onInterruptStable = useStableCallback(interrupt);
   const onUploads = useStableCallback(takeUploads);
   const onPasteFiles = useStableCallback(attachFiles);
+
+  // Global Escape-to-interrupt: a window-level handler so the operator can stop
+  // a running turn from anywhere in the widget, not only from the input box.
+  // It calls the latest interrupt (onInterruptStable), not the one of the
+  // render that set it up.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && props.busy && !props.closed) {
+        e.preventDefault();
+        void onInterruptStable();
+      }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [props.busy, props.closed, onInterruptStable]);
   const onToggleRun = useCallback((run: ToolItem[], expandedKeys: string[]) => setToolOpen((prev) => {
     const next = new Map(prev);
     for (const t of run) next.set(t.seq, expandedKeys.includes(String(t.seq)));

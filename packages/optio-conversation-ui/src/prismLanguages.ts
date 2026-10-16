@@ -67,6 +67,6 @@ const ALIASES: Record<string, string> = {
  *  undefined when there is none (the block is then plain text). */
 export function prismLanguage(lang: string): string | undefined {
   const key = lang.trim().toLowerCase();
-  const name = ALIASES[key] ?? key;
+  const name = Object.hasOwn(ALIASES, key) ? ALIASES[key] : key;
   return Object.hasOwn(LANGUAGES, name) ? name : undefined;
 }

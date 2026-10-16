@@ -1390,6 +1390,23 @@ describe('ConversationView message timestamps', () => {
     expect(screen.getByTestId('message-time').textContent).toBe('14 Sep 23:58');
   });
 
+  // A timer counts awake time only: a computer asleep across midnight would
+  // keep showing yesterday's labels in today's form for as long as it slept
+  // past midnight. The day is checked at least every 15 minutes.
+  it('a time label shows the date soon after waking from a sleep across midnight', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 22, 0).getTime());
+    const ts = new Date(2026, 8, 14, 21, 58).getTime();
+    renderView(makeProps({ state: makeState([{ kind: 'user', text: 'hi', seq: 1, timestamp: ts }]) }));
+    expect(screen.getByTestId('message-time').textContent).toBe('21:58');
+    // Asleep from 22:00 to 08:00: the wall clock jumps, no timer ran.
+    vi.setSystemTime(new Date(2026, 8, 15, 8, 0).getTime());
+    act(() => {
+      vi.advanceTimersByTime(15 * 60_000);
+    });
+    expect(screen.getByTestId('message-time').textContent).toBe('14 Sep 21:58');
+  });
+
   it('a message without a known timestamp renders no time label', () => {
     renderView(makeProps({ state: makeState([{ kind: 'user', text: 'hi', seq: 1 }]) }));
     expect(screen.queryByTestId('message-time')).toBeNull();

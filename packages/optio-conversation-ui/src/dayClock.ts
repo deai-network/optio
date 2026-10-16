@@ -4,14 +4,20 @@ import { useSyncExternalStore } from 'react';
 // "now" (it shows the time alone for today, and the date for any other day),
 // so a time label reads local midnight of today, which changes once a day,
 // rather than the current time, which would re-render it on every render.
-// One timer, set for just after the next midnight, serves every label while
-// any is mounted; none runs otherwise.
+// One timer serves every label while any is mounted; none runs otherwise. It
+// fires just after the next midnight, or within CHECK_MS if that is sooner:
+// a timer counts awake time only, so after a sleep across midnight the day
+// would otherwise change hours late. A check that finds the same day
+// re-renders nothing (useSyncExternalStore compares the snapshot).
 
 /** Local midnight of the day `t` falls on. */
 export function startOfDay(t: number): number {
   const d = new Date(t);
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
+
+// The longest a label may lag behind the day after the computer wakes.
+const CHECK_MS = 15 * 60_000;
 
 const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -25,7 +31,7 @@ function schedule(): void {
     timer = null;
     for (const listener of [...listeners]) listener();
     if (listeners.size > 0 && timer === null) schedule();
-  }, nextMidnight - now + 1000);
+  }, Math.min(nextMidnight - now + 1000, CHECK_MS));
 }
 
 function subscribe(listener: () => void): () => void {

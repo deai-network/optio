@@ -15,8 +15,8 @@ import { useDarkTheme } from './themeMode.js';
 //
 // Ant Design X experiment (owner request 2026-10-08): rendered by XMarkdown,
 // X's streaming markdown engine, wired the way X's own templates and demos
-// do: LaTeX through its Latex plugin, code blocks through X's
-// CodeHighlighter, mermaid fences through X's Mermaid, and its light/dark
+// do: LaTeX through its Latex plugin, code blocks through CodeBlock (Prism,
+// drawn in X's CodeHighlighter chrome), mermaid fences through X's Mermaid, and its light/dark
 // theme stylesheets picked from the antd theme. Mermaid, KaTeX and the code
 // highlighter come with @ant-design/x and @ant-design/x-markdown.
 //
