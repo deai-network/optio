@@ -115,17 +115,20 @@ from reading the code or docs only.
   registry install got two vultus-core copies (0.5.3 and 0.5.4) until `pnpm dedupe`.
   Make it a peer. **Seen**
 
-## Vite dev proxy (affects excavator too, probably)
+## Vite dev proxy
 
-- Vite 8's `server.proxy` does not close the upstream request when an HTTP/2 client
-  abandons a stream (an EventSource on a page you leave): 45-50 leaked SSE connections
-  to the API in ~15 minutes. Over HTTP/1.1 it closes them. Fix used in the guide:
-  `configure: proxy => proxy.on('proxyReq', (proxyReq, _req, res) => res.on('close', ()
+- Vite 7/8's built-in `server.proxy` does not close the upstream request when an HTTP/2
+  client abandons a stream (an EventSource on a page you leave): 45-50 leaked SSE
+  connections to the API in ~15 minutes. Over HTTP/1.1 it closes them. Fix used in the
+  guide: `configure: proxy => proxy.on('proxyReq', (proxyReq, _req, res) => res.on('close', ()
   => { if (!res.writableEnded) proxyReq.destroy(); }))` -- note `writableFinished` is
-  already true on an aborted HTTP/2 response. Excavator's http-proxy-middleware plugin
-  has no such handling either; worth checking there. **Seen**
-- Excavator's vite.config.ts comment says server.proxy forces HTTP/1.1; true for Vite 6,
-  not for 7/8 (http2.createSecureServer with allowHTTP1 in both cases). **Read**
+  already true on an aborted HTTP/2 response. **Seen**
+- Measured on 2026-10-17 (same test: an SSE stream over HTTP/2, client dropped): excavator's
+  dev server (http-proxy-middleware plugin, HTTP/2) and optio-dashboard's (Vite 6, whose
+  proxy mode serves HTTP/1.1 even over HTTPS) both close the upstream connection: **no
+  leak, nothing to fix.** **Seen**
+- Excavator's vite.config.ts comment says server.proxy forces HTTP/1.1; true for Vite 6
+  (and confirmed with optio-dashboard), not for Vite 7/8. **Seen/Read**
 
 ## optio-dashboard 0.2.4 (published)
 
