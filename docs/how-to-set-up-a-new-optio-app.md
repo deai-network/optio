@@ -481,8 +481,8 @@ async def get_task_definitions(services, metadata_filter=None) -> list[TaskInsta
   Both arguments are passed positionally, so the function must accept two.
 - A task's **`execute`** function receives a context. `ctx.report_progress(percent,
   message)` updates the progress bar and writes a log line. `ctx.should_continue()`
-  turns `False` once someone cancels; a task that never checks it cannot be
-  cancelled. `ctx.services` is the dict passed to `init()`. `ctx.params` and
+  turns `False` once someone cancels; a task that ignores it is force-cancelled after
+  a grace period and ends `failed` (section 6). `ctx.services` is the dict passed to `init()`. `ctx.params` and
   `ctx.metadata` come from the `TaskInstance`.
 - This first task is fixed. Section 5 adds one task per document, generated from the
   database. Keep at least one task from the start: optio's instance discovery only
@@ -566,8 +566,9 @@ make engine
 ```
 
 `watchfiles` restarts the engine whenever a file under `packages/engine/src` changes.
-`--sigint-timeout 15` gives a running task time to stop before the old engine is
-killed.
+`--sigint-timeout 15` gives the old engine 15 seconds to shut down cleanly before it is
+killed. Section 6 explains how long a shutdown can take, and replaces the 15 with a
+value derived from the cancel grace period.
 
 The first start prints:
 
@@ -1096,6 +1097,259 @@ process is now in `pressroom_processes`. Launched (from optio-dashboard, for exa
 it prints 4 pages and sets the document's `lastPrintedAt`.
 
 ## 6. Cancellation, shutdown and restarts
+
+A running process can be stopped in three ways:
+
+- **someone cancels it**, from the UI or the API;
+- **the engine shuts down**: Ctrl-C in development, SIGTERM from a deployment;
+- **the engine dies**: a crash, SIGKILL, a power cut.
+
+This section shows what optio does in each case, what your tasks must do, and how to
+size the timeouts. Every timing below was measured on pressroom, with a grace period
+of 10 seconds.
+
+### Cancelling a process
+
+1. The process goes to `cancel_requested`, then `cancelling`, and
+   `ctx.should_continue()` starts returning `False`. Nothing is interrupted: optio
+   waits for the task to notice.
+2. **A task that returns now ends `cancelled`.** Pressroom's print notices within a
+   second, so its cancels completed 0.6 to 1.1 seconds after the request.
+3. **A task that is still running when the grace period ends** (`cancel_grace_seconds`,
+   optio's default is 5) gets a `CancelledError` thrown into it at its next `await`.
+4. If it has still not ended 2 seconds later, optio records it as **`failed`**, with
+   the error "Task did not unwind within cancellation grace period". A test task that
+   ignored the cancel ended that way 11.0 seconds after the request.
+
+Children are cancelled along with their parent. A task declared with
+`cancellable=False` refuses a user's cancel, but an engine shutdown stops it all the
+same.
+
+### Writing tasks that stop well
+
+- **Check `ctx.should_continue()` often**, between steps, at least every second or so.
+  When you wait on something long, race the wait against `ctx.cancellation_flag`, an
+  `asyncio.Event` that is set on cancel.
+- **Clean up in `try`/`finally`.** It runs when the task returns after a cancel, and
+  also when optio throws `CancelledError` into it.
+- **Never block the event loop.** A long synchronous call freezes the whole engine:
+  cancels, RPC calls, the heartbeat (the UI shows the engine as offline) and shutdown.
+  Use async libraries. `asyncio.to_thread` keeps the loop free, but a thread cannot be
+  interrupted, and the engine waits for it before it exits.
+- **optio never kills your subprocesses.** If a task runs a command (a typesetter, a
+  converter), it has to stop the command itself. This helper does that: it runs the
+  command in its own process group and, if the task is told to stop, sends that group
+  SIGTERM, then SIGKILL after 5 seconds:
+
+  ```python
+  import asyncio
+  import os
+  import signal
+
+
+  async def run_command(ctx, *argv: str) -> int | None:
+      """Run a command. If the task is told to stop, stop the command and
+      everything it started. Returns the exit code, or None if stopped."""
+      # Its own process group, so that killing it reaches its children too.
+      proc = await asyncio.create_subprocess_exec(*argv, start_new_session=True)
+      finished = asyncio.ensure_future(proc.wait())
+      stopped = asyncio.ensure_future(ctx.cancellation_flag.wait())
+      try:
+          await asyncio.wait({finished, stopped}, return_when=asyncio.FIRST_COMPLETED)
+      finally:
+          stopped.cancel()
+          if proc.returncode is None:
+              os.killpg(proc.pid, signal.SIGTERM)
+              try:
+                  await asyncio.wait_for(asyncio.shield(finished), 5)
+              except TimeoutError:
+                  os.killpg(proc.pid, signal.SIGKILL)
+                  await finished
+      return None if stopped.done() and not stopped.cancelled() else proc.returncode
+  ```
+
+  Tested with `sleep 600`: on cancel, the command was gone and the task `cancelled`
+  0.6 seconds later. With a command that ignores SIGTERM, the SIGKILL came after 5
+  seconds, and the task ended `cancelled` 5.6 seconds after the request, within the
+  grace period.
+
+### Shutting down the engine
+
+On SIGINT or SIGTERM, `optio_core.run()` shuts the engine down:
+
+1. New launches and RPC calls are refused.
+2. Every running process is told to stop, as if cancelled. (There is no
+   `cancel_requested` step: a task that returns goes straight to `cancelled`.)
+3. optio waits for them, for up to the grace period plus 5 seconds.
+4. Whatever is still running is force-cancelled, one process at a time, and ends
+   `failed`.
+5. `run()` returns.
+
+With a task that ignored the stop, pressroom's engine exited 15.9 seconds after Ctrl-C:
+10 seconds of grace, 5 of margin, then the force-cancel.
+
+**How long a shutdown can take:** about 2 × grace + 10 seconds when RPC calls are in
+flight, plus about 2 seconds for each task that has to be force-cancelled, plus your
+own cleanup after `run()` returns. Whatever stops the engine must wait at least that
+long before it kills it. Excavator's rule, used here too, is
+**2 × grace + 60 seconds**. In development that is watchfiles' `--sigint-timeout`; in
+production, the container's stop timeout (section 12).
+
+**Press Ctrl-C once, and wait for `Shutdown complete`.** The engine ignores a second
+Ctrl-C. Under `make engine`, though, the second one kills watchfiles (with a
+`KeyboardInterrupt` traceback) and make, and your prompt returns while the engine is
+still shutting down in the background.
+
+Make the grace period a setting. In `.env.example`:
+
+```ini
+# How long a task may take to stop after a cancel or an engine shutdown before
+# optio force-cancels it, in whole seconds. The engine's stop timeout in the
+# Makefile is derived from it (2 x grace + 60).
+CANCEL_GRACE_SECONDS=10
+# After a graceful engine restart, resumable processes continue by themselves
+# after this many seconds (optio's default is 300).
+AUTO_RESUME_DELAY_SECONDS=30
+```
+
+In `config.py`, two more fields:
+
+```python
+@dataclass(frozen=True)
+class Config:
+    mongo_url: str
+    mongo_db: str
+    redis_url: str
+    optio_prefix: str
+    cancel_grace_seconds: float
+    auto_resume_delay_seconds: float
+
+
+def load_config() -> Config:
+    ...
+    return Config(
+        ...
+        # optio's defaults are 5 and 300.
+        cancel_grace_seconds=float(os.environ.get("CANCEL_GRACE_SECONDS", 5)),
+        auto_resume_delay_seconds=float(os.environ.get("AUTO_RESUME_DELAY_SECONDS", 300)),
+    )
+```
+
+In `__main__.py`, pass them to `init()`:
+
+```python
+    await optio_core.init(
+        mongo_db=db,
+        prefix=config.optio_prefix,
+        redis_url=config.redis_url,
+        services={"db": db},
+        get_task_definitions=get_task_definitions,
+        cancel_grace_seconds=config.cancel_grace_seconds,
+        auto_resume_delay_seconds=config.auto_resume_delay_seconds,
+    )
+```
+
+And derive the stop timeout in the `Makefile`, replacing the fixed 15 of section 4:
+
+```make
+# The engine's stop budget (section 6): 2 x the cancel grace + 60 seconds.
+# The grace comes from the environment or .env, default 5 (optio's).
+CANCEL_GRACE_SECONDS ?= $(shell sed -n 's/^CANCEL_GRACE_SECONDS=//p' .env 2>/dev/null | tail -1)
+ENGINE_STOP_TIMEOUT := $(shell echo $$(( 2 * $(or $(CANCEL_GRACE_SECONDS),5) + 60 )))
+
+engine:  ## Run the engine; restart it when its source changes
+	$(VENV)/bin/watchfiles --sigint-timeout $(ENGINE_STOP_TIMEOUT) \
+	  "$(VENV)/bin/python -m pressroom_engine" packages/engine/src
+```
+
+With a grace of 10, `make -n engine` shows `--sigint-timeout 80`.
+
+The API server holds nothing that needs saving. Its `index.ts` (section 8) closes
+the server on SIGINT or SIGTERM and exits; with a live event stream open, it stopped
+listening 36 milliseconds after Ctrl-C.
+
+### Restarts, and resuming where a task left off
+
+**After a crash**, the processes that were running stay marked as running until the
+engine starts again. At startup it marks each of them `failed`, with the error
+"Process was interrupted by server restart", and logs
+`State reconciled: running -> failed (server restart)`.
+
+**A task can instead pick up where it stopped**, if it declares that it can and keeps
+a record of how far it got:
+
+- `supports_resume=True` on the `TaskInstance`. A launch with `resume` then tells the
+  task so: `ctx.resume` is `True`.
+- `await ctx.mark_has_saved_state()` once there is something to resume from, and
+  `await ctx.clear_has_saved_state()` when the work is complete. The saved state itself
+  is yours: keep it in your own collections.
+- **Save as you go**, not only when told to stop. A crash gives the task no chance to
+  save anything.
+
+Here is pressroom's print, now resumable. It records the next page on the document
+after every page:
+
+```python
+async def print_document(ctx) -> None:
+    documents = ctx.services["db"]["documents"]
+    doc = await documents.find_one({"_id": ObjectId(ctx.params["documentId"])})
+    if doc is None:
+        raise RuntimeError(f"Document {ctx.params['documentId']} not found")
+    pages = estimate_pages(doc["text"])
+    # A resume continues where the previous run got to; a launch starts over.
+    first = doc.get("nextPage", 1) if ctx.resume else 1
+    # From here on there is always a checkpoint to resume from.
+    await ctx.mark_has_saved_state()
+    for page in range(first, pages + 1):
+        if not ctx.should_continue():
+            return  # cancelled, or the engine is shutting down
+        ctx.report_progress(100 * (page - 1) / pages, f"Printing page {page} of {pages}")
+        await asyncio.sleep(1)
+        # Checkpoint after every page, so that a resume (even after a crash)
+        # continues with the next one.
+        await documents.update_one({"_id": doc["_id"]}, {"$set": {"nextPage": page + 1}})
+    ctx.report_progress(100, f"Printed {pages} pages")
+    await documents.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"lastPrintedAt": datetime.now(timezone.utc)}, "$unset": {"nextPage": ""}},
+    )
+    await ctx.clear_has_saved_state()
+```
+
+and its task definition gains two flags:
+
+```python
+            TaskInstance(
+                execute=print_document,
+                process_id=f"print-{doc_id}",
+                name=f'Print "{doc["title"]}"',
+                params={"documentId": doc_id},
+                metadata={"documentId": doc_id},
+                # Can continue from a saved page, and does so by itself
+                # after the engine restarts.
+                supports_resume=True,
+                auto_resume=True,
+            )
+```
+
+(`print_test_page` no longer needs the shared `print_pages` helper of section 5; give
+it its own loop.)
+
+**Resuming by hand.** optio-ui's standard process components show it without any code
+of yours. For a process with saved state, the play button becomes **Resume**, and its
+menu offers **Restart (discard saved state)**. Over the API, it is a launch with
+`{"resume": true}`. A 20-page print that was SIGKILLed on page 7 came back after the
+restart as `failed`; Resume in optio-dashboard continued with "Printing page 7 of 20"
+and finished.
+
+**Resuming by itself** is `auto_resume=True` (it requires `supports_resume`). When the
+engine shuts down gracefully, it marks such processes; after the next start, and after
+`auto_resume_delay_seconds`, it resumes them. A print stopped by Ctrl-C on page 9
+continued with page 10, 31 seconds after the engine came back (delay 30). After a
+crash nothing is resumed automatically, because the engine never got to mark the
+processes: use Resume.
+
+Only top-level processes are auto-resumed, not children.
 
 ## 7. The API ↔ frontend contract
 

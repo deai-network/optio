@@ -64,6 +64,26 @@ from reading the code or docs only.
 
 - `init(rpc_server=...)` does not run the heartbeat, so discovery reports the
   instance `live: false`. **Read**
+- During shutdown the supervisor loop exits (`while self._running`), so stubborn
+  tasks are force-cancelled only at grace + drain margin, not at grace as the comment
+  at lifecycle.py:1396 and docs/2026-04-29-deadline-driven-cancel-design.md:348 say.
+  Observed: engine exit 15.9 s after Ctrl-C with grace 10. **Seen** (timing) / **Read**
+- The engine ignores a second SIGINT (by design?). Under watchfiles, the second
+  Ctrl-C kills watchfiles with a KeyboardInterrupt traceback and the prompt returns
+  while the engine still shuts down in the background. **Seen**
+- optio-core README is stale on cancellation and shutdown: "a task that never checks
+  should_continue() cannot be cancelled (it will remain in cancelling)" (line ~175),
+  `shutdown()` "waits up to 5 seconds", no timing knobs in the `init()` table, no
+  `supports_resume` / `auto_resume` / `auto_cancel_children` in the TaskInstance table.
+  Root AGENTS.md: `shutdown(grace_seconds=5.0)` (the default is None = the cancel
+  grace), no `auto_resume`. **Read**
+- `cancel_and_wait` exists but is not exported from `optio_core`. **Read**
+- The executor's final-state writes are unconditional, so a late `cancelled` can
+  overwrite a forced `failed`; a force-cancelled sequential `run_child` throws
+  `CancelledError` into the parent's code too. Worth a look. **Read**
+- Shutdown sets no `cancel_requested`/`cancelling` states (goes running -> cancelled),
+  and `cancellable=False` does not protect a task from shutdown. Probably right, but
+  undocumented. **Read**
 
 ## clamator codegen 0.1.9
 
