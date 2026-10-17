@@ -14,6 +14,7 @@ from reading the code or docs only.
   (the SSE streams use projections and do not include it). Any caller allowed to read
   processes, a `viewer` included, gets the credentials. Fix: strip `controlUpstream` too
   (better: strip by an allow-list or every `*Upstream`). **Seen**
+  **Fixed** in optio-api 0.3.1 (ed6ed7e4); optio-dashboard 0.2.5 pins it.
 
 ## Docs vs code (left open by the docs pass)
 
@@ -130,6 +131,8 @@ from reading the code or docs only.
 
 - Filter bar shows raw i18n keys: `processes.search`, `processes.filterAll`,
   `processes.showDetails`, `processes.showSpecial`. **Seen**
+  **Fixed** in optio-dashboard 0.2.5 (b29446bb): a fresh build translates every label;
+  `processes.search` added, i18next/react-i18next deduped.
 - Pins optio-ui 0.8.1 (current 0.8.2) and optio-conversation-ui 0.9.1. **Read**
 - Without a database in `MONGODB_URL`, it lists every optio instance on the server
   and stores its login collections in a database named `optio`. Documented in the
