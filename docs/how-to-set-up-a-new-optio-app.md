@@ -856,10 +856,6 @@ verify-codegen: codegen  ## Fail if the committed generated code is out of date
 	  { git status --short -- $(GEN_TS) $(GEN_PY); echo "Generated code is out of date: commit the output of make codegen"; exit 1; }
 ```
 
-Create an empty `packages/engine/src/pressroom_engine/_generated/__init__.py`, so that
-a regular (non-editable) install of the engine includes the generated module. The
-generator leaves it alone.
-
 Install and generate:
 
 ```bash
@@ -3125,6 +3121,333 @@ may answer 502: optio-api remembers a widget's address for that long.)
 ## 11. Running and checking it
 
 ## 12. Production build
+
+In production, everything runs in containers: MongoDB and Redis, the engine, the API
+server (which now also serves the built frontend) and [Caddy](https://caddyserver.com)
+in front, for HTTPS. HTTPS matters here too: it gives the browser HTTP/2, without the
+six-connection limit of section 9.
+
+```
+pressroom/
+  .dockerignore
+  docker/
+    engine.Dockerfile
+    api.Dockerfile
+  deploy/
+    docker-compose.yml
+    Caddyfile
+    .env.example        committed
+    .env                not committed
+```
+
+### The API server serves the frontend
+
+In development, Vite serves the frontend. In production the API server does, from the
+directory in `STATIC_DIR`. In `config.ts`, one more field:
+
+```ts
+  staticDir: string | undefined;
+...
+    // Production: the built frontend, served by this server.
+    staticDir: process.env.STATIC_DIR,
+```
+
+In `server.ts`, before `registerOptioApi`:
+
+```ts
+import fastifyStatic from '@fastify/static';
+
+...
+  if (config.staticDir) {
+    // Production: serve the built frontend. The app's own routes
+    // (/documents/<id>) exist only in the browser: answer them with index.html.
+    await app.register(fastifyStatic, { root: config.staticDir });
+    app.setNotFoundHandler((request, reply) => {
+      if (request.method === 'GET' && !request.url.startsWith('/api/')) {
+        return reply.sendFile('index.html');
+      }
+      return reply.code(404).send({ reason: 'not-found', message: 'Not found' });
+    });
+  }
+```
+
+and the dependency, `"@fastify/static": "^8.2.0"`, in `packages/api/package.json`.
+
+A `build` target in the `Makefile` builds everything for production:
+
+```make
+.PHONY: build
+
+build: contracts  ## Build the API server and the frontend for production
+	pnpm --filter @pressroom/api build
+	pnpm --filter @pressroom/frontend build
+```
+
+`make build` leaves the API server in `packages/api/dist` and the frontend in
+`packages/frontend/dist`. Vite warns that a chunk is larger than 500 kB; that is only
+advice.
+
+### The images
+
+`.dockerignore`, at the repo root:
+
+```
+**/node_modules
+**/dist
+**/__pycache__
+**/*.egg-info
+.venv
+.env
+.git
+```
+
+`docker/engine.Dockerfile`:
+
+```dockerfile
+FROM python:3.13-slim-trixie
+
+# tini: PID 1 that forwards SIGTERM to the engine and reaps the processes its
+# tasks leave behind. TeX: for the proof (section 10).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tini \
+      texlive-luatex texlive-latex-recommended texlive-fonts-recommended lmodern \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY packages/engine /tmp/engine
+RUN pip install --no-cache-dir /tmp/engine && rm -rf /tmp/engine
+
+# LuaLaTeX keeps a font cache in the home directory.
+RUN useradd --create-home pressroom
+USER pressroom
+WORKDIR /home/pressroom
+
+ENTRYPOINT ["tini", "--"]
+CMD ["python", "-m", "pressroom_engine"]
+```
+
+- **The engine is installed, not linked** (`pip install`, not `pip install -e`). With
+  the package settings of section 4, setuptools includes every directory under `src/`,
+  the generated code too.
+- **tini runs as process 1.** It passes `docker stop`'s SIGTERM on to the engine, which
+  then shuts down as section 6 describes, and it reaps the processes that tasks start.
+- **TeX** is for the proof (section 10).
+- **A user with a home directory**: LuaLaTeX writes its font cache there.
+
+`docker/api.Dockerfile`:
+
+```dockerfile
+FROM node:24-slim AS build
+RUN corepack enable
+WORKDIR /src
+
+# Dependencies first, so that they are cached while only the code changes.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/contracts/package.json packages/contracts/
+COPY packages/api/package.json packages/api/
+COPY packages/frontend/package.json packages/frontend/
+RUN pnpm install --frozen-lockfile
+
+COPY packages/contracts packages/contracts
+COPY packages/api packages/api
+COPY packages/frontend packages/frontend
+RUN pnpm --filter @pressroom/contracts build \
+ && pnpm --filter @pressroom/api build \
+ && pnpm --filter @pressroom/frontend build
+# The API server with only its production dependencies (and the contracts
+# package it uses), in /deploy.
+RUN pnpm --filter @pressroom/api deploy --prod /deploy
+
+FROM node:24-slim
+WORKDIR /app
+COPY --from=build /deploy .
+COPY --from=build /src/packages/frontend/dist ./public
+ENV NODE_ENV=production STATIC_DIR=/app/public API_HOST=0.0.0.0 API_PORT=3000
+CMD ["node", "dist/index.js"]
+```
+
+- The first stage builds the contracts, the API server and the frontend.
+  `pnpm deploy --prod` then puts the API server, its production dependencies and the
+  workspace packages it uses (the contracts, built) into `/deploy`.
+- The final image holds only that, plus the built frontend in `/app/public`.
+- `API_HOST=0.0.0.0` lets the other containers reach the API server. Only Caddy is
+  published to the outside.
+
+### The compose file
+
+`deploy/docker-compose.yml`:
+
+```yaml
+# Production: everything in containers. Run from the repo root:
+#   docker compose -f deploy/docker-compose.yml up -d --build
+# Settings come from deploy/.env (see deploy/.env.example).
+
+name: pressroom
+
+x-app-settings: &app-settings
+  MONGO_URL: mongodb://mongodb:27017
+  MONGO_DB: pressroom
+  OPTIO_PREFIX: pressroom
+  REDIS_URL: redis://redis:6379
+
+services:
+  mongodb:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # The member is registered as mongodb:27017, the name the other
+      # containers reach it by.
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --eval
+          "try { rs.status() } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongodb:27017' }] }) };
+          quit(db.hello().isWritablePrimary ? 0 : 1)"
+      interval: 2s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  engine:
+    build:
+      context: ..
+      dockerfile: docker/engine.Dockerfile
+    environment:
+      <<: *app-settings
+      CANCEL_GRACE_SECONDS: ${CANCEL_GRACE_SECONDS:-10}
+      AUTO_RESUME_DELAY_SECONDS: ${AUTO_RESUME_DELAY_SECONDS:-300}
+      # Process widgets: listen on every interface, and tell optio-api to
+      # reach them under the name "engine".
+      OPTIO_WIDGET_TUNNEL_BIND: 0.0.0.0
+      OPTIO_WIDGET_TUNNEL_HOST: engine
+    # 2 x CANCEL_GRACE_SECONDS + 60 (section 6). Compose cannot compute it.
+    stop_grace_period: ${ENGINE_STOP_TIMEOUT:-80}s
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    environment:
+      <<: *app-settings
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in deploy/.env}
+      CADDY_TLS: ${CADDY_TLS:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
+  caddy-data:
+```
+
+- **MongoDB is a single-node replica set again**, this time registered as
+  `mongodb:27017`, the name the containers reach it by (compare section 2, where it was
+  `localhost`).
+- **`stop_grace_period`** is the engine's stop timeout of section 6: 2 × the grace + 60
+  seconds. Compose cannot compute it, so `deploy/.env` sets both.
+- **The widget settings** (section 10): the proof's web server must listen on every
+  interface of the engine container (`OPTIO_WIDGET_TUNNEL_BIND=0.0.0.0`), and optio-api,
+  in another container, reaches it as `engine` (`OPTIO_WIDGET_TUNNEL_HOST`).
+- **The settings shared by the engine and the API server** are written once
+  (`x-app-settings`), so their database name and prefix cannot drift apart.
+
+`deploy/Caddyfile`:
+
+```
+# HTTPS (and so HTTP/2) in front of the API server, which serves the frontend.
+# SITE_ADDRESS is the public name, e.g. pressroom.example.com: Caddy gets a
+# certificate for it by itself. For a machine without a public name, set
+# CADDY_TLS="tls internal" (a self-signed certificate).
+{$SITE_ADDRESS} {
+	{$CADDY_TLS}
+	reverse_proxy api:3000
+}
+```
+
+`deploy/.env.example`:
+
+```ini
+# Copy to deploy/.env.
+
+# The name the app is reached by. Caddy gets a certificate for it.
+SITE_ADDRESS=pressroom.example.com
+# Without a public name (a test machine): a self-signed certificate.
+# CADDY_TLS=tls internal
+# The host port for HTTPS.
+# HTTPS_PORT=443
+
+# Section 6: the stop timeout must be 2 x the grace + 60 seconds.
+CANCEL_GRACE_SECONDS=10
+ENGINE_STOP_TIMEOUT=80
+```
+
+### Run it
+
+```bash
+cp deploy/.env.example deploy/.env      # set SITE_ADDRESS, and the rest as needed
+docker compose -f deploy/docker-compose.yml up -d --build --wait
+```
+
+`--wait` returns once every container is up, MongoDB being a writable primary. The
+engine's log (`docker compose -f deploy/docker-compose.yml logs engine`) shows the
+migrations, then `Optio initialized`.
+
+**Check your disk space first.** Building the two images takes about 1.5 GB in Docker's
+storage at its peak: base images, build cache and the images themselves (513 MB for the
+engine, with TeX; 283 MB for the API server). On a machine where Docker's storage is
+nearly full, a build can fill it, and then every container that writes, MongoDB
+included, fails. `docker system df` shows what Docker uses; after a build,
+`docker builder prune` returns the build cache.
+
+### What was checked
+
+The stack was built and run with a machine name (`SITE_ADDRESS=excavator`,
+`CADDY_TLS=tls internal`, `HTTPS_PORT=8443`):
+
+- `https://excavator:8443/` served the app over HTTP/2. A link straight to
+  `/documents/<id>` loaded the app too, and `/api/nope` answered
+  `404 {"reason":"not-found",...}`.
+- Creating a document, printing it, and opening its proof worked. The proof's PDF came
+  from the engine container, through optio-api's widget proxy and Caddy.
+- `docker compose stop engine` in the middle of a 20-page print took 1.7 seconds: the
+  print stopped at page 5 with its checkpoint, marked for auto-resume. After
+  `docker compose start engine` (with `AUTO_RESUME_DELAY_SECONDS=30`), it continued with
+  page 6 after 31 seconds and finished.
+- An event stream abandoned by the browser closed its connection to the API server:
+  Caddy, unlike Vite's dev proxy (section 9), passes that on.
+
+Not checked here: a public domain with Caddy's automatic certificates, which needs a
+machine reachable from the internet under that name.
+
+**The app still has no login** (section 8). Anyone who can reach Caddy can do everything.
+Add one before you put it on a public address.
 
 ## Appendix A: working on optio and your app at the same time
 

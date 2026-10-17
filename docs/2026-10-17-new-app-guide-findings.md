@@ -144,5 +144,6 @@ from reading the code or docs only.
   is undocumented; a mismatch only shows up when the API typechecks. **Seen**
 - Python output is named after the service with a hyphen (`pressroom-engine.py`), which
   Python cannot import; every app renames it in its Makefile. **Seen**
-- No `__init__.py` is written into `--out-py`. **Seen**
+- No `__init__.py` is written into `--out-py`. Harmless: setuptools' pyproject-based
+  package finding includes namespace directories (checked with a wheel build). **Seen**
 - `--src` is scanned only at the top level. **Read** (documented in the guide)
