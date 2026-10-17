@@ -3451,4 +3451,148 @@ Add one before you put it on a public address.
 
 ## Appendix A: working on optio and your app at the same time
 
+To change optio itself while you work on your app, link a local optio checkout in
+place of the published packages. This assumes the checkout sits next to your app:
+
+```
+work/
+  optio/          git clone https://github.com/deai-network/optio
+  pressroom/
+```
+
+The checkout's package versions must satisfy your app's version ranges: optio-ui and
+optio-contracts are pinned exactly (section 9). When optio's versions move, update your
+`package.json` to match.
+
+Keep the linked setup on a branch of your app, so that switching back is a checkout.
+
+### The TypeScript packages
+
+`pnpm-workspace.yaml` lists the optio packages your app uses, and the optio packages
+*they* depend on (`"workspace:*"` in their `package.json`):
+
+```yaml
+packages:
+  - "packages/*"
+  # A local optio checkout next to this repo, linked instead of the npm
+  # releases (Appendix A). Every optio package the app uses, and every
+  # optio package those depend on with "workspace:*".
+  - "../optio/packages/optio-api"
+  - "../optio/packages/optio-ui"
+  - "../optio/packages/optio-contracts"
+  - "../optio/packages/filtrum-core"
+  - "../optio/packages/filtrum-mongo"
+
+# Use the linked packages whenever their version satisfies the app's range.
+linkWorkspacePackages: true
+
+# pnpm refuses to run dependencies' install scripts unless they are allowed.
+# esbuild (used by @clamator/codegen through tsx) needs its script.
+allowBuilds:
+  esbuild: true
+  # Needed only by optio-api's own tests (a linked package brings its dev
+  # dependencies): skip it.
+  mongodb-memory-server: false
+
+minimumReleaseAgeExclude:
+  - vultus-core@0.5.4
+```
+
+- **`linkWorkspacePackages: true`** makes pnpm use a workspace package wherever its
+  version satisfies a dependency's range.
+- **The linked packages bring their dev dependencies**, among them install scripts that
+  pnpm stops on. `mongodb-memory-server` is only for optio-api's own tests: `false`
+  tells pnpm to skip its script without complaining.
+
+Then:
+
+```bash
+pnpm install
+pnpm update -r optio-api optio-ui optio-contracts
+```
+
+`pnpm install` alone keeps the versions your lockfile records, the npm releases.
+`pnpm update` resolves them again, now to the linked packages. To check:
+
+```bash
+readlink -f packages/api/node_modules/optio-api
+# /…/optio/packages/optio-api
+```
+
+optio-api, optio-contracts and the two filtrum packages are used compiled (their
+`dist/`). Build them, in this order:
+
+```bash
+for p in filtrum-core filtrum-mongo optio-contracts optio-api; do pnpm --filter $p build; done
+```
+
+After you edit one of them, build it again (and the ones after it). `make api` restarts
+the API server by itself when optio-api's `dist/` changes. optio-ui is used as source: an
+edit reaches the open browser page through Vite's hot reload, without a build or a
+reload.
+
+In `vite.config.ts`, add:
+
+```ts
+    // Appendix A: with a linked optio checkout, optio-ui has its own copies of
+    // some libraries (from its dev dependencies). Use the app's, so that there
+    // is one of each.
+    resolve: {
+      dedupe: ['react', 'react-dom', '@tanstack/react-query', 'antd', 'i18next', 'react-i18next', 'vultus-core'],
+    },
+```
+
+A linked optio-ui gets its own copies of vultus-core, i18next and react-i18next (from
+its dev dependencies). `dedupe` makes Vite use your app's copy of each.
+
+### The Python package
+
+In the `Makefile`, replace the `engine` target with:
+
+```make
+# Appendix A: a local optio checkout next to this repo, if there is one.
+OPTIO_DIR ?= ../optio
+OPTIO_CORE_SRC := $(wildcard $(OPTIO_DIR)/packages/optio-core/src)
+
+engine:  ## Run the engine; restart it when its source (or a linked optio-core) changes
+	$(VENV)/bin/watchfiles --sigint-timeout $(ENGINE_STOP_TIMEOUT) \
+	  "$(VENV)/bin/python -m pressroom_engine" packages/engine/src $(OPTIO_CORE_SRC)
+
+link-optio-core:  ## Appendix A: use the local optio-core instead of the PyPI release
+	$(VENV)/bin/pip install -e "$(OPTIO_DIR)/packages/optio-core[redis]"
+```
+
+(Add `link-optio-core` to the `.PHONY` line.) Without a checkout, `OPTIO_CORE_SRC` is
+empty and `make engine` works as before.
+
+```bash
+make link-optio-core
+```
+
+`pip show optio-core` now gives an "Editable project location" in your checkout, and
+`make engine` restarts the engine when you change optio-core.
+
+### Going back
+
+```bash
+git switch main                # the branch without the link
+pnpm install                   # back to the npm releases
+.venv/bin/pip uninstall -y optio-core && make install-engine   # back to the PyPI release
+```
+
+Then restart `make engine`, `make api` and `make frontend`.
+
+### What was checked
+
+With pressroom linked to an optio checkout:
+
+- Both TypeScript packages typechecked against the linked optio, optio-ui's source
+  included.
+- The app ran: processes listed, translated labels, no errors.
+- A text changed in optio-ui's `ProcessTreeView.tsx` appeared in the open page within
+  seconds, without a reload.
+- Touching a file in optio-core restarted the engine; rebuilding optio-api restarted the
+  API server.
+- The three "going back" steps returned all of it to the published releases.
+
 ## Appendix B: troubleshooting
