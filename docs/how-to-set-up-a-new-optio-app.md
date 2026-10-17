@@ -637,6 +637,454 @@ section 5 need your own API server.
 
 ## 5. The engine ↔ API contract
 
+For the direct calls, the API server calls methods on the engine over clamator. You
+describe those methods once, in TypeScript with Zod, and a code generator produces:
+
+- a typed **TypeScript client** that the API server uses;
+- **Python models and an abstract service class** that the engine implements.
+
+The contract lives in `packages/contracts`, next to the API ↔ frontend contract of
+section 6.
+
+### The contracts package
+
+`tsconfig.base.json` at the repo root, shared by every TypeScript package:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "declaration": true
+  }
+}
+```
+
+`packages/contracts/package.json`:
+
+```json
+{
+  "name": "@pressroom/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./engine": {
+      "types": "./dist/engine-contract.d.ts",
+      "default": "./dist/engine-contract.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@clamator/protocol": "0.1.9",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
+```
+
+- The **`./engine` subpath** is what the generated TypeScript client imports.
+- **clamator is pre-1.0 and released in lockstep**: every `@clamator/*` npm package
+  and every `clamator-*` PyPI package carries the same version. Pin it exactly, and
+  bump all of them together.
+- **zod must be version 3.** clamator's packages require `zod ^3.23`.
+
+`packages/contracts/tsconfig.json`:
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src"]
+}
+```
+
+`packages/contracts/src/schemas.ts` holds the data shapes that both contracts use:
+
+```ts
+import { z } from 'zod';
+
+export const DocumentSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  text: z.string(),
+  createdAt: z.string().datetime({ offset: true }),
+  lastPrintedAt: z.string().datetime({ offset: true }).nullable(),
+});
+export type Document = z.infer<typeof DocumentSchema>;
+```
+
+`packages/contracts/src/engine-contract.ts` is the contract itself:
+
+```ts
+import { z } from 'zod';
+import { defineContract, defineMethod } from '@clamator/protocol';
+
+import { DocumentSchema } from './schemas.js';
+
+export const CreateDocumentFailureReason = z.enum(['empty-text']);
+
+// The engine's own RPC methods, called by the API server. The export must be
+// named after the service: pressroom-engine -> pressroomEngineContract. The
+// generated client imports it by that name.
+export const pressroomEngineContract = defineContract('pressroom-engine', {
+  estimatePages: defineMethod({
+    params: z.object({ text: z.string() }),
+    result: z.object({ pages: z.number().int() }),
+  }),
+  createDocument: defineMethod({
+    params: z.object({ title: z.string().min(1), text: z.string() }),
+    result: z.discriminatedUnion('ok', [
+      z.object({ ok: z.literal(true), document: DocumentSchema }),
+      z.object({ ok: z.literal(false), reason: CreateDocumentFailureReason }),
+    ]),
+  }),
+});
+```
+
+- **The service name** (`pressroom-engine`) must not be `optio-engine`: optio's own
+  service already uses that name on the same RPC server.
+- **The export name must be the service name in camelCase plus `Contract`.** The
+  generated client imports `pressroomEngineContract` from `@pressroom/contracts/engine`
+  whatever you called it.
+- **Put contract files directly in `src/`**, not in a subdirectory. The code generator
+  only looks at the top level.
+- **Expected failures are part of the result**, as a union on `ok` with a `reason`
+  enum. The API server turns each reason into an HTTP status. Use exceptions only
+  for the unexpected.
+
+`packages/contracts/src/index.ts`:
+
+```ts
+export * from './schemas.js';
+```
+
+### Code generation
+
+Add the code generator at the repo root, in `package.json`:
+
+```json
+  "devDependencies": {
+    "@clamator/codegen": "0.1.9",
+    "zod": "^3.25.0"
+  }
+```
+
+`zod` is listed here as well because `@clamator/codegen` needs a zod. Without one at
+the root, pnpm gives it zod 4, which does not match the zod 3 your contracts are
+written with.
+
+The generator loads your contract files with `tsx`, which brings in esbuild. pnpm
+does not run a dependency's install script unless you allow it, and fails the install
+instead (`ERR_PNPM_IGNORED_BUILDS`). Allow esbuild's in `pnpm-workspace.yaml`:
+
+```yaml
+packages:
+  - 'packages/*'
+
+# pnpm refuses to run dependencies' install scripts unless they are allowed.
+# esbuild (used by @clamator/codegen through tsx) needs its script.
+allowBuilds:
+  esbuild: true
+```
+
+The Python half of the generator calls `datamodel-codegen`, so add it to the engine's
+dev tools. The generated module imports clamator directly, so list clamator among the
+engine's dependencies too. In `packages/engine/pyproject.toml`:
+
+```toml
+dependencies = [
+    "optio-core[redis]>=0.6.1,<0.7",
+    "mongo-quaestor>=0.1,<0.2",
+    "clamator-protocol>=0.1.9,<0.2",
+    "clamator-over-redis>=0.1.9,<0.2",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["watchfiles>=1.0", "datamodel-code-generator>=0.26"]
+```
+
+Add to the `Makefile`:
+
+```make
+.PHONY: contracts codegen verify-codegen
+
+contracts:  ## Build the contracts package (the API server and frontend import its dist/)
+	pnpm --filter @pressroom/contracts build
+
+GEN_TS := packages/api/src/_generated
+GEN_PY := packages/engine/src/pressroom_engine/_generated
+
+codegen:  ## Regenerate the engine RPC client (TS) and service base class (Python)
+	PATH="$(CURDIR)/$(VENV)/bin:$$PATH" pnpm exec clamator-codegen \
+	  --src packages/contracts/src \
+	  --out-ts $(GEN_TS) \
+	  --out-py $(GEN_PY) \
+	  --ts-contract-import '@pressroom/contracts/engine'
+	# Python cannot import a module whose name has a hyphen.
+	mv $(GEN_PY)/pressroom-engine.py $(GEN_PY)/pressroom_engine.py
+
+verify-codegen: codegen  ## Fail if the committed generated code is out of date
+	@test -z "$$(git status --porcelain -- $(GEN_TS) $(GEN_PY))" || \
+	  { git status --short -- $(GEN_TS) $(GEN_PY); echo "Generated code is out of date: commit the output of make codegen"; exit 1; }
+```
+
+Create an empty `packages/engine/src/pressroom_engine/_generated/__init__.py`, so that
+a regular (non-editable) install of the engine includes the generated module. The
+generator leaves it alone.
+
+Install and generate:
+
+```bash
+pnpm install
+make install-engine
+make contracts
+make codegen
+```
+
+This writes two files, one per service. Commit both:
+
+- `packages/api/src/_generated/pressroom-engine.ts`, with a `PressroomEngineClient`
+  class: one method per contract method, each taking an optional `{ timeoutMs }`
+  (the default is 30 seconds).
+- `packages/engine/src/pressroom_engine/_generated/pressroom_engine.py`, with:
+  - one pydantic model per params and result. Fields are snake_case in Python and
+    camelCase on the wire (`created_at: AwareDatetime = Field(..., alias="createdAt")`).
+    The models forbid extra fields.
+  - a union result as a `RootModel` over numbered variants: `CreateDocumentResult`
+    wraps `CreateDocumentResult1` (`ok: true`) and `CreateDocumentResult2`
+    (`ok: false`).
+  - `PressroomEngineService`, an abstract class with one `async` method per contract
+    method, in snake_case (`create_document`).
+  - `pressroom_engine_contract`, the object you register on the RPC server.
+
+**Whenever the contract changes:** run `make contracts codegen`, implement any new
+method in the engine, and commit the regenerated files with the contract change. Run
+`make verify-codegen` in CI: it regenerates and fails if the result differs from what
+is committed.
+
+### Implement the service in the engine
+
+`packages/engine/src/pressroom_engine/documents.py`, the domain code that the
+service and the tasks share:
+
+```python
+import math
+
+WORDS_PER_PAGE = 300
+
+
+def estimate_pages(text: str) -> int:
+    return math.ceil(len(text.split()) / WORDS_PER_PAGE)
+
+
+def document_out(doc: dict) -> dict:
+    """A record of the documents collection, in the contract's Document shape."""
+    return {
+        "id": str(doc["_id"]),
+        "title": doc["title"],
+        "text": doc["text"],
+        "createdAt": doc["createdAt"],
+        "lastPrintedAt": doc.get("lastPrintedAt"),
+    }
+```
+
+`packages/engine/src/pressroom_engine/rpc.py`:
+
+```python
+from datetime import datetime, timezone
+
+import optio_core
+
+from pressroom_engine._generated import pressroom_engine as generated
+from pressroom_engine._generated.pressroom_engine import (
+    CreateDocumentParams,
+    CreateDocumentResult,
+    EstimatePagesParams,
+    EstimatePagesResult,
+)
+from pressroom_engine.documents import document_out, estimate_pages
+
+
+class PressroomEngineService(generated.PressroomEngineService):
+    """The engine's own RPC methods. Registered in __main__.py."""
+
+    def __init__(self, db):
+        self._db = db
+
+    async def estimate_pages(self, params: EstimatePagesParams) -> EstimatePagesResult:
+        return EstimatePagesResult(pages=estimate_pages(params.text))
+
+    async def create_document(self, params: CreateDocumentParams) -> CreateDocumentResult:
+        if not params.text.strip():
+            return CreateDocumentResult.model_validate({"ok": False, "reason": "empty-text"})
+        doc = {
+            "title": params.title,
+            "text": params.text,
+            "createdAt": datetime.now(timezone.utc),
+            "lastPrintedAt": None,
+        }
+        result = await self._db["documents"].insert_one(doc)
+        # A new document gets a print task. Resync just that one.
+        await optio_core.resync(metadata_filter={"documentId": str(result.inserted_id)})
+        return CreateDocumentResult.model_validate({"ok": True, "document": document_out(doc)})
+```
+
+- **Params arrive validated**, as the generated model. A call whose params do not
+  match the contract never reaches your method; the caller gets an "Invalid params"
+  error.
+- **Results are validated too.** Return the generated result model, or anything that
+  validates against it. `model_validate` on a dict in the wire shape (camelCase keys)
+  is the easy way to build a union result. If the result does not match the contract,
+  the caller gets a "Result validation failed" error, and the engine logs the details.
+- **Writes happen here**, in the engine. `create_document` stores the document and then
+  calls `optio_core.resync` with a metadata filter. That regenerates only the tasks
+  whose metadata matches, which here is the new document's print task.
+
+Register the service in `__main__.py`, between `init()` and `run()`:
+
+```python
+from pressroom_engine._generated.pressroom_engine import pressroom_engine_contract
+from pressroom_engine.rpc import PressroomEngineService
+
+...
+    await optio_core.init(...)
+    # The app's own RPC methods share optio's RPC server. Register them after
+    # init(), which creates the server, and before run(), which starts it.
+    optio_core.rpc_server.register_service(pressroom_engine_contract, PressroomEngineService(db))
+    await optio_core.run()
+```
+
+Your methods share optio's RPC server, and with it the Redis key prefix
+`<database>/<prefix>`. The API server reaches both optio's methods and yours over one
+connection (section 7).
+
+### Tasks generated from data
+
+Now each document gets its own print task. The new `tasks.py`:
+
+```python
+import asyncio
+from datetime import datetime, timezone
+
+from bson import ObjectId
+from optio_core import TaskInstance
+
+from pressroom_engine.documents import estimate_pages
+
+TEST_PAGE_COUNT = 10
+
+
+async def print_pages(ctx, pages: int) -> bool:
+    """Print page by page. Returns False if cancelled."""
+    for page in range(1, pages + 1):
+        if not ctx.should_continue():
+            return False
+        ctx.report_progress(100 * (page - 1) / pages, f"Printing page {page} of {pages}")
+        await asyncio.sleep(1)
+    ctx.report_progress(100, f"Printed {pages} pages")
+    return True
+
+
+async def print_test_page(ctx) -> None:
+    await print_pages(ctx, TEST_PAGE_COUNT)
+
+
+async def print_document(ctx) -> None:
+    db = ctx.services["db"]
+    doc = await db["documents"].find_one({"_id": ObjectId(ctx.params["documentId"])})
+    if doc is None:
+        raise RuntimeError(f"Document {ctx.params['documentId']} not found")
+    if await print_pages(ctx, estimate_pages(doc["text"])):
+        await db["documents"].update_one(
+            {"_id": doc["_id"]},
+            {"$set": {"lastPrintedAt": datetime.now(timezone.utc)}},
+        )
+
+
+async def get_task_definitions(services, metadata_filter=None) -> list[TaskInstance]:
+    # optio drops the tasks that do not match metadata_filter itself, so the
+    # filter can be ignored here.
+    tasks = [
+        TaskInstance(
+            execute=print_test_page,
+            process_id="print-test-page",
+            name="Print a test page",
+        ),
+    ]
+    async for doc in services["db"]["documents"].find({}, {"title": 1}).sort("createdAt", 1):
+        doc_id = str(doc["_id"])
+        tasks.append(
+            TaskInstance(
+                execute=print_document,
+                process_id=f"print-{doc_id}",
+                name=f'Print "{doc["title"]}"',
+                params={"documentId": doc_id},
+                metadata={"documentId": doc_id},
+            )
+        )
+    return tasks
+```
+
+- **`params`** are for the task itself. **`metadata`** is for finding the task:
+  resyncing it, filtering the process list in the UI, scoping access in the API
+  server. Here both carry the document id.
+- **A task writes through the engine like everything else.** `print_document` sets
+  `lastPrintedAt` on its document when it finishes.
+- A task that raises ends in the `failed` state, and the exception message is stored
+  on the process as its error.
+
+### Try it from Python
+
+The engine restarts by itself (`make engine`) and now reports `Synced 2 task
+definitions` once a document exists. Before the API server exists, you can call the
+engine with the generated Python client:
+
+```python
+import asyncio
+from clamator_over_redis import RedisRpcClient
+from pressroom_engine._generated.pressroom_engine import (
+    PressroomEngineClient, EstimatePagesParams, CreateDocumentParams)
+
+async def main():
+    rpc = RedisRpcClient(redis_url="redis://localhost:6379", key_prefix="pressroom/pressroom")
+    await rpc.start()
+    engine = PressroomEngineClient(rpc)
+    text = " ".join(["word"] * 1000)
+    print(await engine.estimate_pages(EstimatePagesParams(text=text)))
+    print(await engine.create_document(CreateDocumentParams(title="Empty", text="   ")))
+    print(await engine.create_document(CreateDocumentParams(title="Annual report", text=text)))
+    await rpc.stop()
+
+asyncio.run(main())
+```
+
+```
+pages=4
+root=CreateDocumentResult2(ok=False, reason='empty-text')
+root=CreateDocumentResult1(ok=True, document=Document(id='6ad2ece27f94af7380fe9b61', title='Annual report', text='word word word ...', ...))
+```
+
+The `key_prefix` is `<database>/<prefix>`. The new document's `Print "Annual report"`
+process is now in `pressroom_processes`. Launched (from optio-dashboard, for example),
+it prints 4 pages and sets the document's `lastPrintedAt`.
+
 ## 6. The API ↔ frontend contract
 
 ## 7. The API server
