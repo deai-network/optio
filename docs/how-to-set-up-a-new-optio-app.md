@@ -2346,7 +2346,8 @@ function Shell() {
 4. **`OptioProvider prefix={…} database={…}`**, with both values from
    `GET /api/config`. Render nothing that uses optio until they are known: without a
    prefix, optio-ui falls back to `optio`, and its first requests would ask for the
-   wrong processes; without a database, it shows no process widgets (section 10).
+   wrong processes. The database it can find by itself only when exactly one optio
+   instance is visible; process widgets (section 10) need it.
 5. **The router**, inside `OptioProvider`, so that every page can use optio's hooks.
 
 ### The API layer
@@ -3078,7 +3079,8 @@ export function ProofCard({ documentId }: { documentId: string }) {
 nothing otherwise: the layout around it is yours. (`<ProcessDetailView processId={…}
 waitForWidget />` is the ready-made alternative: the widget when there is one, the
 process tree and log otherwise.) optio-ui renders widgets only when it knows the
-database name: pass `database` to `OptioProvider` (section 9).
+database name; pass `database` to `OptioProvider` (section 9) rather than rely on it
+finding the name by itself.
 
 On the document page, add the card after the print card:
 
@@ -3596,3 +3598,139 @@ With pressroom linked to an optio checkout:
 - The three "going back" steps returned all of it to the published releases.
 
 ## Appendix B: troubleshooting
+
+Each problem below was met while writing this guide, or reproduced on pressroom on
+purpose. Symptom first, then the cause and the fix.
+
+### The process list is empty, and the engine's methods time out
+
+The UI shows no processes; your own routes that call the engine answer, after 30
+seconds:
+
+```
+500 {"statusCode":500,"error":"Internal Server Error","message":"call timeout"}
+```
+
+**The API server and the engine disagree on the database name or the prefix.** The
+API server reads processes from `<prefix>_processes` and sends RPC calls to
+`<database>/<prefix>` in Redis; with a typo in `OPTIO_PREFIX` (reproduced with
+`pressrom`) it finds no processes and no engine listens to its calls. Make both read
+the same `.env` (section 3); check what the frontend got with `GET /api/config`.
+
+### Every engine call fails after 30 seconds, but reads work
+
+Your direct calls and optio's launch / cancel return the same `call timeout` 500 after
+30 seconds, while lists and process details still load; after about 15 seconds
+`GET /api/optio/instances` shows the instance as `"live": false`.
+
+**The engine is not running** (or not connected to the same Redis). Start it
+(`make engine`) and look at its log.
+
+**A call that timed out may still happen.** The request waits in Redis until an engine
+reads it: a launch that answered `call timeout` while the engine was stopped was
+carried out the moment the engine came back. Make your engine methods safe to repeat,
+or let the user check the state before trying again.
+
+### The engine does not start: "Can't instantiate abstract class"
+
+```
+TypeError: Can't instantiate abstract class PressroomEngineService without an implementation for abstract method 'ping'
+```
+
+**The contract has a method the engine does not implement yet** (after
+`make codegen`). Implement it in `rpc.py`.
+
+### The API server does not typecheck: "has no exported member"
+
+```
+src/_generated/pressroom-engine.ts(3,10): error TS2305: Module '"@pressroom/contracts/engine"' has no exported member 'pressroomEngineContract'.
+```
+
+**The contract's export is not named after the service.** The generated client imports
+`<service name in camelCase>Contract` (section 5). Rename the export, run
+`make contracts codegen`.
+
+### An engine method answers "Result validation failed"
+
+```
+500 {"statusCode":500,"code":"-32603","error":"Internal Server Error","message":"Result validation failed"}
+```
+
+and the engine logs which field is wrong:
+
+```
+ERROR:clamator_protocol.server_core:RPC result validation failed: pressroom-engine.estimatePages ... errors=[{'type': 'int_parsing', 'loc': ('pages',), ...
+```
+
+**The engine returned something the contract does not allow.** The generated models are
+strict: no extra fields, the right types, and datetimes with a time zone. A datetime read
+from MongoDB without `tz_aware=True` on the client (section 4) is rejected with
+"Input should have timezone info".
+
+If the API server's 500s are logged but you see nothing, look at the engine's log:
+the details are there.
+
+### A widget does not show
+
+- **The browser console says**
+  `[optio-ui] No widget registered under name "pdf-proof"; falling back to default rendering.`
+  The name in `registerWidget` differs from the task's `ui_widget`, or the module that
+  registers it is not imported before the first render (section 10).
+- **The process is not running.** A widget lives as long as its process; after it ends,
+  optio-ui shows the process without it.
+- **optio-ui does not know the database name.** It finds it by itself when exactly one
+  optio instance is visible; pass `database` to `OptioProvider` (section 9) so that it
+  does not depend on that.
+- Right after a process ends, its widget's address answers **502** for up to 5 seconds
+  (optio-api remembers the address that long), then 404. That is expected.
+
+### Labels show as keys: "processes.search", "status.running"
+
+**A translation key optio-ui needs is missing** from your i18n resources (section 9 lists
+them). optio-dashboard 0.2.4 shows a few such keys itself.
+
+### A form field's error appears as a pop-up message instead
+
+**The action was created outside the `FormPanel`.** Create it in a component inside
+the panel (section 9).
+
+### Two copies of a library
+
+`pnpm why react @tanstack/react-query vultus-core optio-ui` shows more than one version.
+Libraries that keep state in React context (React, TanStack Query, vultus-core) and
+optio-ui (which keeps its widget registry in a module) break in quiet ways when two
+copies are loaded: a provider the other copy does not see. Run `pnpm dedupe`; with a
+linked optio checkout, also see Appendix A.
+
+### `pnpm install` fails
+
+- **`ERR_PNPM_IGNORED_BUILDS`**: a dependency has an install script pnpm will not run
+  unless you decide. Allow it (`allowBuilds: { esbuild: true }`, section 5) or deny it
+  (`false`, Appendix A).
+- pnpm reports it **added an entry to `minimumReleaseAgeExclude`**: a version you asked
+  for was published less than a day ago, and pnpm recorded the exception. Commit it.
+
+### Requests hang in the browser after a while
+
+**In development: is the dev server on HTTPS?** Over HTTP/1.1 a browser opens at most
+six connections per origin, shared by all its tabs, and every live optio view keeps one.
+Section 9's dev server uses HTTPS (HTTP/2) for that reason. **Is the `configure` hook
+in `vite.config.ts`?** Without it, every page you leave keeps its event streams open to
+the API server.
+
+### optio-dashboard shows other apps' processes
+
+`MONGODB_URL` has no database name: the dashboard then lists every optio instance on the
+MongoDB server. Put the database in the URL and set `OPTIO_PREFIX` (section 4).
+
+### Containers fail with "No space left on device"
+
+Docker's storage is full, often after building images (section 12). MongoDB stops on
+the first write it cannot make, and stays stopped unless it has a restart policy. Free
+space (`docker system df`, `docker builder prune`), then start the stopped containers
+again.
+
+### The engine takes long to stop, or the prompt returns while it is still stopping
+
+See section 6: a shutdown waits up to the grace period plus 5 seconds for running tasks.
+Press Ctrl-C once, and wait for `Shutdown complete`.

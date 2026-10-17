@@ -40,8 +40,11 @@ from reading the code or docs only.
 - Routes without `?prefix=` silently use `optio` and return an empty list. A warning
   (or 400 when the prefix has no collection) would save debugging. **Seen**
 - Engine RPC calls in handlers have no try/catch: with the engine down, a command
-  fails as a 500 after the 30 s clamator timeout. **Read** (to verify in the guide's
-  troubleshooting appendix)
+  fails as `500 {"message":"call timeout"}` after 30 s. **Seen**
+- **A call that timed out is still executed later**: a launch answered `call timeout`
+  while the engine was stopped ran the moment the engine came back (the request waits
+  in the Redis stream). Surprising for a user who got an error; consider an expiry on
+  requests (clamator) or mapping the timeout to a "may still happen" reason. **Seen**
 - `@ts-rest/fastify` 3.52.1 declares `fastify ^4`; works with 5 (peer warning).
   Upstream. **Seen**
 
@@ -55,8 +58,9 @@ from reading the code or docs only.
 - Right after a process ends, the widget proxy answers 502 for up to 5 s (cached
   upstream, now closed), then 404. Could drop the cache entry when the upstream is
   cleared. **Seen**
-- optio-ui renders no widget unless `OptioProvider` knows the database (discovery fills
-  it only with exactly one visible instance); only a `console.warn` says so. **Read**
+- optio-ui renders no widget unless it knows the database; discovery fills it in when
+  exactly one instance is visible (a widget showed without the `database` prop on
+  pressroom). With several instances only a `console.warn` would say so. **Seen/Read**
 - `store_blob` blobs are never cleaned up by optio (relaunch, dismiss, delete). **Read**
 - optio-conversation-ui depends on optio-ui as a regular dependency (exact version), not
   a peer; a version mismatch means two widget registries. **Read**
