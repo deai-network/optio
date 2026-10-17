@@ -22,13 +22,13 @@ npm install optio-ui
 | `i18next` | >=24 |
 | `antd` | >=6 |
 | `@ant-design/icons` | >=6 |
-| `vultus-core` | >=0.4.0 |
+| `vultus-core` | >=0.5.3 |
 
 `vultus-core` is a peer so that an app has a single copy of it, and with it a single
-components context (see [Loading spinner](#loading-spinner)); 0.4.0 is the release with the
-slot. An app that uses both should list `vultus-core` itself, at the range its vultus-antd depends
-on, so that optio-ui's peer and vultus-antd's dependency resolve to one copy (two copies
-mean two contexts, and optio-ui would quietly keep antd's spinners).
+components context (see [Loading spinner](#loading-spinner)). An app that uses both should
+list `vultus-core` itself, at the range its vultus-antd depends on, so that optio-ui's peer
+and vultus-antd's dependency resolve to one copy (two copies mean two contexts, and optio-ui
+would quietly keep antd's spinners).
 
 ## Quick Setup
 
@@ -45,7 +45,7 @@ const queryClient = new QueryClient();
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <OptioProvider baseUrl="http://localhost:3000">
+      <OptioProvider prefix="optio" database="myapp">
         <ProcessPage />
       </OptioProvider>
     </QueryClientProvider>
@@ -68,8 +68,25 @@ function ProcessPage() {
 }
 ```
 
-`OptioProvider` accepts an optional `prefix` prop (defaults to `"optio"`). Override it if you
-need a custom namespace to avoid collection name collisions in a shared database.
+`prefix` and `database` name the optio instance. Left out, they are taken from instance
+discovery, but only when exactly one instance is visible; otherwise `prefix` falls back to
+`"optio"` and `database` stays unset. Process widgets need the database (without it they fall
+back to the default view), so pass both.
+
+Serve the API from the page's own origin and leave `baseUrl` at its default `''`. optio-api
+sends no CORS headers, and optio-ui opens its event streams (`EventSource`) without
+`withCredentials`, so the browser blocks a cross-origin `baseUrl` (e.g. `http://localhost:3000`
+from a dev server on another port), and with CORS added its streams would still carry no
+session cookie. In development, let the dev server proxy `/api` to the API server, with
+`ws: true` so that widget WebSockets pass too:
+
+```ts
+// vite.config.ts
+server: { proxy: { '/api': { target: 'http://localhost:3000', ws: true } } }
+```
+
+Section 9 of [How to set up a new optio app](../../docs/how-to-set-up-a-new-optio-app.md)
+wires a complete app (providers, i18n, proxy) this way.
 
 ## Components
 
@@ -80,7 +97,7 @@ need a custom namespace to avoid collection name collisions in a shared database
 | `ProcessStatusBadge` | Colored tag showing process state with live elapsed-time counter |
 | `ProcessTreeView` | Ant Design `Tree` rendering a nested process hierarchy from SSE data |
 | `ProcessLogPanel` | Scrolling monospace log viewer with level-colored tags; auto-scrolls to bottom |
-| `ProcessFilters` | Filter group selector (all/active/hide_completed/errors) plus detail/special toggles |
+| `ProcessFilters` | Search box, filter group selector (all/active/hide_completed/errors) and detail/special toggles; reads its state from an enclosing `WithFilteredProcesses`, whose `FilteredProcessList` applies it |
 
 ## Hooks
 
@@ -92,7 +109,7 @@ need a custom namespace to avoid collection name collisions in a shared database
 | `useProcessTreeLog` | Polls the tree log endpoint for a process; returns an array of log entries |
 | `useProcessActions` | Returns imperative action functions: `launch`, `cancel`, `dismiss`, `resurrect`, `resync`, `resyncClean` |
 | `useProcessConversation` | Reads a suspended process's saved conversation record (`GET /processes/:id/conversation`); returns the ts-rest react-query result (`data.body` is `{ events, capturedAt }` on 200; non-2xx responses surface as `error`). Never retries a 4xx. |
-| `useProcessStream` | Opens an SSE connection to a single process tree stream; returns live `{ processes, tree, rootProcess, logs, connected }` |
+| `useProcessStream` | Opens an SSE connection to a single process tree stream; returns live `{ processes, tree, rootProcess, logs, connected, processNotFound, error }` |
 | `useProcessListStream` | Opens a module-level singleton SSE connection with optional metadata filtering; returns `{ processes, connected }`. Only one filter active at a time. |
 
 ## i18n
@@ -103,8 +120,9 @@ following keys:
 
 | Key | Used by |
 |-----|---------|
-| `processes.launch` | `ProcessItem` — tooltip on launch button |
-| `processes.cancel` | `ProcessItem`, `ProcessTreeView` — tooltip on cancel button |
+| `processes.launch` | `LaunchControls` (in `ProcessItem`, `ProcessTreeView`) — tooltip on launch button |
+| `processes.cancel` | `ProcessItem`, `ProcessTreeView` — tooltip on cancel button (a task that can resume shows `processes.suspend` instead) |
+| `processes.search` | `ProcessFilters` — search box placeholder |
 | `processes.filterAll` | `ProcessFilters` — dropdown option |
 | `processes.filterActive` | `ProcessFilters` — dropdown option |
 | `processes.filterHideCompleted` | `ProcessFilters` — dropdown option |
@@ -113,6 +131,9 @@ following keys:
 | `processes.showSpecial` | `ProcessFilters` — checkbox label |
 | `status.<state>` | `ProcessStatusBadge` — state label (e.g. `status.running`, `status.done`, `status.failed`) |
 | `common.noData` | `ProcessLogPanel` — empty state message |
+
+The other keys (e.g. `processes.suspend`, `processes.resume`, `status.suspended`) carry an
+English default; [AGENTS.md](AGENTS.md#i18n-keys) lists them all.
 
 ## Loading spinner
 

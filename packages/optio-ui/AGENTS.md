@@ -3,7 +3,7 @@
 ## Package
 
 - **name**: `optio-ui`
-- **version**: `0.7.0`
+- **version**: `0.8.2`
 - **type**: `module` (ESM)
 - **entry**: `src/index.ts`
 
@@ -22,8 +22,8 @@
 - `@tanstack/react-query: >=5`
 - `react-i18next: >=15`
 - `i18next: >=24`
-- `vultus-core: >=0.4.0` — a peer so the app has one copy and one components context
-  (see "Spinner slot"); 0.4.0 is the release with the slot. In this workspace a dev dependency
+- `vultus-core: >=0.5.3` — a peer so the app has one copy and one components context
+  (see "Spinner slot"). In this workspace a dev dependency
   linked to `../unitas/packages/vultus-core`.
 
 ## Conventions
@@ -98,22 +98,43 @@ Without a lent Spinner every site renders exactly as before. Tests: `src/__tests
 
 ```ts
 interface OptioProviderProps {
-  prefix: string;       // process namespace prefix sent to all API calls
-  baseUrl?: string;     // API base URL, default ''
+  prefix?: string;      // process namespace prefix sent to all API calls
+  database?: string;    // database of the optio instance
+  live?: boolean;
+  baseUrl?: string;     // API base URL, default '' (same origin)
+  onAttention?: (processId: string, reason: string) => void;
+  onClientMessage?: (processId: string, keyword: string, data: unknown) => void;
+  onBrowserOpen?: BrowserOpenHandler;  // undefined: window.open + notification fallback
   children: ReactNode;
 }
 ```
 
-Creates a React context containing `{ prefix, baseUrl, client }`. Must wrap all
-components and hooks from this package. Requires `QueryClientProvider` from
+Creates a React context containing `{ prefix, database, live, baseUrl, client, resetSession }`.
+Must wrap all components and hooks from this package. Requires `QueryClientProvider` from
 `@tanstack/react-query` to be present higher in the tree.
+
+`prefix`, `database` and `live` left out are filled from instance discovery
+(`useInstanceDiscovery`, `GET /api/optio/instances`) only when exactly one instance is
+visible; otherwise `prefix` is `'optio'`, `database` is `undefined` and `live` is `false`.
+Widgets need the database (`useProcessWidgetState` returns `null` without it).
+
+`onAttention` / `onClientMessage` open the session-events stream
+(`{baseUrl}/api/session-events/stream?sessionId=…[&prefix=…][&database=…]`), only when
+`prefix` is passed explicitly: the stream is started with the prop, not the discovered value.
+
+Leave `baseUrl` at `''` and serve the API from the page's origin (in development, a dev-server
+proxy for `/api` with `ws: true`): optio-api sends no CORS headers, and the `EventSource`
+streams are opened without `withCredentials`, so a cross-origin API gets no session cookie.
 
 Internal context value shape:
 ```ts
 interface OptioContextValue {
   prefix: string;
+  database: string | undefined;
+  live: boolean;
   baseUrl: string;
   client: OptioClient;  // ts-rest client created from baseUrl
+  resetSession: () => void;
 }
 ```
 
@@ -126,7 +147,9 @@ interface LaunchControlsProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
   onResurrect?: (id: string) => void;  // save a failed run's host work, then resume
-  size?: ButtonProps['size'];
+  size?: ButtonProps['size'];          // default 'small'
+  iconFontSize?: number;               // pixel size of the button icons
+  denyReason?: string | null;          // non-empty: a disabled play button with this tooltip
 }
 ```
 
@@ -142,11 +165,11 @@ Rendering rules:
   - Both menu items first open a confirmation modal ("This discards the unsaved work left by the failed run.", danger OK button **Discard and continue**); `onLaunch` runs only on OK. The modal comes from `Modal.useModal()`, so it is themed without an antd `<App>` ancestor.
   - Without `onResurrect`, a resurrectable process falls through to the cases below.
 - Renders a single play button (calls `onLaunch(id)` with no opts) when `supportsResume=false` **or** `hasSavedState=false`.
-- Renders an Ant Design `Dropdown.Button` when both `supportsResume=true` and `hasSavedState=true`:
+- Renders a split button (`Space.Compact`: a button and a `Dropdown` arrow) when both `supportsResume=true` and `hasSavedState=true`:
   - Primary button: **Resume** — calls `onLaunch(id, { resume: true })`.
-  - Dropdown menu item: **Restart (discard saved state)** — calls `onLaunch(id)`.
+  - Dropdown menu item: **Restart (discard saved state)** — calls `onLaunch(id, { resume: false })`.
 
-Used by `ProcessList` (replaces the old inline launch button logic) and `ProcessDetailView` (header action area).
+Used by `ProcessItem` (so `ProcessList`), `ProcessTreeView`, and `ProcessDetailView` (the suspended widget's Resume row). Not exported from the package root.
 
 ---
 
@@ -178,7 +201,7 @@ type ProcessItemSize = 'small' | 'default' | 'big';
 
 interface ProcessItemProps {
   process: any;
-  onLaunch?: (id: string) => void;
+  onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
   onResurrect?: (id: string) => void;  // forwarded to LaunchControls
   onCancel?: (id: string) => void;
   readonly?: boolean;
@@ -186,13 +209,14 @@ interface ProcessItemProps {
   size?: ProcessItemSize;  // default: 'default'
   inline?: boolean;        // default: false — when true, progress bar shares the row with name + actions (flex middle slot)
   inactiveContent?: ReactNode;  // shown where the progress bar would go when the process is NOT active (inline: middle slot, non-inline: second row). Pass last-run context here.
+  launchDenyReason?: string | null;  // forwarded to LaunchControls as denyReason
 }
 ```
 
 Single process row. Behavioral rules:
 - Launch button visible when `!readonly && state in LAUNCHABLE_STATES && onLaunch provided`.
 - If `process.warning` is set, launch button is wrapped in `Popconfirm` requiring confirmation.
-- Cancel button visible when `!readonly && isCancellable(process) && onCancel provided` — i.e. state is `scheduled | running` AND `process.cancellable === true`. Hidden during `cancel_requested`/`cancelling` (cancel already in flight; re-click is a no-op).
+- Cancel button visible when `!readonly && isCancellable(process) && onCancel provided` — i.e. state is `scheduled | running` AND `process.cancellable === true`. Hidden during `cancel_requested`/`cancelling` (cancel already in flight; re-click is a no-op). When `process.supportsResume` it is a **Suspend** button (pause icon, not `danger`, `processes.suspend`), otherwise **Cancel** (`processes.cancel`); `ProcessTreeView` does the same.
 - Progress bar: active + `progress.percent != null` → determinate bar; active + no percent → indeterminate animated gradient bar; not active → hidden.
 - Name rendered as `Button[type=link]` when `onProcessClick` provided, plain `Text` otherwise. If `process.description` is set, the name is wrapped in a `Tooltip` showing the description.
 - Progress message shown inline (blue) when `progress.message` is set and the process is active or `isResurrecting(process)` (a resurrect keeps the state `failed`, so its progress message is the only feedback).
@@ -205,7 +229,7 @@ Size mapping (one knob → progress bar height, button size, badge size):
 | `default` | `'default'` (8px bar)  | `'middle'` | fontSize 14, padding 2px 8px |
 | `big`     | `{ height: 12 }` (12px bar) | `'large'`  | fontSize 16, padding 4px 12px |
 
-Internal callers (`ProcessList`, `RecentProcesses`) pass `size="small"` to preserve the pre-existing compact look. New call sites pick whatever fits the surrounding layout.
+The internal caller (`ProcessList`) passes `size="small"` to preserve the pre-existing compact look. New call sites pick whatever fits the surrounding layout.
 
 ---
 
@@ -219,6 +243,10 @@ interface ProcessStatusBadgeProps {
   error?: string;
   runningSince?: string | null;          // ISO datetime string
   size?: ProcessStatusBadgeSize;         // default: 'small' (= antd Tag defaults; preserves legacy look)
+  autoResumeScheduled?: boolean;         // adds a stopwatch icon (status.autoResumeScheduled tooltip)
+  className?: string;                    // extra class on the Tag
+  supportsResume?: boolean;              // with hasSavedState: the suspend labels below
+  hasSavedState?: boolean;
 }
 ```
 
@@ -242,7 +270,9 @@ When `state === 'failed'` and `error` is set: renders an `ExclamationCircleOutli
 icon with a `Tooltip` showing the error string.
 
 Label text is resolved via `t('status.<state>', state)` — falls back to the raw state
-string if no translation exists.
+string if no translation exists. Exceptions, both in `blue`: with `supportsResume`,
+`cancel_requested`/`cancelling` read `t('status.suspending', 'Suspending')`, and with
+`supportsResume` and `hasSavedState`, `cancelled` reads `t('status.suspended', 'Suspended')`.
 
 ---
 
@@ -256,11 +286,13 @@ interface ProcessNode {
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
+  warning?: string;
   supportsResume?: boolean;     // these flags are read by LaunchControls
   hasSavedState?: boolean;
   supportsResurrect?: boolean;
   hasUnsavedWork?: boolean;
   resurrecting?: boolean;
+  autoResumeScheduled?: boolean;
   children?: ProcessNode[];
 }
 
@@ -306,16 +338,21 @@ interface LogEntry {
   timestamp: string;    // ISO datetime string
   level: string;        // 'event' | 'info' | 'debug' | 'warning' | 'error'
   message: string;
-  processName?: string;
+  data?: Record<string, unknown>;
+  processId: string;
+  processLabel: string;
 }
 
 interface ProcessLogPanelProps {
   logs: LogEntry[];
+  tree: ProcessTreeNode | null;  // indents and colours each row by its process; null: no bars
+  fillParent?: boolean;          // fill the parent's height instead of maxHeight 400
 }
 ```
 
-Monospace scrolling log container (`maxHeight: 400px`). Auto-scrolls to bottom on new
-entries, but only when the user was already at the bottom (within 30px). Renders
+Monospace scrolling log container (`maxHeight: 400px`, or the parent's height with
+`fillParent`). Auto-scrolls to bottom on new entries, but only when the user was already at
+the bottom (within 30px). Renders
 `Empty` with `t('common.noData')` when `logs` is empty.
 
 Level-to-color mapping:
@@ -335,33 +372,42 @@ Level-to-color mapping:
 ```ts
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 
-interface ProcessFiltersProps {
-  filterGroup: FilterGroup;
-  onFilterChange: (group: FilterGroup) => void;
-  showDetails: boolean;
-  onShowDetailsChange: (show: boolean) => void;
-  showSpecial: boolean;
-  onShowSpecialChange: (show: boolean) => void;
+function WithFilteredProcesses({ children }: { children: ReactNode }): JSX.Element
+function ProcessFilters({ className, style }?: { className?: string; style?: CSSProperties }): JSX.Element
+function FilteredProcessList(props: ProcessListProps): JSX.Element  // ProcessList over filterFn(processes)
+function useProcessFilter(): {
+  filterGroup: FilterGroup; setFilterGroup: (g: FilterGroup) => void;
+  showDetails: boolean; setShowDetails: (v: boolean) => void;
+  showSpecial: boolean; setShowSpecial: (v: boolean) => void;
+  filterFn: (processes: any[]) => any[];
 }
 ```
 
-Renders a `Select` (width 180) plus two `Checkbox` controls in an Ant Design `Space`.
-The component is purely controlled — no internal state. The `FilterGroup` type is
-exported from `optio-ui`.
+`ProcessFilters` renders a quaesitor-textus `SearchInput` (width 200, searches `name` and
+`description`), a `Select` (width 180) and two `Checkbox` controls in an Ant Design `Space`.
+It holds no state of its own: it reads and sets the state of the enclosing
+`WithFilteredProcesses` (via `useProcessFilter()`), which `FilteredProcessList` applies to
+its `processes`. All four are exported from `optio-ui`, as is the `FilterGroup` type.
 
 ### ProcessDetailView
 
 ```ts
 interface ProcessDetailViewProps {
   processId: string | null | undefined;
+  readOnly?: boolean;            // default false: no Launch / Cancel / Resume affordances
+  showLogs?: boolean;            // default true; false: the widget alone, full height
+  waitForWidget?: boolean;       // default false; true: a big spinner until the widget shows
+  widgetPlaceholder?: ReactNode; // shown instead of that spinner; implies waitForWidget
 }
 
-function ProcessDetailView({ processId }: ProcessDetailViewProps): JSX.Element
+function ProcessDetailView(props: ProcessDetailViewProps): JSX.Element
 ```
 
 Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branches:
 
 - **No processId** — renders a centred "Select a process" placeholder.
+- **`processNotFound`** / **`error`** from the stream — "Process not found." / "Error while accessing process: …".
+- **Waiting** (`waitForWidget` or `widgetPlaceholder`) — renders the placeholder, or a large spinner (the app's lent Spinner, key `optio:process:${processId}:detail`, else antd's `Spin`), in place of the "Loading…" line below, and in place of the default tree+log view while a scheduled or running process has no widget to show yet.
 - **No tree yet** (stream not yet received) — renders a "Loading…" placeholder (preceded by the app's lent Spinner, if any — see "Spinner slot").
 - **`tree.uiWidget` is set and registered for the process's mode** — renders the named widget
   component (live or suspended variant, per `useProcessWidgetState`'s `mode`), passing
@@ -378,8 +424,8 @@ Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branch
   normal case for a widget that doesn't support a read-only suspended view yet).
 - **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set) + `ProcessLogPanel`.
 
-`widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${process._id}/`
-(trailing slash is load-bearing for relative URLs inside iframes).
+`widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${database}/${prefix}/${process._id}/`
+(database and prefix URI-encoded; trailing slash is load-bearing for relative URLs inside iframes).
 
 Exported from `optio-ui`.
 
@@ -389,13 +435,15 @@ Exported from `optio-ui`.
 
 ```ts
 interface UseProcessWidgetOptions {
-  readOnly?: boolean;  // passed to the widget as WidgetProps.readOnly
+  readOnly?: boolean;       // passed to the widget as WidgetProps.readOnly
+  hideEmptyRuns?: boolean;  // passed to the widget as WidgetProps.hideEmptyRuns
+  placeholder?: ReactNode;  // returned (mode 'waiting') until an active process's widget can show; also WidgetProps.placeholder
 }
 function useProcessWidget(tree: ProcessTreeNode | null | undefined, options?: UseProcessWidgetOptions): ReactNode | null
 
 interface UseProcessWidgetStateResult {
   widget: ReactNode;
-  mode: 'live' | 'suspended' | 'resuming';
+  mode: 'live' | 'suspended' | 'resuming' | 'waiting';  // 'waiting' only with options.placeholder
 }
 function useProcessWidgetState(tree: ProcessTreeNode | null | undefined, options?: UseProcessWidgetOptions): UseProcessWidgetStateResult | null
 
@@ -416,26 +464,30 @@ callers that need to know *which* mode produced the element — `ProcessWidget` 
 mapping is otherwise identical between the two. `useProcessWidget` is implemented as
 `useProcessWidgetState(tree, options)?.widget ?? null`. `options.readOnly` adds
 `readOnly: true` to the widget's props (absent otherwise); `ProcessDetailView` passes its own
-`readOnly`.
+`readOnly`. `options.hideEmptyRuns` and `options.placeholder` are passed on the same way.
 
 **Resuming.** A relaunch clears `widgetData` until the task sets it again. When the hook
 rendered a process with its suspended variant and that process is then launched (active, live
 widget not ready: not widget-live with `widgetData`), it keeps returning the suspended variant
 with `mode: 'resuming'`, so a host's layout does not flip between widget and no-widget. It
-hands over to the live widget once that is ready, and returns `null` as usual if the run ends
+hands over to the live widget once that is ready (the live widget mounts hidden beside the
+suspended variant, with `WidgetProps.onReady`, and is shown once it calls it, or after 10 s;
+a suspend hands over the other way alike), and returns `null` as usual if the run ends
 first. The latch is per hook instance and per process `_id`; a page opened mid-resume shows no
 widget until the live one is ready. `ProcessDetailView` shows no Resume row in this mode.
 
 `useProcessWidgetState` owns:
 
 - Readiness gate: `tree.uiWidget` set, and either state is widget-live (`isWidgetLive`) or the
-  process `isSuspended`; `tree.widgetData != null`.
+  process `isSuspended`; `tree.widgetData != null`. With `options.placeholder`, an active
+  process that is not ready yet (and names a registered widget) gets the placeholder, mode
+  `'waiting'`, instead of `null`.
 - Registry lookup: `getWidget(uiWidget)` while live, `getSuspendedWidget(uiWidget)` while
   suspended. Live + unregistered → emits `console.warn` and returns `null`. Suspended +
   unregistered → returns `null` silently (no warning — a widget with no suspended variant,
   e.g. the built-in `iframe` widget, is expected to have nothing to show here).
 - Database check (from `OptioProvider` / instance discovery). If unknown → emits `console.warn` and returns `null` (widget URLs need the database segment).
-- `widgetProxyUrl` build: `${baseUrl}/api/widget/${database}/${prefix}/${tree._id}/` (trailing slash load-bearing). Built the same way for both modes, whether or not the suspended variant actually uses the proxy.
+- `widgetProxyUrl` build: `${baseUrl}/api/widget/${database}/${prefix}/${tree._id}/` (database and prefix URI-encoded; trailing slash load-bearing). Built the same way for both modes, whether or not the suspended variant actually uses the proxy.
 
 What neither hook owns: layout. `useProcessWidgetState` returns `{ widget, mode }` — the
 registered component invoked with `{ process, apiBaseUrl, widgetProxyUrl, prefix, database }`
@@ -472,10 +524,13 @@ process detail page) are free to choose their own layout.
 interface WidgetProps {
   process: any;            // full process tree root object (includes widgetData, uiWidget)
   apiBaseUrl: string;      // optio API base URL
-  widgetProxyUrl: string;  // ${apiBaseUrl}/api/widget/${process._id}/ — trailing slash is load-bearing
+  widgetProxyUrl: string;  // ${apiBaseUrl}/api/widget/${database}/${prefix}/${process._id}/ — trailing slash is load-bearing
   prefix: string;          // process namespace prefix
-  database?: string;       // optional database discriminator
+  database?: string;       // database of the instance (always set when useProcessWidgetState renders the widget)
   readOnly?: boolean;      // the host shows the process read-only: do not launch or resume it
+  hideEmptyRuns?: boolean; // conversation widgets: leave out runs where nothing happened
+  placeholder?: ReactNode; // the host's placeholder, for the widget's own loading states
+  onReady?: () => void;    // given only while the widget mounts hidden for a handover; call once it shows the process
 }
 
 type WidgetComponent = ComponentType<WidgetProps>;
@@ -493,7 +548,7 @@ module load time (before any `ProcessDetailView` renders). Exported from `optio-
 
 `options.suspended` registers a second component under the same name, shown instead of the
 live one while the process `isSuspended` (same `WidgetProps`, no extra fields). It lives in a
-separate map (`getSuspendedWidget`, not exported from the package root — consumed internally
+separate map (`getSuspendedWidget`, also exported from the package root — consumed internally
 by `useProcessWidgetState`, which both `useProcessWidget` and `ProcessDetailView` go through);
 a plain two-argument `registerWidget(name, component)` call leaves
 any suspended variant already registered for that name untouched, so every existing call site
@@ -534,16 +589,17 @@ function useProcessActions(options?: {
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resurrect: (processId: string) => void;
-  resync: () => void;
-  resyncClean: () => void;
+  resync: (metadataFilter?: ProcessMetadataFilter) => void;
+  resyncClean: (metadataFilter?: ProcessMetadataFilter) => void;
   isResyncing: boolean;
 }
 ```
 
 All mutations invalidate the `['processes']` query key on success.
-`resync` sends `body: {}`, `resyncClean` sends `body: { clean: true }`.
+`resync` sends `body: {}`, `resyncClean` sends `body: { clean: true }`; a `metadataFilter`
+is added to the body when given.
 `onResyncSuccess(clean)` is called after a successful resync with the `clean` flag value.
-`launch` sends `body: { resume: true }` when `opts.resume` is true; empty body otherwise.
+`launch` sends `body: { sessionId: getSessionId() }`, plus `resume: true` when `opts.resume` is true.
 `resurrect` POSTs `/processes/:id/resurrect` with `body: { sessionId: getSessionId() }`.
 
 ---
@@ -573,7 +629,9 @@ react-query result, unmodified (the return type is loose — `any`, since `Optio
 **nothing** fetches — neither the conversation nor the process doc described below.
 
 Never retries a 4xx (`error.status` 400–499) — the process's state won't change because the
-read is repeated. Transient errors (network, 5xx) get up to 2 retries.
+read is repeated. A 503 (the engine's conversation archive unreachable, e.g. during an engine
+restart) gets 6 retries, 1 + 2 + 4 + 8 + 15 + 15 s apart; other transient errors (network,
+other 5xx) get up to 2 retries.
 
 `staleTime: Infinity`: a record is fixed for a given suspend, and the key below carries that
 suspend's `stoppedAt`, so a window refocus or a remount never refetches it (each refetch would
@@ -626,7 +684,8 @@ function useProcess(
 }
 ```
 
-Query key: `['process', prefix, id]`. Disabled when `id` is falsy.
+Query key: `['process', database, prefix, id]`. Disabled when `id` is falsy, and when a
+`MultiProcessStreamProvider` ancestor streams the process (its slice is returned instead).
 
 ---
 
@@ -639,7 +698,7 @@ function useProcessTree(
 ): any | null  // returns tree body or null
 ```
 
-Query key: `['process-tree', prefix, id]`. Disabled when `id` is falsy.
+Query key: `['process-tree', database, prefix, id]`. Disabled when `id` is falsy.
 
 ---
 
@@ -655,7 +714,7 @@ function useProcessTreeLog(
 ): any[]  // array of log items
 ```
 
-Query key: `['process-tree-log', prefix, id]`. Disabled when `id` is falsy.
+Query key: `['process-tree-log', database, prefix, id]`. Disabled when `id` is falsy.
 
 ---
 
@@ -671,13 +730,17 @@ function useProcessStream(
   tree: ProcessTreeNode | null;
   rootProcess: ProcessUpdate | null;
   logs: LogEntry[];
+  processNotFound: boolean;  // the probe got a 404: terminal, no retry
+  error: Error | null;       // probe or network failure; retrying continues
 }
 ```
 
-SSE endpoint: `{baseUrl}/api/processes/{prefix}/{processId}/tree/stream?maxDepth={maxDepth}`.
+SSE endpoint: `{baseUrl}/api/processes/{processId}/tree/stream?prefix={prefix}&maxDepth={maxDepth}[&database={database}]`,
+opened after a probe `GET {baseUrl}/api/processes/{processId}?prefix=…[&database=…]`.
 
-Reconnects automatically after 3 seconds on error. Each component instance manages its
-own `EventSource`.
+Reconnects (probe first) 3 seconds after an error. Each component instance manages its
+own `EventSource`, unless a `MultiProcessStreamProvider` ancestor streams the process
+(`{baseUrl}/api/processes/tree/multi/stream`); then its slice is returned.
 
 SSE message types:
 - `{ type: 'update', processes: ProcessUpdate[] }` — replaces full process list.
@@ -701,7 +764,7 @@ function useProcessListStream(options?: {
 }
 ```
 
-SSE endpoint: `{baseUrl}/api/processes/{prefix}/stream`.
+SSE endpoint: `{baseUrl}/api/processes/stream?prefix={prefix}[&database={database}][&metadataFilter={JSON}]`.
 
 Uses a **module-level singleton** `EventSource` shared across all hook instances
 (via `useSyncExternalStore`). Reconnects after 3 seconds on error. The singleton is
@@ -720,7 +783,7 @@ selector.
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 ```
 
-Exported from `ProcessFilters.tsx`, re-exported from `index.ts`.
+Exported from `ProcessFilter.tsx`, re-exported from `index.ts`.
 
 ---
 
@@ -728,15 +791,21 @@ Exported from `ProcessFilters.tsx`, re-exported from `index.ts`.
 
 ```ts
 interface ProcessUpdate {
+  processId?: string;                // the process's stable id
+  launchMode?: 'resume' | 'fresh';   // how its latest run started (tree streams)
   _id: string;
   parentId: string | null;
   name: string;
-  description?: string | null;
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable: boolean;
   depth: number;
   order: number;
+  metadata?: Record<string, unknown>;
+  browserOpenRequests?: { requestId: string; url: string }[];
+  autoResumeScheduled?: boolean;
+  supportsResume?: boolean;
+  hasSavedState?: boolean;
 }
 
 export interface ProcessTreeNode extends ProcessUpdate {
@@ -748,13 +817,26 @@ Exported from `useProcessStream.ts`, re-exported from `index.ts`.
 
 ## i18n Keys
 
-Complete list of all translation keys used in component source files:
+Complete list of all translation keys used in component source files. The first group has
+no inline default (the app must translate them); the second carries an English default.
 
 | Key | Component | Usage |
 |-----|-----------|-------|
-| `processes.launch` | `ProcessItem` | Tooltip on launch button |
-| `processes.resume` | `LaunchControls` | Primary button label when `hasSavedState=true` (default: "Resume") |
+| `processes.launch` | `LaunchControls` | Tooltip on the single launch button |
+| `processes.cancel` | `ProcessItem`, `ProcessTreeView` | Tooltip / `aria-label` of the stop button when the task cannot resume |
+| `processes.search` | `ProcessFilters` | Search box placeholder |
+| `processes.filterAll` | `ProcessFilters` | Select option label |
+| `processes.filterActive` | `ProcessFilters` | Select option label |
+| `processes.filterHideCompleted` | `ProcessFilters` | Select option label |
+| `processes.filterErrors` | `ProcessFilters` | Select option label |
+| `processes.showDetails` | `ProcessFilters` | Checkbox label |
+| `processes.showSpecial` | `ProcessFilters` | Checkbox label |
+| `common.noData` | `ProcessLogPanel` | Empty state description |
+| `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
+| `processes.suspend` | `ProcessItem`, `ProcessTreeView` | Tooltip / `aria-label` of the stop button when the task can resume (default: "Suspend") |
+| `processes.resume` | `LaunchControls` | Resume button tooltip when `supportsResume` and `hasSavedState` (default: "Resume") |
 | `processes.restart` | `LaunchControls` | Dropdown menu item label (default: "Restart (discard saved state)") |
+| `processes.moreOptions` | `LaunchControls` | Tooltip on the dropdown arrow of the Resume and Resurrect split buttons (default: "More options") |
 | `processes.resurrect` | `LaunchControls` | Resurrect button `aria-label` (default: "Resurrect") |
 | `processes.resurrectHint` | `LaunchControls` | Resurrect button tooltip (default: "Save the work left by the failed run, then resume") |
 | `processes.resumeFromSnapshot` | `LaunchControls` | Resurrect menu item and confirmation title (default: "Resume from last snapshot") |
@@ -763,12 +845,6 @@ Complete list of all translation keys used in component source files:
 | `processes.discardAndContinue` | `LaunchControls` | Confirmation OK button (default: "Discard and continue") |
 | `processes.resurrecting` | `LaunchControls` | Resurrecting indicator tooltip (default: "Resurrecting: saving the unsaved work…") |
 | `processes.resurrectingLabel` | `LaunchControls` | Resurrecting indicator `aria-label` (default: "Resurrecting") |
-| `processes.cancel` | `ProcessItem`, `ProcessTreeView` | Tooltip on cancel button |
-| `processes.filterAll` | `ProcessFilters` | Select option label |
-| `processes.filterActive` | `ProcessFilters` | Select option label |
-| `processes.filterHideCompleted` | `ProcessFilters` | Select option label |
-| `processes.filterErrors` | `ProcessFilters` | Select option label |
-| `processes.showDetails` | `ProcessFilters` | Checkbox label |
-| `processes.showSpecial` | `ProcessFilters` | Checkbox label |
-| `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
-| `common.noData` | `ProcessLogPanel` | Empty state description |
+| `status.suspending` | `ProcessStatusBadge` | `cancel_requested` / `cancelling` label when `supportsResume` (default: "Suspending") |
+| `status.suspended` | `ProcessStatusBadge` | `cancelled` label when `supportsResume` and `hasSavedState` (default: "Suspended") |
+| `status.autoResumeScheduled` | `ProcessStatusBadge` | Tooltip / `aria-label` of the auto-resume stopwatch icon (default: "Scheduled for auto-restart") |
