@@ -3,11 +3,11 @@
 ## Package
 
 - **Name:** `optio-contracts`
-- **Version:** `0.1.0` (private, not published to npm)
+- **Version:** `0.6.1` (published to npm)
 - **Type:** ESM (`"type": "module"`)
-- **Entry point:** `dist/index.js` / `dist/index.d.ts`
-- **Runtime deps:** `@ts-rest/core ^3.51.0`, `zod ^3.24.0`
-- **Install note:** Internal monorepo package — referenced via workspace path, never installed from a registry.
+- **Entry points:** `optio-contracts` → `dist/index.js` / `dist/index.d.ts`; `optio-contracts/optio-engine` → `dist/optio-engine-to-api.js` / `dist/optio-engine-to-api.d.ts` (the clamator contract, which pulls in `@clamator/protocol`)
+- **Runtime deps:** `@clamator/protocol ^0.1.9`, `@ts-rest/core ^3.51.0`, `filtrum-core` (workspace), `zod ^3.24.0`
+- **Install note:** Inside the monorepo it is referenced via workspace path; outside it, install from npm (`npm install optio-contracts`).
 
 ## Package structure
 
@@ -32,7 +32,7 @@ The clamator contract (`optio-engine-to-api.ts`, exporting `optioEngineContract`
 
 Generated files are committed. Regenerate via `make codegen` at the repo root. A pre-commit hook runs codegen and fails on `git diff` non-empty under `_generated/` paths to catch drift.
 
-The wire service name is `'optio-engine'` (clamator requires `^[a-z][a-z0-9-]*$`); this is what travels in redis stream keys (e.g., `<keyPrefix>:cmds:optio-engine:*`).
+The wire service name is `'optio-engine'` (clamator requires `^[a-z][a-z0-9-]*$`); this is what travels in redis stream keys (e.g., `<keyPrefix>:cmds:optio-engine`, with `keyPrefix` = `<database>/<prefix>`).
 
 The HTTP contract (`api-to-frontend.ts`) does not require codegen: ts-rest builds typed clients and handlers from the contract object via TypeScript's type system at the consumer's compile time.
 
@@ -77,7 +77,7 @@ Generic factory — call with a Zod item schema to produce:
 |-------|------|
 | `message` | `string` |
 
-Standard error body returned on 404 and 409 responses.
+Standard error body of the read routes' 404 responses (and `getConversation`'s 401). The command routes' 404/409 bodies are typed `{ reason, message }` instead.
 
 ---
 
@@ -134,10 +134,16 @@ z.enum(['idle', 'scheduled', 'running', 'done', 'failed',
 | `supportsResurrect` | `boolean` | optional — task has a resurrect hook (missing = false) |
 | `hasUnsavedWork` | `boolean` | optional — the host workdir holds work newer than the last snapshot (missing = false) |
 | `resurrecting` | `boolean` | optional — transient, true while a resurrect saves the unsaved work (missing = false) |
+| `autoResumeScheduled` | `boolean` | optional — the engine will re-launch this cancelled, state-saved top-level process (resume) after boot |
 | `warning` | `string` | optional |
 | `status` | `ProcessStatusSchema` | see below |
 | `progress` | `ProgressSchema` | see below |
 | `log` | `LogEntry[]` | |
+| `uiWidget` | `string \| null` | nullable, optional |
+| `widgetData` | `unknown` | optional (`widgetUpstream` is server-side only and never appears here) |
+| `browserOpenRequests` | `BrowserOpenRequest[]` | optional — `{ requestId, url, createdAt? }` |
+| `sessionEvents` | `SessionEvent[]` | optional — `{ requestId, type: 'attention', reason }` or `{ requestId, type: 'client', keyword, data }` |
+| `originatingSessionId` | `string \| null` | nullable, optional |
 | `createdAt` | `Date` | coerced |
 
 **Embedded `status` object** (not exported separately):
@@ -185,29 +191,36 @@ Full inferred type from `ProcessSchema` — see schema table above for all field
 
 ## Contract: processesContract
 
-ts-rest router exported from `api-to-frontend.ts`. All paths use a `:prefix` segment that scopes
-processes to a named domain (e.g., a specific application or worker).
+ts-rest router exported from `api-to-frontend.ts`. No path has a `:prefix` segment: every route
+takes the optional query parameters `database?` and `prefix?`, which select the optio instance
+(optio-api defaults the prefix to `'optio'`; `database` is required only in multi-db mode). `id`
+is `ProcessIdParamSchema` (a non-empty string): either the process `_id` (ObjectId hex) or its
+`processId`.
 
 | Name | Method | Path | Path Params | Query Params | Response Codes |
 |------|--------|------|-------------|--------------|----------------|
-| `list` | GET | `/processes/:prefix` | `prefix: string` | `cursor?`, `limit` (1–100, default 20), `rootId?: ObjectId`, `state?: ProcessState`, `metadataFilter?: <URL-encoded JSON>` (parsed via `MetadataFilterQueryParamSchema`) | 200: `PaginatedResponse<Process>` |
-| `get` | GET | `/processes/:prefix/:id` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error` |
-| `getTree` | GET | `/processes/:prefix/:id/tree` | `prefix: string`, `id: ObjectId` | `maxDepth?: number` (int, min 0) | 200: `ProcessTreeNode`, 404: `Error` |
-| `getLog` | GET | `/processes/:prefix/:id/log` | `prefix: string`, `id: ObjectId` | `cursor?`, `limit` (1–100, default 20) | 200: `PaginatedResponse<LogEntry>`, 404: `Error` |
-| `getTreeLog` | GET | `/processes/:prefix/:id/tree/log` | `prefix: string`, `id: ObjectId` | `cursor?`, `limit` (1–100, default 20), `maxDepth?: number` (int, min 0) | 200: `PaginatedResponse<LogEntry & { processId: ObjectId, processLabel: string }>`, 404: `Error` |
+| `list` | GET | `/processes` | — | `database?`, `prefix?`, `cursor?`, `limit` (1–100, default 20), `rootId?: ObjectId`, `state?: ProcessState`, `metadataFilter?: <URL-encoded JSON>` (parsed via `MetadataFilterQueryParamSchema`) | 200: `PaginatedResponse<Process>` |
+| `get` | GET | `/processes/:id` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404: `Error` |
+| `getTree` | GET | `/processes/:id/tree` | `id: string` | `database?`, `prefix?`, `maxDepth?: number` (int, min 0) | 200: `ProcessTreeNode`, 404: `Error` |
+| `getLog` | GET | `/processes/:id/log` | `id: string` | `database?`, `prefix?`, `cursor?`, `limit` (1–100, default 20) | 200: `PaginatedResponse<LogEntry>`, 404: `Error` |
+| `getTreeLog` | GET | `/processes/:id/tree/log` | `id: string` | `database?`, `prefix?`, `cursor?`, `limit` (1–100, default 20), `maxDepth?: number` (int, min 0) | 200: `PaginatedResponse<LogEntry & { processId: ObjectId, processLabel: string }>`, 404: `Error` |
 | `getConversation` | GET | `/processes/:id/conversation` | `id: string` | `database?`, `prefix?` | 200: `ConversationRecord` (`{ events: unknown[], capturedAt: string \| null }`), 401: `Error`, 403/404/409/500/503: `{ reason: ConversationFailureReason, message: string }` |
-| `launch` | POST | `/processes/:prefix/:id/launch` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` (body: `{ resume?: boolean }` — optional; omitting the body entirely is valid) |
-| `cancel` | POST | `/processes/:prefix/:id/cancel` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` |
-| `dismiss` | POST | `/processes/:prefix/:id/dismiss` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` |
+| `launch` | POST | `/processes/:id/launch` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: LaunchFailureReason, message: string }` (body: `{ resume?: boolean; sessionId?: string \| null }` — optional; omitting the body entirely is valid) |
+| `cancel` | POST | `/processes/:id/cancel` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: CancelFailureReason, message: string }` |
+| `dismiss` | POST | `/processes/:id/dismiss` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: DismissFailureReason, message: string }` |
 | `resurrect` | POST | `/processes/:id/resurrect` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: ResurrectFailureReason, message: string }` (body: `{ sessionId?: string \| null }` — optional; omitting the body entirely is valid) |
-| `resync` | POST | `/processes/:prefix/resync` | `prefix: string` | — | 200: `{ message: string }` (body: `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }` — both optional) |
+| `resync` | POST | `/processes/resync` | — | `database?`, `prefix?` | 202: `{ message: string }` (body: `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }` — both optional) |
+
+optio-api mounts the contract under `/api` (`/api/processes/...`). The same file exports
+`discoveryContract`: `instances`, GET `/optio/instances`, 200:
+`{ instances: Array<{ database: string, prefix: string, live: boolean }> }`.
 
 **Notes on specific endpoints:**
 
-- `list` — filters are all optional and combinable. `rootId` scopes results to a process subtree. `state` accepts any `ProcessState` value. `metadataFilter` is a URL-encoded JSON string; the contract's transform schema (`MetadataFilterQueryParamSchema`) parses it into a `ProcessMetadataFilter` (an exact-match map). The legacy `metadata.*` prefix form has been removed and now returns 400.
+- `list` — filters are all optional and combinable. `rootId` scopes results to a process subtree. `state` accepts any `ProcessState` value. `metadataFilter` is a URL-encoded JSON string; the contract's transform schema (`MetadataFilterQueryParamSchema`) parses it into a `ProcessMetadataFilter` (a predicate tree, or a legacy flat exact-match map). The legacy `metadata.*` prefix form has been removed and now returns 400.
 - `getTree` — returns a `ProcessTreeNode`: a `Process` extended with `children: ProcessTreeNode[]` (recursive). `maxDepth` limits traversal depth.
 - `getTreeLog` — returns merged log entries across the process subtree, each augmented with `processId` (ObjectId) and `processLabel` (string) to identify the source process.
-- `launch` — optional body `{ resume?: boolean }`. Clients may omit the body entirely; setting `resume: true` requests a resume. 409 indicates a state conflict (e.g., launching an already-running process) **or** `resume: true` against a task whose `supportsResume` is `false`.
+- `launch` — optional body `{ resume?: boolean; sessionId?: string | null }`. Clients may omit the body entirely; setting `resume: true` requests a resume; `sessionId` is the initiating session. 409 indicates a state conflict (e.g., launching an already-running process) **or** `resume: true` against a task whose `supportsResume` is `false`.
 - `cancel` / `dismiss` — no request body. 409 indicates a state conflict.
 - `getConversation` — the saved conversation record of a suspended process (cancelled, `supportsResume`, `hasSavedState`), read-only; optio-api proxies it from the engine's conversation archive, which decrypts. `events` are `[seq, event]` pairs (the recent part a resume replays); `capturedAt` is the ISO time of the snapshot, or null. The 401 is optio-api's authentication (`{ message }`); the others carry a `ConversationFailureReason`: 403 `forbidden`; 404 `not-found` / `no-conversation-support` / `no-conversation`; 409 `not-suspended`; 500 `read-failed`; 503 `engine-unavailable`.
 - `resurrect` — saves the work a failed run left on its host, then resumes (engine RPC `resurrect`). Optional body `{ sessionId?: string | null }`, the initiating session. Error responses carry a typed `{ reason, message }` body, `reason` being a `ResurrectFailureReason`.

@@ -58,6 +58,13 @@ code belongs in the handler or context layer, not the adapter.
 
 ## Quick Setup
 
+`authenticate` is required by every adapter. It returns the caller's role:
+`'operator'` may do everything, `'viewer'` may only read, `null` means 401. The
+examples let everyone do everything; plug in your real auth there. Write
+`'operator' as const`: in an async arrow a plain `'operator'` is inferred as
+`string`, which TypeScript rejects. To build a complete app around optio, see
+[How to set up a new optio app](../../docs/how-to-set-up-a-new-optio-app.md).
+
 ### Fastify
 
 ```typescript
@@ -70,10 +77,18 @@ const app = Fastify();
 const db = (await new MongoClient(process.env.MONGO_URL!).connect()).db();
 const redis = new Redis(process.env.REDIS_URL!);
 
-registerOptioApi(app, { db, redis });
+registerOptioApi(app, {
+  db, redis,
+  authenticate: async () => 'operator' as const,  // everyone may do everything: plug in real auth
+});
 
 await app.listen({ port: 3000 });
 ```
+
+Fastify's `authenticate` runs as an `onRequest` hook on the instance you pass, so on
+the root instance it gates every route of the app, your own routes and static files
+included, not only optio's. To confine it to optio's routes, register optio in its own
+scope: `await app.register(async (scope) => { registerOptioApi(scope, { ... }); });`.
 
 ### Express
 
@@ -88,7 +103,10 @@ app.use(express.json());
 const db = (await new MongoClient(process.env.MONGO_URL!).connect()).db();
 const redis = new Redis(process.env.REDIS_URL!);
 
-registerOptioApi(app, { db, redis });
+registerOptioApi(app, {
+  db, redis,
+  authenticate: async () => 'operator' as const,  // everyone may do everything: plug in real auth
+});
 
 app.listen(3000);
 ```
@@ -104,7 +122,11 @@ import { createOptioHandler } from 'optio-api/nextjs/pages';
 const db = (await new MongoClient(process.env.MONGO_URL!).connect()).db();
 const redis = new Redis(process.env.REDIS_URL!);
 
-export default createOptioHandler({ db, redis });
+const { handler } = createOptioHandler({
+  db, redis,
+  authenticate: async () => 'operator' as const,  // everyone may do everything: plug in real auth
+});
+export default handler;
 ```
 
 ### Next.js App Router
@@ -118,7 +140,10 @@ import { createOptioRouteHandlers } from 'optio-api/nextjs/app';
 const db = (await new MongoClient(process.env.MONGO_URL!).connect()).db();
 const redis = new Redis(process.env.REDIS_URL!);
 
-export const { GET, POST } = createOptioRouteHandlers({ db, redis });
+export const { GET, POST } = createOptioRouteHandlers({
+  db, redis,
+  authenticate: async () => 'operator' as const,  // everyone may do everything: plug in real auth
+});
 ```
 
 ## REST Endpoints
@@ -143,7 +168,7 @@ Command endpoints do not validate state in this package. The engine owns all com
 
 ### List Query Parameters
 
-The list endpoint (`GET /api/processes/:prefix`) accepts an optional `metadataFilter` query
+The list endpoint (`GET /api/processes`) accepts an optional `metadataFilter` query
 parameter for metadata-based filtering. Pass it as a URL-encoded JSON string, e.g.
 `?metadataFilter=%7B%22project%22%3A%22x%22%7D`.
 
@@ -157,8 +182,14 @@ with an explicit migration message.
 
 ## SSE Streams
 
-- `GET /api/processes/:prefix/stream` — live flat process list. Accepts the same optional `?metadataFilter=<URL-encoded JSON>` query param as the REST list endpoint; the legacy `?metadata.<key>=<value>` form returns 400.
-- `GET /api/processes/:prefix/:id/tree/stream` — live process tree with log deltas
+Like the REST endpoints, every stream takes the optional `?database=&prefix=` query parameters.
+
+- `GET /api/processes/stream` — live flat process list. Accepts the same optional `?metadataFilter=<URL-encoded JSON>` query param as the REST list endpoint; the legacy `?metadata.<key>=<value>` form returns 400.
+- `GET /api/processes/:id/tree/stream` — live process tree with log deltas (optional `?maxDepth=N`)
+- `GET /api/processes/tree/multi/stream?treeIds=&flatIds=` — several trees and single processes in one stream (Fastify and Next.js Pages Router only)
+- `GET /api/session-events/stream?sessionId=` — new `sessionEvents` of the processes whose `originatingSessionId` is that session (Fastify only)
+
+The widget routes (`/api/widget/:database/:prefix/:processId/*`, `POST /api/widget-control/:database/:prefix/:processId`, `POST /api/widget-upload/:database/:prefix/:processId`) are Fastify only.
 
 A stream reads MongoDB once when it opens, then only when the shared change stream of its
 `(database, prefix)` reports a change relevant to it, at most once a second. Without change
@@ -277,7 +308,7 @@ Programmatic engine access for the host's own non-HTTP code:
 ```typescript
 import { resolveOptioEngine } from 'optio-api';
 const engine = resolveOptioEngine(ctx, {});
-await engine.launch({ processId: 'my-task' });
+await engine.launch({ processId: 'my-task', sessionId: null });  // sessionId is required, nullable
 ```
 
 RPC-only consumers (no Mongo, no HTTP — e.g., Excavator) use the Layer-1 transport cache directly:
@@ -289,6 +320,13 @@ const optioEngine = new OptioEngineClient(transports.get('mydb', 'optio'));
 // Plus any other clamator contract:
 const myDomain = new MyDomainClient(transports.get('mydb', 'mydomain'));
 ```
+
+A transport is keyed `<database>/<prefix>` in Redis, the same key prefix optio-core's
+RPC server uses. A service the app registers on that server
+(`optio_core.rpc_server.register_service(...)`) therefore shares optio's key prefix:
+reach it with `transports.get(database, optioPrefix)`, the same transport as
+`OptioEngineClient`. `transports.get('mydb', 'mydomain')` only works for a separate RPC
+server that uses the key prefix `mydb/mydomain`.
 
 ## See Also
 

@@ -12,10 +12,13 @@
 - **entry points**:
   - `optio-api` → `dist/index.js` / `dist/index.d.ts`
   - `optio-api/fastify` → `dist/adapters/fastify.js` / `dist/adapters/fastify.d.ts`
-- **dependencies**: `optio-contracts`, `@ts-rest/core`, `mongodb`, `ioredis`, `@clamator/protocol`, `@clamator/over-redis`, `zod`
+  - `optio-api/express` → `dist/adapters/express.js` / `dist/adapters/express.d.ts`
+  - `optio-api/nextjs/pages` → `dist/adapters/nextjs-pages.js` / `dist/adapters/nextjs-pages.d.ts`
+  - `optio-api/nextjs/app` → `dist/adapters/nextjs-app.js` / `dist/adapters/nextjs-app.d.ts`
+- **dependencies**: `optio-contracts`, `filtrum-mongo`, `@ts-rest/core`, `mongodb`, `ioredis`, `@clamator/protocol`, `@clamator/over-redis`, `@fastify/http-proxy`, `@fastify/multipart`, `zod`
 - **note**: `zod` is declared explicitly here even though `optio-api` does not import it directly. `@clamator/protocol` declares `zod` as a peerDependency; without an explicit declaration in this package, pnpm can resolve `@clamator/protocol`'s peer requirement against a different physical `zod` copy than the one used by `optio-contracts`, which causes TypeScript to reject the codegenned `_generated/optio-engine.ts`. See `@clamator/protocol`'s README for the canonical statement of this consumer requirement.
 - **optionalDependencies**: `@ts-rest/fastify`
-- **peerDependencies**: `fastify ^5.2.0` (optional)
+- **peerDependencies** (all optional): `fastify ^5.2.0`, `express ^4.21.0 || ^5.0.0`, `next ^13.0.0 || ^14.0.0 || ^15.0.0`
 
 ## Layered architecture
 
@@ -33,7 +36,7 @@ Re-exported from the main `optio-api` entry point:
 
 - `OptioEngineClient` (re-exported from `_generated/optio-engine.ts`) — typed clamator client for the optio-engine RPC contract. Constructed as `new OptioEngineClient(transport)`.
 - `createOptioTransports(redis: Redis): OptioTransports` — Layer 1 factory. Caches one `RpcClient` per `(database, prefix)`. Audience: RPC-only consumers, custom adapter authors.
-- `OptioTransports` (type) — interface `{ get(database: string, prefix: string): RpcClient; closeAll(): Promise<void> }`.
+- `OptioTransports` (type) — interface `{ get(database: string, prefix: string): RpcClientCore; closeAll(): Promise<void> }`. Each transport's Redis key prefix is `<database>/<prefix>`.
 - `createOptioContext({ dbOpts, redis }): OptioContext` — Layer 2 factory. Wraps Layer 1 + Mongo `Db`.
 - `OptioContext` (type) — interface `{ dbOpts: DbOptions; transports: OptioTransports; redis: Redis; closeAll(): Promise<void> }`. Threaded into every handler call.
 - `resolveDb(dbOpts, query)` — extract `db`, `database`, `prefix` from a query plus dbOpts.
@@ -48,16 +51,24 @@ import { createOptioTransports, OptioEngineClient } from 'optio-api';
 
 const transports = createOptioTransports(redis);
 const optioEngine = new OptioEngineClient(transports.get('mydb', 'optio'));
-await optioEngine.launch({ processId: 'foo' });
+await optioEngine.launch({ processId: 'foo', sessionId: null });  // sessionId: required, nullable
 
 // Consumer's own contract on the same transport infrastructure:
 const myClient = new MyDomainClient(transports.get('mydb', 'mydomain'));
 ```
 
+The transport key prefix is `<database>/<prefix>`, the same `key_prefix` optio-core's
+RPC server uses (`f"{db_name}/{prefix}"`). A service the app registers on that server
+(`optio_core.rpc_server.register_service(...)`) shares optio's key prefix, so the app
+reaches it with `transports.get(database, optioPrefix)`, as for `OptioEngineClient`;
+`transports.get('mydb', 'mydomain')` only works with a separate RPC server using the
+key prefix `mydb/mydomain`.
+
 HTTP host:
 
 ```typescript
-import { createOptioContext, registerOptioApi, resolveOptioEngine } from 'optio-api';
+import { createOptioContext, resolveOptioEngine } from 'optio-api';
+import { registerOptioApi } from 'optio-api/fastify';
 
 const ctx = createOptioContext({ dbOpts: { db }, redis });
 registerOptioApi(app, { ctx, authenticate });  // explicit form
@@ -65,7 +76,7 @@ app.addHook('onClose', () => ctx.closeAll());
 
 // Programmatic engine access in the host's own code:
 const engine = resolveOptioEngine(ctx, {});
-await engine.launch({ processId: 'foo' });
+await engine.launch({ processId: 'foo', sessionId: null });
 ```
 
 Sugar form (host doesn't need to manage ctx explicitly):
@@ -79,7 +90,9 @@ const ctx = registerOptioApi(app, { db, redis, authenticate });
 
 ```typescript
 interface OptioApiOptions {
-  db: Db;                                  // MongoDB Db instance
+  db: Db;                                  // MongoDB Db instance (or `mongoClient: MongoClient`
+                                           // for multi-db; or `ctx: OptioContext` in place of
+                                           // db + redis: the explicit form)
   redis: Redis;                            // ioredis Redis instance
   prefix?: string;                         // Limits instance discovery
                                            // (GET /api/optio/instances) to this
@@ -92,6 +105,7 @@ interface OptioApiOptions {
   scope?: ScopeCallback<TRequest>;         // Optional tenant boundary. See "Access scope".
   authorize?: AuthorizeCallback<TRequest>; // Optional per-action decision. See "Access scope".
   visibility?: VisibilityCallback<TRequest>; // Optional per-process hide. See "Access scope".
+  verbose?: boolean;                       // Fastify only: log the widget proxy's upstream calls
 }
 ```
 
@@ -101,9 +115,12 @@ The `authenticate` callback is invoked on every request to every route across
 all four adapters:
 
 - REST endpoints from `processesContract` under `/api/processes/...`
-- SSE streams: `/api/processes/stream` and `/api/processes/:id/tree/stream`
+- SSE streams: `/api/processes/stream` and `/api/processes/:id/tree/stream`; also
+  `/api/processes/tree/multi/stream` (Fastify, Next.js Pages Router) and
+  `/api/session-events/stream` (Fastify only)
 - Discovery: `/api/optio/instances`
-- Widget reverse-proxy under `/api/widget/...` (Fastify only)
+- Widget reverse-proxy under `/api/widget/...`, `POST /api/widget-control/...` and
+  `POST /api/widget-upload/...` (Fastify only)
 
 The callback receives the framework-native request object and returns an
 `OptioRole` (`'viewer'` or `'operator'`) or `null`. Returning `null` denies
@@ -116,6 +133,14 @@ hook (Fastify `onRequest`, Express `app.use('/api', …)`, Next.js inline at
 the top of `GET`/`POST` or the returned Pages handler). The Fastify
 widget-proxy plugin's `preHandler` retains its own `checkAuth` call as
 defense in depth.
+
+The Fastify and Express hooks are not confined to optio's routes. Fastify's `onRequest` hook is
+added to the instance passed to `registerOptioApi`: on the root instance it
+gates every route of the host app (its own routes and static files included),
+so an `authenticate` returning `null` 401s those too. Registering inside an
+encapsulated scope (`app.register(async (scope) => registerOptioApi(scope, …))`)
+confines it to optio's routes. Express's middleware likewise covers every
+`/api/*` route of the host app.
 
 ## Access scope and authorization
 
@@ -262,7 +287,7 @@ a nonexistent or out-of-scope one. All four adapters accept `visibility` next
 to `scope` and `authorize` and pass it through to every handler call and
 every poller they create (list, tree, multi-tree, session-events); Fastify
 and Express resolve the tree-stream entry point and the multi-tree
-`resolveOne` lookup with `findReadableProcess`, while the Next.js adapters
+`resolveOne` lookup (Express has no multi-tree stream) with `findReadableProcess`, while the Next.js adapters
 keep their `_id`-only lookup (`reads.findOne({ _id })` followed by
 `inScope`) — both forms read through the request's `ProcessReads`, so a
 hidden entry point is a 404 (missing, for multi-tree) the same as an
@@ -307,7 +332,7 @@ lookup (it judges scope only and returns no document of its own) and
 `findActionTarget`'s own target lookup (the newest document by `_id` or
 `processId`), whose result is checked against `visibility` before it is
 returned. Fastify and Express use `findReadableProcess` for their
-tree-stream and multi-tree lookups; the Next.js adapters use the `_id`-only
+tree-stream and (Fastify) multi-tree lookups; the Next.js adapters use the `_id`-only
 `reads.findOne` + `inScope` form instead (see "Access scope and
 authorization" above).
 
@@ -413,44 +438,38 @@ const engine = resolveOptioEngine(ctx, {});
 const my = new MyClient(ctx.transports.get(database, prefix));
 ```
 
-```typescript
-function registerProcessRoutes(app: FastifyInstance, opts: OptioApiOptions): void
-```
+`registerOptioApi` is the adapter's only export (plus the `OptioApiOptions` type); it
+registers everything below itself.
 
-Registers all REST routes under `/api/processes/:prefix/...` using `@ts-rest/fastify`
-against the `processesContract` from `optio-contracts`.
+REST routes: all of `processesContract` under `/api/processes/...` (instance chosen by
+the `?database=&prefix=` query parameters), using `@ts-rest/fastify`.
 
-```typescript
-function registerProcessStream(app: FastifyInstance, opts: OptioApiOptions): void
-```
+SSE routes (raw HTTP, not ts-rest), each taking the optional `?database=&prefix=`:
 
-Registers two SSE routes (raw HTTP, not ts-rest):
+- `GET /api/processes/stream` — flat list stream (uses `createListPoller`)
+- `GET /api/processes/:id/tree/stream?maxDepth=N` — tree + log delta stream (uses `createTreePoller`)
+- `GET /api/processes/tree/multi/stream?treeIds=&flatIds=` — multi-tree stream (uses `createMultiTreePoller`; first event `{ type: 'resolution', missing }`)
+- `GET /api/session-events/stream?sessionId=` — session events (uses `createSessionEventsPoller`; no `sessionId`: the connection stays open and emits nothing)
 
-- `GET /api/processes/:prefix/stream` — flat list stream (uses `createListPoller`)
-- `GET /api/processes/:prefix/:id/tree/stream?maxDepth=N` — tree + log delta stream (uses `createTreePoller`)
+All set `Content-Type: text/event-stream`, read MongoDB when a change is relevant to them (see "Stream Poller"), and call `poller.stop()` on request close.
 
-Both routes set `Content-Type: text/event-stream`, read MongoDB when a change is relevant to them (see "Stream Poller"), and call `poller.stop()` on request close.
+Also `GET /api/optio/instances` (discovery), `POST /api/widget-control/:database/:prefix/:processId`
+(body `{ text }` or `{ key }`, POSTed to the `/input` route of the process's `controlUpstream`) and
+`POST /api/widget-upload/:database/:prefix/:processId` (one multipart file, at most
+100 MiB, streamed into GridFS and handed to the engine's `materializeUpload`).
 
-```typescript
-function registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxyOptions): void
-
-interface OptioWidgetProxyOptions {
-  db: Db;
-  prefix: string;
-  authenticate: AuthCallback<FastifyRequest>;  // viewer role for reads, operator for writes
-  ttlMs?: number;  // widgetUpstream TTL cache duration; default 5000 ms
-}
-```
-
-Imported from `optio-api/fastify`. Wires the widget proxy under `/api/widget/:processId/*`
+The widget proxy is internal (`registerWidgetProxy`, not exported); `registerOptioApi`
+wires it with its own `dbOpts`, `authenticate`, access hooks and `verbose`, and a fixed
+5 s `widgetUpstream` cache TTL. It serves `/api/widget/:database/:prefix/:processId/*`
 supporting HTTP, SSE, and WebSocket. Per-request behavior:
 
-1. Extracts `processId` (24-hex ObjectId) from the URL; 404 on malformed URL.
+1. Extracts `database`, `prefix` and `processId` (24-hex ObjectId) from the URL; 404 on malformed URL.
 2. Calls `authenticate` — viewer permission for safe HTTP methods, operator for mutating methods.
-3. Looks up `widgetUpstream` from MongoDB, TTL-cached for `ttlMs` ms (default 5 s); 404 when missing.
-4. Injects inner auth: `BasicAuth`/`HeaderAuth` → request headers; `QueryAuth` → URL query parameter.
-5. Strips `/api/widget/:processId` prefix and forwards the sub-path to the upstream URL.
-6. Maps upstream connection errors to 502 Bad Gateway; full error detail is logged server-side only.
+3. Gates the process as the `'widget'` action (`gateProcess`): out of scope or hidden is 404, refused 403.
+4. Looks up `widgetUpstream` from MongoDB, TTL-cached for 5 s (positive lookups only); 404 when missing, 503 when the lookup fails.
+5. Injects inner auth: `BasicAuth`/`HeaderAuth` → request headers; `QueryAuth` → URL query parameter.
+6. Strips the `/api/widget/:database/:prefix/:processId` prefix and forwards the sub-path to the upstream URL.
+7. Maps upstream connection errors to 502 Bad Gateway; full error detail is logged server-side only.
 
 ## Handler Functions
 
@@ -500,6 +519,7 @@ async function launchProcess(
   query: { database?: string; prefix?: string },
   id: string,
   resume?: boolean,  // default: false
+  sessionId?: string | null,  // default: null; the initiating session
 ): Promise<LaunchCommandResult>
 
 async function cancelProcess(
@@ -560,8 +580,10 @@ The 404/409 response body for `launchProcess` / `cancelProcess` / `dismissProces
 `optio-contracts/src/engine-failure-reasons.ts`.
 
 **Adapters** (`fastify`, `express`, `nextjs-app`, `nextjs-pages`): all four extract `body?.resume`
-from the request body and forward it to `launchProcess` as the sixth argument. For resurrect they
-forward `body?.sessionId ?? null` (the body is optional) to `resurrectProcess` as the fourth argument.
+from the request body and forward it to `launchProcess` as the fourth argument; as the fifth
+(`sessionId`), Fastify forwards `body?.sessionId ?? null` and the other three pass `null`. For
+resurrect they forward `body?.sessionId ?? null` (the body is optional) to `resurrectProcess` as
+the fourth argument.
 
 Per the architectural rule above, command handlers do not validate state — they forward the raw
 id to the engine via `engine.launch / cancel / dismiss / resurrect` and translate the discriminated-union
@@ -618,7 +640,7 @@ interface ListQuery {
   limit: number;
   rootId?: string;              // filter by root process ObjectId
   state?: string;               // filter by status.state
-  metadataFilter?: ProcessMetadataFilter;  // exact-match metadata filter; parsed from URL-encoded JSON
+  metadataFilter?: ProcessMetadataFilter;  // metadata predicate (or legacy flat exact-match map); parsed from URL-encoded JSON
 }
 
 interface PaginationQuery {
@@ -660,11 +682,11 @@ interface StreamPollerOptions {
   onError: () => void;                 // called on a failed read; the stream stops itself first
   metadataFilter?: ProcessMetadataFilter;
   scope?: ScopeFilter | null;          // access scope; $and-ed into the query
-  visibility?: ProcessMetadataFilter | null; // access.visibility; read through processReads
+  visibility: ProcessMetadataFilter | null; // required; access.visibility; read through processReads
   hub?: ProcessChangeHub;              // default: the shared hub of (db, prefix)
 }
 
-interface TreePollerOptions extends StreamPollerOptions {
+interface TreePollerOptions extends Omit<StreamPollerOptions, 'metadataFilter' | 'scope'> {
   rootId: string;     // ObjectId string of the tree root
   baseDepth: number;  // absolute depth of the queried process
   maxDepth?: number;  // relative depth limit from baseDepth
@@ -676,7 +698,7 @@ interface MultiTreePollerOptions {
   treeRoots: Array<{ rootId: ObjectId; baseDepth: number }>;
   flatIds: ObjectId[];
   maxDepth?: number;
-  visibility?: ProcessMetadataFilter | null;
+  visibility: ProcessMetadataFilter | null;
   hub?: ProcessChangeHub;
 }
 
@@ -684,7 +706,7 @@ interface SessionEventsPollerOptions {
   db: Db; prefix: string; sessionId: string;
   sendEvent: (data: unknown) => void; onError: () => void;
   scope?: ScopeFilter | null;
-  visibility?: ProcessMetadataFilter | null;
+  visibility: ProcessMetadataFilter | null;
   hub?: ProcessChangeHub;
 }
 
@@ -853,7 +875,7 @@ adapters. This explicitly includes:
 the other three adapters?"* If yes, extract.
 
 **Test before adding a default:** check whether the contract layer
-(`@optio/contracts`, `processesContract`) can express it via Zod
+(`optio-contracts`, `processesContract`) can express it via Zod
 `.default(...)`. Defaults belong in the contract.
 
 ### 2. Handler layer — `packages/optio-api/src/handlers.ts` and collaborators
