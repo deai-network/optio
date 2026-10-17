@@ -200,10 +200,10 @@ pressroom/
   .env                not committed
   .venv/              the engine's Python environment, not committed
   packages/
-    contracts/        ts-rest and clamator contracts            (section 5, 6)
-    engine/           Python, optio-core                         (section 4)
-    api/              TypeScript, Fastify + optio-api            (section 7)
-    frontend/         TypeScript, Vite + React + optio-ui        (section 8)
+    contracts/        clamator and ts-rest contracts             (sections 5, 7)
+    engine/           Python, optio-core                         (sections 4, 6)
+    api/              TypeScript, Fastify + optio-api            (section 8)
+    frontend/         TypeScript, Vite + React + optio-ui        (section 9)
 ```
 
 This section creates the root files. Each package is added in its own section.
@@ -644,7 +644,7 @@ describe those methods once, in TypeScript with Zod, and a code generator produc
 - **Python models and an abstract service class** that the engine implements.
 
 The contract lives in `packages/contracts`, next to the API ↔ frontend contract of
-section 6.
+section 7.
 
 ### The contracts package
 
@@ -727,7 +727,19 @@ export const DocumentSchema = z.object({
   lastPrintedAt: z.string().datetime({ offset: true }).nullable(),
 });
 export type Document = z.infer<typeof DocumentSchema>;
+
+export const NewDocumentSchema = z.object({
+  title: z.string().min(1),
+  text: z.string(),
+});
+export type NewDocument = z.infer<typeof NewDocumentSchema>;
+
+export const CreateDocumentFailureReason = z.enum(['empty-text']);
+export type CreateDocumentFailureReason = z.infer<typeof CreateDocumentFailureReason>;
 ```
+
+The failure reasons live here rather than in the engine contract, so the frontend can
+import them without pulling clamator into the browser bundle.
 
 `packages/contracts/src/engine-contract.ts` is the contract itself:
 
@@ -735,9 +747,7 @@ export type Document = z.infer<typeof DocumentSchema>;
 import { z } from 'zod';
 import { defineContract, defineMethod } from '@clamator/protocol';
 
-import { DocumentSchema } from './schemas.js';
-
-export const CreateDocumentFailureReason = z.enum(['empty-text']);
+import { CreateDocumentFailureReason, DocumentSchema, NewDocumentSchema } from './schemas.js';
 
 // The engine's own RPC methods, called by the API server. The export must be
 // named after the service: pressroom-engine -> pressroomEngineContract. The
@@ -748,7 +758,7 @@ export const pressroomEngineContract = defineContract('pressroom-engine', {
     result: z.object({ pages: z.number().int() }),
   }),
   createDocument: defineMethod({
-    params: z.object({ title: z.string().min(1), text: z.string() }),
+    params: NewDocumentSchema,
     result: z.discriminatedUnion('ok', [
       z.object({ ok: z.literal(true), document: DocumentSchema }),
       z.object({ ok: z.literal(false), reason: CreateDocumentFailureReason }),
@@ -973,7 +983,7 @@ from pressroom_engine.rpc import PressroomEngineService
 
 Your methods share optio's RPC server, and with it the Redis key prefix
 `<database>/<prefix>`. The API server reaches both optio's methods and yours over one
-connection (section 7).
+connection (section 8).
 
 ### Tasks generated from data
 
@@ -1085,15 +1095,181 @@ The `key_prefix` is `<database>/<prefix>`. The new document's `Print "Annual rep
 process is now in `pressroom_processes`. Launched (from optio-dashboard, for example),
 it prints 4 pages and sets the document's `lastPrintedAt`.
 
-## 6. The API ↔ frontend contract
+## 6. Cancellation, shutdown and restarts
 
-## 7. The API server
+## 7. The API ↔ frontend contract
 
-## 8. The frontend
+The frontend talks to two sets of routes on the API server: optio's own (process list,
+launch, cancel, live updates), which optio-api and optio-ui already agree on, and your
+app's. For your app's routes you write a [ts-rest](https://ts-rest.com) contract: a
+plain TypeScript object that lists each route's method, path, body and responses as Zod
+schemas. The API server implements it (section 8), and the frontend gets a typed client
+from it (section 9).
 
-## 9. Running and checking it
+No code generation is involved. Both sides import the built contracts package.
 
-## 10. Production build
+### One router per resource
+
+Add ts-rest to `packages/contracts/package.json`:
+
+```json
+  "dependencies": {
+    "@clamator/protocol": "0.1.9",
+    "@ts-rest/core": "^3.52.1",
+    "zod": "^3.25.0"
+  },
+```
+
+Add the error body to `src/schemas.ts`:
+
+```ts
+// The body of every error response from the API server, as in optio-api.
+export const ErrorSchema = z.object({
+  reason: z.string(),
+  message: z.string(),
+});
+```
+
+`src/api/config.ts`:
+
+```ts
+import { initContract } from '@ts-rest/core';
+import { z } from 'zod';
+
+const c = initContract();
+
+export const configContract = c.router({
+  // Which optio instance the frontend shows: the same database name and
+  // prefix the engine uses.
+  get: {
+    method: 'GET',
+    path: '/config',
+    responses: {
+      200: z.object({ mongoDb: z.string(), optioPrefix: z.string() }),
+    },
+  },
+});
+```
+
+`src/api/documents.ts`:
+
+```ts
+import { initContract } from '@ts-rest/core';
+import { z } from 'zod';
+
+import {
+  CreateDocumentFailureReason,
+  DocumentSchema,
+  ErrorSchema,
+  NewDocumentSchema,
+} from '../schemas.js';
+
+const c = initContract();
+
+export const documentsContract = c.router({
+  list: {
+    method: 'GET',
+    path: '/documents',
+    responses: {
+      200: z.array(DocumentSchema),
+    },
+    summary: 'All documents, newest first',
+  },
+  create: {
+    method: 'POST',
+    path: '/documents',
+    body: NewDocumentSchema,
+    responses: {
+      201: DocumentSchema,
+      400: ErrorSchema.extend({ reason: CreateDocumentFailureReason }),
+    },
+  },
+  estimatePages: {
+    method: 'POST',
+    path: '/documents/estimate-pages',
+    body: z.object({ text: z.string() }),
+    responses: {
+      200: z.object({ pages: z.number().int() }),
+    },
+  },
+});
+```
+
+`src/api-contract.ts` puts them together:
+
+```ts
+import { initContract } from '@ts-rest/core';
+
+import { configContract } from './api/config.js';
+import { documentsContract } from './api/documents.js';
+
+const c = initContract();
+
+// The REST API between the API server and the frontend. One router per
+// resource, in src/api/.
+export const apiContract = c.router(
+  {
+    config: configContract,
+    documents: documentsContract,
+  },
+  { pathPrefix: '/api' },
+);
+```
+
+`src/index.ts` exports it:
+
+```ts
+export * from './schemas.js';
+export { apiContract } from './api-contract.js';
+```
+
+- **Every route is under `/api`**, like optio-api's. In development the frontend's dev
+  server forwards `/api` to the API server; in production the API server serves the
+  frontend from the same origin (sections 9 and 11).
+- **`GET /api/config` tells the frontend which optio instance to show.** optio-ui needs
+  the database name and the prefix. Its fallbacks are a prefix of `optio`, and
+  auto-discovery, which only works when exactly one instance is visible. Served by the
+  API server from the same `.env`, the values always match the engine's.
+- **Errors carry a `reason`**, an enum per route, and a human-readable `message`.
+  optio-api's errors have the same shape, so the frontend treats both alike.
+  `create` reuses the engine's `CreateDocumentFailureReason`, so a new reason in the
+  engine contract becomes a type error wherever it is not handled.
+- **The per-resource routers sit in `src/api/`**, a subdirectory. That also keeps them
+  out of the clamator code generator's way, which looks only at files directly in
+  `src/`. A ts-rest file directly in `src/`, like `api-contract.ts`, does no harm
+  either: the generator loads it and finds no clamator contract in it.
+
+### Build
+
+```bash
+pnpm install
+make contracts
+```
+
+`make codegen` still produces exactly the same generated files. To check that the
+built package works as plain JavaScript:
+
+```bash
+cd packages/contracts
+node --input-type=module -e "
+const m = await import('./dist/index.js');
+console.log(Object.keys(m).sort().join(' '));
+console.log(m.apiContract.documents.create.method, m.apiContract.documents.create.path);
+"
+# CreateDocumentFailureReason DocumentSchema ErrorSchema NewDocumentSchema apiContract
+# POST /api/documents
+```
+
+The contracts package must be built (`make contracts`) before the API server or the
+frontend can use it, and again after every change to it.
+
+## 8. The API server
+
+## 9. The frontend
+
+## 10. Running and checking it
+
+## 11. Production build
 
 ## Appendix A: working on optio and your app at the same time
 
