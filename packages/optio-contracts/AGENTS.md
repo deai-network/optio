@@ -140,7 +140,7 @@ z.enum(['idle', 'scheduled', 'running', 'done', 'failed',
 | `progress` | `ProgressSchema` | see below |
 | `log` | `LogEntry[]` | |
 | `uiWidget` | `string \| null` | nullable, optional |
-| `widgetData` | `unknown` | optional (`widgetUpstream` is server-side only and never appears here) |
+| `widgetData` | `unknown` | optional (`widgetUpstream` and `controlUpstream` are server-side only and never appear here) |
 | `browserOpenRequests` | `BrowserOpenRequest[]` | optional — `{ requestId, url, createdAt? }` |
 | `sessionEvents` | `SessionEvent[]` | optional — `{ requestId, type: 'attention', reason }` or `{ requestId, type: 'client', keyword, data }` |
 | `originatingSessionId` | `string \| null` | nullable, optional |

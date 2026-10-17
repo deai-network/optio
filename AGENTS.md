@@ -601,7 +601,7 @@ Collection: `{prefix}_processes`
 | `autoResumeScheduled` | bool | Stamp set at shutdown on a cancelled, state-saved top-level `auto_resume` process; cleared on resume, manual launch and any transition to failed |
 | `launchMode` | `"resume"` \| `"fresh"` \| absent | How the latest run started (a resume without saved state is fresh) |
 | `originatingSessionId` | string \| null | The `session_id` of the launch; children inherit the parent's |
-| `controlUpstream` | `{ url, innerAuth } \| null` | The session's in-process input listener, read by optio-api's widget-control route (set/cleared by `ctx.set_control_upstream` / `clear_control_upstream`) |
+| `controlUpstream` | `{ url, innerAuth } \| null` | Server-side only — never sent to clients. The session's in-process input listener, read by optio-api's widget-control route (set/cleared by `ctx.set_control_upstream` / `clear_control_upstream`) |
 | `browserOpenRequests` | array | `{requestId, url, createdAt}` records pushed by `ctx.request_browser_open`; append-only |
 | `sessionEvents` | array | `{requestId, type: "attention", reason}` / `{requestId, type: "client", keyword, data}` records pushed by `ctx.need_attention` / `ctx.client_message`; append-only |
 | `ttlSeconds` | int \| null | From `TaskInstance.ttl_seconds`; a child copies its parent's |
@@ -1194,7 +1194,7 @@ snapshot fingerprint. Neither carries `description`.
 
 `widgetData` is included in tree-stream payloads and tracked in the snapshot fingerprint so
 worker-side mutations trigger SSE events. The list stream does **not** include `widgetData`.
-`widgetUpstream` is never present in any client-facing payload.
+`widgetUpstream` and `controlUpstream` are never present in any client-facing payload.
 
 ---
 

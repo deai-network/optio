@@ -805,7 +805,7 @@ The `widgetData` field is included in tree-stream `update` events and is part of
 
 `createListPoller` reads only the fields it sends (a projection: no `log`, `widgetData`, `params` or `sessionEvents`), so a poll costs the summary, not the processes' logs.
 
-`widgetUpstream` is **never** included in any client-facing payload (list stream, tree stream, or REST responses).
+`widgetUpstream` and `controlUpstream` are **never** included in any client-facing payload (list stream, tree stream, or REST responses): both carry `innerAuth` credentials. REST responses drop them in `stripServerSideFields` (handlers.ts); the streams never select them.
 
 ## Building Custom Adapters
 

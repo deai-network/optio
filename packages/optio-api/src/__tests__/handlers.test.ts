@@ -78,32 +78,39 @@ describe('widgetUpstream stripping', () => {
         url: 'http://127.0.0.1:9000',
         innerAuth: { kind: 'basic', username: 'admin', password: 'secret' },
       },
+      controlUpstream: {
+        url: 'http://127.0.0.1:9001',
+        innerAuth: { kind: 'basic', username: 'admin', password: 'secret' },
+      },
       ...extra,
     });
     return oid.toString();
   }
 
-  it('getProcess does not return widgetUpstream', async () => {
+  it('getProcess does not return widgetUpstream or controlUpstream', async () => {
     const id = await insertProcessWithUpstream();
     const result = await getProcess(makeCtx(db), { prefix: PREFIX }, id);
     expect(result).not.toBeNull();
     expect(result).not.toHaveProperty('widgetUpstream');
+    expect(result).not.toHaveProperty('controlUpstream');
   });
 
-  it('getProcessTree does not return widgetUpstream', async () => {
+  it('getProcessTree does not return widgetUpstream or controlUpstream', async () => {
     const id = await insertProcessWithUpstream();
     const result = await getProcessTree(makeCtx(db), { prefix: PREFIX }, id);
     expect(result).not.toBeNull();
     expect(result).not.toHaveProperty('widgetUpstream');
+    expect(result).not.toHaveProperty('controlUpstream');
   });
 
-  it('listProcesses does not return widgetUpstream in any item', async () => {
+  it('listProcesses does not return widgetUpstream or controlUpstream in any item', async () => {
     await insertProcessWithUpstream();
     await insertProcessWithUpstream({ processId: 'q', name: 'Q' });
     const result = await listProcesses(makeCtx(db), { limit: 10, prefix: PREFIX });
     expect(result.items.length).toBeGreaterThan(0);
     for (const item of result.items) {
       expect(item).not.toHaveProperty('widgetUpstream');
+      expect(item).not.toHaveProperty('controlUpstream');
     }
   });
 });

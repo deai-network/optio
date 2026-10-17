@@ -18,8 +18,11 @@ import type {
   ConversationFailureReason as ConversationFailureReasonType,
 } from 'optio-contracts';
 
-function stripServerSideFields<T extends Record<string, any>>(proc: T): Omit<T, 'widgetUpstream'> {
-  const { widgetUpstream: _omit, ...rest } = proc;
+// Fields only the server may see: both upstreams carry innerAuth credentials.
+function stripServerSideFields<T extends Record<string, any>>(
+  proc: T,
+): Omit<T, 'widgetUpstream' | 'controlUpstream'> {
+  const { widgetUpstream: _widget, controlUpstream: _control, ...rest } = proc;
   return rest;
 }
 
