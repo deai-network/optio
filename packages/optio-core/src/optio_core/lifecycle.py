@@ -206,7 +206,7 @@ class Optio:
             if Redis is None:
                 raise ImportError(
                     "Redis support requires the 'redis' extra: "
-                    "pip install optio[redis]"
+                    "pip install optio-core[redis]"
                 )
             self._redis = Redis.from_url(redis_url)
 

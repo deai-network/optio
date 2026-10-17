@@ -30,7 +30,7 @@ class TaskInstance:
     supports_resume: bool = False  # opt-in to resume/checkpoint support
 ```
 
-Optional field. Defaults to `False`. When `True`, the executor publishes `supportsResume=True`
+Optional field. Defaults to `False`. When `True`, task sync publishes `supportsResume=True`
 into the process document (refreshed via `$set` on every sync) and the UI switches the launch
 button to a `Dropdown.Button` (Resume primary / Restart menu) when `hasSavedState` is also true.
 Tasks that set this should use `ProcessContext.mark_has_saved_state()` / `clear_has_saved_state()`
@@ -71,7 +71,7 @@ class TaskInstance:
     schedule_offset_seconds: int | None = None
 ```
 
-Optional field, last in the dataclass. A cron `schedule` has minute resolution, so every
+Optional field, after `resurrect`. A cron `schedule` has minute resolution, so every
 task scheduled `*/1 * * * *` fires at second 0 of the same minute. Setting an offset (0-59)
 makes the scheduler build the same `CronTrigger` that `CronTrigger.from_crontab` would,
 plus `second=offset`, so the task fires that many seconds into each matching minute.
@@ -106,7 +106,7 @@ For `parallel_group`, `ParallelGroup` records `_breach_reason: Literal["failure"
 
 `ctx.should_continue()` is a reliable in-flight discriminator: it returns `False` if and only if the process itself has been cancelled (external on self/ancestor, or cancel cascade from a non-surviving descendant). It does **not** become `False` because a child of this process failed.
 
-`ctx.run_child` and `ParallelGroup.spawn` refuse to spawn new children when the parent's cancellation flag is set and `auto_cancel_children=True` — they return `ChildOutcome(state="cancelled")` without inserting a child doc.
+`ctx.run_child` and `ParallelGroup.spawn` refuse to spawn new children when the parent's cancellation flag is set and `auto_cancel_children=True` — `run_child` returns `ChildOutcome(state="cancelled")` and `spawn` records a `ChildResult(state="cancelled", error="parent cancelled")` in `group.results`, without inserting a child doc.
 
 Spec: `docs/2026-05-11-cancel-propagation-design.md`. Plan: `docs/2026-05-11-cancel-propagation-plan.md`.
 
@@ -242,7 +242,8 @@ await ctx.delete_blob(file_id) -> None
 ```python
 await ctx.set_widget_upstream(url: str, inner_auth: InnerAuth | None = None) -> None
 # Registers the upstream URL for the widget proxy. The proxy will forward all
-# /api/widget/:processId/* requests to this URL. inner_auth is injected per-request.
+# /api/widget/:database/:prefix/:processId/* requests to this URL (:processId is the
+# process document's _id, as hex). inner_auth is injected per-request.
 
 await ctx.clear_widget_upstream() -> None
 # Removes widgetUpstream so the proxy returns 404 for this process.
@@ -286,12 +287,15 @@ payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them.
 Both methods gain a `resume` keyword argument (default `False`):
 
 ```python
-await optio_core.launch(process_id: str, resume: bool = False) -> None
-await optio_core.launch_and_wait(process_id: str, resume: bool = False) -> None
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None) -> LaunchOutcome
+await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None) -> None
 ```
 
-When `resume=True`, the value is forwarded through the Redis command payload so the
-executor sets `ctx.resume = True` when the task starts.
+When `resume=True`, the executor sets `ctx.resume = True` when the task starts. `launch`
+refuses it with `no-resume-support` when the process has `supportsResume` false, and
+launches fresh (`resume=False`) when it has no saved state (`hasSavedState` false);
+`launch_and_wait` does neither check. `session_id` is required (keyword-only; `None` for
+an unattended launch).
 
 While a resurrect of the process is in progress, `launch` returns `not-launchable`.
 
@@ -382,9 +386,11 @@ await optio_core.group_cancel(
     *,
     persist: bool = False,                     # requires block_new_launches=True
     reason: str | None = None,                 # stored on the persistent record
-) -> None  # fire-and-forget; returns once cancels are issued (and, if
-           # block_new_launches=True, after the leak sweep). Safe to call
-           # from inside a task whose own metadata matches the filter.
+    purge_records: bool = False,               # then delete matching records + descendants
+) -> int  # fire-and-forget; returns once cancels are issued (and, if
+          # block_new_launches=True, after the leak sweep). Safe to call
+          # from inside a task whose own metadata matches the filter.
+          # Returns the number of processes cancellation was issued for.
 
 await optio_core.group_cancel_and_wait(
     metadata_filter: ProcessMetadataFilter,
@@ -392,10 +398,13 @@ await optio_core.group_cancel_and_wait(
     *,
     persist: bool = False,                     # requires block_new_launches=True
     reason: str | None = None,                 # stored on the persistent record
-) -> None  # blocks until every matching process is in a terminal state.
-           # Raises asyncio.TimeoutError on the internal ceiling
-           # (cancel_grace_seconds + 25s). Do NOT call from inside a task
-           # whose metadata matches the filter — use group_cancel instead.
+    purge_records: bool = False,               # then delete matching records + descendants
+) -> int  # blocks until every matching process is in a terminal state;
+          # returns the number of processes cancellation was issued for.
+          # Raises asyncio.TimeoutError on the internal ceiling
+          # (cancel_grace_seconds + cancel_wait_ceiling_margin_seconds,
+          # default 25s). Do NOT call from inside a task
+          # whose metadata matches the filter — use group_cancel instead.
 ```
 
 A matching row in `running`, `cancel_requested` or `cancelling` that no task in
@@ -502,7 +511,7 @@ Two new keyword arguments added to `optio_core.init()`:
 - `redis_url` (existing): When supplied, optio-core constructs a `RedisRpcServer`
   internally, registers `OptioEngineService`, and exposes it at `optio_core.rpc_server`.
 
-Full `init()` signature (as of phase 2):
+Full `init()` signature:
 
 ```python
 await optio_core.init(
@@ -513,8 +522,16 @@ await optio_core.init(
     services: dict[str, Any] | None = None,
     get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,
     cancel_grace_seconds: float = 5.0,
+    auto_resume_delay_seconds: float = 300.0,
+    cancel_wait_ceiling_margin_seconds: float = 25.0,
+    shutdown_drain_margin_seconds: float = 5.0,
+    terminal_poll_interval_seconds: float = 0.1,
+    force_cancel_shield_seconds: float = 2.0,
 ) -> None
 ```
+
+The last five are timing knobs (stored on `OptioConfig`); the README's `init()` table
+describes each.
 
 ### Process collection indexes and TTL
 
@@ -551,7 +568,7 @@ class SessionCrypto:
     decrypt: Callable[[bytes], bytes] | None = None
 ```
 
-Optional, last field. A task's at-rest cipher for its own encrypted blob channels
+Optional field, after `schedule_offset_seconds`. A task's at-rest cipher for its own encrypted blob channels
 (e.g. the session blob). Filled by an engine wrapper's task factory from its config
 (e.g. optio-claudecode's `session_blob_encrypt`/`session_blob_decrypt`); other
 engines may fill it later. `None` cipher members mean "no encryption configured" —

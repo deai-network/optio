@@ -8,13 +8,13 @@ The core Python library for Optio. Embed it in your Python application to define
 pip install optio-core
 ```
 
-For Redis command bus support:
+For Redis (clamator RPC) support:
 
 ```bash
 pip install optio-core[redis]
 ```
 
-**Requirements:** Python 3.11+, MongoDB. Dependencies: `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `quaestor`. Redis support: `redis>=5.0.0` (optional extra).
+**Requirements:** Python 3.11+, MongoDB. Dependencies: `motor>=3.3.0`, `apscheduler>=4.0.0a6`, `mongo-quaestor>=0.1,<0.2`, `clamator-over-redis>=0.1.9`, `clamator-protocol>=0.1.9`, `pydantic>=2.0`, `aiohttp>=3.9`. Redis support: `redis>=5.0.0` (optional extra).
 
 ## Quick Start
 
@@ -31,7 +31,8 @@ async def my_task(ctx):
         await asyncio.sleep(1)
     ctx.report_progress(100, "Done")
 
-async def get_tasks(services):
+async def get_tasks(services, metadata_filter=None):
+    # Optio filters the result by metadata_filter itself, so it may be ignored.
     return [
         TaskInstance(
             execute=my_task,
@@ -49,7 +50,7 @@ async def main():
         get_task_definitions=get_tasks,
     )
 
-    await launch_and_wait("my-task")
+    await launch_and_wait("my-task", session_id=None)  # no initiating session
     proc = await get_process("my-task")
     print(proc["status"]["state"])  # "done"
 
@@ -71,8 +72,15 @@ await optio_core.init(
     mongo_db: AsyncIOMotorDatabase,
     prefix: str = "optio",
     redis_url: str | None = None,
+    rpc_server: RpcServerCore | None = None,
     services: dict[str, Any] | None = None,
     get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,
+    cancel_grace_seconds: float = 5.0,
+    auto_resume_delay_seconds: float = 300.0,
+    cancel_wait_ceiling_margin_seconds: float = 25.0,
+    shutdown_drain_margin_seconds: float = 5.0,
+    terminal_poll_interval_seconds: float = 0.1,
+    force_cancel_shield_seconds: float = 2.0,
 ) -> None
 ```
 
@@ -82,9 +90,16 @@ Initialize Optio. Must be called before any other function.
 |-----------|------|---------|-------------|
 | `mongo_db` | `AsyncIOMotorDatabase` | required | Motor async database object |
 | `prefix` | `str` | `"optio"` | Namespace for collections (`{prefix}_processes`) and clamator service streams (the `{database}/{prefix}` Redis key prefix). Override if you need to avoid name collisions in a shared database. Streams are automatically scoped by both database name and prefix, so instances using different databases won't collide even on a shared Redis server. |
-| `redis_url` | `str \| None` | `None` | If `None`, Redis features are disabled; use direct method calls only |
+| `redis_url` | `str \| None` | `None` | If `None` (and no `rpc_server`), Redis features are disabled; use direct method calls only. Mutually exclusive with `rpc_server` |
+| `rpc_server` | `RpcServerCore \| None` | `None` | A pre-built clamator RPC server to register the `optio-engine` service on, instead of building one from `redis_url`. The caller owns its start/stop. Mutually exclusive with `redis_url` |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
-| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init and resync. `metadata_filter` is `None` for a full sync, or a dict of metadata key/value pairs to restrict which task definitions are regenerated. **This is the most important part — this is where you declare the tasks that Optio will manage.** See the [TaskInstance definition](#taskinstance) under Data Types. |
+| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init, when `run()` starts, and on resync. Optio passes both arguments positionally. `metadata_filter` is `None` for a full sync, or a dict of metadata key/value pairs to restrict which task definitions are regenerated; Optio drops the returned tasks that do not match it, so the function may ignore it. **This is the most important part — this is where you declare the tasks that Optio will manage.** See the [TaskInstance definition](#taskinstance) under Data Types. |
+| `cancel_grace_seconds` | `float` | `5.0` | How long a cancelled task has to unwind cooperatively before it is force-cancelled and ends `failed` (see [Cooperative Cancellation](#cooperative-cancellation)) |
+| `auto_resume_delay_seconds` | `float` | `300.0` | Delay after `run()` starts before the top-level processes of `auto_resume` tasks that the previous shutdown interrupted, and that saved their state, are re-launched with `resume=True` |
+| `cancel_wait_ceiling_margin_seconds` | `float` | `25.0` | Added to `cancel_grace_seconds` to give the ceiling after which `Optio.cancel_and_wait()` and `group_cancel_and_wait()` raise `asyncio.TimeoutError` |
+| `shutdown_drain_margin_seconds` | `float` | `5.0` | Added to the grace during `shutdown()`'s wait for running processes to exit |
+| `terminal_poll_interval_seconds` | `float` | `0.1` | Poll interval while waiting for a process to reach a terminal state |
+| `force_cancel_shield_seconds` | `float` | `2.0` | How long a force-cancel waits for the task to unwind after `Task.cancel()` before writing `failed` anyway |
 
 ### `run()`
 
@@ -92,17 +107,17 @@ Initialize Optio. Must be called before any other function.
 await optio_core.run() -> None
 ```
 
-Start the main event loop. Blocks until `shutdown()` is called. Starts the cron scheduler and, if Redis is configured, begins consuming commands from the Redis stream. Installs signal handlers for `SIGTERM` and `SIGINT` that trigger graceful shutdown.
+Start the main event loop. Blocks until `shutdown()` is called. Starts the cron scheduler, the supervisor that force-cancels processes past their cancel grace, and, if `redis_url` was given, the clamator RPC server (see [Remote Control via Clamator RPC](#remote-control-via-clamator-rpc)). Installs signal handlers for `SIGTERM` and `SIGINT` that trigger graceful shutdown.
 
 Without Redis, `run()` simply blocks until `shutdown()` is called (useful for scheduler-only deployments).
 
 ### `shutdown()`
 
 ```python
-await optio_core.shutdown() -> None
+await optio_core.shutdown(grace_seconds: float | None = None) -> None
 ```
 
-Initiate graceful shutdown. Stops the command consumer and scheduler, sets cancellation flags on all running processes, waits up to 5 seconds for them to exit, and closes the Redis connection.
+Initiate graceful shutdown. Refuses new launches, stops the RPC server (if Optio built it from `redis_url`), then sets the cancellation flag of every running process, giving each `grace_seconds` (default: `cancel_grace_seconds`) to unwind. It waits up to that grace plus `shutdown_drain_margin_seconds` for them to exit, then force-cancels every process still running; those end `failed`. Finally it closes the Redis connection and unblocks `run()`, which then stops the scheduler.
 
 ## State Machine
 
@@ -120,6 +135,7 @@ idle --> scheduled --> running --> done
 Cancel path:
   scheduled --> cancelled
   running --> cancel_requested --> cancelling --> cancelled
+  cancel_requested / cancelling --> failed (force-cancelled after the grace)
   cancelled --> idle (dismiss)
 ```
 
@@ -137,7 +153,7 @@ Here is the full state diagram, including re-launch and dismiss transitions:
 | `cancel_requested` | ACTIVE | Cancel requested, waiting for executor to acknowledge |
 | `cancelling` | ACTIVE | Executor acknowledged; cleaning up |
 | `done` | END, LAUNCHABLE, DISMISSABLE | Completed successfully |
-| `failed` | END, LAUNCHABLE, DISMISSABLE | Execute function raised an exception |
+| `failed` | END, LAUNCHABLE, DISMISSABLE | Execute function raised an exception, or the process was force-cancelled or interrupted by a server restart |
 | `cancelled` | END, LAUNCHABLE, DISMISSABLE | Cancelled successfully |
 
 ### State Groups
@@ -163,6 +179,8 @@ DISMISSABLE_STATES = {"done", "failed", "cancelled"}
 | `cancelling` | `cancelled` |
 | `cancelled` | `scheduled`, `idle` |
 
+This table is `optio_core.state_machine.VALID_TRANSITIONS`, which optio does not enforce. The engine also writes `scheduled` → `cancelled` (cancel before start), `running` or `cancel_requested` → `cancelled` (the task returned after its flag was set, e.g. during `shutdown()`), and any active state → `failed` (force-cancel after the grace, or a process interrupted by a server restart).
+
 ### Cooperative Cancellation
 
 Cancellation is cooperative. When a cancel request arrives:
@@ -170,9 +188,9 @@ Cancellation is cooperative. When a cancel request arrives:
 1. The process state transitions to `cancel_requested`, then `cancelling`.
 2. An internal flag is set.
 3. The task function must check `ctx.should_continue()` periodically and return early if it returns `False`.
-4. Cancellation propagates to child processes automatically.
+4. Cancellation propagates to active child processes automatically (unless the task sets `auto_cancel_children=False`).
 
-If a task never checks `should_continue()`, it cannot be cancelled (it will remain in `cancelling` state until it finishes naturally).
+A task that returns while its flag is set ends `cancelled`. A task that has not unwound within `cancel_grace_seconds` (an `init()` parameter, default 5 s) is force-cancelled: `asyncio.CancelledError` is raised in it at its next `await`, and the process ends `failed` with the error `"Task did not unwind within cancellation grace period"`. The force-cancel is done by the supervisor that `run()` starts, and by `shutdown()`.
 
 ### Scheduling
 
@@ -240,15 +258,15 @@ await ctx.run_child(
     execute: Callable[..., Awaitable[None]],
     process_id: str,
     name: str,
-    description: str | None = None,
     params: dict[str, Any] | None = None,
     survive_failure: bool = False,
     survive_cancel: bool = False,
     on_child_progress: Callable[[list[ChildProgressInfo]], None] | None = None,
-) -> str
+    description: str | None = None,
+) -> ChildOutcome
 ```
 
-Run a sequential child process. Blocks until the child completes. Returns the child's final state: `"done"`, `"failed"`, or `"cancelled"`.
+Run a sequential child process. Blocks until the child completes. Returns a `ChildOutcome` (`from optio_core.models import ChildOutcome`): `.state` is the child's final state, `"done"`, `"failed"`, or `"cancelled"`, and `.original_exception` the exception a failed child raised.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -257,8 +275,8 @@ Run a sequential child process. Blocks until the child completes. Returns the ch
 | `name` | `str` | required | Display name |
 | `description` | `str \| None` | `None` | Optional description text |
 | `params` | `dict \| None` | `None` | Parameters passed to the child's `ctx.params` |
-| `survive_failure` | `bool` | `False` | If `False`, raises `RuntimeError` when child fails |
-| `survive_cancel` | `bool` | `False` | If `False`, raises `RuntimeError` when child is cancelled |
+| `survive_failure` | `bool` | `False` | If `False`, raises `ChildProcessFailed` (`from optio_core.exceptions import ChildProcessFailed`; `.original` is the child's exception) when the child fails |
+| `survive_cancel` | `bool` | `False` | If `False`, a cancelled child cancels the parent too: the parent's `should_continue()` turns `False`. No exception is raised |
 | `on_child_progress` | `Callable \| None` | `None` | Callback for child progress updates (use progress helpers) |
 
 #### `parallel_group()`
@@ -277,11 +295,11 @@ Create a parallel execution group. Use as an async context manager.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `max_concurrency` | `int` | `10` | Maximum number of children running concurrently |
-| `survive_failure` | `bool` | `False` | If `False`, raises `RuntimeError` on exit if any child failed |
-| `survive_cancel` | `bool` | `False` | If `False`, raises `RuntimeError` on exit if any child was cancelled |
+| `survive_failure` | `bool` | `False` | If `False`, raises `ExceptionGroup` of `ChildProcessFailed` on exit if any child failed |
+| `survive_cancel` | `bool` | `False` | If `False`, cancels the parent and raises `ExceptionGroup` of `ChildProcessFailed` on exit if any child was cancelled |
 | `on_child_progress` | `Callable \| None` | `None` | Callback for child progress updates |
 
-Inside the context, call `await group.spawn(execute, process_id, name, description, params)` to add children. After the context exits, `group.results` contains a `list[ChildResult]`.
+Inside the context, call `await group.spawn(execute, process_id, name, params, description)` to add children. After the context exits, `group.results` contains a `list[ChildResult]`.
 
 ## Child Processes
 
@@ -292,15 +310,15 @@ Tasks can spawn child processes that appear as a tree in the database. Children 
 ```python
 async def parent_task(ctx):
     ctx.report_progress(0, "Starting phase 1")
-    state = await ctx.run_child(
+    outcome = await ctx.run_child(
         execute=phase_one,
         process_id=f"{ctx.process_id}/phase-1",
         name="Phase 1",
         params={"key": "value"},
-        survive_failure=False,  # Raise if child fails (default)
-        survive_cancel=False,   # Raise if child is cancelled (default)
+        survive_failure=False,  # Raise ChildProcessFailed if child fails (default)
+        survive_cancel=False,   # Cancel this task too if child is cancelled (default)
     )
-    # state is "done", "failed", or "cancelled"
+    # outcome.state is "done" or "cancelled" here (a failure raised ChildProcessFailed)
 
     ctx.report_progress(50, "Starting phase 2")
     await ctx.run_child(
@@ -333,7 +351,7 @@ async def parent_task(ctx):
     ctx.report_progress(100, f"Done, {len(failed)} failures")
 ```
 
-When `survive_failure=False` (the default), a `RuntimeError` is raised when the group's async context exits if any child failed or was cancelled.
+When `survive_failure=False` (the default), an `ExceptionGroup` of `ChildProcessFailed` is raised when the group's async context exits if any child failed; with `survive_cancel=False` (the default), also if any child was cancelled. Catch it with `except* ChildProcessFailed`.
 
 ## Progress Reporting
 
@@ -381,46 +399,54 @@ Now that we have discussed what the individual processes can do, let's look at w
 ### `launch()`
 
 ```python
-await optio_core.launch(process_id: str) -> None
+await optio_core.launch(
+    process_id: str, resume: bool = False, *, session_id: str | None,
+) -> LaunchOutcome
 ```
 
-Fire-and-forget launch. The process begins execution in a background task and the call returns immediately. The process must be in a launchable state (`idle`, `done`, `failed`, or `cancelled`).
+Fire-and-forget launch. The process begins execution in a background task and the call returns immediately. The process must be in a launchable state (`idle`, `done`, `failed`, or `cancelled`). `session_id` is required (keyword-only): the id of the session that initiated the launch, or `None` for an unattended launch; it is stored on the process as `originatingSessionId`. `resume=True` starts the task with `ctx.resume=True` (the task needs `supports_resume=True`; without saved state it starts fresh). Returns a `LaunchOutcome`: `ok=True` with `proc` the process document, or `ok=False` with a `reason`: `not-found`, `not-launchable`, `launch-blocked`, `no-resume-support` or `shutting-down`.
 
 ### `launch_and_wait()`
 
 ```python
-await optio_core.launch_and_wait(process_id: str) -> None
+await optio_core.launch_and_wait(
+    process_id: str, resume: bool = False, *, session_id: str | None,
+) -> None
 ```
 
-Launch a process and block until it reaches a terminal state (`done`, `failed`, or `cancelled`). Useful for scripting and tests.
+Launch a process and block until it reaches a terminal state (`done`, `failed`, or `cancelled`). Useful for scripting and tests. `session_id` is as for `launch()`; `resume` reaches the task as `ctx.resume` unchecked (no `supports_resume` or saved-state check). Raises `LaunchBlocked` if a launch block matches the task's metadata. If the process is not found or not in a launchable state, it returns at once without launching.
 
 ### `cancel()`
 
 ```python
-await optio_core.cancel(process_id: str) -> None
+await optio_core.cancel(process_id: str) -> CancelOutcome
 ```
 
-Cancel a running or scheduled process. If `scheduled`, it transitions directly to `cancelled`. If `running`, it transitions through `cancel_requested` -> `cancelling`, and the cancellation flag is set for cooperative cancellation.
+Cancel a running or scheduled process. If `scheduled`, it transitions directly to `cancelled`. If `running`, it transitions through `cancel_requested` -> `cancelling`, and the cancellation flag is set for cooperative cancellation. Returns a `CancelOutcome`: `ok=True` with `proc` the process document, or `ok=False` with `reason` `not-found` or `not-cancellable` (not `scheduled` or `running`, or the task has `cancellable=False`).
 
 ### `dismiss()`
 
 ```python
-await optio_core.dismiss(process_id: str) -> None
+await optio_core.dismiss(process_id: str) -> DismissOutcome
 ```
 
-Reset a completed process back to `idle`. Only works on processes in a dismissable state (`done`, `failed`, or `cancelled`). Clears the previous run's result fields (status timestamps, progress, logs) and deletes all descendant child processes.
+Reset a completed process back to `idle`. Only works on processes in a dismissable state (`done`, `failed`, or `cancelled`). Clears the previous run's result fields (status timestamps, progress, logs) and deletes all descendant child processes. Returns a `DismissOutcome`: `ok=True` with `proc` the process document, or `ok=False` with `reason` `not-found` or `not-dismissable`.
 
 ### `resync()`
 
 ```python
-await optio_core.resync(clean: bool = False) -> None
+await optio_core.resync(
+    clean: bool = False,
+    metadata_filter: ProcessMetadataFilter | None = None,
+) -> dict[str, str]
 ```
 
-Re-run the task generator and sync definitions with the database. New tasks are created, removed tasks are deleted (if idle), and metadata on existing tasks is updated without disturbing runtime state.
+Re-run the task generator and sync definitions with the database. New tasks are created, the root records of tasks no longer generated are deleted (an active one is cancelled first, waiting up to `cancel_grace_seconds`), and metadata on existing tasks is updated without disturbing runtime state. Returns a `{processId: oid_hex}` map of the tasks synced.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `clean` | `bool` | `False` | If `True`, delete all process records before re-syncing |
+| `clean` | `bool` | `False` | If `True`, delete process records before re-syncing: all of them, or with `metadata_filter` the matching root records |
+| `metadata_filter` | `dict[str, Any] \| None` | `None` | If set, only tasks whose metadata matches are regenerated and pruned; everything else is left alone |
 
 ## Querying
 
@@ -515,7 +541,7 @@ proc = await adhoc_define(
     ephemeral=True,  # Auto-delete after completion
 )
 
-await launch("one-off-123")
+await launch("one-off-123", session_id=None)
 ```
 
 ## Remote Control via Clamator RPC
@@ -524,8 +550,8 @@ When Redis is configured (by passing `redis_url` to `init()`), `optio-core`
 hosts a clamator `RedisRpcServer` at the `${database}/${prefix}` key prefix
 and registers the `optio-engine` service against it. External services
 control processes by holding a clamator client and calling typed methods:
-`launch`, `cancel`, `dismiss`, `resync`, `group_cancel`, `group_cancel_and_wait`,
-`block_launches`, `unblock_launches`. Results are discriminated unions —
+`launch`, `cancel`, `dismiss`, `resurrect`, `resync`, `group_cancel`, `group_cancel_and_wait`,
+`block_launches`, `unblock_launches`, `materialize_upload`. Results are discriminated unions —
 `ok: true` carries the updated process payload; `ok: false` carries a typed
 `reason` field (e.g. `"not-found"`, `"not-cancellable"`, `"launch-blocked"`,
 `"no-resume-support"`).
@@ -568,7 +594,15 @@ class TaskInstance:
     special: bool = False                    # hidden from default UI views when special=True
     warning: str | None = None               # shown as confirmation prompt before launch
     cancellable: bool = True                 # whether this process can be cancelled
+    ui_widget: str | None = None             # optio-ui widget that renders this process
+    supports_resume: bool = False            # the task can resume from saved state
+    ttl_seconds: int | None = None           # delete the record this long after it ends
+    auto_cancel_children: bool = True        # cancel propagates to active children
+    auto_resume: bool = False                # resume after an engine restart
+    resurrect: Callable[..., Awaitable[None]] | None = None  # saves a failed run's work
     schedule_offset_seconds: int | None = None  # second within the minute at which `schedule` fires
+    session_crypto: SessionCrypto | None = None  # at-rest cipher for the task's blobs
+    read_conversation: Callable[..., Awaitable[list | dict | None]] | None = None
 ```
 
 | Field | Type | Description |
@@ -583,7 +617,17 @@ class TaskInstance:
 | `special` | `bool` | Hidden from default UI views when `True` |
 | `warning` | `str \| None` | Warning message shown as confirmation prompt before launch |
 | `cancellable` | `bool` | Whether this process can be cancelled (default: `True`) |
+| `ui_widget` | `str \| None` | Name of a widget registered in optio-ui (`registerWidget()`) that renders this process instead of the default tree+log view. Stored as `uiWidget` |
+| `supports_resume` | `bool` | The task can restore saved state when launched with `resume=True` (default: `False`). Stored as `supportsResume`; see `ctx.mark_has_saved_state()` in [AGENTS.md](AGENTS.md) |
+| `ttl_seconds` | `int \| None` | If set, the record is deleted by MongoDB's TTL index this many seconds after the process reaches a terminal state; children use their parent's value |
+| `auto_cancel_children` | `bool` | When `True` (default), cancelling this process also cancels its active direct children; when `False`, the task cancels its own children (if it is still running at the end of the grace, it and its live descendants are force-cancelled) |
+| `auto_resume` | `bool` | A top-level process interrupted by an engine shutdown that saved its state is re-launched with `resume=True` after the next start, `auto_resume_delay_seconds` later (default: `False`). Requires `supports_resume=True` |
+| `resurrect` | `Callable \| None` | Optional hook that saves the work a failed run left on its host; run by `optio_core.resurrect()`, followed by a resume. Requires `supports_resume=True` |
 | `schedule_offset_seconds` | `int \| None` | Second (0–59) within each matching minute at which `schedule` fires; `None` fires at second 0. Use it to spread many minute-aligned schedules across the minute. |
+| `session_crypto` | `SessionCrypto \| None` | The task's at-rest cipher (`encrypt` / `decrypt` callables) for its own encrypted blobs; `None` means no encryption |
+| `read_conversation` | `Callable \| None` | Optional hook returning the conversation record a suspended process saved, for a read-only view without resuming it |
+
+The fields after `cancellable` are covered in more detail in [AGENTS.md](AGENTS.md).
 
 ### `ChildResult`
 
@@ -593,6 +637,8 @@ class ChildResult:
     process_id: str
     state: str        # "done" | "failed" | "cancelled"
     error: str | None = None
+    name: str = ""
+    original_exception: BaseException | None = None  # what a failed child raised
 ```
 
 Returned in `ParallelGroup.results` after all children complete.
@@ -661,3 +707,4 @@ Collection: `{prefix}_processes`
 ## See Also
 
 - [Optio Overview](../../README.md)
+- [How to set up a new optio app](../../docs/how-to-set-up-a-new-optio-app.md): an engine, API server and UI built on optio-core, step by step
