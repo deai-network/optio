@@ -114,7 +114,13 @@ from reading the code or docs only.
 - Without a database in `MONGODB_URL`, it lists every optio instance on the server
   and stores its login collections in a database named `optio`. Documented in the
   guide; maybe warn at startup. **Seen**
-- Prints a Fastify deprecation warning at startup (`disableRequestLogging`). **Seen**
+- Prints a Fastify deprecation warning at startup (`disableRequestLogging`), and
+  `@fastify/reply-from might not behave as expected when used with @fastify/multipart`
+  (optio-api's adapter; every optio-api app logs it). **Seen**
+- Sign-in works only from `http://localhost:<PORT>`: `http://127.0.0.1:<PORT>` or a
+  machine name fails with "Invalid origin" (better-auth trustedOrigins). It listens on
+  all interfaces, so the address it is reachable at and the one it accepts differ.
+  **Seen** (by the fresh-reader test)
 
 ## optio-core
 

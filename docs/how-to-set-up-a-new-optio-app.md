@@ -17,7 +17,9 @@ Replace `pressroom` with your app's name throughout.
 
 ![Architecture](images/architecture-future.png)
 
-An optio app has three layers, plus MongoDB and Redis:
+An optio app has three layers, plus MongoDB and Redis. (The diagram shows Redis as an
+optional "remote control" level of optio. In the app this guide builds it is required:
+every call from the API server to the engine goes through it.)
 
 | Layer | Package | Language | Uses | Role |
 |---|---|---|---|---|
@@ -182,9 +184,18 @@ server run on the host, so the member must be reachable from the host under its 
 name. A plain `mongodb://localhost:27017` then works, without `directConnection=true`.
 
 **If you already run MongoDB and Redis**, skip the compose file and point `.env` at
-them. Use a database name and prefix that no other app uses. To use change streams,
-the MongoDB server must be a replica set whose member names are reachable from where
-your engine and API server run.
+them, and leave out the `deps` and `deps-stop` targets of the `Makefile` (section 3).
+Use a database name and prefix that no other app uses. To use change streams, the
+MongoDB server must be a replica set whose member names are reachable from where your
+engine and API server run. Once the engine is installed (section 4), this shows the
+member names:
+
+```bash
+.venv/bin/python -c "import pymongo; print(pymongo.MongoClient('mongodb://localhost:27017').admin.command('hello')['hosts'])"
+# ['localhost:27017']
+```
+
+The engine's first start (section 4) is the real check.
 
 ## 3. The repo skeleton
 
@@ -196,6 +207,8 @@ pressroom/
   Makefile
   package.json
   pnpm-workspace.yaml
+  tsconfig.base.json  shared TypeScript settings          (section 5)
+  .gitignore
   .env.example        committed
   .env                not committed
   .venv/              the engine's Python environment, not committed
@@ -566,6 +579,10 @@ make engine
 ```
 
 `watchfiles` restarts the engine whenever a file under `packages/engine/src` changes.
+Some steps change several files in a row (`make install-engine`, `make codegen`, or
+adding a few new modules one by one); the engine then restarts several times quickly,
+and the log shows `KeyboardInterrupt` tracebacks, or an `ImportError` while a module is
+still missing. That is harmless: it settles once every file is in place.
 `--sigint-timeout 15` gives the old engine 15 seconds to shut down cleanly before it is
 killed. Section 6 explains how long a shutdown can take, and replaces the 15 with a
 value derived from the cancel grace period.
@@ -618,7 +635,10 @@ PORT=3999 \
 npx -y optio-dashboard
 ```
 
-Open `http://localhost:3999`, sign in with the password, and the header shows
+Open exactly `http://localhost:3999` (on a remote machine, through a tunnel:
+`ssh -L 3999:localhost:3999 <machine>`): sign-in checks the address, and
+`http://127.0.0.1:3999` or a machine name fails with "Invalid origin". Sign in with the
+password, and the header shows
 `pressroom/pressroom`. Click the play icon next to "Print a test page": the progress
 bar fills over ten seconds, and the log fills in live.
 
@@ -630,8 +650,12 @@ bar fills over ten seconds, and the log fills in live.
 - `OPTIO_PASSWORD` is required. The dashboard keeps its login data in the database
   from `MONGODB_URL`, in the collections `user`, `account` and `session`. Without a
   database in the URL, it uses a database called `optio`.
-- npm prints peer-dependency warnings while installing it, and Fastify prints a
-  deprecation warning at startup. Both are harmless.
+- npm prints peer-dependency warnings while installing it, and at startup it warns
+  about a Fastify deprecation and that `@fastify/reply-from might not behave as
+  expected when used with @fastify/multipart`. All harmless.
+- The dashboard listens on every network interface, not only localhost.
+- A few of its filter labels show as keys (`processes.search`, …): that is the
+  dashboard's own omission, not your app's.
 
 What the dashboard cannot test is your app's own engine calls: the direct calls of
 section 5 need your own API server.
@@ -1060,9 +1084,9 @@ async def get_task_definitions(services, metadata_filter=None) -> list[TaskInsta
 
 ### Try it from Python
 
-The engine restarts by itself (`make engine`) and now reports `Synced 2 task
-definitions` once a document exists. Before the API server exists, you can call the
-engine with the generated Python client:
+The engine restarts by itself (`make engine`). Before the API server exists, you can
+call it with the generated Python client. Save this as `try_engine.py` at the repo root
+and run it with the venv's Python, `.venv/bin/python try_engine.py`:
 
 ```python
 import asyncio
@@ -1071,6 +1095,7 @@ from pressroom_engine._generated.pressroom_engine import (
     PressroomEngineClient, EstimatePagesParams, CreateDocumentParams)
 
 async def main():
+    # key_prefix: <MONGO_DB>/<OPTIO_PREFIX> from your .env
     rpc = RedisRpcClient(redis_url="redis://localhost:6379", key_prefix="pressroom/pressroom")
     await rpc.start()
     engine = PressroomEngineClient(rpc)
@@ -1089,7 +1114,8 @@ root=CreateDocumentResult2(ok=False, reason='empty-text')
 root=CreateDocumentResult1(ok=True, document=Document(id='6ad2ece27f94af7380fe9b61', title='Annual report', text='word word word ...', ...))
 ```
 
-The `key_prefix` is `<database>/<prefix>`. The new document's `Print "Annual report"`
+After `create_document`, the engine logs `Synced 1 task definitions (filter=
+{'documentId': '…'})`: the targeted resync. The new document's `Print "Annual report"`
 process is now in `pressroom_processes`. Launched (from optio-dashboard, for example),
 it prints 4 pages and sets the document's `lastPrintedAt`.
 
@@ -1136,8 +1162,8 @@ same.
 - **optio never kills your subprocesses.** If a task runs a command (a typesetter, a
   converter), it has to stop the command itself. This helper does that: it runs the
   command in its own process group and, if the task is told to stop, sends that group
-  SIGTERM, then SIGKILL after 5 seconds. Pressroom keeps it in
-  `src/pressroom_engine/commands.py`; section 10 uses it for LuaLaTeX:
+  SIGTERM, then SIGKILL after 5 seconds. Pressroom uses it from section 10 on, for
+  LuaLaTeX; it lives in `src/pressroom_engine/commands.py`, which you create there:
 
   ```python
   import asyncio
@@ -1194,12 +1220,14 @@ long before it kills it. Excavator's rule, used here too, is
 **2 × grace + 60 seconds**. In development that is watchfiles' `--sigint-timeout`; in
 production, the container's stop timeout (section 12).
 
-**Press Ctrl-C once, and wait for `Shutdown complete`.** The engine ignores a second
-Ctrl-C. Under `make engine`, though, the second one kills watchfiles (with a
-`KeyboardInterrupt` traceback) and make, and your prompt returns while the engine is
-still shutting down in the background.
+**Press Ctrl-C once, and wait for `Shutdown complete`.** After it, a traceback
+(`Exception ignored in atexit callback … KeyboardInterrupt`) and
+`make: *** [Makefile:…: engine] Interrupt` are normal. The engine ignores a second
+Ctrl-C. Under `make engine`, though, the second one kills watchfiles and make, and your
+prompt returns while the engine is still shutting down in the background.
 
-Make the grace period a setting. In `.env.example`:
+Make the grace period a setting. Add these lines to `.env.example`, and the same lines
+to your `.env` (it was copied in section 3, before they existed):
 
 ```ini
 # How long a task may take to stop after a cancel or an engine shutdown before
@@ -1261,7 +1289,9 @@ engine:  ## Run the engine; restart it when its source changes
 	  "$(VENV)/bin/python -m pressroom_engine" packages/engine/src
 ```
 
-With a grace of 10, `make -n engine` shows `--sigint-timeout 80`.
+With a grace of 10, `make -n engine` shows `--sigint-timeout 80`. A running
+`make engine` still has the old timeout and the old settings: stop it (Ctrl-C once) and
+start it again.
 
 The API server holds nothing that needs saving. Its `index.ts` (section 8) closes
 the server on SIGINT or SIGTERM and exits; with a live event stream open, it stopped
@@ -1331,8 +1361,165 @@ and its task definition gains two flags:
             )
 ```
 
-(`print_test_page` no longer needs the shared `print_pages` helper of section 5; give
-it its own loop.)
+`print_pages`, the helper of section 5, goes; `print_test_page` gets its own loop
+again. The whole `tasks.py` now:
+
+```python
+import asyncio
+from datetime import datetime, timezone
+
+from bson import ObjectId
+from optio_core import TaskInstance
+
+from pressroom_engine.documents import estimate_pages
+
+TEST_PAGE_COUNT = 10
+
+
+async def print_test_page(ctx) -> None:
+    for page in range(1, TEST_PAGE_COUNT + 1):
+        if not ctx.should_continue():
+            return
+        ctx.report_progress(100 * (page - 1) / TEST_PAGE_COUNT, f"Printing page {page} of {TEST_PAGE_COUNT}")
+        await asyncio.sleep(1)
+    ctx.report_progress(100, f"Printed {TEST_PAGE_COUNT} pages")
+
+
+async def print_document(ctx) -> None:
+    documents = ctx.services["db"]["documents"]
+    doc = await documents.find_one({"_id": ObjectId(ctx.params["documentId"])})
+    if doc is None:
+        raise RuntimeError(f"Document {ctx.params['documentId']} not found")
+    pages = estimate_pages(doc["text"])
+    # A resume continues where the previous run got to; a launch starts over.
+    first = doc.get("nextPage", 1) if ctx.resume else 1
+    # From here on there is always a checkpoint to resume from.
+    await ctx.mark_has_saved_state()
+    for page in range(first, pages + 1):
+        if not ctx.should_continue():
+            return  # cancelled, or the engine is shutting down
+        ctx.report_progress(100 * (page - 1) / pages, f"Printing page {page} of {pages}")
+        await asyncio.sleep(1)
+        # Checkpoint after every page, so that a resume (even after a crash)
+        # continues with the next one.
+        await documents.update_one({"_id": doc["_id"]}, {"$set": {"nextPage": page + 1}})
+    ctx.report_progress(100, f"Printed {pages} pages")
+    await documents.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"lastPrintedAt": datetime.now(timezone.utc)}, "$unset": {"nextPage": ""}},
+    )
+    await ctx.clear_has_saved_state()
+
+
+async def get_task_definitions(services, metadata_filter=None) -> list[TaskInstance]:
+    # optio drops the tasks that do not match metadata_filter itself, so the
+    # filter can be ignored here.
+    tasks = [
+        TaskInstance(
+            execute=print_test_page,
+            process_id="print-test-page",
+            name="Print a test page",
+        ),
+    ]
+    async for doc in services["db"]["documents"].find({}, {"title": 1}).sort("createdAt", 1):
+        doc_id = str(doc["_id"])
+        tasks.append(
+            TaskInstance(
+                execute=print_document,
+                process_id=f"print-{doc_id}",
+                name=f'Print "{doc["title"]}"',
+                params={"documentId": doc_id},
+                metadata={"documentId": doc_id, "kind": "print"},
+                # Can continue from a saved page, and does so by itself
+                # after the engine restarts.
+                supports_resume=True,
+                auto_resume=True,
+            )
+        )
+    return tasks
+```
+
+And the whole `config.py` and `__main__.py`, after this section:
+
+```python
+import os
+from dataclasses import dataclass
+
+from dotenv import find_dotenv, load_dotenv
+
+
+@dataclass(frozen=True)
+class Config:
+    mongo_url: str
+    mongo_db: str
+    redis_url: str
+    optio_prefix: str
+    cancel_grace_seconds: float
+    auto_resume_delay_seconds: float
+
+
+def load_config() -> Config:
+    # The nearest .env above the working directory. Variables already set in
+    # the environment win, so production can do without the file.
+    load_dotenv(find_dotenv(usecwd=True))
+    return Config(
+        mongo_url=os.environ.get("MONGO_URL", "mongodb://localhost:27017"),
+        # No defaults: these two must match the API server's, so a missing
+        # value is an error rather than a silent mismatch.
+        mongo_db=os.environ["MONGO_DB"],
+        optio_prefix=os.environ["OPTIO_PREFIX"],
+        redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379"),
+        # optio's defaults are 5 and 300.
+        cancel_grace_seconds=float(os.environ.get("CANCEL_GRACE_SECONDS", 5)),
+        auto_resume_delay_seconds=float(os.environ.get("AUTO_RESUME_DELAY_SECONDS", 300)),
+    )
+```
+
+```python
+import asyncio
+import logging
+
+import optio_core
+from motor.motor_asyncio import AsyncIOMotorClient
+
+from pressroom_engine._generated.pressroom_engine import pressroom_engine_contract
+from pressroom_engine.config import load_config
+from pressroom_engine.migrations import migrations
+from pressroom_engine.rpc import PressroomEngineService
+from pressroom_engine.tasks import get_task_definitions
+
+# Applied migrations are recorded in <MIGRATIONS_PREFIX>_migrations. Keep this
+# constant: a new value means a new, empty record, and every migration would
+# run again.
+MIGRATIONS_PREFIX = "pressroom"
+
+
+async def main() -> None:
+    config = load_config()
+    client = AsyncIOMotorClient(config.mongo_url, tz_aware=True)
+    db = client[config.mongo_db]
+
+    await migrations.run(db, prefix=MIGRATIONS_PREFIX)
+
+    await optio_core.init(
+        mongo_db=db,
+        prefix=config.optio_prefix,
+        redis_url=config.redis_url,
+        services={"db": db},
+        get_task_definitions=get_task_definitions,
+        cancel_grace_seconds=config.cancel_grace_seconds,
+        auto_resume_delay_seconds=config.auto_resume_delay_seconds,
+    )
+    # The app's own RPC methods share optio's RPC server. Register them after
+    # init(), which creates the server, and before run(), which starts it.
+    optio_core.rpc_server.register_service(pressroom_engine_contract, PressroomEngineService(db))
+    await optio_core.run()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(main())
+```
 
 **Resuming by hand.** optio-ui's standard process components show it without any code
 of yours. For a process with saved state, the play button becomes **Resume**, and its
@@ -1503,12 +1690,11 @@ make contracts
 built package works as plain JavaScript:
 
 ```bash
-cd packages/contracts
-node --input-type=module -e "
+(cd packages/contracts && node --input-type=module -e "
 const m = await import('./dist/index.js');
 console.log(Object.keys(m).sort().join(' '));
 console.log(m.apiContract.documents.create.method, m.apiContract.documents.create.path);
-"
+")
 # CreateDocumentFailureReason DocumentSchema ErrorSchema NewDocumentSchema apiContract
 # POST /api/documents
 ```
@@ -1581,12 +1767,15 @@ packages/api/
 ```
 
 - **Use the `mongodb` and `ioredis` major versions that optio-api uses** (see
-  `npm view optio-api dependencies`). You hand your own database and Redis objects to
+  `pnpm view optio-api dependencies`). You hand your own database and Redis objects to
   optio-api, so there must be one copy of each. Newer majors exist (mongodb 7,
   ioredis 6); installing them gives you a second copy and type errors.
 - `@clamator/protocol` is there for the generated client's types.
-- pnpm warns that `@ts-rest/fastify` wants `fastify ^4`. It works with Fastify 5, as
-  optio-api itself does; the warning is harmless.
+- pnpm prints `Issues with peer dependencies found. Run "pnpm peers check" to list
+  them.` `pnpm peers check` shows that `@ts-rest/fastify` wants `fastify ^4`. It works
+  with Fastify 5, as optio-api itself does; the warning is harmless.
+- At startup the server logs a warning that `@fastify/reply-from might not behave as
+  expected when used with @fastify/multipart`. optio-api brings both; harmless.
 
 `packages/api/tsconfig.json`:
 
@@ -1890,11 +2079,12 @@ curl -s localhost:3000/api/optio/instances
 curl -s 'localhost:3000/api/processes?prefix=pressroom'
 # {"items":[{"processId":"print-test-page", ...}, {"processId":"print-6ad2f290...", "name":"Print \"Leaflet\"", ...}], ...}
 
-curl -s -X POST -H 'content-type: application/json' -d '{}' \
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -d '{}' \
   'localhost:3000/api/processes/print-test-page/launch?prefix=pressroom'
-curl -s -X POST -H 'content-type: application/json' -d '{}' \
+# 200 (without -o /dev/null it prints the process record, with its state before the launch)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -d '{}' \
   'localhost:3000/api/processes/print-test-page/cancel?prefix=pressroom'
-# the process ends "cancelled"; cancelling it again:
+# 200; the process ends "cancelled". Cancelling it again:
 # {"reason":"not-cancellable","message":"Process is not cancellable in its current state"}   (status 409)
 ```
 
@@ -2031,7 +2221,7 @@ of optio) touches the data layer only.
   `@ant-design/icons`, i18next, react-i18next and vultus-core. optio-ui then uses your
   copies.
 - **optio-contracts** is only needed for the filter helpers (`exists`, `eq`, …). Pin it
-  to the exact version optio-ui depends on (`npm view optio-ui@0.8.2 dependencies`),
+  to the exact version optio-ui depends on (`pnpm view optio-ui@0.8.2 dependencies`),
   so that there is one copy.
 - **vultus** (vultus-core and vultus-antd) is used here for actions, see below. optio-ui
   needs vultus-core in any case.
@@ -2078,11 +2268,10 @@ Install, then check that every library the components share exists only once:
 
 ```bash
 pnpm install
-cd packages/frontend
-pnpm why react react-dom @tanstack/react-query antd vultus-core optio-ui optio-contracts
+(cd packages/frontend && pnpm why react react-dom @tanstack/react-query antd vultus-core optio-ui optio-contracts | grep '^Found')
 ```
 
-Each must show a single version. Two copies of a library with React context (React
+Each must say `Found 1 version`. Two copies of a library with React context (React
 itself, TanStack Query, vultus-core) break at runtime in quiet ways: a provider that the
 other copy does not see. If `pnpm why` shows two, `pnpm dedupe` usually merges them. (On
 the first install here, vultus-antd got vultus-core 0.5.3 while optio-ui got 0.5.4;
@@ -2093,8 +2282,8 @@ pnpm may also tell you it **added an entry to `minimumReleaseAgeExclude`** in
 when your `package.json` asks for such a version anyway, it records the exception. That
 is fine; commit it.
 
-Peer warnings you can ignore: `@ts-rest/react-query` declares React up to 18 and works
-with 19 (optio-ui uses it too).
+Peer warnings you can ignore (`pnpm peers check` lists them): `@ts-rest/react-query`
+declares React up to 18 and works with 19 (optio-ui uses it too).
 
 ### The dev server
 
@@ -2155,7 +2344,16 @@ export default defineConfig(({ mode }) => {
   API server streaming to nobody (pressroom reached 50 such connections in a quarter of
   an hour of testing).
   With it, a visit leaves none.
-- It listens on `127.0.0.1:5173` only. The API has no login (section 8).
+- It listens on `127.0.0.1:5173` only, unless `FRONTEND_HOST` in `.env` says otherwise
+  (`0.0.0.0` makes it reachable from other machines, as `https://<machine>:5173`). It
+  forwards `/api`, so that exposes the API server too, which has no login (section 8).
+  Add the setting to `.env.example` as a reminder:
+
+  ```ini
+  # The frontend dev server listens on 127.0.0.1 unless you set this (e.g.
+  # 0.0.0.0). It forwards /api to the API server, so this exposes the API too.
+  # FRONTEND_HOST=127.0.0.1
+  ```
 
 Add to the `Makefile`:
 
@@ -2761,6 +2959,11 @@ With the engine (`make engine`) and the API server (`make api`) running, open
 To check the HTTP/2 claim, in the browser's developer tools the requests' protocol is
 `h2`.
 
+The browser console shows a few messages that are not yours to fix: antd deprecation
+warnings from optio-ui's components (`[antd: Progress] size="default" is deprecated`,
+`[antd: List] … is deprecated`), and a 404 for `/favicon.ico`, which pressroom does not
+have.
+
 ## 10. Custom process UIs (widgets)
 
 The standard process components show a name, a status, a progress bar and the launch,
@@ -2814,9 +3017,9 @@ Markdown, add `pandoc`.)
 
 ### The engine
 
-Section 6's `run_command` helper now goes into the app, as
-`src/pressroom_engine/commands.py`, with one addition: it passes options such as `cwd`
-and `stdout` on to the subprocess.
+Section 6's `run_command` helper now goes into the app, unchanged, as
+`src/pressroom_engine/commands.py`. Its `**kwargs` pass options such as `cwd` and
+`stdout` on to the subprocess.
 
 ```python
 import asyncio
@@ -2940,6 +3143,8 @@ async def proof_document(ctx) -> None:
       "aiohttp>=3.9",
   ]
   ```
+
+  and run `make install-engine` again.
 
 - **The proof stays open until someone closes it**: after setting up the widget, the
   task waits on `ctx.cancellation_flag`. Closing it is a cancel, so a closed proof is
@@ -3102,6 +3307,95 @@ and the texts to `i18n.ts`:
   },
 ```
 
+The whole `tasks.py` after this section:
+
+```python
+import asyncio
+from datetime import datetime, timezone
+
+from bson import ObjectId
+from optio_core import TaskInstance
+
+from pressroom_engine.documents import estimate_pages
+from pressroom_engine.proof import proof_document
+
+TEST_PAGE_COUNT = 10
+
+
+async def print_test_page(ctx) -> None:
+    for page in range(1, TEST_PAGE_COUNT + 1):
+        if not ctx.should_continue():
+            return
+        ctx.report_progress(100 * (page - 1) / TEST_PAGE_COUNT, f"Printing page {page} of {TEST_PAGE_COUNT}")
+        await asyncio.sleep(1)
+    ctx.report_progress(100, f"Printed {TEST_PAGE_COUNT} pages")
+
+
+async def print_document(ctx) -> None:
+    documents = ctx.services["db"]["documents"]
+    doc = await documents.find_one({"_id": ObjectId(ctx.params["documentId"])})
+    if doc is None:
+        raise RuntimeError(f"Document {ctx.params['documentId']} not found")
+    pages = estimate_pages(doc["text"])
+    # A resume continues where the previous run got to; a launch starts over.
+    first = doc.get("nextPage", 1) if ctx.resume else 1
+    # From here on there is always a checkpoint to resume from.
+    await ctx.mark_has_saved_state()
+    for page in range(first, pages + 1):
+        if not ctx.should_continue():
+            return  # cancelled, or the engine is shutting down
+        ctx.report_progress(100 * (page - 1) / pages, f"Printing page {page} of {pages}")
+        await asyncio.sleep(1)
+        # Checkpoint after every page, so that a resume (even after a crash)
+        # continues with the next one.
+        await documents.update_one({"_id": doc["_id"]}, {"$set": {"nextPage": page + 1}})
+    ctx.report_progress(100, f"Printed {pages} pages")
+    await documents.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"lastPrintedAt": datetime.now(timezone.utc)}, "$unset": {"nextPage": ""}},
+    )
+    await ctx.clear_has_saved_state()
+
+
+async def get_task_definitions(services, metadata_filter=None) -> list[TaskInstance]:
+    # optio drops the tasks that do not match metadata_filter itself, so the
+    # filter can be ignored here.
+    tasks = [
+        TaskInstance(
+            execute=print_test_page,
+            process_id="print-test-page",
+            name="Print a test page",
+        ),
+    ]
+    async for doc in services["db"]["documents"].find({}, {"title": 1}).sort("createdAt", 1):
+        doc_id = str(doc["_id"])
+        tasks.append(
+            TaskInstance(
+                execute=print_document,
+                process_id=f"print-{doc_id}",
+                name=f'Print "{doc["title"]}"',
+                params={"documentId": doc_id},
+                metadata={"documentId": doc_id, "kind": "print"},
+                # Can continue from a saved page, and does so by itself
+                # after the engine restarts.
+                supports_resume=True,
+                auto_resume=True,
+            )
+        )
+        tasks.append(
+            TaskInstance(
+                execute=proof_document,
+                process_id=f"proof-{doc_id}",
+                name=f'Proof "{doc["title"]}"',
+                params={"documentId": doc_id},
+                metadata={"documentId": doc_id, "kind": "proof"},
+                # The UI of this process: the frontend's 'pdf-proof' widget.
+                ui_widget="pdf-proof",
+            )
+        )
+    return tasks
+```
+
 ### Check it
 
 With the stack running, open a document. Under **Proof**, the play button starts the
@@ -3121,6 +3415,68 @@ After it is closed, the same request answers 404. (For up to 5 seconds after a c
 may answer 502: optio-api remembers a widget's address for that long.)
 
 ## 11. Running and checking it
+
+### Every day
+
+Three processes, each in its own terminal, from the repo root:
+
+```bash
+make deps        # only with the compose file of section 2
+make engine      # terminal 1
+make api         # terminal 2
+make frontend    # terminal 3
+```
+
+| Process | Ready when it prints | Restarts by itself when |
+|---|---|---|
+| `make engine` | `Optio initialized: db='pressroom', prefix='pressroom', …` | a file under `packages/engine/src` changes |
+| `make api` | `Server listening at http://127.0.0.1:3000` | a file it imports changes (`tsx watch`) |
+| `make frontend` | `Local: https://127.0.0.1:5173/` | never needed: the browser page updates itself (hot reload) |
+
+Open `https://127.0.0.1:5173` (accept the certificate once). To check from a shell that
+the layers see each other:
+
+```bash
+curl -s localhost:3000/api/optio/instances
+# {"instances":[{"database":"pressroom","prefix":"pressroom","live":true}]}
+```
+
+`live: true` means the API server sees the engine's heartbeat. `false`: the engine is
+not running, or uses another database or prefix (Appendix B).
+
+**After changing `.env` or the `Makefile`**, restart all three: each reads its settings
+when it starts. **After changing a contract** (section 5 or 7), run
+`make contracts codegen`, implement what changed in the engine, and commit the generated
+files.
+
+**To stop**, press Ctrl-C once in each terminal. The engine may take up to the cancel
+grace period plus 5 seconds, while running tasks stop (section 6).
+
+### The end-to-end check
+
+After a change that touches several layers, or before a release, walk through the app:
+
+1. **Documents**: the table lists the documents, each with its print status.
+2. **Add a document without text**: "Write some text first." appears under the Text
+   field. (Engine → API → frontend error path.)
+3. **Add a real document**: its page opens. **Estimate pages** shows the page count.
+   (A direct engine call.)
+4. **Print** it: the progress bar fills page by page. **Suspend**, then **Resume**: it
+   continues with the next page and ends "Done". Back on **Documents**, "Last printed"
+   shows the time. (An optio process, cooperative cancellation, resume.)
+5. **Proof**: the PDF appears in the card; the ✕ closes it. (A process widget.)
+6. **Processes**: every process, with search and filters; click one for its tree and
+   log. (optio-ui's standard components.)
+7. In the engine's terminal, press Ctrl-C while a long print runs, and start
+   `make engine` again: after `AUTO_RESUME_DELAY_SECONDS`, the print continues where it
+   stopped. (Shutdown and auto-resume.)
+
+### How this guide was tested
+
+Every step was carried out on a scratch app while the guide was written. Then a
+separate reader, with nothing but this guide, built pressroom from an empty directory
+(against its own database and prefix) and ran every check in it, steps 1 to 7 above
+included. What it found unclear or wrong has been fixed.
 
 ## 12. Production build
 
@@ -3148,10 +3504,13 @@ In development, Vite serves the frontend. In production the API server does, fro
 directory in `STATIC_DIR`. In `config.ts`, one more field:
 
 ```ts
+import { dirname, join, resolve } from 'node:path';
+...
   staticDir: string | undefined;
 ...
-    // Production: the built frontend, served by this server.
-    staticDir: process.env.STATIC_DIR,
+    // Production: the built frontend, served by this server. (@fastify/static
+    // needs an absolute path.)
+    staticDir: process.env.STATIC_DIR ? resolve(process.env.STATIC_DIR) : undefined,
 ```
 
 In `server.ts`, before `registerOptioApi`:
@@ -3173,7 +3532,8 @@ import fastifyStatic from '@fastify/static';
   }
 ```
 
-and the dependency, `"@fastify/static": "^8.2.0"`, in `packages/api/package.json`.
+and the dependency, `"@fastify/static": "^8.2.0"`, in `packages/api/package.json`;
+then `pnpm install`.
 
 A `build` target in the `Makefile` builds everything for production:
 
@@ -3186,7 +3546,129 @@ build: contracts  ## Build the API server and the frontend for production
 ```
 
 `make build` leaves the API server in `packages/api/dist` and the frontend in
-`packages/frontend/dist`. Vite warns that a chunk is larger than 500 kB; that is only
+`packages/frontend/dist`. To try the build without containers (with the engine running):
+
+```bash
+STATIC_DIR=packages/frontend/dist API_PORT=3093 node packages/api/dist/index.js
+# http://127.0.0.1:3093/ serves the app; /documents/<id> too; /api/nope is a JSON 404
+```
+
+The whole `config.ts` and `server.ts` now:
+
+```ts
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+
+export interface Config {
+  mongoUrl: string;
+  mongoDb: string;
+  redisUrl: string;
+  optioPrefix: string;
+  host: string;
+  port: number;
+  staticDir: string | undefined;
+}
+
+// The nearest .env above the working directory. Variables already set in the
+// environment win, so production can do without the file.
+function loadDotEnv(): void {
+  for (let dir = process.cwd(); ; dir = dirname(dir)) {
+    const file = join(dir, '.env');
+    if (existsSync(file)) {
+      process.loadEnvFile(file);
+      return;
+    }
+    if (dirname(dir) === dir) return;
+  }
+}
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is not set`);
+  return value;
+}
+
+export function loadConfig(): Config {
+  loadDotEnv();
+  return {
+    mongoUrl: process.env.MONGO_URL ?? 'mongodb://localhost:27017',
+    // No defaults: these two must match the engine's.
+    mongoDb: required('MONGO_DB'),
+    optioPrefix: required('OPTIO_PREFIX'),
+    redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
+    // Only this machine can connect unless you say otherwise.
+    host: process.env.API_HOST ?? '127.0.0.1',
+    port: Number(process.env.API_PORT ?? 3000),
+    // Production: the built frontend, served by this server. (@fastify/static
+    // needs an absolute path.)
+    staticDir: process.env.STATIC_DIR ? resolve(process.env.STATIC_DIR) : undefined,
+  };
+}
+```
+
+```ts
+import fastifyStatic from '@fastify/static';
+import { initServer } from '@ts-rest/fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { Redis } from 'ioredis';
+import { MongoClient } from 'mongodb';
+import { createOptioContext } from 'optio-api';
+import { registerOptioApi } from 'optio-api/fastify';
+
+import { PressroomEngineClient } from './_generated/pressroom-engine.js';
+import type { Config } from './config.js';
+import { configRoutes } from './routes/config.js';
+import { documentsRoutes } from './routes/documents.js';
+
+export async function createServer(config: Config): Promise<FastifyInstance> {
+  const app = Fastify({ logger: true });
+
+  const mongo = await MongoClient.connect(config.mongoUrl);
+  const db = mongo.db(config.mongoDb);
+  const redis = new Redis(config.redisUrl);
+
+  // optio-api reads MongoDB and calls the engine over Redis.
+  const optio = createOptioContext({ dbOpts: { db }, redis });
+  // The RPC connection to this app's engine. optio-api uses the same one for
+  // optio's own methods.
+  const engine = new PressroomEngineClient(optio.transports.get(config.mongoDb, config.optioPrefix));
+
+  app.addHook('onClose', async () => {
+    await optio.closeAll();
+    redis.disconnect();
+    await mongo.close();
+  });
+
+  // The app's own routes, one plugin per resource.
+  const s = initServer();
+  app.register(s.plugin(configRoutes(s, config)));
+  app.register(s.plugin(documentsRoutes(s, { db, engine })));
+
+  if (config.staticDir) {
+    // Production: serve the built frontend. The app's own routes
+    // (/documents/<id>) exist only in the browser: answer them with index.html.
+    await app.register(fastifyStatic, { root: config.staticDir });
+    app.setNotFoundHandler((request, reply) => {
+      if (request.method === 'GET' && !request.url.startsWith('/api/')) {
+        return reply.sendFile('index.html');
+      }
+      return reply.code(404).send({ reason: 'not-found', message: 'Not found' });
+    });
+  }
+
+  // optio's routes: processes, live updates, launch, cancel, ...
+  registerOptioApi(app, {
+    ctx: optio,
+    // optio has no notion of users; every caller may do everything. See
+    // "Adding a login" in the guide.
+    authenticate: async () => 'operator' as const,
+  });
+
+  return app;
+}
+```
+
+ Vite warns that a chunk is larger than 500 kB; that is only
 advice.
 
 ### The images
