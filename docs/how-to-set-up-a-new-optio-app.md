@@ -1941,6 +1941,818 @@ same origin as the frontend (section 9 arranges that).
 
 ## 9. The frontend
 
+The frontend is a Vite + React app. optio-ui supplies the process components (list,
+filters, status, progress, launch / cancel / resume buttons, log); your own pages use
+them next to your app's data.
+
+```
+packages/frontend/
+  package.json
+  tsconfig.json
+  vite.config.ts
+  index.html
+  src/
+    main.tsx
+    app/          the shell: providers, routes, texts
+      App.tsx
+      i18n.ts
+    api/          the only code that knows about ts-rest
+      client.ts
+      error-routes.ts
+    data/         domain data and actions, as hooks
+      config.ts
+      documents/
+        queries.ts    useDocuments(), useDocument(id)
+        actions.tsx   useDocumentActions(), useEstimatePagesAction(text)
+        print.ts      usePrintProcess(id), usePrintProcesses()
+    features/     pages and components: UI only
+      documents/
+      processes/
+```
+
+**Three layers, and each knows only the one below it.**
+
+- `api/` holds the ts-rest client, created from the contract of section 7, and the table
+  of how API errors are shown.
+- `data/` turns the API, and optio-ui's hooks, into domain terms: "the documents",
+  "create a document", "this document's print". Pages never see a ts-rest response or a
+  process id.
+- `features/` is the UI. It renders what the hooks return.
+
+This is how excavator is built, and it keeps pages simple: swapping the API (or a part
+of optio) touches the data layer only.
+
+### The package
+
+`packages/frontend/package.json`:
+
+```json
+{
+  "name": "@pressroom/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && vite build"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.1.0",
+    "@pressroom/contracts": "workspace:*",
+    "@tanstack/react-query": "^5.90.0",
+    "@ts-rest/core": "^3.52.1",
+    "@ts-rest/react-query": "^3.52.1",
+    "antd": "^6.6.5",
+    "i18next": "^26.2.0",
+    "optio-contracts": "0.6.1",
+    "optio-ui": "0.8.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-i18next": "^17.0.16",
+    "react-router": "^7.18.4",
+    "vultus-antd": "^0.7.1",
+    "vultus-core": "^0.5.4",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}
+```
+
+- **optio-ui is published as TypeScript source.** Your bundler compiles it (Vite does
+  this without configuration) and your typecheck covers it.
+- **List optio-ui's peers yourself**: react, react-dom, `@tanstack/react-query`, antd,
+  `@ant-design/icons`, i18next, react-i18next and vultus-core. optio-ui then uses your
+  copies.
+- **optio-contracts** is only needed for the filter helpers (`exists`, `eq`, …). Pin it
+  to the exact version optio-ui depends on (`npm view optio-ui@0.8.2 dependencies`),
+  so that there is one copy.
+- **vultus** (vultus-core and vultus-antd) is used here for actions, see below. optio-ui
+  needs vultus-core in any case.
+
+`packages/frontend/tsconfig.json`:
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "noEmit": true,
+    "declaration": false
+  },
+  "include": ["src"]
+}
+```
+
+`declaration: false` overrides the shared base: the frontend emits no type declarations,
+and with them on, TypeScript rejects exported hooks whose return types it cannot name.
+
+`packages/frontend/index.html`:
+
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pressroom</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
+
+Install, then check that every library the components share exists only once:
+
+```bash
+pnpm install
+cd packages/frontend
+pnpm why react react-dom @tanstack/react-query antd vultus-core optio-ui optio-contracts
+```
+
+Each must show a single version. Two copies of a library with React context (React
+itself, TanStack Query, vultus-core) break at runtime in quiet ways: a provider that the
+other copy does not see. If `pnpm why` shows two, `pnpm dedupe` usually merges them. (On
+the first install here, vultus-antd got vultus-core 0.5.3 while optio-ui got 0.5.4;
+`pnpm dedupe` fixed it.)
+
+pnpm may also tell you it **added an entry to `minimumReleaseAgeExclude`** in
+`pnpm-workspace.yaml`. pnpm holds back package versions published less than a day ago;
+when your `package.json` asks for such a version anyway, it records the exception. That
+is fine; commit it.
+
+Peer warnings you can ignore: `@ts-rest/react-query` declares React up to 18 and works
+with 19 (optio-ui uses it too).
+
+### The dev server
+
+`packages/frontend/vite.config.ts`:
+
+```ts
+import basicSsl from '@vitejs/plugin-basic-ssl';
+import react from '@vitejs/plugin-react';
+import { defineConfig, loadEnv } from 'vite';
+
+export default defineConfig(({ mode }) => {
+  // The repo's .env, for the API server's port.
+  const env = loadEnv(mode, '../..', '');
+  return {
+    // HTTPS, so that the browser speaks HTTP/2 to the dev server. Over HTTP/1.1
+    // a browser keeps at most 6 connections per origin, and every live optio
+    // view holds one open.
+    plugins: [react(), basicSsl()],
+    server: {
+      host: '127.0.0.1',
+      port: 5173,
+      strictPort: true,
+      proxy: {
+        '/api': {
+          target: `http://127.0.0.1:${env.API_PORT ?? 3000}`,
+          // Process widgets (section 10) can use WebSockets.
+          ws: true,
+          configure: (proxy) => {
+            // When the browser closes a request before its response is done
+            // (it leaves a page with a live event stream), close the request
+            // to the API server too. Over HTTP/2 the proxy does not do it by
+            // itself, and every page visit would leave streams open.
+            proxy.on('proxyReq', (proxyReq, _req, res) => {
+              res.on('close', () => {
+                if (!res.writableEnded) proxyReq.destroy();
+              });
+            });
+          },
+        },
+      },
+    },
+  };
+});
+```
+
+- **The dev server forwards `/api` to the API server**, so the browser talks to one
+  origin. Cookies (if you add a login) and optio-ui's event streams need that.
+- **HTTPS, for HTTP/2.** Browsers speak HTTP/2 only over TLS. Over HTTP/1.1 a browser
+  opens at most 6 connections per origin, shared by all its tabs, and every live optio
+  view (a process list, a process's progress) keeps one open. Past six, every further
+  request waits forever. `@vitejs/plugin-basic-ssl` makes a self-signed certificate:
+  the browser asks you to accept it once.
+- **The `configure` hook closes abandoned streams.** Over HTTP/2, Vite's proxy does not
+  close its connection to the API server when the browser stops listening, for example
+  when you leave a page with a live list. Without the hook, every page visit left the
+  API server streaming to nobody (pressroom reached 50 such connections in a quarter of
+  an hour of testing).
+  With it, a visit leaves none.
+- It listens on `127.0.0.1:5173` only. The API has no login (section 8).
+
+Add to the `Makefile`:
+
+```make
+.PHONY: frontend
+
+frontend: contracts  ## Run the frontend dev server (https://127.0.0.1:5173)
+	pnpm --filter @pressroom/frontend dev
+```
+
+### The shell
+
+`src/main.tsx`:
+
+```tsx
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+
+import './app/i18n';
+import { App } from './app/App';
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
+```
+
+`src/app/i18n.ts`. optio-ui ships no texts: every label it shows is a translation key
+that your app defines. A missing key shows up as the key itself
+(`processes.search`).
+
+```ts
+import i18n from 'i18next';
+import { initReactI18next } from 'react-i18next';
+
+const en = {
+  // Needed by optio-ui, which ships no texts of its own.
+  common: { noData: 'Nothing yet', error: 'Something went wrong' },
+  status: {
+    idle: 'Idle',
+    scheduled: 'Scheduled',
+    running: 'Running',
+    done: 'Done',
+    failed: 'Failed',
+    cancel_requested: 'Cancel requested',
+    cancelling: 'Cancelling',
+    cancelled: 'Cancelled',
+  },
+  processes: {
+    launch: 'Launch',
+    cancel: 'Cancel',
+    search: 'Search',
+    filterAll: 'All',
+    filterActive: 'Active',
+    filterHideCompleted: 'Hide completed',
+    filterErrors: 'Errors',
+    showDetails: 'Show details',
+    showSpecial: 'Show special',
+  },
+  // The app's own.
+  app: { documents: 'Documents', processes: 'Processes' },
+  documents: {
+    new: 'New document',
+    title: 'Title',
+    text: 'Text',
+    create: 'Add document',
+    estimate: 'Estimate pages',
+    pages_one: '{{count}} page',
+    pages_other: '{{count}} pages',
+    created: 'Created',
+    lastPrinted: 'Last printed',
+    never: 'Never',
+    print: 'Print',
+    notFound: 'No such document',
+  },
+  errors: {
+    documents: { create: { 'empty-text': 'Write some text first.' } },
+  },
+};
+
+void i18n.use(initReactI18next).init({
+  resources: { en: { translation: en } },
+  lng: 'en',
+  interpolation: { escapeValue: false },
+});
+
+export default i18n;
+```
+
+The `common`, `status` and `processes` keys above are the ones optio-ui needs; it has
+built-in English for the rest (`processes.resume`, `processes.suspend`, …), which you
+can override the same way. `common.error` is vultus's fallback text for a failed
+action.
+
+`src/app/App.tsx`:
+
+```tsx
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { App as AntApp, ConfigProvider, Layout, Menu, Result, Spin } from 'antd';
+import { OptioProvider } from 'optio-ui';
+import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
+import { createBrowserRouter, NavLink, Outlet, RouterProvider, useLocation } from 'react-router';
+import { VultusProvider } from 'vultus-antd';
+
+import { useRuntimeConfig } from '../data/config';
+import { DocumentPage } from '../features/documents/DocumentPage';
+import { DocumentsPage } from '../features/documents/DocumentsPage';
+import { ProcessesPage } from '../features/processes/ProcessesPage';
+
+const queryClient = new QueryClient();
+
+const router = createBrowserRouter([
+  {
+    path: '/',
+    element: <Shell />,
+    children: [
+      { index: true, element: <DocumentsPage /> },
+      { path: 'documents/:id', element: <DocumentPage /> },
+      { path: 'processes', element: <ProcessesPage /> },
+    ],
+  },
+]);
+
+export function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <ConfigProvider tag={{ variant: 'outlined' }}>
+        <AntApp>
+          <VultusProvider>
+            <WithOptio>
+              <RouterProvider router={router} />
+            </WithOptio>
+          </VultusProvider>
+        </AntApp>
+      </ConfigProvider>
+    </QueryClientProvider>
+  );
+}
+
+// optio-ui needs this app's optio prefix. Ask the API server for it before
+// rendering anything that uses optio.
+function WithOptio({ children }: { children: ReactNode }) {
+  const { config, error } = useRuntimeConfig();
+  if (error) return <Result status="error" title="The API server cannot be reached" />;
+  if (!config) return <Spin fullscreen />;
+  return <OptioProvider prefix={config.optioPrefix}>{children}</OptioProvider>;
+}
+
+function Shell() {
+  const { t } = useTranslation();
+  const { pathname } = useLocation();
+  return (
+    <Layout style={{ minHeight: '100vh' }}>
+      <Layout.Header style={{ display: 'flex', alignItems: 'center' }}>
+        <Menu
+          theme="dark"
+          mode="horizontal"
+          selectedKeys={[pathname.startsWith('/processes') ? 'processes' : 'documents']}
+          items={[
+            { key: 'documents', label: <NavLink to="/">{t('app.documents')}</NavLink> },
+            { key: 'processes', label: <NavLink to="/processes">{t('app.processes')}</NavLink> },
+          ]}
+          style={{ flex: 1 }}
+        />
+      </Layout.Header>
+      <Layout.Content style={{ padding: 24 }}>
+        <Outlet />
+      </Layout.Content>
+    </Layout>
+  );
+}
+```
+
+**The providers, outermost first:**
+
+1. **`QueryClientProvider`** (TanStack Query). optio-ui's hooks run queries, so it must
+   be above `OptioProvider`.
+2. **antd's `ConfigProvider`** and **`App`**, for the theme and for message pop-ups.
+   `tag={{ variant: 'outlined' }}` gives optio-ui's status badges their intended look.
+3. **`VultusProvider`** (vultus-antd). It shows the messages actions report; without
+   it, they are silently dropped.
+4. **`OptioProvider prefix={…}`**, with the prefix from `GET /api/config`. Render nothing
+   that uses optio until the prefix is known: without one, optio-ui falls back to the
+   prefix `optio`, and its first requests would ask for the wrong processes.
+5. **The router**, inside `OptioProvider`, so that every page can use optio's hooks.
+
+### The API layer
+
+`src/api/client.ts`:
+
+```ts
+import { apiContract } from '@pressroom/contracts';
+import { initTsrReactQuery } from '@ts-rest/react-query/v5';
+
+// The only module that knows about ts-rest. Same origin: in development the
+// dev server forwards /api to the API server, in production the API server
+// serves the frontend itself.
+export const tsr = initTsrReactQuery(apiContract, { baseUrl: '' });
+```
+
+Import from **`@ts-rest/react-query/v5`**: it is the API for TanStack Query 5, the one
+optio-ui uses. (The package's main entry is the older, TanStack Query 4 style.)
+
+`src/api/error-routes.ts`:
+
+```ts
+// For each action's error route: the failure reasons the API can return, with
+// the text to show and the form field to show it on.
+export const errorRoutes = {
+  'documents.create': {
+    'empty-text': { i18nKey: 'errors.documents.create.empty-text', field: 'text' },
+  },
+} as const;
+
+export type ErrorRouteId = keyof typeof errorRoutes;
+```
+
+When an action fails with one of these reasons, its text appears on that form field.
+
+### The data layer
+
+`src/data/config.ts`:
+
+```ts
+import { tsr } from '../api/client';
+
+/** The API server's settings: which optio instance this app shows. */
+export function useRuntimeConfig() {
+  const { data, error } = tsr.config.get.useQuery({ queryKey: ['config'], staleTime: Infinity });
+  return { config: data?.body, error };
+}
+```
+
+`src/data/documents/queries.ts`:
+
+```ts
+import { tsr } from '../../api/client';
+
+export function useDocuments() {
+  const { data, isPending } = tsr.documents.list.useQuery({ queryKey: ['documents'] });
+  return { documents: data?.body ?? [], isLoading: isPending };
+}
+
+export function useDocument(id: string | undefined) {
+  const { documents, isLoading } = useDocuments();
+  return { document: documents.find((d) => d.id === id) ?? null, isLoading };
+}
+```
+
+**Actions.** A user action (a button, a form submit) is a
+[vultus](https://github.com/deai-network/unitas) `useAction`: one object that holds
+the label, whether the action is allowed now (and if not, why: the button's tooltip),
+the function that does it, whether it is running (the button's spinner), and where its
+errors go. The UI only renders it. This is our preference, not something optio
+requires: any way of calling the API works with optio-ui. It is used here because it
+moves all of that bookkeeping out of the components, and because optio-ui already
+depends on vultus-core.
+
+`src/data/documents/actions.tsx`:
+
+```tsx
+import type { Document, NewDocument } from '@pressroom/contracts';
+import { useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
+import { useAction } from 'vultus-core';
+
+import { tsr } from '../../api/client';
+import { errorRoutes, type ErrorRouteId } from '../../api/error-routes';
+
+export function useDocumentActions(opts: { onCreated?: (doc: Document) => void } = {}) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const create = tsr.documents.create.useMutation();
+
+  const createDocument = useAction<NewDocument, Document, ErrorRouteId>(
+    {
+      id: 'document.create',
+      label: t('documents.create'),
+      variant: 'primary',
+      errorRoute: 'documents.create',
+      fire: async (values) => {
+        // An error response rejects with { status, body: { reason, message } };
+        // useAction looks body.reason up in errorRoutes.
+        const res = await create.mutateAsync({ body: values });
+        await queryClient.invalidateQueries({ queryKey: ['documents'] });
+        return res.body;
+      },
+      onSuccess: (doc) => opts.onCreated?.(doc),
+    },
+    errorRoutes,
+  );
+
+  return { createDocument };
+}
+
+/** Ask the engine how many pages a text takes; the answer is shown as a message. */
+export function useEstimatePagesAction(text: string) {
+  const { t } = useTranslation();
+  const estimate = tsr.documents.estimatePages.useMutation();
+  return useAction<void, number>({
+    id: 'document.estimate',
+    label: t('documents.estimate'),
+    fire: async (_args, ctx) => {
+      const res = await estimate.mutateAsync({ body: { text } });
+      ctx.info(t('documents.pages', { count: res.body.pages }));
+      return res.body.pages;
+    },
+  });
+}
+```
+
+- ts-rest's hooks **throw** on an error response, as `{ status, body }`. `useAction`
+  catches it, looks `body.reason` up in the action's error route, and puts the text on
+  the named form field, or, failing that, in a message.
+- `ctx.info(…)` shows a message (through `VultusProvider`).
+
+**optio, in domain terms.** `src/data/documents/print.ts`:
+
+```ts
+import { useQueryClient } from '@tanstack/react-query';
+import { exists } from 'optio-contracts';
+import { useProcessActions, useProcessListStream, useProcessStream } from 'optio-ui';
+import { useEffect, useMemo } from 'react';
+
+// The engine names a document's print task like this (tasks.py).
+export const printProcessId = (documentId: string) => `print-${documentId}`;
+
+/** One document's print process, live, and what can be done to it. */
+export function usePrintProcess(documentId: string) {
+  const { rootProcess, connected } = useProcessStream(printProcessId(documentId));
+  const { launch, cancel } = useProcessActions();
+  useRefreshDocumentsWhenPrinted(rootProcess ? [rootProcess] : []);
+  return { process: rootProcess, connected, launch, cancel };
+}
+
+/** Every document's print process, by document id, over a single event stream. */
+export function usePrintProcesses() {
+  const { processes } = useProcessListStream({ metadataFilter: exists('documentId') });
+  const { launch, cancel } = useProcessActions();
+  const prints = useMemo(() => processes.filter((p) => p.depth === 0), [processes]);
+  const byDocument = useMemo(() => new Map(prints.map((p) => [String(p.metadata.documentId), p])), [prints]);
+  useRefreshDocumentsWhenPrinted(prints);
+  return { byDocument, launch, cancel };
+}
+
+// A finished print sets its document's lastPrintedAt: whenever one finishes,
+// fetch the documents again.
+function useRefreshDocumentsWhenPrinted(prints: { status: { state: string; doneAt?: unknown } }[]) {
+  const queryClient = useQueryClient();
+  const finished = prints
+    .filter((p) => p.status.state === 'done')
+    .map((p) => String(p.status.doneAt))
+    .sort()
+    .join();
+  useEffect(() => {
+    if (finished) void queryClient.invalidateQueries({ queryKey: ['documents'] });
+  }, [finished, queryClient]);
+}
+```
+
+- **`useProcessStream(id)`** follows one process (and its children) live. The id is
+  the engine's `processId` or the MongoDB `_id`. It opens one event stream per call.
+  Mount it only for a process that exists: if the first request finds nothing, it
+  does not try again.
+- **`useProcessListStream({ metadataFilter })`** follows every process matching a
+  metadata filter, over **one** event stream. For a list of documents, use it once for
+  the whole list rather than `useProcessStream` per row. It is shared within the
+  browser tab: one filter at a time.
+- **`useProcessActions()`** gives `launch`, `cancel`, `dismiss` and `resurrect`. They
+  return nothing and report no errors: fine for the standard buttons, but for an
+  action whose failure the user must see, call the API through your own action.
+- The filter helpers (`exists`, `eq`, `and`, `or`, …) come from `optio-contracts`.
+  Field names are metadata keys, here `documentId`.
+- **Domain data that a process changes** (here the document's `lastPrintedAt`, written
+  by the print task) is not pushed to the browser. Refetch it when the process
+  finishes, as `useRefreshDocumentsWhenPrinted` does.
+
+### The pages
+
+`src/features/documents/NewDocumentForm.tsx`:
+
+```tsx
+import { Form, Input } from 'antd';
+import { useTranslation } from 'react-i18next';
+import { FormPanel, FormSubmitButton } from 'vultus-antd';
+
+import { useDocumentActions } from '../../data/documents/actions';
+
+export function NewDocumentForm({ onCreated }: { onCreated: (id: string) => void }) {
+  return (
+    <FormPanel layout="vertical">
+      <NewDocumentFields onCreated={onCreated} />
+    </FormPanel>
+  );
+}
+
+// The action must be created inside the FormPanel: that is where it finds the
+// form to put a field's error on.
+function NewDocumentFields({ onCreated }: { onCreated: (id: string) => void }) {
+  const { t } = useTranslation();
+  const { createDocument } = useDocumentActions({ onCreated: (doc) => onCreated(doc.id) });
+  return (
+    <>
+      <Form.Item name="title" label={t('documents.title')} rules={[{ required: true }]}>
+        <Input />
+      </Form.Item>
+      <Form.Item name="text" label={t('documents.text')} initialValue="">
+        <Input.TextArea rows={4} />
+      </Form.Item>
+      <FormSubmitButton action={createDocument} />
+    </>
+  );
+}
+```
+
+**Create the action inside the `FormPanel`.** `useAction` finds the form to put a
+field's error on through React context, at the place where it is called. Called in the
+component that renders the `FormPanel`, it is outside the panel: the error then shows
+as a pop-up message instead of on the field.
+
+`src/features/documents/DocumentsPage.tsx`:
+
+```tsx
+import type { Document } from '@pressroom/contracts';
+import { Card, Space, Table } from 'antd';
+import { ProcessItem } from 'optio-ui';
+import { useTranslation } from 'react-i18next';
+import { Link, useNavigate } from 'react-router';
+
+import { useDocuments } from '../../data/documents/queries';
+import { usePrintProcesses } from '../../data/documents/print';
+import { NewDocumentForm } from './NewDocumentForm';
+
+export function DocumentsPage() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { documents, isLoading } = useDocuments();
+  const prints = usePrintProcesses();
+  return (
+    <Space orientation="vertical" size="large" style={{ width: '100%' }}>
+      <Table<Document>
+        rowKey="id"
+        loading={isLoading}
+        dataSource={documents}
+        pagination={false}
+        columns={[
+          {
+            title: t('documents.title'),
+            render: (_, doc) => <Link to={`/documents/${doc.id}`}>{doc.title}</Link>,
+          },
+          {
+            title: t('documents.lastPrinted'),
+            render: (_, doc) =>
+              doc.lastPrintedAt ? new Date(doc.lastPrintedAt).toLocaleString() : t('documents.never'),
+          },
+          {
+            title: t('documents.print'),
+            width: 420,
+            render: (_, doc) => {
+              const process = prints.byDocument.get(doc.id);
+              return process ? (
+                <ProcessItem process={process} size="small" inline onLaunch={prints.launch} onCancel={prints.cancel} />
+              ) : null;
+            },
+          },
+        ]}
+      />
+      <Card title={t('documents.new')} style={{ maxWidth: 640 }}>
+        <NewDocumentForm onCreated={(id) => navigate(`/documents/${id}`)} />
+      </Card>
+    </Space>
+  );
+}
+```
+
+`src/features/documents/DocumentPage.tsx`:
+
+```tsx
+import type { Document } from '@pressroom/contracts';
+import { Card, Empty, Space, Spin, Typography } from 'antd';
+import { ProcessItem } from 'optio-ui';
+import { useTranslation } from 'react-i18next';
+import { useParams } from 'react-router';
+import { ActionButton } from 'vultus-antd';
+
+import { useEstimatePagesAction } from '../../data/documents/actions';
+import { usePrintProcess } from '../../data/documents/print';
+import { useDocument } from '../../data/documents/queries';
+
+export function DocumentPage() {
+  const { t } = useTranslation();
+  const { id } = useParams();
+  const { document, isLoading } = useDocument(id);
+  if (isLoading) return <Spin />;
+  if (!document) return <Empty description={t('documents.notFound')} />;
+  return <DocumentView document={document} />;
+}
+
+function DocumentView({ document }: { document: Document }) {
+  const { t } = useTranslation();
+  const estimate = useEstimatePagesAction(document.text);
+  const print = usePrintProcess(document.id);
+  return (
+    <Space orientation="vertical" size="large" style={{ width: '100%', maxWidth: 900 }}>
+      <Typography.Title level={2}>{document.title}</Typography.Title>
+      <Card>
+        <Typography.Paragraph ellipsis={{ rows: 6, expandable: true }}>{document.text}</Typography.Paragraph>
+        <ActionButton action={estimate} />
+      </Card>
+      <Card title={t('documents.print')}>
+        {print.process && <ProcessItem process={print.process} onLaunch={print.launch} onCancel={print.cancel} />}
+      </Card>
+    </Space>
+  );
+}
+```
+
+`src/features/processes/ProcessesPage.tsx`, optio's standard process browser:
+
+```tsx
+import { Layout } from 'antd';
+import {
+  FilteredProcessList,
+  ProcessDetailView,
+  ProcessFilters,
+  WithFilteredProcesses,
+  useProcessActions,
+  useProcessListStream,
+} from 'optio-ui';
+import { useState } from 'react';
+
+// optio's standard process browser: every process, with filters, and the
+// selected one's tree and log.
+export function ProcessesPage() {
+  const [selected, setSelected] = useState<string | null>(null);
+  const { processes, connected } = useProcessListStream();
+  const { launch, cancel, resurrect } = useProcessActions();
+  return (
+    <WithFilteredProcesses>
+      <Layout style={{ background: 'transparent' }}>
+        <Layout.Sider width={420} theme="light" style={{ overflow: 'auto' }}>
+          <ProcessFilters />
+          <FilteredProcessList
+            processes={processes}
+            loading={!connected}
+            onLaunch={launch}
+            onCancel={cancel}
+            onResurrect={resurrect}
+            onProcessClick={setSelected}
+          />
+        </Layout.Sider>
+        <Layout.Content style={{ padding: '0 24px' }}>
+          <ProcessDetailView processId={selected} />
+        </Layout.Content>
+      </Layout>
+    </WithFilteredProcesses>
+  );
+}
+```
+
+**`ProcessItem`** shows one process: name, status, progress, and the buttons its state
+allows. It knows the process's options from the engine: for pressroom's resumable
+print, the stop button is **Suspend** (the process ends "Suspended"), the play button
+of a suspended or interrupted print is **Resume**, and its menu offers **Restart
+(discard saved state)**. None of that is app code. `size` and `inline` set the
+layout; leave out `onLaunch` or `onCancel` to hide those buttons.
+
+### Run and check
+
+```bash
+pnpm --filter @pressroom/frontend typecheck
+make frontend
+```
+
+With the engine (`make engine`) and the API server (`make api`) running, open
+`https://127.0.0.1:5173` and accept the certificate. What pressroom showed:
+
+- **Documents**: the table, with each document's print status and its play button;
+  the "New document" form below.
+- **Add a document without text**: "Write some text first." appears under the Text
+  field, from the engine's `empty-text` reason, through the API's 400 and the error
+  route.
+- **Add a real document**: the app opens its page. **Estimate pages** shows
+  "8 pages" for 2400 words.
+- **Print**: the progress bar fills page by page. **Suspend** stops it ("Suspended");
+  **Resume** continues with the next page, and the print ends "Done".
+- **Back on Documents**: the row shows "Done" and the new "Last printed" time. Started
+  from the list itself, a print updates "Never" to the time when it finishes, without a
+  reload.
+- **Processes**: every process, with search and filters; click one for its tree and
+  log.
+
+To check the HTTP/2 claim, in the browser's developer tools the requests' protocol is
+`h2`.
+
+
 ## 10. Custom process UIs (widgets)
 
 ## 11. Running and checking it

@@ -50,6 +50,42 @@ from reading the code or docs only.
 - `usePrefixes` / `usePrefixDiscovery` call `client.discovery.prefixes`, which
   `discoveryContract` does not have: dead exports. **Read**
 
+- optio-ui components use antd APIs deprecated in antd 6.6: `Progress size="default"`
+  (use `"medium"`) and the `List` component; every page logs the warnings. **Seen**
+- optio-ui's i18n contract is undocumented in its README beyond a partial table; the
+  guide lists the required keys (`common.noData`, `status.*`, `processes.launch|cancel|
+  search|filterAll|filterActive|filterHideCompleted|filterErrors|showDetails|
+  showSpecial`). Some texts are hardcoded English (ProcessTreeView "Live", "Hide
+  finished sub-tasks"; ProcessDetailView "Select a process to view details", ...). **Read**
+- `useProcessActions` is fire-and-forget (no error reporting), so it cannot back a
+  `useAction` with an error route; excavator's `useAgentSetup` / `EntityOverview`
+  `checkAction` set `errorRoute` on such calls, which never fires. **Read**
+- `useProcessListStream` is a per-tab singleton without cleanup on unmount;
+  `useProcessStream` never retries after a 404 probe. **Read**
+
+## vultus
+
+- `useAction` reads the form-error context where the hook is called, not where
+  `FormSubmitButton` renders. Creating the action in the component that renders
+  `<FormPanel>` sends field errors to a pop-up instead of the field. Excavator's
+  `AddSourceModalBody` has that shape. Either `FormSubmitButton` should hand its context
+  to the action, or this needs documenting. **Seen** (pressroom)
+- vultus-antd depends on vultus-core (`^0.5.3`) as a regular dependency, not a peer; a
+  registry install got two vultus-core copies (0.5.3 and 0.5.4) until `pnpm dedupe`.
+  Make it a peer. **Seen**
+
+## Vite dev proxy (affects excavator too, probably)
+
+- Vite 8's `server.proxy` does not close the upstream request when an HTTP/2 client
+  abandons a stream (an EventSource on a page you leave): 45-50 leaked SSE connections
+  to the API in ~15 minutes. Over HTTP/1.1 it closes them. Fix used in the guide:
+  `configure: proxy => proxy.on('proxyReq', (proxyReq, _req, res) => res.on('close', ()
+  => { if (!res.writableEnded) proxyReq.destroy(); }))` -- note `writableFinished` is
+  already true on an aborted HTTP/2 response. Excavator's http-proxy-middleware plugin
+  has no such handling either; worth checking there. **Seen**
+- Excavator's vite.config.ts comment says server.proxy forces HTTP/1.1; true for Vite 6,
+  not for 7/8 (http2.createSecureServer with allowHTTP1 in both cases). **Read**
+
 ## optio-dashboard 0.2.4 (published)
 
 - Filter bar shows raw i18n keys: `processes.search`, `processes.filterAll`,
