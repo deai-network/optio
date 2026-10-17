@@ -40,6 +40,9 @@ export default defineConfig({
     // optio-conversation-ui) land in a different Map than ProcessWidget reads.
     dedupe: [
       'react', 'react-dom', '@tanstack/react-query', '@ts-rest/react-query', 'optio-ui',
+      // One i18next for the app and optio-ui: with two, optio-ui's
+      // useTranslation finds no initialised instance and shows raw keys.
+      'i18next', 'react-i18next',
       // vultus-core is only deduped beside its alias: the app root cannot
       // resolve it (it is not a dependency here), and Vite resolves deduped
       // packages from the root.

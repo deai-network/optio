@@ -9,6 +9,7 @@ i18n.use(initReactI18next).init({
         'processes.launch': 'Launch',
         'processes.cancel': 'Cancel',
         'processes.suspend': 'Suspend',
+        'processes.search': 'Search',
         'processes.filterAll': 'All',
         'processes.filterActive': 'Active',
         'processes.filterHideCompleted': 'Hide completed',
