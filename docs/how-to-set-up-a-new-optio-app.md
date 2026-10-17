@@ -1225,7 +1225,7 @@ export { apiContract } from './api-contract.js';
 
 - **Every route is under `/api`**, like optio-api's. In development the frontend's dev
   server forwards `/api` to the API server; in production the API server serves the
-  frontend from the same origin (sections 9 and 11).
+  frontend from the same origin (sections 9 and 12).
 - **`GET /api/config` tells the frontend which optio instance to show.** optio-ui needs
   the database name and the prefix. Its fallbacks are a prefix of `optio`, and
   auto-discovery, which only works when exactly one instance is visible. Served by the
@@ -1265,11 +1265,433 @@ frontend can use it, and again after every change to it.
 
 ## 8. The API server
 
+The API server is a [Fastify](https://fastify.dev) app with two sets of routes:
+
+- **your app's routes**, implementing the contract of section 7 with
+  `@ts-rest/fastify`. They read MongoDB directly, and pass every change to the engine
+  through the generated `PressroomEngineClient`;
+- **optio's routes**, added by optio-api: the process list and tree, logs, launch,
+  cancel, dismiss, resync, instance discovery, and the live-update streams (Server-Sent
+  Events) that optio-ui listens to.
+
+Use Fastify: some optio-api features, such as process widgets (section 10) and
+per-browser notifications, exist only in its Fastify adapter.
+
+```
+packages/api/
+  package.json
+  tsconfig.json
+  src/
+    index.ts            starts the server, handles SIGINT / SIGTERM
+    server.ts           createServer(): connections, routes, optio-api
+    config.ts           settings from the environment / .env
+    routes/
+      config.ts         GET /api/config
+      documents.ts      /api/documents...
+    _generated/
+      pressroom-engine.ts    from make codegen (section 5)
+```
+
+### The package
+
+`packages/api/package.json`:
+
+```json
+{
+  "name": "@pressroom/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@clamator/protocol": "0.1.9",
+    "@pressroom/contracts": "workspace:*",
+    "@ts-rest/core": "^3.52.1",
+    "@ts-rest/fastify": "^3.52.1",
+    "fastify": "^5.12.0",
+    "ioredis": "^5.4.0",
+    "mongodb": "^6.12.0",
+    "optio-api": "^0.3.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.2"
+  }
+}
+```
+
+- **Use the `mongodb` and `ioredis` major versions that optio-api uses** (see
+  `npm view optio-api dependencies`). You hand your own database and Redis objects to
+  optio-api, so there must be one copy of each. Newer majors exist (mongodb 7,
+  ioredis 6); installing them gives you a second copy and type errors.
+- `@clamator/protocol` is there for the generated client's types.
+- pnpm warns that `@ts-rest/fastify` wants `fastify ^4`. It works with Fastify 5, as
+  optio-api itself does; the warning is harmless.
+
+`packages/api/tsconfig.json`:
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src"]
+}
+```
+
+### Configuration
+
+`src/config.ts` reads the same `.env` as the engine, with Node's built-in
+`process.loadEnvFile`:
+
+```ts
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+export interface Config {
+  mongoUrl: string;
+  mongoDb: string;
+  redisUrl: string;
+  optioPrefix: string;
+  host: string;
+  port: number;
+}
+
+// The nearest .env above the working directory. Variables already set in the
+// environment win, so production can do without the file.
+function loadDotEnv(): void {
+  for (let dir = process.cwd(); ; dir = dirname(dir)) {
+    const file = join(dir, '.env');
+    if (existsSync(file)) {
+      process.loadEnvFile(file);
+      return;
+    }
+    if (dirname(dir) === dir) return;
+  }
+}
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is not set`);
+  return value;
+}
+
+export function loadConfig(): Config {
+  loadDotEnv();
+  return {
+    mongoUrl: process.env.MONGO_URL ?? 'mongodb://localhost:27017',
+    // No defaults: these two must match the engine's.
+    mongoDb: required('MONGO_DB'),
+    optioPrefix: required('OPTIO_PREFIX'),
+    redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
+    // Only this machine can connect unless you say otherwise.
+    host: process.env.API_HOST ?? '127.0.0.1',
+    port: Number(process.env.API_PORT ?? 3000),
+  };
+}
+```
+
+The server listens on `127.0.0.1` unless `API_HOST` says otherwise, because it has no
+login (see [Adding a login](#adding-a-login) below). Add the setting to
+`.env.example` as a reminder:
+
+```ini
+# The API server listens on 127.0.0.1 unless you set this (e.g. 0.0.0.0).
+# There is no login, so think twice before exposing it.
+# API_HOST=127.0.0.1
+```
+
+### Your routes
+
+`src/routes/config.ts`:
+
+```ts
+import { apiContract } from '@pressroom/contracts';
+import type { initServer } from '@ts-rest/fastify';
+
+import type { Config } from '../config.js';
+
+export function configRoutes(s: ReturnType<typeof initServer>, config: Config) {
+  return s.router(apiContract.config, {
+    get: async () => ({
+      status: 200,
+      body: { mongoDb: config.mongoDb, optioPrefix: config.optioPrefix },
+    }),
+  });
+}
+```
+
+`src/routes/documents.ts`:
+
+```ts
+import {
+  apiContract,
+  type CreateDocumentFailureReason,
+  type Document,
+} from '@pressroom/contracts';
+import type { initServer } from '@ts-rest/fastify';
+import type { Db, WithId } from 'mongodb';
+
+import type { PressroomEngineClient } from '../_generated/pressroom-engine.js';
+
+// A record of the documents collection, as the engine writes it.
+interface DocumentRecord {
+  title: string;
+  text: string;
+  createdAt: Date;
+  lastPrintedAt: Date | null;
+}
+
+// Every reason the engine can give, with its HTTP status. A new reason in the
+// contract is a type error here until it is added.
+const CREATE_ERRORS: Record<CreateDocumentFailureReason, { status: 400; message: string }> = {
+  'empty-text': { status: 400, message: 'The document has no text.' },
+};
+
+export function documentsRoutes(
+  s: ReturnType<typeof initServer>,
+  deps: { db: Db; engine: PressroomEngineClient },
+) {
+  const documents = deps.db.collection<DocumentRecord>('documents');
+  return s.router(apiContract.documents, {
+    // Reads go straight to MongoDB.
+    list: async () => {
+      const records = await documents.find().sort({ createdAt: -1 }).toArray();
+      return { status: 200, body: records.map(toDocument) };
+    },
+    // Changes go to the engine.
+    create: async ({ body }) => {
+      const result = await deps.engine.createDocument(body);
+      if (!result.ok) {
+        const error = CREATE_ERRORS[result.reason];
+        return { status: error.status, body: { reason: result.reason, message: error.message } };
+      }
+      return { status: 201, body: result.document };
+    },
+    estimatePages: async ({ body }) => ({
+      status: 200,
+      body: await deps.engine.estimatePages(body),
+    }),
+  });
+}
+
+function toDocument(record: WithId<DocumentRecord>): Document {
+  return {
+    id: record._id.toHexString(),
+    title: record.title,
+    text: record.text,
+    createdAt: record.createdAt.toISOString(),
+    lastPrintedAt: record.lastPrintedAt?.toISOString() ?? null,
+  };
+}
+```
+
+- **The API server never writes to MongoDB.** A simple guard for CI is a search for
+  write methods in `packages/api/src` (`insertOne`, `updateOne`, `deleteMany`, and so
+  on), which should find nothing.
+- **The `Record<CreateDocumentFailureReason, …>` is exhaustive.** When the engine
+  contract gains a reason, this file stops compiling until the reason has a status and
+  a message.
+- A request body that does not match the contract never reaches your handler. ts-rest
+  answers it with `400` and its own error shape (`{ "bodyErrors": { "issues": [...] },
+  ... }`), not `{ reason, message }`.
+
+### The server
+
+`src/server.ts`:
+
+```ts
+import { initServer } from '@ts-rest/fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { Redis } from 'ioredis';
+import { MongoClient } from 'mongodb';
+import { createOptioContext } from 'optio-api';
+import { registerOptioApi } from 'optio-api/fastify';
+
+import { PressroomEngineClient } from './_generated/pressroom-engine.js';
+import type { Config } from './config.js';
+import { configRoutes } from './routes/config.js';
+import { documentsRoutes } from './routes/documents.js';
+
+export async function createServer(config: Config): Promise<FastifyInstance> {
+  const app = Fastify({ logger: true });
+
+  const mongo = await MongoClient.connect(config.mongoUrl);
+  const db = mongo.db(config.mongoDb);
+  const redis = new Redis(config.redisUrl);
+
+  // optio-api reads MongoDB and calls the engine over Redis.
+  const optio = createOptioContext({ dbOpts: { db }, redis });
+  // The RPC connection to this app's engine. optio-api uses the same one for
+  // optio's own methods.
+  const engine = new PressroomEngineClient(optio.transports.get(config.mongoDb, config.optioPrefix));
+
+  app.addHook('onClose', async () => {
+    await optio.closeAll();
+    redis.disconnect();
+    await mongo.close();
+  });
+
+  // The app's own routes, one plugin per resource.
+  const s = initServer();
+  app.register(s.plugin(configRoutes(s, config)));
+  app.register(s.plugin(documentsRoutes(s, { db, engine })));
+
+  // optio's routes: processes, live updates, launch, cancel, ...
+  registerOptioApi(app, {
+    ctx: optio,
+    // optio has no notion of users; every caller may do everything. See
+    // "Adding a login" in the guide.
+    authenticate: async () => 'operator' as const,
+  });
+
+  return app;
+}
+```
+
+- **`createOptioContext`** holds optio-api's connections. You own it, so close it when
+  the server closes (`optio.closeAll()`).
+- **`optio.transports.get(database, prefix)`** is the clamator connection to one
+  engine, keyed `<database>/<prefix>` in Redis. Your engine's methods live on the same
+  RPC server as optio's (section 5), so the generated client reuses that connection.
+- **`authenticate` is required.** It returns the caller's role: `'operator'` may do
+  everything, `'viewer'` may only read, `null` means 401. Write `'operator' as const`:
+  a plain `'operator'` is typed as `string`, which TypeScript rejects.
+- **`db` pins optio-api to one database.** Its routes still need the prefix on every
+  request (`?prefix=pressroom`); without it they use the prefix `optio` and find
+  nothing. optio-ui adds the parameter for you once it knows the prefix (section 9).
+
+`src/index.ts`:
+
+```ts
+import { loadConfig } from './config.js';
+import { createServer } from './server.js';
+
+const config = loadConfig();
+const app = await createServer(config);
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    // Open event streams can keep close() waiting; do not wait for them forever.
+    setTimeout(() => process.exit(0), 3000).unref();
+    void app.close().then(() => process.exit(0));
+  });
+}
+
+await app.listen({ host: config.host, port: config.port });
+```
+
+Add to the `Makefile`:
+
+```make
+.PHONY: api
+
+api: contracts  ## Run the API server; restart it when its source changes
+	pnpm --filter @pressroom/api dev
+```
+
+### Run and check
+
+```bash
+pnpm install
+pnpm --filter @pressroom/api typecheck
+make api
+```
+
+With the engine running (`make engine`), try your routes:
+
+```bash
+curl -s localhost:3000/api/config
+# {"mongoDb":"pressroom","optioPrefix":"pressroom"}
+
+curl -s -X POST -H 'content-type: application/json' \
+  -d '{"title":"Leaflet","text":"Fold here and here."}' localhost:3000/api/documents
+# {"id":"6ad2f290e9d2d1b78113fa4d","title":"Leaflet","text":"Fold here and here.",
+#  "createdAt":"2026-10-17T03:59:12.217449Z","lastPrintedAt":null}
+
+curl -s -X POST -H 'content-type: application/json' \
+  -d '{"title":"Blank","text":"  "}' localhost:3000/api/documents
+# {"reason":"empty-text","message":"The document has no text."}      (status 400)
+
+curl -s -X POST -H 'content-type: application/json' \
+  -d '{"text":"one two three"}' localhost:3000/api/documents/estimate-pages
+# {"pages":1}
+```
+
+and optio's:
+
+```bash
+curl -s localhost:3000/api/optio/instances
+# {"instances":[{"database":"pressroom","prefix":"pressroom","live":true}]}
+
+curl -s 'localhost:3000/api/processes?prefix=pressroom'
+# {"items":[{"processId":"print-test-page", ...}, {"processId":"print-6ad2f290...", "name":"Print \"Leaflet\"", ...}], ...}
+
+curl -s -X POST -H 'content-type: application/json' -d '{}' \
+  'localhost:3000/api/processes/print-test-page/launch?prefix=pressroom'
+curl -s -X POST -H 'content-type: application/json' -d '{}' \
+  'localhost:3000/api/processes/print-test-page/cancel?prefix=pressroom'
+# the process ends "cancelled"; cancelling it again:
+# {"reason":"not-cancellable","message":"Process is not cancellable in its current state"}   (status 409)
+```
+
+A process can be addressed by its `processId` or by its MongoDB `_id`. To watch the
+live updates, open `GET /api/processes/<id>/tree/stream?prefix=pressroom` with
+`curl -N` in another terminal while the process runs.
+
+### Adding a login
+
+optio has no users and no opinion about them: who may log in, how, and what they may
+see is up to your app. optio-api asks you four questions instead, as options of
+`registerOptioApi`:
+
+| Option | Question | Answer |
+|---|---|---|
+| `authenticate(request)` | Who is this? (required) | `'operator'`, `'viewer'` (read-only), or `null` (401) |
+| `scope(request)` | Which slice of the processes belongs to this caller? | a metadata map that every visible process must match exactly, e.g. `{ customerId: 7 }`; `null` for everything |
+| `visibility(request)` | Which processes should this caller not see? | a metadata filter built with optio's predicate builders (`and`, `or`, `eq`, …); `null` for no extra filter |
+| `authorize(request, input)` | May this caller do this action? | `true` or `false`, per action: `launch`, `cancel`, `dismiss`, `resurrect`, `resync`, the widget actions, `instances` |
+
+The exact rules are in optio-api's
+[AGENTS.md](../packages/optio-api/AGENTS.md#access-scope-and-authorization).
+
+**`authenticate` runs for every request to the Fastify app**, not only for optio's
+routes: registerOptioApi adds it as an app-wide hook. A hook that returns `null`
+locks out your own routes and pages as well. There are two ways to deal with that:
+
+- **Register optio-api in its own scope**, so its hook covers only optio's routes, and
+  protect your own routes with your own hook:
+
+  ```ts
+  await app.register(async (scope) => {
+    registerOptioApi(scope, { ctx: optio, authenticate: myAuthenticate });
+  });
+  ```
+
+- or make `authenticate` answer for every path, returning a role for public ones
+  (your login route, static files).
+
+Your login itself (a password, sessions, user accounts) is ordinary Fastify code.
+Remember that optio-ui sends no credentials of its own: use a cookie, served from the
+same origin as the frontend (section 9 arranges that).
+
 ## 9. The frontend
 
-## 10. Running and checking it
+## 10. Custom process UIs (widgets)
 
-## 11. Production build
+## 11. Running and checking it
+
+## 12. Production build
 
 ## Appendix A: working on optio and your app at the same time
 
