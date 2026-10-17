@@ -4,6 +4,26 @@ Notes for a cleanup round, collected while building the pressroom scratch app fo
 `docs/how-to-set-up-a-new-optio-app.md`. **Seen** = observed running it; **Read** =
 from reading the code or docs only.
 
+## Security
+
+- **optio-api leaks `controlUpstream` credentials to clients.** `stripServerSideFields`
+  (handlers.ts) removes only `widgetUpstream`, but optio-core also stores
+  `controlUpstream` (an agent session's input listener: `{url, innerAuth}`) on the process
+  record. Reproduced on pressroom with a fake value: its password came back in
+  `GET /api/processes/<id>`, `GET /api/processes` and `GET /api/processes/<id>/tree`
+  (the SSE streams use projections and do not include it). Any caller allowed to read
+  processes, a `viewer` included, gets the credentials. Fix: strip `controlUpstream` too
+  (better: strip by an allow-list or every `*Upstream`). **Seen**
+
+## Docs vs code (left open by the docs pass)
+
+- README / AGENTS.md say optio-api performs no database writes; `/api/widget-upload`
+  stages files in GridFS and deletes them afterwards (upload-forward.ts). Decide which
+  is wrong. **Read**
+- optio-core's `launch` can answer `shutting-down`, but the contract's
+  `LaunchFailureReason` and optio-api's status map do not include it: a launch during
+  shutdown probably fails result validation or gets no HTTP status. **Read**
+
 ## Stale documentation (would break code copied from it)
 
 - optio-core README: `launch_and_wait("my-task")` lacks the now-required keyword
@@ -157,3 +177,51 @@ from reading the code or docs only.
 - No `__init__.py` is written into `--out-py`. Harmless: setuptools' pyproject-based
   package finding includes namespace directories (checked with a wheel build). **Seen**
 - `--src` is scanned only at the top level. **Read** (documented in the guide)
+
+## Found during the docs pass (code, not docs)
+
+The docs pass (branch csillag/docs-cleanup) corrected the documentation; these are
+behaviors in the code it ran into.
+
+### optio-core
+
+- **A full sync deletes root ad-hoc processes.** `init()`, the start of `run()` and
+  `resync()` without a filter treat every root process the generator does not produce as
+  stale (`find_stale` / `remove_stale` match `processId not in generator, parentId None`),
+  so a process from `adhoc_define` is deleted by the next full sync. Reproduced:
+  `adhoc_define` → present, `resync()` → gone. An ad-hoc process defined between
+  `init()` and `run()` is deleted when `run()` starts. **Seen**
+- `launch_and_wait` skips `launch()`'s checks (shutting-down, no-resume-support, the
+  saved-state downgrade) and returns `None` silently when the process is missing or not
+  launchable. **Read**
+- `group_cancel_and_wait(purge_records=True)` returns before purging when nothing
+  matching is active, so terminal records stay; `group_cancel` purges in that case.
+  **Read**
+- `VALID_TRANSITIONS` / `validate_transition` are used only by tests, and the engine's
+  real transitions differ from them. **Read**
+- The `[redis]` extra is redundant: `clamator-over-redis`, a hard dependency, requires
+  `redis`, so the "install optio-core[redis]" ImportError branch cannot be reached in a
+  normal install. **Read**
+- `report_progress`'s docstring says percent is 0..100 but its examples use 0.42 and
+  1.0. **Read**
+
+### optio-api
+
+- The Express and both Next.js adapters drop the browser's `sessionId` on launch (they
+  pass `null`); only Fastify forwards it, so per-browser attention / client messages work
+  only on Fastify. **Read**
+- The Next.js adapters' tree and multi-tree lookups accept only a Mongo `_id`
+  (`new ObjectId(id)`); the App Router's tree stream throws on a `processId`. **Read**
+- The documented Next.js route files (`[...optio]` catch-alls under `/api/processes`)
+  probably do not match `GET /api/processes` itself or `/api/optio/instances`; a
+  `[[...optio]]` file or a catch-all at `/api` may be needed. Not checked (no Next.js app
+  in the repo). **Read**
+
+### optio-ui
+
+- `OptioProvider` passes its `prefix` prop, not the discovered prefix, to
+  `startSessionEvents`: with discovery (no `prefix` prop), `onAttention` and
+  `onClientMessage` never connect. **Read**
+- `ProcessTreeView` shows its stop button for `isActive && cancellable` (including
+  cancel_requested / cancelling); `ProcessItem` uses `isCancellable`. **Read**
+- `FilteredProcessListProps.onLaunch` is typed without the `opts` argument. **Read**
