@@ -45,6 +45,22 @@ from reading the code or docs only.
 - `@ts-rest/fastify` 3.52.1 declares `fastify ^4`; works with 5 (peer warning).
   Upstream. **Seen**
 
+## Widgets
+
+- optio-api AGENTS.md (435-452) and optio-ui AGENTS.md (381) still describe a widget URL
+  `/api/widget/:processId/*`; the real one is `/api/widget/:db/:prefix/:pid/*`. **Read**
+- No optio doc shows a minimal app-defined widget end to end (engine `ui_widget` +
+  `set_widget_upstream` + `set_widget_data`, UI `registerWidget`); the guide's section 10
+  now does. **Seen**
+- Right after a process ends, the widget proxy answers 502 for up to 5 s (cached
+  upstream, now closed), then 404. Could drop the cache entry when the upstream is
+  cleared. **Seen**
+- optio-ui renders no widget unless `OptioProvider` knows the database (discovery fills
+  it only with exactly one visible instance); only a `console.warn` says so. **Read**
+- `store_blob` blobs are never cleaned up by optio (relaunch, dismiss, delete). **Read**
+- optio-conversation-ui depends on optio-ui as a regular dependency (exact version), not
+  a peer; a version mismatch means two widget registries. **Read**
+
 ## optio-ui
 
 - `usePrefixes` / `usePrefixDiscovery` call `client.discovery.prefixes`, which

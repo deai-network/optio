@@ -1047,7 +1047,7 @@ async def get_task_definitions(services, metadata_filter=None) -> list[TaskInsta
                 process_id=f"print-{doc_id}",
                 name=f'Print "{doc["title"]}"',
                 params={"documentId": doc_id},
-                metadata={"documentId": doc_id},
+                metadata={"documentId": doc_id, "kind": "print"},
             )
         )
     return tasks
@@ -1055,7 +1055,8 @@ async def get_task_definitions(services, metadata_filter=None) -> list[TaskInsta
 
 - **`params`** are for the task itself. **`metadata`** is for finding the task:
   resyncing it, filtering the process list in the UI, scoping access in the API
-  server. Here both carry the document id.
+  server. Here both carry the document id, and `kind` tells a document's processes
+  apart (section 10 adds a second kind).
 - **A task writes through the engine like everything else.** `print_document` sets
   `lastPrintedAt` on its document when it finishes.
 - A task that raises ends in the `failed` state, and the exception message is stored
@@ -1139,7 +1140,8 @@ same.
 - **optio never kills your subprocesses.** If a task runs a command (a typesetter, a
   converter), it has to stop the command itself. This helper does that: it runs the
   command in its own process group and, if the task is told to stop, sends that group
-  SIGTERM, then SIGKILL after 5 seconds:
+  SIGTERM, then SIGKILL after 5 seconds. Pressroom keeps it in
+  `src/pressroom_engine/commands.py`; section 10 uses it for LuaLaTeX:
 
   ```python
   import asyncio
@@ -1147,11 +1149,12 @@ same.
   import signal
 
 
-  async def run_command(ctx, *argv: str) -> int | None:
+  async def run_command(ctx, *argv: str, **kwargs) -> int | None:
       """Run a command. If the task is told to stop, stop the command and
-      everything it started. Returns the exit code, or None if stopped."""
+      everything it started. Returns the exit code, or None if stopped.
+      kwargs go to asyncio.create_subprocess_exec (cwd, stdout, ...)."""
       # Its own process group, so that killing it reaches its children too.
-      proc = await asyncio.create_subprocess_exec(*argv, start_new_session=True)
+      proc = await asyncio.create_subprocess_exec(*argv, start_new_session=True, **kwargs)
       finished = asyncio.ensure_future(proc.wait())
       stopped = asyncio.ensure_future(ctx.cancellation_flag.wait())
       try:
@@ -1324,7 +1327,7 @@ and its task definition gains two flags:
                 process_id=f"print-{doc_id}",
                 name=f'Print "{doc["title"]}"',
                 params={"documentId": doc_id},
-                metadata={"documentId": doc_id},
+                metadata={"documentId": doc_id, "kind": "print"},
                 # Can continue from a saved page, and does so by itself
                 # after the engine restarts.
                 supports_resume=True,
@@ -2115,7 +2118,9 @@ export default defineConfig(({ mode }) => {
     // view holds one open.
     plugins: [react(), basicSsl()],
     server: {
-      host: '127.0.0.1',
+      // Only this machine, unless .env says otherwise. (Over HTTPS, Vite
+      // answers to any host name, so no allowedHosts is needed.)
+      host: env.FRONTEND_HOST ?? '127.0.0.1',
       port: 5173,
       strictPort: true,
       proxy: {
@@ -2296,13 +2301,17 @@ export function App() {
   );
 }
 
-// optio-ui needs this app's optio prefix. Ask the API server for it before
-// rendering anything that uses optio.
+// optio-ui needs this app's optio prefix and database name. Ask the API
+// server for them before rendering anything that uses optio.
 function WithOptio({ children }: { children: ReactNode }) {
   const { config, error } = useRuntimeConfig();
   if (error) return <Result status="error" title="The API server cannot be reached" />;
   if (!config) return <Spin fullscreen />;
-  return <OptioProvider prefix={config.optioPrefix}>{children}</OptioProvider>;
+  return (
+    <OptioProvider prefix={config.optioPrefix} database={config.mongoDb}>
+      {children}
+    </OptioProvider>
+  );
 }
 
 function Shell() {
@@ -2338,9 +2347,10 @@ function Shell() {
    `tag={{ variant: 'outlined' }}` gives optio-ui's status badges their intended look.
 3. **`VultusProvider`** (vultus-antd). It shows the messages actions report; without
    it, they are silently dropped.
-4. **`OptioProvider prefix={…}`**, with the prefix from `GET /api/config`. Render nothing
-   that uses optio until the prefix is known: without one, optio-ui falls back to the
-   prefix `optio`, and its first requests would ask for the wrong processes.
+4. **`OptioProvider prefix={…} database={…}`**, with both values from
+   `GET /api/config`. Render nothing that uses optio until they are known: without a
+   prefix, optio-ui falls back to `optio`, and its first requests would ask for the
+   wrong processes; without a database, it shows no process widgets (section 10).
 5. **The router**, inside `OptioProvider`, so that every page can use optio's hooks.
 
 ### The API layer
@@ -2477,7 +2487,7 @@ export function useEstimatePagesAction(text: string) {
 
 ```ts
 import { useQueryClient } from '@tanstack/react-query';
-import { exists } from 'optio-contracts';
+import { eq } from 'optio-contracts';
 import { useProcessActions, useProcessListStream, useProcessStream } from 'optio-ui';
 import { useEffect, useMemo } from 'react';
 
@@ -2492,9 +2502,10 @@ export function usePrintProcess(documentId: string) {
   return { process: rootProcess, connected, launch, cancel };
 }
 
-/** Every document's print process, by document id, over a single event stream. */
+/** Every document's print process, by document id, over a single event stream.
+ *  (The engine tags each document's processes with metadata.kind.) */
 export function usePrintProcesses() {
-  const { processes } = useProcessListStream({ metadataFilter: exists('documentId') });
+  const { processes } = useProcessListStream({ metadataFilter: eq('kind', 'print') });
   const { launch, cancel } = useProcessActions();
   const prints = useMemo(() => processes.filter((p) => p.depth === 0), [processes]);
   const byDocument = useMemo(() => new Map(prints.map((p) => [String(p.metadata.documentId), p])), [prints]);
@@ -2528,8 +2539,9 @@ function useRefreshDocumentsWhenPrinted(prints: { status: { state: string; doneA
 - **`useProcessActions()`** gives `launch`, `cancel`, `dismiss` and `resurrect`. They
   return nothing and report no errors: fine for the standard buttons, but for an
   action whose failure the user must see, call the API through your own action.
-- The filter helpers (`exists`, `eq`, `and`, `or`, …) come from `optio-contracts`.
-  Field names are metadata keys, here `documentId`.
+- The filter helpers (`eq`, `exists`, `and`, `or`, …) come from `optio-contracts`.
+  Field names are metadata keys: the engine tags each document's processes with
+  `kind` (section 5), and the list follows `kind = print`.
 - **Domain data that a process changes** (here the document's `lastPrintedAt`, written
   by the print task) is not pushed to the browser. Refetch it when the process
   finishes, as `useRefreshDocumentsWhenPrinted` does.
@@ -2752,8 +2764,363 @@ With the engine (`make engine`) and the API server (`make api`) running, open
 To check the HTTP/2 claim, in the browser's developer tools the requests' protocol is
 `h2`.
 
-
 ## 10. Custom process UIs (widgets)
+
+The standard process components show a name, a status, a progress bar and the launch,
+cancel and resume buttons. Some processes need more: a live view of what they are
+doing, a viewer for what they produced, controls of their own. For that, **a process
+can bring its own UI, a widget**: a React component that the frontend registers under
+a name, and that the engine names as the UI of a task. optio-ui then shows the widget
+wherever it shows the process.
+
+Pressroom gets a second process per document, a **proof**: it typesets the document
+to PDF with LuaLaTeX, and shows the PDF in a `pdf-proof` widget until you close it.
+
+### How a widget works
+
+- **The task names its widget**: `TaskInstance(..., ui_widget="pdf-proof")`.
+- **The task runs a small web server** for the widget, and tells optio where it is:
+  `await ctx.set_widget_upstream("http://127.0.0.1:<port>/")`. optio-api forwards the
+  widget's requests to it, under
+  `/api/widget/<database>/<prefix>/<process _id>/…`. The address itself never reaches
+  the browser.
+- **The task gives the widget its data**: `await ctx.set_widget_data({...})`, any JSON.
+  The widget appears once this is set.
+- **The frontend registers the component** under the same name:
+  `registerWidget("pdf-proof", PdfProofWidget)`. It receives the process (with its
+  `widgetData`) and `widgetProxyUrl`, the address of the task's web server through the
+  proxy.
+
+**A widget lives as long as its process runs** (or is suspended). When the process
+ends, optio clears the server's address, and optio-ui stops showing the widget. A widget
+is a live UI. To keep a result after the process ends, store it (for files,
+`ctx.store_blob` puts them in MongoDB's GridFS), put a reference in `widgetData`, which
+optio keeps, and show it from your own page and API route.
+
+**optio-api must be able to reach the task's web server.** With the engine and the API
+server on one machine, `127.0.0.1` works. Otherwise the server must listen on an
+address the API server can reach; pressroom reads optio's own two settings for that,
+`OPTIO_WIDGET_TUNNEL_BIND` (where to listen) and `OPTIO_WIDGET_TUNNEL_HOST` (the address
+to give optio), see section 12.
+
+### Prerequisites
+
+The proof needs LuaLaTeX on the engine's machine. On Debian or Ubuntu:
+
+```bash
+sudo apt-get install --no-install-recommends texlive-luatex texlive-latex-recommended \
+  texlive-fonts-recommended lmodern
+```
+
+(Pressroom's documents are plain text, so it writes the LaTeX itself. To typeset
+Markdown, add `pandoc`.)
+
+### The engine
+
+Section 6's `run_command` helper now goes into the app, as
+`src/pressroom_engine/commands.py`, with one addition: it passes options such as `cwd`
+and `stdout` on to the subprocess.
+
+```python
+import asyncio
+import os
+import signal
+
+
+async def run_command(ctx, *argv: str, **kwargs) -> int | None:
+    """Run a command. If the task is told to stop, stop the command and
+    everything it started. Returns the exit code, or None if stopped.
+    kwargs go to asyncio.create_subprocess_exec (cwd, stdout, ...)."""
+    # Its own process group, so that killing it reaches its children too.
+    proc = await asyncio.create_subprocess_exec(*argv, start_new_session=True, **kwargs)
+    finished = asyncio.ensure_future(proc.wait())
+    stopped = asyncio.ensure_future(ctx.cancellation_flag.wait())
+    try:
+        await asyncio.wait({finished, stopped}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        stopped.cancel()
+        if proc.returncode is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(asyncio.shield(finished), 5)
+            except TimeoutError:
+                os.killpg(proc.pid, signal.SIGKILL)
+                await finished
+    return None if stopped.done() and not stopped.cancelled() else proc.returncode
+```
+
+`src/pressroom_engine/proof.py`:
+
+```python
+import asyncio
+import os
+import re
+import shutil
+import tempfile
+
+from aiohttp import web
+from bson import ObjectId
+
+from pressroom_engine.commands import run_command
+
+LATEX_SPECIALS = {
+    "\\": r"\textbackslash{}", "{": r"\{", "}": r"\}", "$": r"\$", "&": r"\&",
+    "#": r"\#", "%": r"\%", "_": r"\_", "^": r"\textasciicircum{}", "~": r"\textasciitilde{}",
+}
+
+
+def latex_escape(text: str) -> str:
+    return "".join(LATEX_SPECIALS.get(c, c) for c in text)
+
+
+def latex_source(title: str, text: str) -> str:
+    return (
+        "\\documentclass[11pt]{article}\n"
+        "\\begin{document}\n"
+        f"\\title{{{latex_escape(title)}}}\\date{{}}\\maketitle\n"
+        f"{latex_escape(text)}\n"
+        "\\end{document}\n"
+    )
+
+
+async def proof_document(ctx) -> None:
+    """Typeset a document to PDF and show it in the 'pdf-proof' widget, until
+    the proof is closed (cancelled)."""
+    doc = await ctx.services["db"]["documents"].find_one({"_id": ObjectId(ctx.params["documentId"])})
+    if doc is None:
+        raise RuntimeError(f"Document {ctx.params['documentId']} not found")
+    workdir = tempfile.mkdtemp(prefix="pressroom-proof-")
+    runner = None
+    try:
+        with open(os.path.join(workdir, "proof.tex"), "w") as f:
+            f.write(latex_source(doc["title"], doc["text"]))
+        ctx.report_progress(None, "Typesetting")
+        code = await run_command(
+            ctx, "lualatex", "-interaction=nonstopmode", "-halt-on-error", "proof.tex",
+            cwd=workdir, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        if code is None:
+            return  # closed while typesetting
+        with open(os.path.join(workdir, "proof.log"), errors="replace") as f:
+            log = f.read()
+        if code != 0:
+            raise RuntimeError("LuaLaTeX failed: " + log[-500:])
+        pages = int(re.search(r"Output written on proof\.pdf \((\d+) pages?", log).group(1))
+
+        # Serve the directory. optio-api forwards the widget's requests here.
+        app = web.Application()
+        app.router.add_static("/", workdir)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        # Where to listen, and the address optio-api reaches it at. Both default to
+        # this machine; set them when the API server runs elsewhere (section 12).
+        bind = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
+        host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+        await web.TCPSite(runner, bind, 0).start()
+        port = runner.addresses[0][1]
+        await ctx.set_widget_upstream(f"http://{host}:{port}/")
+        await ctx.set_widget_data({"file": "proof.pdf", "pages": pages})
+        ctx.report_progress(100, f"Proof ready: {pages} page{'' if pages == 1 else 's'}")
+
+        await ctx.cancellation_flag.wait()  # open until someone closes it
+    finally:
+        if runner is not None:
+            await runner.cleanup()
+        shutil.rmtree(workdir, ignore_errors=True)
+```
+
+- **Typesetting goes through `run_command`**, so closing the proof while LuaLaTeX runs
+  stops LuaLaTeX. (Tested: the proof ended `cancelled` 0.3 seconds after the request,
+  with no `lualatex` left.)
+- **The web server is aiohttp's, inside the engine**, serving the work directory on a
+  free port (`0`). aiohttp comes with optio-core; list it in `pyproject.toml` anyway,
+  since the engine now imports it:
+
+  ```toml
+  dependencies = [
+      ...
+      "python-dotenv>=1.0",
+      "aiohttp>=3.9",
+  ]
+  ```
+
+- **The proof stays open until someone closes it**: after setting up the widget, the
+  task waits on `ctx.cancellation_flag`. Closing it is a cancel, so a closed proof is
+  `cancelled`. An engine shutdown closes it the same way.
+- **`finally` cleans up** in every case: closed, failed, shut down. The server stops
+  and the directory goes.
+
+In `tasks.py`, every document gets a proof task next to its print task:
+
+```python
+from pressroom_engine.proof import proof_document
+
+...
+        tasks.append(
+            TaskInstance(
+                execute=proof_document,
+                process_id=f"proof-{doc_id}",
+                name=f'Proof "{doc["title"]}"',
+                params={"documentId": doc_id},
+                metadata={"documentId": doc_id, "kind": "proof"},
+                # The UI of this process: the frontend's 'pdf-proof' widget.
+                ui_widget="pdf-proof",
+            )
+        )
+```
+
+`metadata.kind` tells a document's print and proof apart: the documents list follows
+only `kind = print` (section 9).
+
+### The frontend
+
+The widget, `src/features/documents/PdfProofWidget.tsx`:
+
+```tsx
+import { Space, Typography } from 'antd';
+import type { WidgetProps } from 'optio-ui';
+import { useTranslation } from 'react-i18next';
+
+// The UI of a proof process (the engine's ui_widget="pdf-proof"). optio-ui
+// renders it while the process runs; widgetProxyUrl reaches the web server
+// the task started, through the API server.
+export function PdfProofWidget({ process, widgetProxyUrl }: WidgetProps) {
+  const { t } = useTranslation();
+  const { file, pages } = process.widgetData as { file: string; pages: number };
+  const src = `${widgetProxyUrl}${file}`;
+  return (
+    <Space orientation="vertical" style={{ width: '100%' }}>
+      <Space>
+        <Typography.Text>{t('proof.pages', { count: pages })}</Typography.Text>
+        <a href={src} target="_blank" rel="noreferrer">
+          {t('proof.open')}
+        </a>
+      </Space>
+      <iframe src={src} title={process.name} style={{ width: '100%', height: '75vh', border: 0 }} />
+    </Space>
+  );
+}
+```
+
+It shows the PDF in an iframe, with the browser's own PDF viewer. `widgetProxyUrl`
+ends with a slash; the file name is appended to it.
+
+Register it in `src/app/widgets.ts`:
+
+```ts
+import { registerWidget } from 'optio-ui';
+
+import { PdfProofWidget } from '../features/documents/PdfProofWidget';
+
+// Process UIs, by the name the engine gives in TaskInstance(ui_widget=...).
+// Register them before the first render.
+registerWidget('pdf-proof', PdfProofWidget);
+```
+
+and import that in `src/main.tsx`, before anything renders:
+
+```tsx
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+
+import './app/i18n';
+import './app/widgets';
+import { App } from './app/App';
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
+```
+
+optio-ui keeps registered widgets in a module-level table, which is one more reason for
+exactly one copy of optio-ui (section 9). A process whose widget is not registered
+shows without it, and the browser console says so.
+
+The data hook, `src/data/documents/proof.ts`:
+
+```ts
+import { useProcessActions, useProcessStream } from 'optio-ui';
+
+// The engine names a document's proof task like this (tasks.py).
+export const proofProcessId = (documentId: string) => `proof-${documentId}`;
+
+/** One document's proof process: the process, its tree (which carries the
+ *  widget), and opening / closing it. */
+export function useProofProcess(documentId: string) {
+  const { rootProcess, tree } = useProcessStream(proofProcessId(documentId));
+  const { launch, cancel } = useProcessActions();
+  return { process: rootProcess, tree, open: launch, close: cancel };
+}
+```
+
+The card, `src/features/documents/ProofCard.tsx`:
+
+```tsx
+import { Card } from 'antd';
+import { ProcessItem, ProcessWidget } from 'optio-ui';
+import { useTranslation } from 'react-i18next';
+
+import { useProofProcess } from '../../data/documents/proof';
+
+export function ProofCard({ documentId }: { documentId: string }) {
+  const { t } = useTranslation();
+  const proof = useProofProcess(documentId);
+  if (!proof.process) return null;
+  return (
+    <Card title={t('proof.title')}>
+      <ProcessItem process={proof.process} onLaunch={proof.open} onCancel={proof.close} />
+      {/* The process's own UI (the pdf-proof widget), while it runs. */}
+      <ProcessWidget tree={proof.tree} />
+    </Card>
+  );
+}
+```
+
+**`<ProcessWidget tree={…} />`** renders the process's widget when it has one, and
+nothing otherwise: the layout around it is yours. (`<ProcessDetailView processId={…}
+waitForWidget />` is the ready-made alternative: the widget when there is one, the
+process tree and log otherwise.) optio-ui renders widgets only when it knows the
+database name: pass `database` to `OptioProvider` (section 9).
+
+On the document page, add the card after the print card:
+
+```tsx
+import { ProofCard } from './ProofCard';
+
+...
+      <ProofCard documentId={document.id} />
+```
+
+and the texts to `i18n.ts`:
+
+```ts
+  proof: {
+    title: 'Proof',
+    pages_one: '{{count}} page',
+    pages_other: '{{count}} pages',
+    open: 'Open the PDF in a new tab',
+  },
+```
+
+### Check it
+
+With the stack running, open a document. Under **Proof**, the play button starts the
+proof: after a moment ("Typesetting", about 2.5 seconds for a one-page document), the
+card shows "1 page", a link to the PDF, and the PDF itself. The ✕ closes it: the
+viewer disappears and the proof is "Cancelled". Play opens it again.
+
+Through the API, while the proof is open:
+
+```bash
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
+  "http://127.0.0.1:3000/api/widget/pressroom/pressroom/<the proof's _id>/proof.pdf"
+# 200 application/pdf
+```
+
+After it is closed, the same request answers 404. (For up to 5 seconds after a close it
+may answer 502: optio-api remembers a widget's address for that long.)
 
 ## 11. Running and checking it
 
