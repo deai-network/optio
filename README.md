@@ -71,10 +71,10 @@ States are grouped for convenience:
 
 Inside your Python code, you define tasks as `TaskInstance` objects. Each one pairs an async function to execute (your application logic) with metadata that Optio uses to manage it — a unique ID, a display name, optional parameters, scheduling rules, and cancellation behavior. This is the main point of contact between your application and Optio: you provide the work and its description, Optio handles the rest.
 
-Rather than registering tasks imperatively, you provide a `get_task_definitions` async callback that returns the full list of tasks. Optio calls this function on `init()` and on every `resync()`, syncing the returned list with MongoDB: new tasks are created, removed ones deleted, metadata updated — without disturbing running state.
+Rather than registering tasks imperatively, you provide a `get_task_definitions` async callback that returns the full list of tasks. Optio calls this function with two positional arguments, the `services` dict and a `metadata_filter` (`None` for a full sync), on `init()` and on every `resync()`, syncing the returned list with MongoDB: new tasks are created, removed ones deleted, metadata updated — without disturbing running state.
 
 ```python
-async def get_tasks(services):
+async def get_tasks(services, metadata_filter=None):
     sources = await services["db"].sources.find().to_list(None)
     return [
         TaskInstance(
@@ -127,6 +127,8 @@ Cancellation is cooperative. When a cancel request arrives, the process transiti
 
 The core of Optio is the Python library. This is the essential part; you can pick and choose the rest based on your requirements. Below we showcase the possible combinations of components that can work together.
 
+To build a full app with all of them (engine, API server and UI) step by step, follow [How to set up a new optio app](docs/how-to-set-up-a-new-optio-app.md).
+
 ### Level 1: Core Runtime (Python + MongoDB)
 
 Define async tasks, launch/cancel/dismiss them, track progress, create child processes, cron scheduling, and query processes — all via direct Python method calls.
@@ -150,7 +152,7 @@ async def my_task(ctx):
         await asyncio.sleep(1)
     ctx.report_progress(100, "Done")
 
-async def get_tasks(services):
+async def get_tasks(services, metadata_filter=None):
     return [
         TaskInstance(
             execute=my_task,
@@ -168,7 +170,7 @@ async def main():
         get_task_definitions=get_tasks,
     )
 
-    await launch_and_wait("my-task")
+    await launch_and_wait("my-task", session_id=None)
     proc = await get_process("my-task")
     print(proc["status"]["state"])  # "done"
 
@@ -206,10 +208,10 @@ npm install optio-ui
 If you don't need to embed Optio into an existing application, [optio-dashboard](packages/optio-dashboard) bundles [optio-api](packages/optio-api) and [optio-ui](packages/optio-ui) into a standalone app you can run directly — no custom backend or frontend code required. Just point it at your MongoDB and Redis instances and you have a full management UI.
 
 ```bash
-npx optio-dashboard
+OPTIO_PASSWORD=mysecret npx optio-dashboard
 ```
 
-Configuration is handled entirely through environment variables (`MONGODB_URL`, `REDIS_URL`, `PORT`). An optional `OPTIO_PREFIX` variable overrides the default namespace if needed. If you later need custom API endpoints or custom UI components, you can switch to using [optio-api](packages/optio-api) and [optio-ui](packages/optio-ui) directly.
+Configuration is handled entirely through environment variables: `OPTIO_PASSWORD` (required: the password the dashboard asks for), `MONGODB_URL`, `REDIS_URL`, `PORT`. A `MONGODB_URL` that names a database pins the dashboard to it; an optional `OPTIO_PREFIX` limits it to one prefix. If you later need custom API endpoints or custom UI components, you can switch to using [optio-api](packages/optio-api) and [optio-ui](packages/optio-ui) directly.
 
 ## Packages
 

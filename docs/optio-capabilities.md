@@ -18,6 +18,24 @@ corpus. Every `file:line` below was read. Claims that were inferred rather than 
 platform, the wire surfaces and the constraints. Sections 9–11 are what a designer most needs before
 committing to anything: the defects found, the documentation trust map, and the open threads.
 
+**Changed since this snapshot (note added 2026-10-17, checked against optio main `028ae20d`).**
+The body below still describes `4aebde18` (2026-09-13). Since then:
+
+- **Tenant scoping exists.** optio-api 0.3.0 (2026-10-14) takes `scope`, `visibility` and
+  `authorize` options on all four adapters (`scope` and `authorize` since 0.2.10, `visibility`
+  new in 0.3.0). §1's "no per-process ACL, no tenant scoping" no longer holds.
+- **The adapters' `prefix` option now filters instance discovery** (`discoverInstances(dbOpts,
+  redis, prefix)`, since 0.2.11). §9.2's "Dead option" is fixed.
+- **The SSE streams follow MongoDB change streams** (one per `(database, prefix)`, a re-read at most
+  once a second), falling back to the old 1 s polling where change streams are unavailable
+  (standalone mongod, no permission) or with `OPTIO_API_CHANGE_STREAMS=off` (since 0.2.11). §7.3's
+  "All poll Mongo at 1000 ms" and the polling threads in §11 describe the old behaviour.
+- **`checkAuth` is exported** from optio-api's root, with `AuthCallback`, `OptioRole` and the
+  access helpers (since 0.2.10); §5.12's list of missing exports is partly out of date.
+- **Line references are from the old revision.** Every `file:line` points into `4aebde18`.
+- Versions now: `optio-core` 0.6.1, `optio-contracts` 0.6.1, `optio-host` 0.4.0, `optio-agents`
+  0.7.1, `optio-agents-all` 0.3.0, `optio-api` 0.3.0, `optio-ui` 0.8.2, `optio-conversation-ui` 0.9.4.
+
 ---
 
 ## 1. What optio is

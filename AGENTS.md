@@ -85,13 +85,13 @@ run the file 10–20×, then `kill $hogs`.
 | 1 — Core runtime | `optio-core` | Python | `pip install optio-core` (MongoDB + APScheduler); add `[redis]` for Redis command bus |
 | 2 — Remote control | `optio-core[redis]` | Python | `pip install optio-core[redis]` |
 | 3 — REST API | `optio-api` | TypeScript | `npm install optio-api optio-contracts` |
-| 4 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query react-i18next antd @ant-design/icons vultus-core` |
+| 4 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query i18next react-i18next antd @ant-design/icons vultus-core` |
 | 1+ — Opencode runner | `optio-opencode` | Python | workspace; runs `opencode web` as an optio task (local subprocess or remote via SSH) |
 | 1+ — Claude Code runner | `optio-claudecode` | Python | workspace; runs `claude` as an optio task via ttyd-served iframe (local subprocess or remote via SSH) |
 | — Filter language (core) | `filtrum-core` | TypeScript | `npm install filtrum-core` (backend-agnostic filter schema + builders + `Dialect<T>` compiler) |
 | — Filter language (Mongo) | `filtrum-mongo` | TypeScript | `npm install filtrum-mongo` (Mongo dialect + `createMongoFilterTranslator`; type-only `mongodb` peer) |
 
-Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `mongo-quaestor` (the migration module; import name is still `quaestor` for backwards compatibility — note the upstream `quaestor` PyPI package is unrelated and will collide if installed). Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 19+, Ant Design 6+ (`antd` and `@ant-design/icons` are peers of `optio-ui`) and `vultus-core` (a peer of `optio-ui`: one copy, one components context).
+Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a6`, `mongo-quaestor>=0.1,<0.2` (the migration module; import name is still `quaestor` for backwards compatibility — note the upstream `quaestor` PyPI package is unrelated and will collide if installed), `clamator-over-redis>=0.1.9`, `clamator-protocol>=0.1.9`, `pydantic>=2.0`, `aiohttp>=3.9`. Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 18+, Ant Design 6+ (`antd` and `@ant-design/icons` are peers of `optio-ui`), `@tanstack/react-query` 5+, `i18next` 24+ / `react-i18next` 15+ and `vultus-core` >=0.5.3 (all peers of `optio-ui`; vultus-core: one copy, one components context).
 
 ---
 
@@ -149,13 +149,22 @@ All symbols are available directly from `optio_core` (module-level singleton):
 import optio_core
 
 # Lifecycle
-await optio_core.init(mongo_db, prefix, redis_url=None, services=None, get_task_definitions=None)
+await optio_core.init(mongo_db, prefix="optio", redis_url=None, rpc_server=None, services=None, get_task_definitions=None,
+                      cancel_grace_seconds=5.0, auto_resume_delay_seconds=300.0,
+                      cancel_wait_ceiling_margin_seconds=25.0, shutdown_drain_margin_seconds=5.0,
+                      terminal_poll_interval_seconds=0.1, force_cancel_shield_seconds=2.0)
 await optio_core.run()          # blocks until shutdown; call after init()
-await optio_core.shutdown(grace_seconds=5.0)  # graceful shutdown; force-finalizes tasks that do not unwind in time
+await optio_core.shutdown(grace_seconds: float | None = None)  # graceful shutdown; None = init's cancel_grace_seconds; force-finalizes tasks that do not unwind in time
 
-# Commands
-await optio_core.launch(process_id: str, resume: bool = False) -> None           # fire-and-forget
-await optio_core.launch_and_wait(process_id: str, resume: bool = False) -> None  # blocks until done
+# Commands. session_id is keyword-only and required (None is valid): the session that started
+# the run (optio-ui sends its browser session's id), stored as originatingSessionId, read as ctx.session_id.
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down)
+await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None) -> None  # blocks until done; raises LaunchBlocked
+await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None) -> Any
+# Launches like launch() and returns the object the task passes to ctx.publish_result(obj) while it keeps
+# running. Raises LaunchError(reason) on a refused launch, ResultNotPublished when the task ends without
+# publishing, asyncio.TimeoutError on timeout. optio_core.get_published_result(process_id) -> Any | None
+# reads a running process's published object.
 await optio_core.resurrect(process_id: str, *, session_id: str | None) -> ResurrectOutcome  # fire-and-forget
 # Saves the work a failed run left on its host, then resumes. Refusals come back as
 # ResurrectOutcome(ok=False, reason=...), checked in this order: shutting-down, not-found,
@@ -177,18 +186,18 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 # would wipe the work): with supportsResurrect and a registered hook it calls resurrect
 # (session_id=None) instead; otherwise it skips it and logs "Auto-resume skipped <processId>:
 # unsaved work on the host (use Resurrect)". The autoResumeScheduled stamp is cleared either way.
-await optio_core.cancel(process_id: str) -> None
+await optio_core.cancel(process_id: str) -> CancelOutcome
 # Cancels the named process. Recursively cancels active direct descendants whose
 # TaskInstance has auto_cancel_children=True (default). Opt-out parents handle
 # their own children's shutdown. Force-cancel after grace always cascades through
 # the live subtree regardless of the flag. The cancel grace deadline is shared
 # across the subtree — descendants inherit the root cancel's monotonic deadline.
-await optio_core.group_cancel(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None) -> None             # fire-and-forget; cancels every active process matching the filter (persist=True requires block_new_launches=True)
-await optio_core.group_cancel_and_wait(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None) -> None    # blocks until every matching process is terminal (persist=True requires block_new_launches=True)
+await optio_core.group_cancel(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None, purge_records: bool = False) -> int             # fire-and-forget; cancels every active process matching the (non-empty) filter, returns how many (persist=True requires block_new_launches=True; purge_records=True also deletes the matching records and their descendants)
+await optio_core.group_cancel_and_wait(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None, purge_records: bool = False) -> int    # blocks until every matching process is terminal (persist=True requires block_new_launches=True)
 async with optio_core.block_launches(launch_filter: dict, *, persist: bool = False, reason: str | None = None): ...   # async CM; rejects matching launches with LaunchBlocked. persist=True writes a Mongo record and the block survives the CM
 await optio_core.unblock_launches(launch_filter: dict) -> int                                              # remove every persistent record + in-memory block whose filter equals launch_filter exactly; returns count of in-memory entries removed
-await optio_core.dismiss(process_id: str) -> None          # reset done/failed/cancelled → idle
-await optio_core.resync(clean: bool = False) -> None       # re-sync task definitions; clean=True nukes all records first
+await optio_core.dismiss(process_id: str) -> DismissOutcome          # reset done/failed/cancelled → idle
+await optio_core.resync(clean: bool = False, metadata_filter: dict | None = None) -> dict[str, str]  # re-sync task definitions (scoped to metadata_filter if given); clean=True deletes the (in-scope) records first; returns {processId: oid_hex}
 
 # Ad-hoc processes (not from get_task_definitions)
 await optio_core.adhoc_define(task: TaskInstance, parent_id: ObjectId | None = None, ephemeral: bool = False) -> dict
@@ -205,6 +214,9 @@ await optio_core.count_processes(*, states=None, metadata=None, roots_only=False
 # RPC server (set after init(); None if no Redis configured).
 # Register custom clamator services on it before run() for app-specific verbs.
 optio_core.rpc_server: RpcServerCore | None
+
+# The (db, prefix) binding init() was called with; raises before init().
+optio_core.mongo_store: MongoStore
 ```
 
 **`init()` parameters:**
@@ -212,11 +224,17 @@ optio_core.rpc_server: RpcServerCore | None
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
 | `mongo_db` | `AsyncIOMotorDatabase` | required | Motor async database object |
-| `prefix` | `str` | required | Namespace for collections (`{prefix}_processes`) and clamator service streams (the `{database}/{prefix}` Redis key prefix) |
+| `prefix` | `str` | `"optio"` | Namespace for collections (`{prefix}_processes`) and clamator service streams (the `{database}/{prefix}` Redis key prefix) |
 | `redis_url` | `str \| None` | `None` | If None: command bus disabled; use direct method calls |
 | `rpc_server` | `RpcServerCore \| None` | `None` | Pre-built clamator RPC server. Mutually exclusive with `redis_url`. When supplied, optio-core registers `OptioEngineService` on it but does not own its lifecycle. |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
 | `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init and resync. `metadata_filter` is `None` for a full sync. |
+| `cancel_grace_seconds` | `float` | `5.0` | Cooperative-cancel deadline; after it the supervisor force-cancels and writes `failed`. Also the default `shutdown()` grace |
+| `auto_resume_delay_seconds` | `float` | `300.0` | Post-boot delay before the auto-resume sweep re-launches stamped processes |
+| `cancel_wait_ceiling_margin_seconds` | `float` | `25.0` | Budget on top of the grace before `cancel_and_wait` / `group_cancel_and_wait` give up with `TimeoutError` |
+| `shutdown_drain_margin_seconds` | `float` | `5.0` | Extra time `shutdown()` waits for tasks to drain beyond the grace |
+| `terminal_poll_interval_seconds` | `float` | `0.1` | Poll step while waiting for terminal states |
+| `force_cancel_shield_seconds` | `float` | `2.0` | How long a force-cancel (and shutdown, for a resurrect in progress) waits for the task to unwind |
 
 **`optio_core.rpc_server`** (`RpcServerCore | None`): The clamator `RpcServerCore`
 constructed (a `RedisRpcServer` when `redis_url` is provided, or whatever the caller
@@ -243,8 +261,11 @@ class TaskInstance:
     warning: str | None = None              # shown as confirmation prompt before launch
     cancellable: bool = True                 # whether this process can be cancelled
     ui_widget: str | None = None             # widget name registered via registerWidget() in optio-ui
+    ttl_seconds: int | None = None           # record expires this long after reaching a terminal state (expireAt); children copy it
     auto_cancel_children: bool = True        # cancel(this) recursively cancels active direct descendants; set False for tasks that finalize children themselves
+    auto_resume: bool = False                # a top-level process interrupted by engine shutdown that saved its state is re-launched (resume=True) after the next start, after auto_resume_delay_seconds; requires supports_resume=True (ValueError at sync)
     schedule_offset_seconds: int | None = None  # second (0-59) within each matching minute at which `schedule` fires; None = second 0
+    session_crypto: SessionCrypto | None = None  # the task's at-rest cipher (encrypt/decrypt callables) for its own blob channels; set by engine-wrapper factories, read e.g. by deferred migrations
     read_conversation: Callable[[ReadOnlyProcessContext], Awaitable[list | dict | None]] | None = None  # last field; returns a suspended process's saved conversation record ([[seq, event], ...] or {events, capturedAt}; None = no record) for the engine's conversation archive listener; gets a read-only context (process_id, _db, _prefix, load_blob)
 ```
 
@@ -373,13 +394,13 @@ await ctx.run_child(
     execute: Callable[..., Awaitable[None]],
     process_id: str,
     name: str,
-    description: str | None = None,
     params: dict[str, Any] | None = None,
     survive_failure: bool = False,
     survive_cancel: bool = False,
     on_child_progress: Callable[[list[ChildProgressInfo]], None] | None = None,
-) -> str
-# Returns child's final state: "done" | "failed" | "cancelled"
+    description: str | None = None,
+) -> ChildOutcome
+# Returns ChildOutcome; .state is the child's final state: "done" | "failed" | "cancelled"
 # Blocks until child completes
 
 # Parallel child processes
@@ -389,7 +410,7 @@ ctx.parallel_group(
     survive_cancel: bool = False,
     on_child_progress: Callable[[list[ChildProgressInfo]], None] | None = None,
 ) -> ParallelGroup
-# Use as async context manager; raises RuntimeError if any child fails (unless survive_failure=True)
+# Use as async context manager; raises ExceptionGroup("Parallel group failed", [ChildProcessFailed, ...]) on exit if any child fails (unless survive_failure=True) or is cancelled (unless survive_cancel=True)
 
 # Public fields (read-only use)
 ctx.process_id: str
@@ -397,6 +418,7 @@ ctx.params: dict[str, Any]
 ctx.metadata: dict[str, Any]
 ctx.services: dict[str, Any]
 ctx.resume: bool  # True when this execution was triggered with resume=True
+ctx.session_id: str | None  # the launch's session_id (children inherit the parent's)
 
 # Resume / checkpoint support
 await ctx.mark_has_saved_state() -> None
@@ -576,6 +598,12 @@ Collection: `{prefix}_processes`
 | `supportsResurrect` | bool | Task has a `resurrect` hook; refreshed via `$set` on every sync; absent reads as false |
 | `hasUnsavedWork` | bool | Host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts and when a resurrect saves the work or finds nothing; absent reads as false |
 | `resurrecting` | bool | Transient: true while a resurrect's background run is in progress; set and cleared by optio-core only; `init()` clears any marker a dead engine left behind; absent reads as false |
+| `autoResumeScheduled` | bool | Stamp set at shutdown on a cancelled, state-saved top-level `auto_resume` process; cleared on resume, manual launch and any transition to failed |
+| `launchMode` | `"resume"` \| `"fresh"` \| absent | How the latest run started (a resume without saved state is fresh) |
+| `originatingSessionId` | string \| null | The `session_id` of the launch; children inherit the parent's |
+| `controlUpstream` | `{ url, innerAuth } \| null` | The session's in-process input listener, read by optio-api's widget-control route (set/cleared by `ctx.set_control_upstream` / `clear_control_upstream`) |
+| `browserOpenRequests` | array | `{requestId, url, createdAt}` records pushed by `ctx.request_browser_open`; append-only |
+| `sessionEvents` | array | `{requestId, type: "attention", reason}` / `{requestId, type: "client", keyword, data}` records pushed by `ctx.need_attention` / `ctx.client_message`; append-only |
 | `ttlSeconds` | int \| null | From `TaskInstance.ttl_seconds`; a child copies its parent's |
 | `expireAt` | datetime \| absent | Set at a terminal state to now + `ttlSeconds`; removed by relaunch and dismiss; the `expireAt_ttl` index evicts the record after it |
 | `createdAt` | datetime | Document creation timestamp |
@@ -746,6 +774,10 @@ Package: `optio-contracts`
 - `supportsResurrect`: boolean (optional) — task has a resurrect hook (missing = false)
 - `hasUnsavedWork`: boolean (optional) — the host workdir holds work newer than the last snapshot (missing = false)
 - `resurrecting`: boolean (optional) — transient, true while a resurrect saves the unsaved work (missing = false)
+- `autoResumeScheduled`: boolean (optional) — stamped for automatic resume after an engine restart
+- `browserOpenRequests`: `{ requestId, url, createdAt? }[]` (optional)
+- `sessionEvents`: `({ requestId, type: 'attention', reason } | { requestId, type: 'client', keyword, data })[]` (optional)
+- `originatingSessionId`: string (nullable, optional)
 - `createdAt`: Date
 
 **`ProcessStateSchema`** — enum:
@@ -774,23 +806,25 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 
 ### Contract Endpoints
 
-`processesContract` — ts-rest router. All paths prefixed with `/processes`.
+`processesContract` — ts-rest router. All paths prefixed with `/processes`. There is no `:prefix` path segment: every route takes the optio instance as the optional query parameters `database` and `prefix` (`?prefix=&database=`; `prefix` defaults to `optio`; `database` is required in multi-db mode and ignored in single-db mode, see `resolveDb`). `:id` is an ObjectId hex or a `processId` string.
 
 | Name | Method | Path | Path Params | Query | Body | Responses |
 |------|--------|------|-------------|-------|------|-----------|
-| `list` | GET | `/processes/:prefix` | `prefix` | `cursor?, limit, rootId?, state?, metadataFilter?` (URL-encoded JSON; legacy `?metadata.<key>=<value>` form returns 400) | — | `200: PaginatedResponse<Process>` |
-| `get` | GET | `/processes/:prefix/:id` | `prefix, id` | — | — | `200: Process`, `404: Error` |
-| `getTree` | GET | `/processes/:prefix/:id/tree` | `prefix, id` | `maxDepth?: number` | — | `200: ProcessTreeNode`, `404: Error` |
-| `getLog` | GET | `/processes/:prefix/:id/log` | `prefix, id` | `cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |
-| `getTreeLog` | GET | `/processes/:prefix/:id/tree/log` | `prefix, id` | `cursor?, limit, maxDepth?` | — | `200: PaginatedResponse<LogEntry & {processId, processLabel}>`, `404: Error` |
+| `list` | GET | `/processes` | — | `database?, prefix?, cursor?, limit, rootId?, state?, metadataFilter?` (URL-encoded JSON; legacy `?metadata.<key>=<value>` form returns 400) | — | `200: PaginatedResponse<Process>` |
+| `get` | GET | `/processes/:id` | `id` | `database?, prefix?` | — | `200: Process`, `404: Error` |
+| `getTree` | GET | `/processes/:id/tree` | `id` | `database?, prefix?, maxDepth?: number` | — | `200: ProcessTreeNode`, `404: Error` |
+| `getLog` | GET | `/processes/:id/log` | `id` | `database?, prefix?, cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |
+| `getTreeLog` | GET | `/processes/:id/tree/log` | `id` | `database?, prefix?, cursor?, limit, maxDepth?` | — | `200: PaginatedResponse<LogEntry & {processId, processLabel}>`, `404: Error` |
 | `getConversation` | GET | `/processes/:id/conversation` | `id` | `database?, prefix?` | — | `200: { events: unknown[], capturedAt: string \| null }` (a suspended process's saved conversation record, proxied from the engine's conversation archive; `Cache-Control: no-store`), `401: { message }`, `403`/`404`/`409`/`500`/`503`: `{ reason: ConversationFailureReason, message }` |
-| `launch` | POST | `/processes/:prefix/:id/launch` | `prefix, id` | — | `{ resume?: boolean }` (optional; body may be omitted entirely) | `200: Process`, `404: Error`, `409: Error` |
-| `cancel` | POST | `/processes/:prefix/:id/cancel` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
-| `dismiss` | POST | `/processes/:prefix/:id/dismiss` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
+| `launch` | POST | `/processes/:id/launch` | `id` | `database?, prefix?` | `{ resume?: boolean; sessionId?: string \| null }` (optional; body may be omitted entirely) | `200: Process`, `404`/`409`: `{ reason: LaunchFailureReason, message }` |
+| `cancel` | POST | `/processes/:id/cancel` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: CancelFailureReason, message }` |
+| `dismiss` | POST | `/processes/:id/dismiss` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: DismissFailureReason, message }` |
 | `resurrect` | POST | `/processes/:id/resurrect` | `id` | `database?, prefix?` | `{ sessionId?: string \| null }` (optional; body may be omitted entirely) | `200: Process`, `404`/`409`: `{ reason: ResurrectFailureReason, message }` |
-| `resync` | POST | `/processes/:prefix/resync` | `prefix` | — | `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }` (omit or send `{}` for full sync) | `200: { message: string }` |
+| `resync` | POST | `/processes/resync` | — | `database?, prefix?` | `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }` (send `{}` for full sync) | `202: { message: string }` |
 
-Note: The Fastify adapter mounts the entire contract under `/api`, so effective paths are `/api/processes/:prefix/...`.
+`discoveryContract` has one route, `instances`: GET `/optio/instances` → `200: { instances: { database, prefix, live }[] }`.
+
+Note: The adapters mount the contract under `/api` (`pathPrefix: '/api'`), so effective paths are `/api/processes/...?prefix=&database=`.
 
 ### Engine RPC contract
 
@@ -836,7 +870,16 @@ export { listProcesses, getProcess, getProcessTree, getProcessLog, getProcessTre
          resyncProcesses } from 'optio-api';
 export type { ListQuery, PaginationQuery, TreeLogQuery,
               LaunchCommandResult, CancelCommandResult, DismissCommandResult,
-              ResurrectCommandResult, ConversationResult } from 'optio-api';
+              ResurrectCommandResult, ResyncCommandResult, ForbiddenResult,
+              ConversationResult } from 'optio-api';
+
+// Authentication + per-request access (for custom adapters). checkAuth(req, authenticate, isWrite)
+// -> null | { status: 401 | 403, body }; accessFor / resolveAccess build the request's Access from
+// the scope / visibility / authorize hooks; UNRESTRICTED is the no-hooks Access.
+export { checkAuth, accessFor, resolveAccess, hasAccessHooks, UNRESTRICTED,
+         type OptioRole, type AuthCallback, type AuthResult, type Access, type AccessHooks,
+         type ScopeCallback, type ScopeFilter, type VisibilityCallback, type AuthorizeCallback,
+         type AuthorizeInput, type OptioAction, type ProcessRef } from 'optio-api';
 
 // Conversation archive proxy (read a suspended process's record; for custom adapters)
 export { resolveConversationArchive, forgetConversationArchive, fetchConversation,
@@ -853,7 +896,9 @@ export { resolveConversationArchive, forgetConversationArchive, fetchConversatio
 // findScopedProcess/findReadableProcess/findActionTarget/inScope/gateProcess all
 // accept a `ProcessReads` (below) or, for custom adapters and compatibility, a
 // plain `Collection`.
-export { findActionTarget, findReadableProcess } from 'optio-api';
+export { findActionTarget, findReadableProcess, findScopedProcess, gateProcess, inScope,
+         andScope, scopeToMongo, gateInstances, scopedResyncFilter, toProcessRef,
+         type GateResult, type ScopedFilterResult } from 'optio-api';
 
 // Visibility helpers (for custom adapters). normalizeVisibility(raw): validate a
 // visibility hook's return value (null/undefined/{} -> null, else parsed with
@@ -905,8 +950,15 @@ export { OptioEngineClient,
          type DbOptions, type SingleDbOptions, type MultiDbOptions } from 'optio-api';
 
 // Stream poller (for custom SSE adapters)
-export { createListPoller, createTreePoller } from 'optio-api';
-export type { StreamPollerOptions, TreePollerOptions, ListPollerHandle } from 'optio-api';
+export { createListPoller, createTreePoller, createMultiTreePoller, createSessionEventsPoller } from 'optio-api';
+export type { StreamPollerOptions, TreePollerOptions, MultiTreePollerOptions, MultiTreeRoot,
+              SessionEventsPollerOptions, ListPollerHandle } from 'optio-api';
+
+// Instance discovery and metadata-filter helpers
+export { discoverInstances,              // (dbOpts, redis?, prefix?) -> { database, prefix, live }[]
+         parseMetadataFilterQuery, metadataFilterToMongo,
+         detectLegacyMetadataParams, formatLegacyMetadataMessage,
+         type ParseResult, type ProcessMetadataFilter } from 'optio-api';
 ```
 
 ### OptioApiOptions (two-form)
@@ -924,11 +976,13 @@ interface SugarOptioApiOptions {
   scope?: ScopeCallback<TRequest>;            // optional tenant boundary (see below)
   authorize?: AuthorizeCallback<TRequest>;    // optional per-action decision (see below)
   visibility?: VisibilityCallback<TRequest>;  // optional per-process hide (see below)
+  verbose?: boolean;                          // Fastify only
 }
 
 // Explicit form: caller supplies a pre-built OptioContext. Returns void.
 interface ExplicitOptioApiOptions {
   ctx: OptioContext;
+  prefix?: string;
   authenticate: AuthCallback<TRequest>;
   scope?: ScopeCallback<TRequest>;
   authorize?: AuthorizeCallback<TRequest>;
@@ -939,6 +993,11 @@ interface ExplicitOptioApiOptions {
 // Enforced on every request to every route across all four adapters: REST,
 // SSE streams, /api/optio/instances discovery, and the /api/widget/* proxy.
 // Reads (GET/HEAD/OPTIONS) require viewer or operator; writes require operator.
+// Fastify: authenticate runs in an onRequest hook added to the instance passed to
+// registerOptioApi, so it gates every route of the host app too, not only optio's;
+// let the host's own routes through in the callback (optio-dashboard returns
+// 'operator' for URLs outside /api/ and for /api/auth/). Express mounts it with
+// app.use('/api', ...): a narrower reach, but host /api/* routes added after it pass through it too.
 //
 // scope(req) -> ScopeFilter | null: a flat exact-match metadata map
 // ({ customerId: 3 }) confining the request to processes whose metadata
@@ -1003,9 +1062,14 @@ registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): OptioContext | vo
 // Sugar form: returns the constructed OptioContext; fastify onClose wired to ctx.closeAll().
 // Explicit form (caller passed ctx): returns void; caller owns ctx lifecycle.
 // Single entry point for the Fastify integration. Registers:
-//   - REST endpoints from processesContract under /api/processes/...
-//   - SSE endpoints GET /api/processes/:id/tree/stream and GET /api/processes/stream
-//   - Instance discovery GET /api/optio/instances
+//   - The authenticate onRequest hook (app-wide, see OptioApiOptions above)
+//   - REST endpoints from processesContract under /api/processes/... (?database=&prefix=)
+//   - SSE endpoints GET /api/processes/:id/tree/stream, GET /api/processes/stream,
+//     GET /api/processes/tree/multi/stream and GET /api/session-events/stream
+//   - Instance discovery GET /api/optio/instances (only instances of opts.prefix when set)
+//   - POST /api/widget-control/:database/:prefix/:processId (body { text } or { key }) and
+//     POST /api/widget-upload/:database/:prefix/:processId (multipart, staged in GridFS,
+//     handed to the engine's materializeUpload)
 //   - Widget reverse-proxy at /api/widget/:database/:prefix/:processId/*
 //     proxies HTTP, SSE, and WebSocket to the upstream URL stored in widgetUpstream.
 //     404 when widgetUpstream is absent; 502 on upstream errors.
@@ -1025,25 +1089,29 @@ interface ListQuery {
 interface PaginationQuery { cursor?: string; limit: number; }
 interface TreeLogQuery extends PaginationQuery { maxDepth?: number; }
 
-type CommandResult =
-  | { status: 200; body: any }
-  | { status: 404; body: { message: string } }
-  | { status: 409; body: { message: string } };
+// Every handler takes the OptioContext, the instance query { database?, prefix? } (resolved by
+// resolveDb) and a trailing `access: Access = UNRESTRICTED`. Command results:
+//   { status: 200; body: Process } | { status: 404 | 409; body: { reason, message } } | ForbiddenResult (403)
+type InstanceQuery = { database?: string; prefix?: string };
 
-async function listProcesses(db: Db, prefix: string, query: ListQuery): Promise<PaginatedResponse>
-async function getProcess(db: Db, prefix: string, id: string): Promise<Process | null>
-async function getProcessTree(db: Db, prefix: string, id: string, maxDepth?: number): Promise<ProcessTreeNode | null>
-async function getProcessLog(db: Db, prefix: string, id: string, query: PaginationQuery): Promise<PaginatedResponse<LogEntry> | null>
-async function getProcessTreeLog(db: Db, prefix: string, id: string, query: TreeLogQuery): Promise<PaginatedResponse | null>
-async function launchProcess(db: Db, redis: Redis, database: string, prefix: string, id: string, resume?: boolean): Promise<CommandResult>
-// Returns 409 "This task does not support resume" when resume=true and supportsResume=false.
-async function cancelProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult>
-async function dismissProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult>
-async function resurrectProcess(ctx: OptioContext, query: { database?: string; prefix?: string }, id: string,
-                                sessionId?: string | null, access?: Access): Promise<ResurrectCommandResult>
+async function listProcesses(ctx: OptioContext, query: ListQuery & InstanceQuery, access?: Access): Promise<PaginatedResponse>
+async function getProcess(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<Process | null>
+async function getProcessTree(ctx: OptioContext, query: InstanceQuery & { maxDepth?: number }, id: string, access?: Access): Promise<ProcessTreeNode | null>
+async function getProcessLog(ctx: OptioContext, query: PaginationQuery & InstanceQuery, id: string, access?: Access): Promise<PaginatedResponse<LogEntry> | null>
+async function getProcessTreeLog(ctx: OptioContext, query: TreeLogQuery & InstanceQuery, id: string, access?: Access): Promise<PaginatedResponse | null>
+async function getProcessConversation(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<ConversationResult>
+async function launchProcess(ctx: OptioContext, query: InstanceQuery, id: string, resume = false,
+                             sessionId: string | null = null, access?: Access): Promise<LaunchCommandResult>
+// 409 { reason: 'no-resume-support', message: "This task does not support resume" } when resume=true and supportsResume=false.
+async function cancelProcess(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<CancelCommandResult>
+async function dismissProcess(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<DismissCommandResult>
+async function resurrectProcess(ctx: OptioContext, query: InstanceQuery, id: string,
+                                sessionId: string | null = null, access?: Access): Promise<ResurrectCommandResult>
 // POST /processes/:id/resurrect. 200: Process; 404/409: { reason: ResurrectFailureReason, message }
 // (not-found is 404, every other reason 409); 403 when authorize refuses.
-async function resyncProcesses(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter): Promise<{ message: string }>
+async function resyncProcesses(ctx: OptioContext, query: InstanceQuery, clean = false,
+                               metadataFilter?: ProcessMetadataFilter, access?: Access): Promise<ResyncCommandResult>
+// 202 { message }; 400/403 { message } when the filter is a predicate tree under a scope / contradicts it, or authorize refuses.
 ```
 
 ### In-process triggers
@@ -1064,11 +1132,13 @@ interface StreamPollerOptions {
   prefix: string;
   sendEvent: (data: unknown) => void;
   onError: () => void;
+  metadataFilter?: ProcessMetadataFilter;      // list poller
   scope?: ScopeFilter | null;                 // list/session-events pollers only
-  visibility?: ProcessMetadataFilter | null;   // every poller; read through processReads
+  visibility: ProcessMetadataFilter | null;    // required on every poller (null = no restriction); read through processReads
+  hub?: ProcessChangeHub;                     // default: the shared change hub of (db, prefix)
 }
 
-interface TreePollerOptions extends StreamPollerOptions {
+interface TreePollerOptions extends Omit<StreamPollerOptions, 'metadataFilter' | 'scope'> {
   rootId: string;
   baseDepth: number;
   maxDepth?: number;
@@ -1107,17 +1177,20 @@ diverged-metadata edge case; details: packages/optio-api/AGENTS.md
 
 **List stream process shape:**
 ```typescript
-{ _id, processId, name, description, status, progress, cancellable, special, warning, metadata, depth }
+{ _id, processId, name, status, progress, cancellable, special, warning, metadata, depth,
+  supportsResume, hasSavedState, autoResumeScheduled, browserOpenRequests }
 ```
 
 **Tree stream process shape:**
 ```typescript
-{ _id, parentId: string | null, name, description, status, progress, cancellable, depth, order, widgetData }
+{ _id, parentId: string | null, rootId, processId, launchMode, name, status, progress, cancellable,
+  depth, order, widgetData, uiWidget, metadata,
+  supportsResume, hasSavedState, autoResumeScheduled, browserOpenRequests }
 ```
 
 Both streams, and the multi-tree stream (`GET /api/processes/tree/multi/stream`), also carry
 `supportsResurrect`, `hasUnsavedWork` and `resurrecting` (`false` when absent), tracked in the
-snapshot fingerprint.
+snapshot fingerprint. Neither carries `description`.
 
 `widgetData` is included in tree-stream payloads and tracked in the snapshot fingerprint so
 worker-side mutations trigger SSE events. The list stream does **not** include `widgetData`.
@@ -1142,8 +1215,13 @@ changes. Details: `packages/optio-ui/AGENTS.md` "Spinner slot".
 
 ```typescript
 interface OptioProviderProps {
-  prefix: string;
-  baseUrl?: string;  // default: '' (same origin)
+  prefix?: string;    // omitted: that of the instance discovery finds (GET /api/optio/instances) when it finds exactly one, else 'optio'
+  database?: string;  // omitted: the discovered instance's database
+  live?: boolean;     // omitted: the discovered instance's liveness, else false
+  baseUrl?: string;   // default: '' (same origin)
+  onAttention?: (processId: string, reason: string) => void;                     // ctx.need_attention events of processes this tab's session launched
+  onClientMessage?: (processId: string, keyword: string, data: unknown) => void; // ctx.client_message events, likewise
+  onBrowserOpen?: BrowserOpenHandler;  // overrides the default handler for agent "open this URL" requests (window.open + notification fallback)
   children: ReactNode;
 }
 ```
@@ -1170,6 +1248,8 @@ interface LaunchControlsProps {
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
   onResurrect?: (id: string) => void;  // save a failed run's host work, then resume
   size?: ButtonProps['size'];
+  iconFontSize?: number;               // pixel size of the buttons' icons
+  denyReason?: string | null;          // set + non-empty: launch button disabled, this as its tooltip
 }
 ```
 
@@ -1205,11 +1285,15 @@ Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set)
 ```typescript
 interface ProcessItemProps {
   process: any;
-  onLaunch?: (id: string) => void;
+  onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
   onResurrect?: (id: string) => void;  // forwarded to LaunchControls
   onCancel?: (id: string) => void;
   readonly?: boolean;
   onProcessClick?: (id: string) => void;
+  size?: ProcessItemSize;
+  inline?: boolean;                    // name / progress / actions on one row
+  inactiveContent?: ReactNode;         // shown where the progress bar would be while not active
+  launchDenyReason?: string | null;    // forwarded to LaunchControls as denyReason
 }
 ```
 
@@ -1223,10 +1307,15 @@ interface ProcessStatusBadgeProps {
   state: string;
   error?: string;
   runningSince?: string | null;
+  size?: ProcessStatusBadgeSize;     // default 'small'
+  autoResumeScheduled?: boolean;     // shows a clock icon ("Scheduled for auto-restart")
+  className?: string;
+  supportsResume?: boolean;          // cancel_requested / cancelling read "Suspending" (blue)
+  hasSavedState?: boolean;           // with supportsResume: cancelled reads "Suspended" (blue)
 }
 ```
 
-Ant Design `Tag` with state-based color. Active states show elapsed time (live ticker). Failed state shows error tooltip icon.
+Ant Design `Tag` with state-based color. Active states show elapsed time (live ticker). Failed state shows error tooltip icon. A resumable process being stopped reads "Suspending", and a cancelled one with saved state "Suspended", both blue.
 
 State → color mapping:
 - `idle` → `default`
@@ -1236,7 +1325,7 @@ State → color mapping:
 - `failed` → `red`
 - `cancel_requested` → `orange`
 - `cancelling` → `orange`
-- `cancelled` → `default`
+- `cancelled` → `orange`
 
 **`ProcessTreeView`**
 
@@ -1261,11 +1350,13 @@ interface ProcessNode {
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
+  warning?: string;
   supportsResume?: boolean;     // these flags are read by LaunchControls
   hasSavedState?: boolean;
   supportsResurrect?: boolean;
   hasUnsavedWork?: boolean;
   resurrecting?: boolean;
+  autoResumeScheduled?: boolean;
   children?: ProcessNode[];
 }
 ```
@@ -1274,7 +1365,9 @@ interface ProcessNode {
 
 ```typescript
 interface ProcessLogPanelProps {
-  logs: LogEntry[];  // { timestamp: string; level: string; message: string; processName?: string }
+  logs: LogEntry[];  // { timestamp: string; level: string; message: string; data?; processId: string; processLabel: string }
+  tree: ProcessTreeNode | null;  // gives each process's lines a stable color and indent; null: no bar
+  fillParent?: boolean;          // fill the parent's height instead of max-height 400px
 }
 ```
 
@@ -1283,14 +1376,14 @@ Scrollable log viewer (max-height 400px, monospace). Auto-scrolls to bottom unle
 **`ProcessFilters`**
 
 ```typescript
-interface ProcessFiltersProps {
-  filterGroup: FilterGroup;
-  onFilterChange: (group: FilterGroup) => void;
-  showDetails: boolean;
-  onShowDetailsChange: (show: boolean) => void;
-  showSpecial: boolean;
-  onShowSpecialChange: (show: boolean) => void;
-}
+function ProcessFilters(props?: { className?: string; style?: CSSProperties }): JSX.Element
+// Search box + filter-group select + "show details" / "show special" checkboxes. Holds no state
+// of its own: reads and sets it through useProcessFilter(), so it must sit inside
+// <WithFilteredProcesses>, next to the FilteredProcessList it filters.
+
+function WithFilteredProcesses(props: { children: ReactNode }): JSX.Element  // provides the filter state
+function useProcessFilter(): { filterGroup, setFilterGroup, showDetails, setShowDetails,
+                               showSpecial, setShowSpecial, filterFn: (processes: any[]) => any[] }
 
 type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 ```
@@ -1301,6 +1394,9 @@ type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 interface ProcessDetailViewProps {
   processId: string | null | undefined;
   readOnly?: boolean;  // default false; true hides the launch / resurrect / cancel affordances
+  showLogs?: boolean;  // default true; false renders only the widget, at full height
+  waitForWidget?: boolean;  // default false; true shows a big spinner instead of "Loading…" and the process view until the widget shows
+  widgetPlaceholder?: ReactNode;  // shown instead of that spinner; implies waitForWidget
 }
 ```
 
@@ -1325,10 +1421,13 @@ discards the unsaved work). The default layout wires `ProcessTreeView`'s
 interface WidgetProps {
   process: any;            // full process tree root (includes widgetData, uiWidget)
   apiBaseUrl: string;      // optio API base URL
-  widgetProxyUrl: string;  // ${apiBaseUrl}/api/widget/${process._id}/ — trailing slash load-bearing
+  widgetProxyUrl: string;  // ${apiBaseUrl}/api/widget/${database}/${prefix}/${process._id}/ (URI-encoded) — trailing slash load-bearing
   prefix: string;
   database?: string;
   readOnly?: boolean;      // the host shows the process read-only (ProcessDetailView readOnly): do not launch or resume it
+  hideEmptyRuns?: boolean; // conversation widgets: leave out resumed runs where nothing happened
+  placeholder?: ReactNode; // what the host shows while the process waits for its widget
+  onReady?: () => void;    // given to a live widget taking over from the suspended variant; call once it shows the process
 }
 
 type WidgetComponent = ComponentType<WidgetProps>;
@@ -1354,6 +1453,10 @@ imported. Reads `process.widgetData` for config (`iframeSrc`, `localStorageOverr
 `sandbox`, `allow`, `title`). Sets localStorage entries on mount and removes them on
 unmount. Shows a dismissible "Session ended." banner on terminal states. Has no suspended
 variant, so a suspended process using it falls back to the default tree/log layout.
+
+**Built-in `'iframe-input'` widget** (`IframeInputWidget`) — the `'iframe'` widget plus a text box
+under it that POSTs `{ text }` (or, with the box empty, navigation keys as `{ key }`) to
+`/api/widget-control/:database/:prefix/:processId` (Fastify adapter only).
 
 **`useProcessWidget(tree, options?)`** (`packages/optio-ui/src/components/ProcessWidget.tsx`) —
 **unchanged in shape**: still `ReactNode | null`, exactly as before suspended-widget support
@@ -1389,11 +1492,12 @@ useProcessActions(options?: ProcessActionsOptions): {
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resurrect: (processId: string) => void;
-  resync: () => void;
-  resyncClean: () => void;
+  resync: (metadataFilter?: ProcessMetadataFilter) => void;
+  resyncClean: (metadataFilter?: ProcessMetadataFilter) => void;
   isResyncing: boolean;
 }
-// launch sends body: { resume: true } when opts.resume is true; empty body otherwise.
+// Every call sends the provider's ?database=&prefix=.
+// launch sends body: { sessionId: getSessionId() }, plus resume: true when opts.resume is true.
 // resurrect POSTs /processes/:id/resurrect with body: { sessionId: getSessionId() }.
 ```
 
@@ -1477,8 +1581,11 @@ useProcessStream(processId: string | undefined, maxDepth?: number): {
   tree: ProcessTreeNode | null;
   rootProcess: ProcessUpdate | null;
   logs: LogEntry[];
+  processNotFound: boolean;  // the pre-flight GET returned 404; terminal, no retry
+  error: Error | null;       // other API errors; the retry loop keeps running
 }
-// SSE connection to /api/processes/:prefix/:id/tree/stream
+// SSE connection to /api/processes/:id/tree/stream?prefix=&maxDepth=&database=
+// (inside a MultiProcessStreamProvider it reads that provider's shared stream instead)
 // Reconnects automatically after 3s on error.
 // maxDepth default: 10
 ```
@@ -1492,7 +1599,8 @@ useProcessListStream(options?: {
   processes: any[];
   connected: boolean;
 }
-// SSE connection to /api/processes/:prefix/stream (module-level singleton — one connection per prefix/baseUrl pair)
+// SSE connection to /api/processes/stream?prefix=&database=&metadataFilter= (module-level singleton — one
+// EventSource per app; it reconnects when baseUrl, database, prefix or the filter changes)
 // Reconnects automatically after 3s on error. Only one filter active at a time.
 ```
 
@@ -1504,16 +1612,22 @@ useProcessListStream(options?: {
 // From optio-ui
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 
-export interface ProcessTreeNode {
+export interface ProcessTreeNode {   // ProcessUpdate (a tree-stream item) + children
   _id: string;
+  processId?: string;
+  launchMode?: 'resume' | 'fresh';
   parentId: string | null;
   name: string;
-  description?: string | null;
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable: boolean;
   depth: number;
   order: number;
+  metadata?: Record<string, unknown>;
+  browserOpenRequests?: { requestId: string; url: string }[];
+  autoResumeScheduled?: boolean;
+  supportsResume?: boolean;
+  hasSavedState?: boolean;
   children: ProcessTreeNode[];
 }
 ```
@@ -1538,6 +1652,9 @@ All components use `react-i18next`. Required keys:
 | `processes.resurrecting` | LaunchControls (Resurrecting indicator tooltip; default "Resurrecting: saving the unsaved work…") |
 | `processes.resurrectingLabel` | LaunchControls (Resurrecting indicator aria-label; default "Resurrecting") |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |
+| `processes.suspend` | ProcessItem, ProcessTreeView (stop button tooltip for a resumable process; default "Suspend") |
+| `processes.moreOptions` | LaunchControls (split-button menu tooltip; default "More options") |
+| `processes.search` | ProcessFilters (search box placeholder) |
 | `processes.filterAll` | ProcessFilters |
 | `processes.filterActive` | ProcessFilters |
 | `processes.filterHideCompleted` | ProcessFilters |
@@ -1552,6 +1669,8 @@ All components use `react-i18next`. Required keys:
 | `status.cancel_requested` | ProcessStatusBadge |
 | `status.cancelling` | ProcessStatusBadge |
 | `status.cancelled` | ProcessStatusBadge |
+| `status.suspending` / `status.suspended` | ProcessStatusBadge (resumable process stopping / stopped with saved state; defaults "Suspending" / "Suspended") |
+| `status.autoResumeScheduled` | ProcessStatusBadge (auto-resume clock icon label; default "Scheduled for auto-restart") |
 | `common.noData` | ProcessLogPanel (empty state) |
 
 ---
@@ -1569,7 +1688,7 @@ All components use `react-i18next`. Required keys:
 - **Ephemeral processes**: deleted from DB after reaching an end state
 - **Migrations**: run automatically on `init()` via `mongo-quaestor` (PyPI name; legacy `quaestor` import name); migrations live in `packages/optio-core/src/optio_core/migrations/`
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync
-- **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"`, and every `resurrecting` marker is cleared (no resurrect survives an engine restart). On `shutdown(grace_seconds=5.0)`, tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not exit within shutdown grace period"`. Spec: `docs/2026-04-22-process-reconciliation-design.md`
+- **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"`, and every `resurrecting` marker is cleared (no resurrect survives an engine restart). On `shutdown(grace_seconds=None)` (None = `cancel_grace_seconds`, default 5.0), tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not unwind within cancellation grace period"`. Spec: `docs/2026-04-22-process-reconciliation-design.md`
 - **Lost final-state writes**: if MongoDB is unreachable when a process ends, the executor keeps the final state in memory and the supervisor loop retries it (backing off from 1 s to 30 s, no attempt limit) until it lands; the row gets a `"State recorded late: <state> (database was unavailable)"` log entry. `cancel()`, `cancel_and_wait()` and `group_cancel_and_wait()` settle an active row that no task in this engine owns instead of waiting on it (to the queued final state, else `failed` with `error="Process had no running task in this engine; its final state was never recorded"`). Spec: `docs/2026-10-03-lost-final-state-writes-design.md`
 - **Process writes**: each lifecycle step of a process is one update on its document -- relaunch (reset, `scheduled` and its log line), start (`running`, its log line and `originatingSessionId`), a progress message and its log line, the end (final status, `expireAt`, its log or error line and the `widgetUpstream` clear), dismiss. Log entries keep their own timestamps and order; nothing is buffered. `store.update_status(..., log=, set_fields=)`, `store.update_progress(..., log=)` and `store.relaunch_reset` carry the combined writes. Spec: `docs/2026-10-09-fewer-process-writes-design.md`
 - **Process indexes**: every `init()` ensures six indexes on `{prefix}_processes` (`store.ensure_process_indexes`): `processId`+`_id` desc, `parentId`+`order`, `rootId`+`depth`+`order`, `status.state`, `originatingSessionId`, and the `expireAt` TTL index (`expireAt_ttl`, as migration m004 creates it). An index that conflicts with an existing one is logged and skipped. A relaunch or dismiss removes `expireAt` (a terminal state sets it again), and a child copies its parent's `ttlSeconds`, so a tree expires with its root. Spec: `docs/2026-10-09-process-indexes-design.md`
