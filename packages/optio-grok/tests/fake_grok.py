@@ -22,28 +22,34 @@ SCENARIOS = ("happy", "deliverable", "error", "resume", "seed", "seed_rotate")
 
 
 def _record_launch() -> None:
-    """Durably record this launch's argv + planted sandbox profile (Stage 8).
+    """Durably record this launch's argv + planted GROK_HOME files.
 
     When ``FAKE_GROK_RECORD`` names a path, append one JSON object per launch:
-    ``{"argv": [...], "sandbox_toml": <content|null>}``. The workdir is wiped
-    on teardown, so this record (outside the workdir) is how the wiring test
-    asserts that ``--sandbox optio`` was passed AND that
-    ``$GROK_HOME/sandbox.toml`` was planted before launch. The fake ACCEPTS
-    and otherwise IGNORES ``--sandbox`` — it enforces nothing.
+    ``{"argv": [...], "sandbox_toml": ..., "auth_json": ..., "config_toml": ...}``
+    (each file's content as grok finds it at launch, or null when absent). The
+    workdir is wiped on teardown, so this record (outside the workdir) is how a
+    test asserts what was planted before launch: ``$GROK_HOME/sandbox.toml``
+    for ``--sandbox optio`` (Stage 8), and which credentials and config a
+    seeded or resumed launch starts with. The fake ACCEPTS and otherwise
+    IGNORES ``--sandbox`` — it enforces nothing.
     """
     dest = os.environ.get("FAKE_GROK_RECORD")
     if not dest:
         return
-    gh = os.environ.get("GROK_HOME") or str(Path.cwd() / "home" / ".grok")
-    sandbox_path = Path(gh) / "sandbox.toml"
-    try:
-        sandbox_toml = sandbox_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        sandbox_toml = None
+    gh = Path(os.environ.get("GROK_HOME") or str(Path.cwd() / "home" / ".grok"))
+
+    def _read(name: str):
+        try:
+            return (gh / name).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+
     with open(dest, "a", encoding="utf-8") as fh:
         fh.write(json.dumps({
             "argv": sys.argv[1:],
-            "sandbox_toml": sandbox_toml,
+            "sandbox_toml": _read("sandbox.toml"),
+            "auth_json": _read("auth.json"),
+            "config_toml": _read("config.toml"),
         }) + "\n")
         fh.flush()
 
@@ -178,18 +184,34 @@ def _rotate_auth(gh: Path, new_refresh: str) -> None:
     auth.write_text(json.dumps(data), encoding="utf-8")
 
 
+def _hold() -> None:
+    """When ``FAKE_GROK_HOLD_UNTIL`` names a path, stay live (before DONE)
+    until that path exists. A test that must see something happen while the
+    session is live (the credential watcher starting) creates the file once it
+    has, so the session ends on that event rather than on the scenario's timer.
+    The 60 s ceiling only bounds a hang."""
+    path = os.environ.get("FAKE_GROK_HOLD_UNTIL")
+    if not path:
+        return
+    end = time.monotonic() + 60.0
+    while not os.path.exists(path) and time.monotonic() < end:
+        time.sleep(0.02)
+
+
 def _scenario_seed_rotate() -> None:
     """CONSUME role that rotates the refresh token mid-session.
 
     The seed engine planted ``home/.grok/auth.json`` before launch; this run
     rotates its refresh_token (as real grok would on a token refresh), so the
     session's teardown save-back must write the rotated auth.json back into the
-    seed. Used by the Stage-4 lease/save-back session test."""
+    seed. Used by the Stage-4 lease/save-back session test, and by the resumed
+    seeded session test (with ``FAKE_GROK_HOLD_UNTIL``)."""
     gh = _grok_home()
     gh.mkdir(parents=True, exist_ok=True)
     _rotate_auth(gh, "ROTATED-INSESSION")
     time.sleep(0.05)
     _log("STATUS: 10% rotate scenario alive")
+    _hold()
     time.sleep(0.05)
     _log("DONE: rotate scenario completed")
     time.sleep(30.0)

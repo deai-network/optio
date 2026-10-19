@@ -43,7 +43,11 @@ from optio_grok.conversation import GrokConversation
 from optio_grok.info import AGENT_INFO
 from optio_grok.conversation_listener import ConversationListener
 from optio_grok.prompt import compose_agents_md
-from optio_grok.seed_manifest import GROK_SEED_MANIFEST, GROK_SEED_SUFFIX
+from optio_grok.seed_manifest import (
+    GROK_CRED_MANIFEST,
+    GROK_SEED_MANIFEST,
+    GROK_SEED_SUFFIX,
+)
 from optio_grok.snapshots import (
     insert_snapshot,
     load_latest_snapshot,
@@ -170,9 +174,9 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     # mode). Threaded into the deferred session/load replay below; None when not
     # resuming, in iframe mode, or when the prior snapshot recorded no id.
     resume_session_id: str | None = None
-    # Resolved seed id for a fresh, seeded launch (Stage 3). Set by _prepare
-    # (str seed_id → itself; SeedProvider callable → awaited). Stays None on
-    # resume and when no seed_id is configured.
+    # Resolved seed id for a seeded launch, fresh or resumed. Set by _prepare
+    # (str seed_id → itself; SeedProvider callable → awaited). Stays None when
+    # no seed_id is configured.
     resolved_seed_id: str | None = None
     # Stage 4 lease + credential save-back. ``lease_holder`` is the task's
     # process_id when the seed came from a lease-holding SeedProvider (renewed
@@ -280,13 +284,10 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             # the prior conversation into the listener's replay buffer.
             resume_session_id = snapshot.get("sessionId")
 
-        if not resuming and config.seed_id is not None:
-            # Seeded FRESH start: resolve the seed id (str → itself; a
-            # SeedProvider callable → awaited, may raise SeedUnavailableError)
-            # and overlay the stored grok identity (auth.json + config.toml)
-            # into the fresh workdir BEFORE AGENTS.md, so grok launches
-            # already-authed. No --continue: this begins a NEW session. Grok
-            # auth/config are cwd-independent, so no rekey is needed.
+        if config.seed_id is not None:
+            # Resolve the seed at EVERY launch, resume included (as
+            # optio-claudecode does): str → itself; a SeedProvider callable →
+            # awaited, may raise SeedUnavailableError.
             if callable(config.seed_id):
                 # A SeedProvider leases a seed from the pool (holder =
                 # process_id); the watcher renews the lease, teardown releases
@@ -295,10 +296,27 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 lease_holder = ctx.process_id
             else:
                 resolved_seed_id = config.seed_id
+            if resuming:
+                # Resume: overlay only the seed's CURRENT credentials
+                # (auth.json) onto the restored snapshot. The seed is the
+                # source of truth for credentials; the snapshot may carry a
+                # rotated-away token, or another account's (the seed was
+                # replaced since). The snapshot's config.toml stays.
+                # Baseline the restored auth.json first: should the overlay
+                # fail, teardown must not save that token into this seed.
+                cred_baseline = await cred_watcher.cred_fingerprint(host)
+                manifest = GROK_CRED_MANIFEST
+            else:
+                # Fresh start: overlay the stored grok identity (auth.json +
+                # config.toml) into the fresh workdir BEFORE AGENTS.md, so
+                # grok launches already-authed. No --continue: this begins a
+                # NEW session. Grok auth/config are cwd-independent, so no
+                # rekey is needed.
+                manifest = GROK_SEED_MANIFEST
             await _seeds.merge_seed(
                 ctx, host,
                 seed_id=resolved_seed_id,
-                manifest=GROK_SEED_MANIFEST,
+                manifest=manifest,
                 suffix=GROK_SEED_SUFFIX,
                 decrypt=config.seed_decrypt,
             )

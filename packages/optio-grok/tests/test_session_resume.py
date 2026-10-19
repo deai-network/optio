@@ -129,6 +129,42 @@ async def test_resume_restores_workdir_and_passes_continue(
     assert any("you have been resumed" in str(a) for a in launches[1]), launches[1]
 
 
+async def test_resume_without_seed_keeps_the_snapshot_credentials(
+    mongo_db, task_root, shim_install_dir, tmp_path, monkeypatch,
+):
+    """No seed_id: the resumed launch starts on the auth.json and config.toml
+    the snapshot restored, leases nothing and runs no credential watcher."""
+    from optio_grok import cred_watcher
+    from optio_grok.seed_manifest import GROK_SEED_SUFFIX
+
+    started: list[dict] = []
+
+    async def _watcher(ctx, host, **kw):
+        started.append(kw)
+
+    monkeypatch.setattr(cred_watcher, "run_credential_watcher", _watcher)
+    record = tmp_path / "launches.jsonl"
+    monkeypatch.setenv("FAKE_GROK_RECORD", str(record))
+    pid = "grok_resume_noseed"
+
+    # Fresh run: the fake logs in (writes auth.json + config.toml).
+    monkeypatch.setenv("FAKE_GROK_SCENARIO", "seed")
+    await run_grok_session(await _make_ctx(mongo_db, pid, resume=False), _cfg(shim_install_dir))
+    monkeypatch.setenv("FAKE_GROK_SCENARIO", "happy")
+    await run_grok_session(await _make_ctx(mongo_db, pid, resume=True), _cfg(shim_install_dir))
+
+    fresh, resumed = [
+        json.loads(line) for line in record.read_text().splitlines() if line.strip()
+    ]
+    assert fresh["auth_json"] is None
+    assert "-c" in resumed["argv"], resumed["argv"]
+    (acct,) = json.loads(resumed["auth_json"]).values()
+    assert (acct["key"], acct["refresh_token"]) == ("fake-key", "fake-refresh"), acct
+    assert 'model = "grok-fake"' in resumed["config_toml"], resumed["config_toml"]
+    assert started == []
+    assert await mongo_db[f"test{GROK_SEED_SUFFIX}"].count_documents({}) == 0
+
+
 async def test_resume_with_no_prior_snapshot_falls_back_to_fresh(
     mongo_db, task_root, shim_install_dir, monkeypatch,
 ):

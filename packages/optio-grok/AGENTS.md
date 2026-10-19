@@ -48,11 +48,17 @@ Frozen kw-only dataclass composing the shared mixins from
 
 ## Seed lifecycle
 
-`seed_id` (str or leased `SeedProvider`) merges the stored grok identity
-(`auth.json` + `config.toml`, manifest in `seed_manifest.py`) into a fresh
-workdir pre-launch; `cred_watcher` saves rotated tokens back into the seed
-in-session and at teardown, renewing the lease; `on_seed_saved` enables
-capture at teardown of a fresh authed session. All ignored on resume.
+`seed_id` (str or leased `SeedProvider`) is resolved at every launch, resume
+included (a provider leases under the task's `process_id`), as in
+optio-claudecode. A fresh start merges the stored grok identity (`auth.json`
++ `config.toml`, `GROK_SEED_MANIFEST` in `seed_manifest.py`) into the new
+workdir pre-launch. A resume overlays only the seed's current `auth.json`
+(`GROK_CRED_MANIFEST`) onto the restored snapshot before grok starts (`-c`
+in iframe mode; in conversation mode with `conversation_ui`, `session/load`
+of the stored ACP session); the snapshot's `config.toml` stays. `cred_watcher` saves rotated
+tokens back into the seed in-session and at teardown, renewing the lease, in
+both cases; teardown releases the lease. `on_seed_saved` enables capture at
+teardown of a fresh authed session (ignored on resume).
 
 ## Testing
 

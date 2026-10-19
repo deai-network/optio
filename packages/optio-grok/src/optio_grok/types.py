@@ -165,19 +165,22 @@ class GrokTaskConfig(
     # back to the agent as feedback. Off (None) by default.
     on_caller_message: CallerMessageCallback | None = None
 
-    # --- seed surface (start fresh from a stored environment) -----------
-    # Consumed (default/fallback): merge this seed's environment (grok
-    # auth.json + config.toml) into a fresh workdir before launch, beginning
-    # a NEW session already logged-in. A plain string is used as-is; a
-    # SeedProvider callable is awaited at launch to resolve one (Stage 4
-    # lease path). Baked at task-creation time; ignored on resume.
+    # --- seed surface (start from a stored environment) ------------------
+    # Resolved at every launch, fresh and resumed: a plain string is used
+    # as-is; a SeedProvider callable is awaited to resolve one, leasing it
+    # under the task's process_id (Stage 4 lease path). Fresh: merge the
+    # seed's environment (grok auth.json + config.toml) into the new workdir
+    # before launch, beginning a NEW session already logged-in. Resume:
+    # overlay only the seed's current auth.json onto the restored snapshot
+    # (the seed is the source of truth for credentials; the snapshot's
+    # config.toml stays). Either way the credential watcher saves a rotated
+    # token back into the seed and renews the lease; teardown releases it.
     seed_id: "str | SeedProvider | None" = None
     # Capture intent: a (sync or async) callback fired on teardown of a fresh
     # session after a successful capture, with two args: (seed_id, info).
     # ``info`` is a human-readable account summary (None in Stage 3; resolved
-    # in a later stage). Its presence is what enables seed capture. Both
-    # default None, so existing consumers are unaffected. Both are ignored on
-    # resume.
+    # in a later stage). Its presence is what enables seed capture. Defaults
+    # to None, so existing consumers are unaffected. Ignored on resume.
     on_seed_saved: "Callable[[str, str | None], Awaitable[None] | None] | None" = None
 
     # Resume machinery (Stage 2). ON by default: grok persists its session
