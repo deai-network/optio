@@ -355,9 +355,30 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
 
+    def _start_cred_watcher(host: Host) -> None:
+        """Start the in-session credential watcher once the session is live,
+        in either mode, for a seeded session only (no seed, no watcher): it
+        saves back the rotated auth.json and, when the seed is leased, renews
+        the lease and aborts the session on lease loss. Without it a leased
+        seed's lease lapses after its TTL while the session still uses it.
+        Teardown cancels it before the final save-back and the release."""
+        nonlocal cred_watch_task
+        if resolved_seed_id is None:
+            return
+        cred_watch_task = asyncio.create_task(
+            cred_watcher.run_credential_watcher(
+                ctx, host,
+                seed_id=resolved_seed_id,
+                baseline=cred_baseline,
+                encrypt=config.seed_encrypt,
+                decrypt=config.seed_decrypt,
+                lease_holder=lease_holder,
+            )
+        )
+
     async def _grok_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
-        nonlocal cred_watch_task, input_runner
+        nonlocal input_runner
 
         # Network binding (same env handling as claudecode/opencode for
         # multi-container deploys).
@@ -436,20 +457,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         )
         await ctx.set_control_upstream(f"http://{upstream_host}:{input_port}")
 
-        # Start the in-session credential watcher for a seeded session: it
-        # saves back the rotated auth.json, and (when the seed is leased)
-        # renews the lease and aborts the session on lease loss.
-        if resolved_seed_id is not None:
-            cred_watch_task = asyncio.create_task(
-                cred_watcher.run_credential_watcher(
-                    ctx, host,
-                    seed_id=resolved_seed_id,
-                    baseline=cred_baseline,
-                    encrypt=config.seed_encrypt,
-                    decrypt=config.seed_decrypt,
-                    lease_holder=lease_holder,
-                )
-            )
+        _start_cred_watcher(host)
 
         # Await the grok process inside tmux (NOT the ttyd connection). ttyd
         # stays up serving viewers; the task is alive while the tmux session
@@ -472,7 +480,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     todo_tracker: TodoTracker | None = None
 
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal launched_handle, cred_watch_task, conv_listener, todo_tracker
+        nonlocal launched_handle, conv_listener, todo_tracker
 
         # Launch `grok agent [--model M] [--always-approve] --no-leader stdio`
         # directly (no tmux/ttyd). --always-approve is used only when no
@@ -526,6 +534,9 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
+        # Started here, not after the widget setup below, so that setup (the
+        # model probe can run `grok models` on the host) eats no lease time.
+        _start_cred_watcher(host)
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via
