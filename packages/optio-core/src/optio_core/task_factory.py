@@ -6,25 +6,31 @@ them at task sync. `check_values` checks a launch's values before its child
 exists (spec 1.4). `child_task` is the TaskInstance of one launch (spec 1.2).
 Nothing is coerced: a value of the wrong JSON type is refused.
 
-Throughout, a key whose value is null (None) counts as absent.
+Throughout, a key whose value is null (None) counts as absent; a launch's
+null values are dropped from its params.
 Spec: docs/2026-10-20-task-factory-design.md §1.
 """
 
 import math
+import re
 import secrets
 from typing import Any
 
 from optio_core.models import TaskFactory, TaskInstance
 
-# The kinds a definition may have, each with its own static options (spec 1.3).
+# The kinds a definition may have, each with its own static options (spec 1.3,
+# plus vultus-core's `integer` for the numeric kinds).
 _KIND_OPTIONS: dict[str, frozenset[str]] = {
     "boolean": frozenset(),
     "oneOf": frozenset({"choices"}),
     "manyOf": frozenset({"choices"}),
-    "numeric": frozenset({"min", "max", "step"}),
-    "range": frozenset({"min", "max", "step"}),
+    "numeric": frozenset({"min", "max", "step", "integer"}),
+    "range": frozenset({"min", "max", "step", "integer"}),
     "text": frozenset({"maxLength"}),
 }
+# A parameter's id: an identifier, so that a refusal's "<id>: " prefix is
+# unambiguous and the id is a plain Mongo key.
+_ID = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _COMMON_KEYS = frozenset({"kind", "id", "label", "initialValue", "required"})
 _CHOICE_KEYS = frozenset({"value", "label"})
 _LABEL_PROBLEM = "label must be a string or a map of language code to string"
@@ -41,8 +47,11 @@ def check_parameters(parameters: list[dict]) -> None:
         if not isinstance(definition, dict):
             raise ValueError(f"parameters[{i}]: must be an object")
         pid = definition.get("id")
-        if not isinstance(pid, str) or not pid:
-            raise ValueError(f"parameters[{i}]: id must be a non-empty string")
+        if not isinstance(pid, str) or not _ID.fullmatch(pid):
+            raise ValueError(
+                f"parameters[{i}]: id must be an identifier "
+                f"(letters, digits and _, not starting with a digit)"
+            )
         if pid in seen:
             raise ValueError(f"{pid}: id is not unique")
         seen.add(pid)
@@ -78,18 +87,26 @@ def check_values(parameters: list[dict], values: dict[str, Any]) -> str | None:
     return None
 
 
+def without_nulls(values: dict[str, Any]) -> dict[str, Any]:
+    """`values` without the null ones: a launch's params as its task (and
+    the factory's `validate` and `name_for`) see them, so that a value left
+    out and a null value look the same."""
+    return {k: v for k, v in values.items() if v is not None}
+
+
 def child_task(factory: TaskFactory, values: dict[str, Any]) -> TaskInstance:
     """The TaskInstance of one launch of `factory` with `values` (already
-    checked): the factory's `execute` and fields, `params` = the values, its
-    metadata plus `taskFactory: <the factory's process id>`, its process id
-    plus ":" and 8 random hex digits, and the name `name_for(values)` or the
-    factory's (spec 1.2)."""
+    checked): the factory's `execute` and fields, `params` = the values
+    without their nulls, its metadata plus `taskFactory: <the factory's
+    process id>`, its process id plus ":" and 8 random hex digits, and the
+    name `name_for(values)` or the factory's (spec 1.2)."""
+    values = without_nulls(values)
     return TaskInstance(
         execute=factory.execute,
         process_id=f"{factory.process_id}:{secrets.token_hex(4)}",
         name=factory.name_for(values) if factory.name_for is not None else factory.name,
         description=factory.description,
-        params=dict(values),
+        params=values,
         metadata={**factory.metadata, "taskFactory": factory.process_id},
         special=factory.special,
         warning=factory.warning,
@@ -127,6 +144,8 @@ def _definition_problem(p: dict) -> str | None:
             return "min must not be greater than max"
         if step is not None and step <= 0:
             return "step must be positive"
+        if p.get("integer") is not None and not isinstance(p["integer"], bool):
+            return "integer must be true or false"
     if kind == "text" and p.get("maxLength") is not None:
         m = p["maxLength"]
         if isinstance(m, bool) or not isinstance(m, int) or m < 1:
@@ -181,10 +200,14 @@ def _value_problem(p: dict, v: Any) -> str | None:
     if kind == "numeric":
         if not _is_number(v):
             return "must be a number"
+        if p.get("integer") and not _is_whole(v):
+            return "must be a whole number"
         return _bounds_problem(p, v)
     if kind == "range":
         if not (isinstance(v, list) and len(v) == 2 and all(_is_number(x) for x in v)):
             return "must be a [from, to] pair of numbers"
+        if p.get("integer") and not all(_is_whole(x) for x in v):
+            return "must be a pair of whole numbers"
         if v[0] > v[1]:
             return "from must not be greater than to"
         return _bounds_problem(p, v[0]) or _bounds_problem(p, v[1])
@@ -227,6 +250,12 @@ def _is_number(v: Any) -> bool:
     if isinstance(v, int):
         return True
     return isinstance(v, float) and math.isfinite(v)
+
+
+def _is_whole(n: int | float) -> bool:
+    """A number (already checked) with no fractional part; 2.0 counts, as a
+    JSON number need not be written as an integer."""
+    return isinstance(n, int) or n.is_integer()
 
 
 def _is_label(label: Any) -> bool:

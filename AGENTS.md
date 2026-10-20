@@ -159,7 +159,7 @@ await optio_core.shutdown(grace_seconds: float | None = None)  # graceful shutdo
 # Commands. session_id is keyword-only and required (None is valid): the session that started
 # the run (optio-ui sends its browser session's id), stored as originatingSessionId, read as ctx.session_id.
 await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down, parameters-required, not-a-factory, invalid-parameters)
-await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError)
+await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError, but LaunchBlocked for a launch block)
 await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None) -> Any
 # Launches like launch() and returns the object the task passes to ctx.publish_result(obj) while it keeps
 # running. Raises LaunchError(reason, message) on a refused launch, ResultNotPublished when the task ends without
@@ -167,10 +167,11 @@ await optio_core.launch_and_await_result(process_id: str, resume: bool = False, 
 # reads a running process's published object.
 # params: a TaskFactory's launch values (see "TaskFactory Fields"). A factory's record launched with them
 # defines an ad-hoc child of the record with the values in ctx.params and launches it with the same
-# session_id; the outcome's proc is the child's record. Refusals, in this order: parameters-required (no
-# params), no-resume-support (resume=True), not-launchable (no synced definition), invalid-parameters
-# (LaunchOutcome.message "<id>: <what>": the fields' checks, then the factory's validate), launch-blocked
-# (the child's metadata). params on any other record: not-a-factory. A factory's record never runs itself.
+# session_id; the outcome's proc is the child's record. Refusals, in this order: shutting-down, not-found,
+# no-resume-support (resume=True), parameters-required (no params), not-launchable (no synced definition),
+# invalid-parameters (LaunchOutcome.message "<id>: <what>": the fields' checks, then the factory's
+# validate), launch-blocked (the child's metadata). params on any other record: not-a-factory. No child is
+# defined while shutting down (all three entry points). A factory's record never runs itself.
 await optio_core.resurrect(process_id: str, *, session_id: str | None) -> ResurrectOutcome  # fire-and-forget
 # Saves the work a failed run left on its host, then resumes. Refusals come back as
 # ResurrectOutcome(ok=False, reason=...), checked in this order: shutting-down, not-found,
@@ -317,21 +318,26 @@ class TaskFactory:
   (`parameters-required`), the scheduler never gets it, the auto-resume sweep's `resume=True`
   launch is refused (`no-resume-support`), `resurrect` answers `no-resurrect-support` (factories
   stay out of the executor's task registry), and `Executor.launch_process` skips a `taskFactory`
-  record. A TaskInstance's record has neither field (unset on sync).
+  record. A TaskInstance's record has neither field (unset on sync). A resync that removes the
+  factory cancels its running launches (the stale records' active descendants are cancelled with
+  them).
 - **The parameters** (checked at sync; a bad one raises `ValueError("Task factory '<id>':
   parameters: <param id>: <what>")`; `optio_core.task_factory.check_parameters`): `kind` one of
-  `boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`; `id` (unique); `label`; the kind's
-  options (`choices: [{value: str, label?}]`, non-empty, for `oneOf`/`manyOf`; `min`, `max`, `step`
-  for `numeric`/`range`, a range needing `min` and `max`; `maxLength` for `text`); `initialValue`
+  `boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`; `id` (unique, an identifier:
+  `^[A-Za-z_][A-Za-z0-9_]*$`); `label`; the kind's options (`choices: [{value: str, label?}]`,
+  non-empty, for `oneOf`/`manyOf`; `min`, `max`, `step` and `integer` (bool) for
+  `numeric`/`range`, a range needing `min` and `max`; `maxLength` for `text`); `initialValue`
   (checked like a value, may be empty); `required` (default true). Any other key is refused. A
   `label` (a field's, a choice's) is a string or a map of language code to string. A null key
   counts as absent.
 - **A launch's values** (`optio_core.task_factory.check_values`, before the child exists): every
   key a parameter's id; every required parameter has a value (null, and for `text`/`manyOf` the
   empty string/list, is none); `boolean` a bool, `oneOf` one of its choices, `manyOf` a list of
-  distinct choices, `numeric` a number within `min`/`max`, `range` a `[from, to]` list within them
-  with `from <= to`, `text` a string within `maxLength`; nothing coerced (a bool is no number).
-  Then `validate`. The first problem refuses: `invalid-parameters`, message `"<id>: <what>"`.
+  distinct choices, `numeric` a number within `min`/`max` (a whole one with `integer`), `range` a
+  `[from, to]` list within them with `from <= to` (whole ends with `integer`), `text` a string
+  within `maxLength`; nothing coerced (a bool is no number). Then `validate`. The first problem
+  refuses: `invalid-parameters`, message `"<id>: <what>"`. Null values are then dropped: the task's
+  `ctx.params`, `validate` and `name_for` see a left-out value and a null one alike.
 - **The launch's child:** an ad-hoc child of the factory's record (`adhoc_define(child,
   parent_id=<record _id>, ephemeral=ttl_seconds is None)`), process id `<factory id>:<8 hex
   digits>`, name `name_for(values)` or `name`, `params` the values, metadata the factory's plus
@@ -632,7 +638,7 @@ Collection: `{prefix}_processes`
 | `order` | int | Sort order among siblings |
 | `cancellable` | bool | Whether cancel is permitted |
 | `adhoc` | bool | True if created via `adhoc_define()` |
-| `ephemeral` | bool | True if process should be deleted after completion |
+| `ephemeral` | bool | The record is deleted (with its descendants) when its run ends: any terminal state, a force-cancel, a start that finds no execute function, or an engine restart that interrupted it |
 | `special` | bool | Marks administrative/special-purpose processes |
 | `warning` | string \| null | Warning text shown before launch |
 | `status` | object | See ProcessStatus sub-document |
@@ -1748,10 +1754,10 @@ All components use `react-i18next`. Required keys:
 - **No Redis mode**: `init()` with `redis_url=None` and no `rpc_server` disables the command surface; use direct Python API calls (`optio.launch()`, etc.) instead.
 - **Progress flushing**: buffered every 100ms; override with `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` env var
 - **Child processes**: stored as MongoDB documents with `parentId`/`rootId`; automatically deleted on parent re-launch and dismiss (`delete_descendants`); each carries its parent's `ttlSeconds`
-- **Ephemeral processes**: deleted from DB after reaching an end state
+- **Ephemeral processes**: deleted from DB (with their descendants) when their run ends: after reaching an end state, after a force-cancel (once its children are force-cancelled), when a launch finds no execute function, and on `init()` when a restart interrupted them (instead of being reconciled to `failed`)
 - **Migrations**: run automatically on `init()` via `mongo-quaestor` (PyPI name; legacy `quaestor` import name); migrations live in `packages/optio-core/src/optio_core/migrations/`
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync
-- **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"`, and every `resurrecting` marker is cleared (no resurrect survives an engine restart). On `shutdown(grace_seconds=None)` (None = `cancel_grace_seconds`, default 5.0), tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not unwind within cancellation grace period"`. Spec: `docs/2026-04-22-process-reconciliation-design.md`
+- **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"` (an ephemeral one is deleted instead, with its descendants), and every `resurrecting` marker is cleared (no resurrect survives an engine restart). On `shutdown(grace_seconds=None)` (None = `cancel_grace_seconds`, default 5.0), tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not unwind within cancellation grace period"` (an ephemeral one is then deleted). Spec: `docs/2026-04-22-process-reconciliation-design.md`
 - **Lost final-state writes**: if MongoDB is unreachable when a process ends, the executor keeps the final state in memory and the supervisor loop retries it (backing off from 1 s to 30 s, no attempt limit) until it lands; the row gets a `"State recorded late: <state> (database was unavailable)"` log entry. `cancel()`, `cancel_and_wait()` and `group_cancel_and_wait()` settle an active row that no task in this engine owns instead of waiting on it (to the queued final state, else `failed` with `error="Process had no running task in this engine; its final state was never recorded"`). Spec: `docs/2026-10-03-lost-final-state-writes-design.md`
 - **Process writes**: each lifecycle step of a process is one update on its document -- relaunch (reset, `scheduled` and its log line), start (`running`, its log line and `originatingSessionId`), a progress message and its log line, the end (final status, `expireAt`, its log or error line and the `widgetUpstream` clear), dismiss. Log entries keep their own timestamps and order; nothing is buffered. `store.update_status(..., log=, set_fields=)`, `store.update_progress(..., log=)` and `store.relaunch_reset` carry the combined writes. Spec: `docs/2026-10-09-fewer-process-writes-design.md`
 - **Process indexes**: every `init()` ensures six indexes on `{prefix}_processes` (`store.ensure_process_indexes`): `processId`+`_id` desc, `parentId`+`order`, `rootId`+`depth`+`order`, `status.state`, `originatingSessionId`, and the `expireAt` TTL index (`expireAt_ttl`, as migration m004 creates it). An index that conflicts with an existing one is logged and skipped. A relaunch or dismiss removes `expireAt` (a terminal state sets it again), and a child copies its parent's `ttlSeconds`, so a tree expires with its root. Spec: `docs/2026-10-09-process-indexes-design.md`

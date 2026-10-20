@@ -13,7 +13,7 @@ import optio_core
 from optio_core import TaskFactory, TaskInstance, LaunchOutcome, LaunchError
 from optio_core.lifecycle import Optio
 from optio_core.models import LaunchBlocked
-from optio_core.store import get_process_by_process_id
+from optio_core.store import get_process_by_process_id, upsert_process
 from optio_core.task_factory import check_parameters, check_values
 
 
@@ -45,13 +45,16 @@ async def _wait_until(pred, timeout=60.0):
     raise AssertionError("condition not reached within the hang ceiling")
 
 
-async def _init(mongo_db, prefix, defs):
+async def _init(mongo_db, prefix, defs, **init_kwargs):
     """An Optio whose task definitions are the current contents of `defs`."""
     async def get_defs(_services, metadata_filter=None):
         return list(defs)
 
     fw = Optio()
-    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_defs)
+    await fw.init(
+        mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_defs,
+        **init_kwargs,
+    )
     return fw
 
 
@@ -208,20 +211,67 @@ def test_check_parameters_accepts_good_definitions():
         {"kind": "range", "id": "r", "min": 0, "max": 5, "step": 0.5, "initialValue": [1, 2]},
         {"kind": "text", "id": "t", "initialValue": ""},
         {"kind": "text", "id": "t2", "label": None, "maxLength": None},
+        {"kind": "numeric", "id": "i", "integer": True, "initialValue": 3},
+        {"kind": "range", "id": "ir", "min": 1, "max": 9, "integer": True,
+         "initialValue": [1, 2.0]},
+        {"kind": "numeric", "id": "i2", "integer": False, "initialValue": 1.5},
+        {"kind": "boolean", "id": "_private"},
+        {"kind": "boolean", "id": "camelCase_2"},
+        {"kind": "boolean", "id": "X"},
     ])
+
+
+INTEGRAL = [
+    {"kind": "numeric", "id": "count", "integer": True, "min": 0},
+    {"kind": "range", "id": "units", "integer": True, "min": 1, "max": 12},
+]
+
+
+@pytest.mark.parametrize("values", [
+    {"count": 3, "units": [1, 12]},
+    {"count": 3.0, "units": [2.0, 5]},
+    {"count": 0, "units": [4, 4]},
+])
+def test_check_values_integer_accepts_whole_numbers(values):
+    assert check_values(INTEGRAL, values) is None
+
+
+@pytest.mark.parametrize("values,refusal", [
+    ({"count": 1.5, "units": [1, 2]}, "count: must be a whole number"),
+    ({"count": 1, "units": [1.5, 3]}, "units: must be a pair of whole numbers"),
+    ({"count": 1, "units": [1, 2.5]}, "units: must be a pair of whole numbers"),
+    ({"count": True, "units": [1, 2]}, "count: must be a number"),
+])
+def test_check_values_integer_refuses_fractions(values, refusal):
+    assert check_values(INTEGRAL, values) == refusal
 
 
 @pytest.mark.parametrize("parameters,error", [
     ({"id": "x", "kind": "text"}, "parameters: must be a list of field definitions"),
     (["x"], "parameters[0]: must be an object"),
-    ([{"kind": "text"}], "parameters[0]: id must be a non-empty string"),
-    ([{"kind": "text", "id": ""}], "parameters[0]: id must be a non-empty string"),
-    ([{"kind": "text", "id": 3}], "parameters[0]: id must be a non-empty string"),
+    ([{"kind": "text"}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "text", "id": ""}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "text", "id": 3}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "text", "id": "1x"}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "text", "id": "x-y"}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "text", "id": "x:y"}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "text", "id": "x.y"}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "text", "id": "a b"}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "text", "id": "$x"}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "text", "id": "x\n"}], "parameters[0]: id must be an identifier"),
+    ([{"kind": "boolean", "id": "ok"}, {"kind": "text", "id": "é"}],
+     "parameters[1]: id must be an identifier"),
     ([{"kind": "text", "id": "x"}, {"kind": "boolean", "id": "x"}], "x: id is not unique"),
     ([{"kind": "mixed-boolean", "id": "x"}], "x: kind must be one of"),
     ([{"kind": ["text"], "id": "x"}], "x: kind must be one of"),
     ([{"id": "x"}], "x: kind must be one of"),
-    ([{"kind": "numeric", "id": "x", "integer": True}], "x: unknown key(s) integer"),
+    ([{"kind": "text", "id": "x", "integer": True}], "x: unknown key(s) integer"),
+    ([{"kind": "numeric", "id": "x", "integer": "yes"}], "x: integer must be true or false"),
+    ([{"kind": "range", "id": "x", "min": 0, "max": 5, "integer": 1}],
+     "x: integer must be true or false"),
+    ([{"kind": "numeric", "id": "x", "integer": True, "initialValue": 1.5}],
+     "x: initialValue: must be a whole number"),
+    ([{"kind": "numeric", "id": "x", "unit": "kg"}], "x: unknown key(s) unit"),
     ([{"kind": "numeric", "id": "x", "choices": []}], "x: unknown key(s) choices"),
     ([{"kind": "text", "id": "x", "visible": False}], "x: unknown key(s) visible"),
     ([{"kind": "text", "id": "x", "label": 5}], "x: label must be a string or a map"),
@@ -461,7 +511,7 @@ async def test_a_launch_runs_a_child_of_the_factory_with_the_values(mongo_db):
         assert head == "fac" and len(suffix) == 8
         int(suffix, 16)
         assert child["parentId"] == fac["_id"]
-        assert child["rootId"] == fac["rootId"]
+        assert child["rootId"] == fac["_id"]
         assert child["depth"] == 1
         assert child["adhoc"] is True
         assert child["name"] == "Drop (fast)"
@@ -573,25 +623,156 @@ async def test_launch_and_await_result_returns_the_launchs_result(mongo_db):
         await fw.shutdown()
 
 
-async def test_a_child_whose_launch_is_refused_after_its_definition_is_deleted(mongo_db):
-    prefix = "tf_orphan"
+async def test_a_factory_record_without_a_synced_definition_is_not_launchable(mongo_db):
+    prefix = "tf_nodef"
+    # The record exists (as a sync left it), but this engine synced no
+    # definition for it.
+    await upsert_process(mongo_db, prefix, _factory(_noop))
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix)
+    try:
+        fac = await get_process_by_process_id(mongo_db, prefix, "fac")
+        assert fac["taskFactory"] is True
+        assert await fw.launch("fac", session_id=None, params=GOOD) == LaunchOutcome(
+            ok=False, reason="not-launchable",
+        )
+        with pytest.raises(LaunchError) as exc:
+            await fw.launch_and_wait("fac", session_id=None, params=GOOD)
+        assert exc.value.reason == "not-launchable"
+        assert await _children(mongo_db, prefix, fac["_id"]) == []
+    finally:
+        await fw.shutdown()
+
+
+async def test_null_values_are_left_out_of_the_launchs_params(mongo_db):
+    prefix = "tf_nulls"
+    execute, seen, _ = _recorder()
+    validated: list[dict] = []
+    names: list[dict] = []
+
+    def validate(values):
+        validated.append(values)
+        return None
+
+    def name_for(values):
+        names.append(values)
+        return "Drop"
+
+    fw = await _init(mongo_db, prefix, [_factory(
+        execute, ttl_seconds=3600, validate=validate, name_for=name_for,
+    )])
+    try:
+        values = {**GOOD, "dry": None, "note": None}
+        outcome = await fw.launch("fac", session_id=None, params=values)
+        assert outcome.ok
+        pid = outcome.proc["processId"]
+        expected = {k: v for k, v in GOOD.items() if k not in ("dry", "note")}
+        assert outcome.proc["params"] == expected
+        await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+        # Left out and null are one shape, for the task and the hooks alike.
+        assert seen == {pid: expected}
+        assert validated == [expected] and names == [expected]
+    finally:
+        await fw.shutdown()
+
+
+async def test_no_child_is_defined_while_shutting_down(mongo_db):
+    prefix = "tf_stop"
     execute, seen, _ = _recorder()
     fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
     try:
         fac = await get_process_by_process_id(mongo_db, prefix, "fac")
-        # launch_and_await_result defines the child before launching it (its
-        # result future is keyed by the child's id); the shutdown's stop
-        # sign then refuses the launch.
+        defined: list[str] = []
+        original = fw.adhoc_define
+
+        async def recording_define(task, *args, **kwargs):
+            defined.append(task.process_id)
+            return await original(task, *args, **kwargs)
+
+        fw.adhoc_define = recording_define
         fw._shutting_down = True
+        assert await fw.launch("fac", session_id=None, params=GOOD) == LaunchOutcome(
+            ok=False, reason="shutting-down",
+        )
+        with pytest.raises(LaunchError) as exc:
+            await fw.launch_and_wait("fac", session_id=None, params=GOOD)
+        assert exc.value.reason == "shutting-down"
         with pytest.raises(LaunchError) as exc:
             await fw.launch_and_await_result(
                 "fac", session_id=None, params=GOOD, timeout=60,
             )
         assert exc.value.reason == "shutting-down"
+        assert defined == []
+        assert await _children(mongo_db, prefix, fac["_id"]) == []
+        assert seen == {}
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("entry", ["launch", "launch_and_await_result"])
+async def test_a_child_whose_launch_is_refused_after_its_definition_is_deleted(
+    mongo_db, entry,
+):
+    prefix = f"tf_orphan_{entry}"
+    execute, seen, _ = _recorder()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
+    try:
+        fac = await get_process_by_process_id(mongo_db, prefix, "fac")
+        original = fw.adhoc_define
+
+        async def define_then_stop(task, *args, **kwargs):
+            # A shutdown that comes between the child's definition and its
+            # launch: the launch's stop sign refuses it.
+            proc = await original(task, *args, **kwargs)
+            fw._shutting_down = True
+            return proc
+
+        fw.adhoc_define = define_then_stop
+        if entry == "launch":
+            outcome = await fw.launch("fac", session_id=None, params=GOOD)
+            assert outcome == LaunchOutcome(ok=False, reason="shutting-down")
+        else:
+            with pytest.raises(LaunchError) as exc:
+                await fw.launch_and_await_result(
+                    "fac", session_id=None, params=GOOD, timeout=60,
+                )
+            assert exc.value.reason == "shutting-down"
         assert await _children(mongo_db, prefix, fac["_id"]) == []
         assert not any(pid.startswith("fac:") for pid in fw._executor._task_registry)
         assert not any(pid.startswith("fac:") for pid in fw._executor._result_futures)
         assert seen == {}
+    finally:
+        await fw.shutdown()
+
+
+async def test_a_resync_that_removes_a_factory_cancels_its_running_launches(mongo_db):
+    prefix = "tf_gone"
+    started = asyncio.Event()
+
+    async def until_cancelled(ctx):
+        started.set()
+        while ctx.should_continue():
+            await asyncio.sleep(0.02)
+
+    defs = [
+        TaskInstance(execute=_noop, process_id="plain", name="Plain"),
+        _factory(until_cancelled, ttl_seconds=3600),
+    ]
+    # The grace bounds resync's wait for the cancelled launch; a cooperative
+    # unwind needs far less.
+    fw = await _init(mongo_db, prefix, defs, cancel_grace_seconds=60.0)
+    try:
+        outcome = await fw.launch("fac", session_id=None, params=GOOD)
+        assert outcome.ok
+        pid = outcome.proc["processId"]
+        await asyncio.wait_for(started.wait(), timeout=60.0)
+
+        del defs[1]
+        await fw.resync()
+
+        assert await get_process_by_process_id(mongo_db, prefix, "fac") is None
+        # The launch was asked to stop: it ends cancelled, not by itself.
+        await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "cancelled"))
     finally:
         await fw.shutdown()
 

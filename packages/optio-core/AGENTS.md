@@ -348,34 +348,41 @@ deferred migrations) finds one, and the scheduler never gets one.
 **It never runs.** `launch` without `params` answers `parameters-required`, with `resume=True`
 `no-resume-support` (so the auto-resume sweep skips it), `resurrect` answers
 `no-resurrect-support`, and `Executor.launch_process` returns None for a `taskFactory` record
-(any direct path). Its own state never changes.
+(any direct path). Its own state never changes. A resync that removes the factory cancels its
+running launches: `_sync_definitions` cancels the stale roots' active descendants with them
+(`store.find_active_descendants`), as it does a stale running task.
 
 **Checks** (`optio_core.task_factory`):
 
 - `check_parameters(parameters: list[dict]) -> None` runs at sync and raises
   `ValueError("<id>: <what>")` (a definition without a usable id: `"parameters[<i>]: ..."`); sync
   re-raises it as `ValueError("Task factory '<process id>': parameters: <id>: <what>")`. A
-  definition has `kind` (`boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`), `id` (unique),
-  `label`, the kind's options (`choices: [{value: str, label?}]`, non-empty, distinct values;
-  `min`, `max`, `step` (> 0), `min <= max`, a range needing both; `maxLength`, a positive int),
-  `initialValue` (checked like a value, may be empty) and `required` (bool, default true); any
-  other key is refused. A `label` is a string or a non-empty map of language code to string. A
-  null key counts as absent.
+  definition has `kind` (`boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`), `id` (unique,
+  an identifier, `^[A-Za-z_][A-Za-z0-9_]*$`, so the `"<id>: "` prefix is unambiguous and the id a
+  plain Mongo key), `label`, the kind's options (`choices: [{value: str, label?}]`, non-empty,
+  distinct values; `min`, `max`, `step` (> 0), `min <= max`, a range needing both, and vultus's
+  `integer` (bool); `maxLength`, a positive int), `initialValue` (checked like a value, may be
+  empty) and `required` (bool, default true); any other key is refused. A `label` is a string or
+  a non-empty map of language code to string. A null key counts as absent.
 - `check_values(parameters, values) -> str | None` runs at launch, before the child exists, and
   returns the first refusal `"<id>: <what>"` or None: an unknown key (`"<key>: not a
   parameter"`), a required parameter without a value (`"<id>: required"`; null is no value, nor is
   the empty string of a `text` or the empty list of a `manyOf`), then each value's kind: `boolean`
   a bool; `oneOf` one of its choices' values; `manyOf` a list of distinct choice values; `numeric`
-  an int or finite float (never a bool) within `min`/`max`; `range` a 2-element list of numbers,
-  `from <= to`, within `min`/`max`; `text` a string within `maxLength`. Nothing is coerced. Then
-  the factory's `validate(values)`, whose message also refuses. A refusal is
+  an int or finite float (never a bool) within `min`/`max`, a whole one with `integer` (`2.0`
+  counts); `range` a 2-element list of numbers, `from <= to`, within `min`/`max`, whole ends with
+  `integer`; `text` a string within `maxLength`. Nothing is coerced. Then the factory's
+  `validate(values)`, whose message also refuses. A refusal is
   `LaunchOutcome(ok=False, reason="invalid-parameters", message=...)`.
+- `without_nulls(values)`: the values without the null ones. `validate`, `name_for` and the task's
+  `ctx.params` get these, so a left-out value and a null one are one shape.
 
 **A launch** (`launch(factory_id, session_id=..., params=values)`), refusals in this order:
-`parameters-required`, `no-resume-support`, `not-launchable` (no definition synced for the
-record), `invalid-parameters`, `launch-blocked` (a block matching the child's metadata). Then
+`shutting-down`, `not-found`, `no-resume-support`, `parameters-required`, `not-launchable` (no
+definition synced for the record), `invalid-parameters`, `launch-blocked` (a block matching the
+child's metadata). No child is defined while shutting down, whichever entry point. Then
 `task_factory.child_task(factory, values)` is the child's TaskInstance: the factory's `execute`
-and fields, `params` = the values, metadata the factory's plus `taskFactory: <factory id>`,
+and fields, `params` = the values without nulls, metadata the factory's plus `taskFactory: <factory id>`,
 process id `f"{factory.process_id}:{secrets.token_hex(4)}"`, name `name_for(values)` or `name`.
 It is defined with `adhoc_define(child, parent_id=<factory record _id>,
 ephemeral=factory.ttl_seconds is None)` (its record copies the factory record's `ttlSeconds`) and
@@ -575,6 +582,12 @@ Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`.
   automatically so the proxy returns 404 after the process ends.
 - **Dismiss / relaunch**: both `widgetData` and `widgetUpstream` are cleared when a
   process is dismissed or re-launched.
+- **Ephemeral processes** (`adhoc_define(..., ephemeral=True)`, `ctx.mark_ephemeral()`, a
+  TaskFactory launch without `ttl_seconds`): the record and its descendants are deleted (and the
+  ad-hoc task unregistered) whenever the run ends: at any terminal state the executor writes; after
+  a force-cancel (`Executor.force_cancel`, once it has force-cancelled the active children); when a
+  launch finds no execute function; and on `init()`, when a restart interrupted it
+  (`_reconcile_interrupted_processes` deletes it instead of reconciling it to `failed`).
 
 ---
 

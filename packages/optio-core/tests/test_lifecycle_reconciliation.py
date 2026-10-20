@@ -101,6 +101,31 @@ async def test_startup_reconciles_all_active_states(mongo_db):
         await fw.shutdown()
 
 
+async def test_startup_deletes_interrupted_ephemeral_processes(mongo_db):
+    """An ephemeral process interrupted by a restart has ended, so it is
+    deleted (with its descendants) instead of being kept as failed."""
+    prefix = "recontest_eph"
+    coll = mongo_db[f"{prefix}_processes"]
+    eph = await coll.insert_one(
+        {**_make_active_seed("p_eph", "Ephemeral", "running"), "adhoc": True, "ephemeral": True},
+    )
+    await coll.insert_one({
+        **_make_active_seed("p_eph_child", "Child", "running"),
+        "parentId": eph.inserted_id, "rootId": eph.inserted_id, "depth": 1,
+    })
+    await coll.insert_one(_make_active_seed("p_kept", "Kept", "running"))
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix)
+    try:
+        assert await get_process_by_process_id(mongo_db, prefix, "p_eph") is None
+        assert await get_process_by_process_id(mongo_db, prefix, "p_eph_child") is None
+        kept = await get_process_by_process_id(mongo_db, prefix, "p_kept")
+        assert kept["status"]["state"] == "failed"
+    finally:
+        await fw.shutdown()
+
+
 async def test_startup_reconciliation_is_noop_on_fresh_db(mongo_db):
     """Startup reconciliation does nothing when no active-state rows exist."""
     prefix = "recontest_clean"

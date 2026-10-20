@@ -206,6 +206,30 @@ async def find_stale_process_ids(
     return out
 
 
+async def find_active_descendants(
+    db: AsyncIOMotorDatabase,
+    prefix: str,
+    root_oids: list[ObjectId],
+) -> list[tuple[ObjectId, str, str]]:
+    """Find the active records in the trees rooted at `root_oids`, the roots
+    themselves left out, as (oid, processId, state) tuples like
+    `find_stale_process_ids`'. Used by the resync flow to cancel what still
+    runs under a stale root, e.g. a removed TaskFactory's launches (its own
+    record never runs)."""
+    from optio_core.state_machine import ACTIVE_STATES
+
+    coll = _collection(db, prefix)
+    query = {
+        "rootId": {"$in": list(root_oids)},
+        "parentId": {"$ne": None},
+        "status.state": {"$in": list(ACTIVE_STATES)},
+    }
+    out: list[tuple[ObjectId, str, str]] = []
+    async for doc in coll.find(query, {"processId": 1, "status.state": 1}):
+        out.append((doc["_id"], doc["processId"], doc["status"]["state"]))
+    return out
+
+
 async def get_process_by_id(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
 ) -> dict | None:

@@ -451,6 +451,85 @@ async def test_adhoc_define_ephemeral(mongo_db, redis_url):
     await fw.shutdown()
 
 
+async def test_ephemeral_process_without_execute_function_is_deleted(mongo_db):
+    """An ephemeral process whose task is gone from the registry (e.g. after
+    a resync) fails at once, and is deleted like any ephemeral process
+    that ends."""
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="eph_noexec")
+    try:
+        task = TaskInstance(execute=_never_ends, process_id="eph_noexec", name="Gone")
+        await fw.adhoc_define(task, ephemeral=True)
+        fw._executor._task_registry.pop("eph_noexec")
+
+        result = await fw._executor.launch_process("eph_noexec", session_id=None)
+        assert result == "failed"
+        assert await get_process_by_process_id(mongo_db, "eph_noexec", "eph_noexec") is None
+    finally:
+        await fw.shutdown()
+
+
+async def test_force_cancelled_ephemeral_process_is_deleted_with_its_children(mongo_db):
+    """A force-cancel (the task did not unwind in time) ends an ephemeral
+    process too: its running child is force-cancelled, then both go."""
+    prefix = "eph_force"
+    child_started = asyncio.Event()
+
+    async def child(ctx):
+        child_started.set()
+        await asyncio.Event().wait()
+
+    async def parent(ctx):
+        await ctx.run_child(child, "eph_force_child", "Child")
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix)
+    try:
+        await fw.adhoc_define(
+            TaskInstance(execute=parent, process_id="eph_force", name="Parent"),
+            ephemeral=True,
+        )
+        assert (await fw.launch("eph_force", session_id=None)).ok
+        await asyncio.wait_for(child_started.wait(), timeout=60.0)
+        proc = await get_process_by_process_id(mongo_db, prefix, "eph_force")
+
+        await fw._executor.force_cancel(proc["_id"])
+
+        assert await get_process_by_process_id(mongo_db, prefix, "eph_force") is None
+        assert await get_process_by_process_id(mongo_db, prefix, "eph_force_child") is None
+        assert "eph_force" not in fw._executor._task_registry
+    finally:
+        await fw.shutdown()
+
+
+async def test_force_cancelled_process_that_is_not_ephemeral_is_kept(mongo_db):
+    prefix = "eph_force_keep"
+    started = asyncio.Event()
+
+    async def stuck(ctx):
+        started.set()
+        await asyncio.Event().wait()
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix)
+    try:
+        await fw.adhoc_define(TaskInstance(execute=stuck, process_id="kept", name="Kept"))
+        assert (await fw.launch("kept", session_id=None)).ok
+        await asyncio.wait_for(started.wait(), timeout=60.0)
+        proc = await get_process_by_process_id(mongo_db, prefix, "kept")
+
+        await fw._executor.force_cancel(proc["_id"])
+
+        kept = await get_process_by_process_id(mongo_db, prefix, "kept")
+        assert kept["status"]["state"] == "failed"
+    finally:
+        await fw.shutdown()
+
+
+async def _never_ends(ctx):  # noqa: ARG001
+    await asyncio.Event().wait()
+
+
 async def test_register_tasks_stores_full_taskinstance(mongo_db):
     async def my_task(ctx):
         pass

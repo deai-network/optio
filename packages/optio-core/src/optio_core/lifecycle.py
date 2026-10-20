@@ -31,9 +31,12 @@ from optio_core.models import (
     ProcessMetadataFilter, matches_filter, LaunchBlocked, Progress,
     LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome,
 )
-from optio_core.task_factory import check_parameters, check_values, child_task
+from optio_core.task_factory import (
+    check_parameters, check_values, child_task, without_nulls,
+)
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
+    find_active_descendants, delete_process,
     get_process_by_process_id, update_status, relaunch_reset, delete_descendants,
     append_log, compute_expire_at, purge_processes, set_auto_resume_scheduled,
     finalize_if_active, set_has_unsaved_work, set_resurrecting, update_progress,
@@ -477,11 +480,12 @@ class Optio:
 
         A TaskFactory's record is launched with `params`, its values: they
         are checked, an ad-hoc child of the record is defined with them and
-        launched, and `proc` is the child's record. Refusals:
-        parameters-required (no `params`), no-resume-support (`resume`),
-        invalid-parameters (with `message`), launch-blocked; `params` on any
-        other record is not-a-factory. Spec:
-        docs/2026-10-20-task-factory-design.md §1.2"""
+        launched, and `proc` is the child's record. Refusals, after
+        shutting-down and not-found, in this order: no-resume-support
+        (`resume`), parameters-required (no `params`), not-launchable (no
+        factory definition synced for the record), invalid-parameters (with
+        `message`), launch-blocked; `params` on any other record is
+        not-a-factory. Spec: docs/2026-10-20-task-factory-design.md §1.2"""
         # Stop sign: once shutdown has begun, refuse new launches so nothing
         # half-boots into a shutting-down engine. Covers scheduler, RPC, and
         # programmatic launch paths.
@@ -542,12 +546,16 @@ class Optio:
         self, proc: dict, resume: bool, params: dict[str, Any] | None,
     ) -> dict | LaunchOutcome:
         """The ad-hoc child (idle) of a factory's record `proc` for one launch
-        with `params`, or the launch's refusal: not-a-factory (`proc` is no
-        factory's), no-resume-support, parameters-required, not-launchable
-        (no factory definition is synced for the record), invalid-parameters
-        (the fields' checks, then the factory's `validate`). A launch block
-        on the child's metadata raises LaunchBlocked (adhoc_define's check).
+        with `params`, or the launch's refusal, in this order: shutting-down,
+        not-a-factory (`proc` is no factory's), no-resume-support,
+        parameters-required, not-launchable (no factory definition is synced
+        for the record), invalid-parameters (the fields' checks, then the
+        factory's `validate`, which gets the values without their nulls, as
+        the task does). A launch block on the child's metadata raises
+        LaunchBlocked (adhoc_define's check).
         Spec: docs/2026-10-20-task-factory-design.md §1.2, §1.4"""
+        if self._shutting_down:
+            return LaunchOutcome(ok=False, reason="shutting-down")
         if not proc.get("taskFactory"):
             return LaunchOutcome(ok=False, reason="not-a-factory")
         if resume:
@@ -559,9 +567,10 @@ class Optio:
             return LaunchOutcome(ok=False, reason="not-launchable")
         message = check_values(factory.parameters, params)
         if message is None and factory.validate is not None:
-            message = factory.validate(params)
+            message = factory.validate(without_nulls(params))
         if message is not None:
             return LaunchOutcome(ok=False, reason="invalid-parameters", message=message)
+        # child_task drops the nulls too.
         return await self.adhoc_define(
             child_task(factory, params), parent_id=proc["_id"],
             ephemeral=factory.ttl_seconds is None,
@@ -1564,21 +1573,32 @@ class Optio:
 
         Also clears every `resurrecting` marker: no resurrect runs in a fresh
         engine, so a marker still set was left by a dead one.
+
+        An ephemeral record is deleted instead (with its descendants): its
+        run ended, and an ephemeral process is deleted when it ends.
         """
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
         await coll.update_many({"resurrecting": True}, {"$set": {"resurrecting": False}})
         cursor = coll.find(
             {"status.state": {"$in": list(ACTIVE_STATES)}},
-            {"_id": 1, "status.state": 1},
+            {"_id": 1, "status.state": 1, "ephemeral": 1},
         )
-        stale = [(doc["_id"], doc["status"]["state"]) async for doc in cursor]
+        stale = [
+            (doc["_id"], doc["status"]["state"], doc.get("ephemeral", False))
+            async for doc in cursor
+        ]
         if not stale:
             return
 
         now = datetime.now(timezone.utc)
         error_msg = "Process was interrupted by server restart"
+        deleted = 0
         # Re-read each record for ttlSeconds so we can set expireAt for TTL eviction.
-        for oid, prev_state in stale:
+        for oid, prev_state, ephemeral in stale:
+            if ephemeral:
+                await delete_process(self._config.mongo_db, self._config.prefix, str(oid))
+                deleted += 1
+                continue
             ttl_doc = await coll.find_one({"_id": oid}, {"ttlSeconds": 1})
             expire_at = compute_expire_at((ttl_doc or {}).get("ttlSeconds"), now=now)
             await update_status(
@@ -1594,7 +1614,10 @@ class Optio:
                 self._config.mongo_db, self._config.prefix, oid,
                 "event", f"State reconciled: {prev_state} -> failed (server restart)",
             )
-        logger.info(f"Reconciled {len(stale)} interrupted process(es) to 'failed'")
+        logger.info(
+            f"Reconciled {len(stale) - deleted} interrupted process(es) to 'failed'"
+            f" and deleted {deleted} ephemeral one(s)"
+        )
 
     async def _supervisor_loop(self) -> None:
         """Scan for past-deadline cancellations every 500 ms; force-cancel them.
@@ -1832,6 +1855,12 @@ class Optio:
             self._config.mongo_db, self._config.prefix, valid_ids, metadata_filter,
         )
         if stale:
+            # With the active records below them: a removed TaskFactory's
+            # record never runs, but its launches (its children) may.
+            stale += await find_active_descendants(
+                self._config.mongo_db, self._config.prefix,
+                [oid for oid, _pid, _state in stale],
+            )
             await self._cancel_stale_processes(
                 stale, self._config.cancel_grace_seconds,
             )

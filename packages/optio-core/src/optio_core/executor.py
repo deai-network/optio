@@ -311,6 +311,7 @@ class Executor:
                     set_fields={"widgetUpstream": None},
                 )
                 final_recorded = True
+                await self._cleanup_ephemeral(str(oid))
                 return ("failed", None)
 
             start_time = time.monotonic()
@@ -700,6 +701,9 @@ class Executor:
         If Mongo is unreachable, the write and the cascade are parked for
         retry_unrecorded_finals instead of raising (Rule 3 of
         docs/2026-10-03-lost-final-state-writes-design.md).
+
+        An ephemeral row whose failed state this wrote is deleted after the
+        cascade (its children are force-cancelled first, then go with it).
         """
         from optio_core._force_cancel import (
             FORCE_CANCEL_ERROR, _write_force_cancelled_state,
@@ -734,7 +738,7 @@ class Executor:
                            oid, type(_e).__name__, _e)
                     pass
             try:
-                await _write_force_cancelled_state(self._db, self._prefix, oid)
+                written = await _write_force_cancelled_state(self._db, self._prefix, oid)
             except PyMongoError as e:
                 self._park_final(
                     oid,
@@ -749,5 +753,10 @@ class Executor:
                 await self._force_cancel_children(oid)
             except PyMongoError as e:
                 self._park_final(oid, None, cascade=True, cause=e)
+                return
+            # A row that already reached a terminal state was cleaned up by
+            # whoever wrote that state.
+            if written:
+                await self._cleanup_ephemeral(str(oid))
         finally:
             self._force_cancelling.discard(oid)
