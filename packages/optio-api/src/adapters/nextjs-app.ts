@@ -133,7 +133,7 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
       },
       launch: async ({ params, query, body }) => {
         const result = await handlers.launchProcess(
-          ctx, query, params.id, body?.resume === true, null, await currentAccess(),
+          ctx, query, params.id, body?.resume === true, null, await currentAccess(), body?.params,
         );
         return result as any;
       },

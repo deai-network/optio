@@ -167,7 +167,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
     },
     launch: async ({ params, query, body, req }) => {
       const result = await handlers.launchProcess(
-        ctx, query, params.id, body?.resume === true, null, await access(req),
+        ctx, query, params.id, body?.resume === true, null, await access(req), body?.params,
       );
       return result as any;
     },

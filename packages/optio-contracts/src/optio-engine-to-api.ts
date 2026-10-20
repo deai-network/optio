@@ -14,7 +14,8 @@ const ProcessIdParam = z.string().min(1);
 
 const launchResult = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), process: ProcessSchema }),
-  z.object({ ok: z.literal(false), reason: LaunchFailureReason }),
+  // `message` is optio-core's text of an `invalid-parameters` refusal.
+  z.object({ ok: z.literal(false), reason: LaunchFailureReason, message: z.string().optional() }),
 ]);
 
 const cancelResult = z.discriminatedUnion('ok', [
@@ -65,6 +66,9 @@ export const optioEngineContract = defineContract('optio-engine', {
       // consciously supply the initiating session token, or explicit null
       // for unattended launches.
       sessionId: z.string().nullable(),
+      // A task factory's parameter values (required for a factory, refused
+      // for any other process).
+      params: z.record(z.unknown()).optional(),
     }),
     result: launchResult,
   }),

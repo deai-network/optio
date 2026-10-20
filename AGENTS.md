@@ -838,6 +838,8 @@ Package: `optio-contracts`
 - `log`: `LogEntry[]`
 - `uiWidget`: string (nullable, optional) — widget name for `ProcessDetailView` dispatch
 - `widgetData`: unknown (optional) — live data delivered to the widget component
+- `taskFactory`: boolean (optional) — the record is a `TaskFactory` (missing = false)
+- `parameters`: unknown[] (optional) — a factory's field definitions as data (optio-ui types them with vultus-core)
 - `supportsResume`: boolean (optional) — task opted into resume support
 - `hasSavedState`: boolean (optional) — task has a valid checkpoint ready to restore
 - `supportsResurrect`: boolean (optional) — task has a resurrect hook (missing = false)
@@ -885,7 +887,7 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 | `getLog` | GET | `/processes/:id/log` | `id` | `database?, prefix?, cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |
 | `getTreeLog` | GET | `/processes/:id/tree/log` | `id` | `database?, prefix?, cursor?, limit, maxDepth?` | — | `200: PaginatedResponse<LogEntry & {processId, processLabel}>`, `404: Error` |
 | `getConversation` | GET | `/processes/:id/conversation` | `id` | `database?, prefix?` | — | `200: { events: unknown[], capturedAt: string \| null }` (a suspended process's saved conversation record, proxied from the engine's conversation archive; `Cache-Control: no-store`), `401: { message }`, `403`/`404`/`409`/`500`/`503`: `{ reason: ConversationFailureReason, message }` |
-| `launch` | POST | `/processes/:id/launch` | `id` | `database?, prefix?` | `{ resume?: boolean; sessionId?: string \| null }` (optional; body may be omitted entirely) | `200: Process`, `404`/`409`: `{ reason: LaunchFailureReason, message }` |
+| `launch` | POST | `/processes/:id/launch` | `id` | `database?, prefix?` | `{ resume?: boolean; sessionId?: string \| null; params?: Record<string, unknown> }` (optional; body may be omitted entirely; `params` are a task factory's values) | `200: Process` (a factory's launch: the child's record), `400`/`404`/`409`: `{ reason: LaunchFailureReason, message }` (`parameters-required` and `invalid-parameters` are 400, `not-found` 404, the others 409; an `invalid-parameters` message is optio-core's `"<id>: <what>"`, unchanged) |
 | `cancel` | POST | `/processes/:id/cancel` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: CancelFailureReason, message }` |
 | `dismiss` | POST | `/processes/:id/dismiss` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: DismissFailureReason, message }` |
 | `resurrect` | POST | `/processes/:id/resurrect` | `id` | `database?, prefix?` | `{ sessionId?: string \| null }` (optional; body may be omitted entirely) | `200: Process`, `404`/`409`: `{ reason: ResurrectFailureReason, message }` |
@@ -901,9 +903,14 @@ Note: The adapters mount the contract under `/api` (`pathPrefix: '/api'`), so ef
 `resurrect`, `groupCancel`, `groupCancelAndWait`, `blockLaunches`, `unblockLaunches`,
 `materializeUpload`; notification `resync`. `resurrect({ processId, sessionId: string | null })`
 returns `{ ok: true, process } | { ok: false, reason: ResurrectFailureReason }`.
+`launch({ processId, resume?, sessionId: string | null, params? })` returns
+`{ ok: true, process } | { ok: false, reason: LaunchFailureReason, message? }` (`message` is the
+`"<id>: <what>"` text of an `invalid-parameters` refusal); the engine answers every reason
+optio-core's `launch` can return.
 
 Failure-reason enums (zod enum + type of the same name, browser-safe, exported from the package
-root): `LaunchFailureReason`, `CancelFailureReason`, `DismissFailureReason`,
+root): `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`,
+`shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`), `CancelFailureReason`, `DismissFailureReason`,
 `ResurrectFailureReason` (`not-found`, `not-resurrectable`, `no-resurrect-support`,
 `resurrect-in-progress`, `launch-blocked`, `shutting-down`), `GroupCancelFailureReason`,
 `BlockLaunchesFailureReason`.
@@ -1170,8 +1177,12 @@ async function getProcessLog(ctx: OptioContext, query: PaginationQuery & Instanc
 async function getProcessTreeLog(ctx: OptioContext, query: TreeLogQuery & InstanceQuery, id: string, access?: Access): Promise<PaginatedResponse | null>
 async function getProcessConversation(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<ConversationResult>
 async function launchProcess(ctx: OptioContext, query: InstanceQuery, id: string, resume = false,
-                             sessionId: string | null = null, access?: Access): Promise<LaunchCommandResult>
+                             sessionId: string | null = null, access?: Access,
+                             params?: Record<string, unknown>): Promise<LaunchCommandResult>
 // 409 { reason: 'no-resume-support', message: "This task does not support resume" } when resume=true and supportsResume=false.
+// `params` (a task factory's values) go to the engine unchanged. 400 for parameters-required and
+// invalid-parameters (its message is the engine's "<id>: <what>", unchanged), 409 for not-a-factory
+// and shutting-down.
 async function cancelProcess(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<CancelCommandResult>
 async function dismissProcess(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<DismissCommandResult>
 async function resurrectProcess(ctx: OptioContext, query: InstanceQuery, id: string,

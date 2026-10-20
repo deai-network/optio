@@ -112,7 +112,7 @@ async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
     result = await svc.launch(LaunchParams.model_validate({"processId": hex_id, "sessionId": None}))
 
     assert result.root.ok is True
-    fake_optio.launch.assert_awaited_once_with(hex_id, resume=False, session_id=None)
+    fake_optio.launch.assert_awaited_once_with(hex_id, resume=False, session_id=None, params=None)
 
 
 @pytest.mark.asyncio
@@ -130,7 +130,63 @@ async def test_launch_success(fake_optio, sample_idle_proc):
     assert isinstance(result, LaunchResult)
     assert result.root.ok is True
     assert result.root.process.process_id == "p1"
-    fake_optio.launch.assert_awaited_once_with("p1", resume=False, session_id=None)
+    fake_optio.launch.assert_awaited_once_with("p1", resume=False, session_id=None, params=None)
+
+
+@pytest.mark.asyncio
+async def test_launch_passes_params_through(fake_optio, sample_idle_proc):
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
+    result = await svc.launch(LaunchParams.model_validate(
+        {"processId": "f", "sessionId": None, "params": {"n": 3}}
+    ))
+    assert result.root.ok is True
+    fake_optio.launch.assert_awaited_once_with(
+        "f", resume=False, session_id=None, params={"n": 3},
+    )
+
+
+@pytest.mark.asyncio
+async def test_launch_answers_a_factorys_fields(fake_optio, sample_idle_proc):
+    """The Process wire keeps taskFactory and parameters (a factory record)."""
+    from optio_core._engine_service import OptioEngineService
+    factory = dict(sample_idle_proc)
+    factory["taskFactory"] = True
+    factory["parameters"] = [{"kind": "numeric", "id": "n", "label": "N"}]
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=factory))
+    svc = OptioEngineService(fake_optio)
+    result = await svc.launch(LaunchParams.model_validate({"processId": "p1", "sessionId": None}))
+    assert result.root.process.task_factory is True
+    assert result.root.process.parameters == factory["parameters"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason", ["parameters-required", "not-a-factory", "shutting-down"],
+)
+async def test_launch_answers_every_reason_optio_core_returns(fake_optio, reason):
+    from optio_core._engine_service import OptioEngineService
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=False, reason=reason))
+    svc = OptioEngineService(fake_optio)
+    result = await svc.launch(LaunchParams.model_validate({"processId": "f", "sessionId": None}))
+    assert result.root.ok is False
+    assert result.root.reason == reason
+    assert result.root.message is None
+
+
+@pytest.mark.asyncio
+async def test_launch_invalid_parameters_carries_the_message(fake_optio):
+    from optio_core._engine_service import OptioEngineService
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(
+        ok=False, reason="invalid-parameters", message="n: must be at most 5",
+    ))
+    svc = OptioEngineService(fake_optio)
+    result = await svc.launch(LaunchParams.model_validate(
+        {"processId": "f", "sessionId": None, "params": {"n": 9}}
+    ))
+    assert result.root.ok is False
+    assert result.root.reason == "invalid-parameters"
+    assert result.root.message == "n: must be at most 5"
 
 
 @pytest.mark.asyncio

@@ -520,6 +520,8 @@ async function launchProcess(
   id: string,
   resume?: boolean,  // default: false
   sessionId?: string | null,  // default: null; the initiating session
+  access?: Access,
+  params?: Record<string, unknown>,  // a task factory's values, passed to the engine unchanged
 ): Promise<LaunchCommandResult>
 
 async function cancelProcess(
@@ -581,7 +583,8 @@ The 404/409 response body for `launchProcess` / `cancelProcess` / `dismissProces
 
 **Adapters** (`fastify`, `express`, `nextjs-app`, `nextjs-pages`): all four extract `body?.resume`
 from the request body and forward it to `launchProcess` as the fourth argument; as the fifth
-(`sessionId`), Fastify forwards `body?.sessionId ?? null` and the other three pass `null`. For
+(`sessionId`), Fastify forwards `body?.sessionId ?? null` and the other three pass `null`; the
+last argument, after `access`, is `body?.params` (a task factory's values). For
 resurrect they forward `body?.sessionId ?? null` (the body is optional) to `resurrectProcess` as
 the fourth argument.
 
@@ -590,7 +593,12 @@ id to the engine via `engine.launch / cancel / dismiss / resurrect` and translat
 result into HTTP status + body. Failure reasons (`not-found`, `not-launchable`, `no-resume-support`,
 `launch-blocked`, `not-cancellable`, `not-dismissable`, and for resurrect `not-resurrectable`,
 `no-resurrect-support`, `resurrect-in-progress`, `shutting-down`) come from the engine; the API only
-maps each to 404 or 409 (`not-found` is 404, every other reason 409).
+maps each to a status (`not-found` is 404, every other reason 409). Launch adds `shutting-down`
+(409) and the task-factory reasons: `parameters-required` and `invalid-parameters` are 400,
+`not-a-factory` 409. A factory's launch answers 200 with the child's record. The body keeps
+`{ reason, message }`; for `invalid-parameters` the message is the engine's `"<id>: <what>"` text
+passed on unchanged (optio-ui reads the parameter's id from it; a fixed text only if the engine sent
+none), for the other reasons a fixed text.
 
 ## Conversation archive proxy
 
@@ -657,7 +665,7 @@ interface TreeLogQuery extends PaginationQuery {
 // enum from `optio-contracts/src/engine-failure-reasons.ts`.
 type LaunchCommandResult =
   | { status: 200; body: any }
-  | { status: 404 | 409; body: { reason: LaunchFailureReasonType; message: string } };
+  | { status: 400 | 404 | 409; body: { reason: LaunchFailureReasonType; message: string } };
 
 type CancelCommandResult =
   | { status: 200; body: any }

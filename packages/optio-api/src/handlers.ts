@@ -274,7 +274,7 @@ export type ForbiddenResult = { status: 403; body: { message: string } };
 
 export type LaunchCommandResult =
   | { status: 200; body: any }
-  | { status: 404 | 409; body: { reason: LaunchFailureReasonType; message: string } }
+  | { status: 400 | 404 | 409; body: { reason: LaunchFailureReasonType; message: string } }
   | ForbiddenResult;
 
 export type CancelCommandResult =
@@ -298,11 +298,15 @@ export type ResyncCommandResult =
 
 const FORBIDDEN: ForbiddenResult = { status: 403, body: { message: 'Forbidden' } };
 
-const LAUNCH_STATUS: Record<LaunchFailureReasonType, 404 | 409> = {
+const LAUNCH_STATUS: Record<LaunchFailureReasonType, 400 | 404 | 409> = {
   'not-found': 404,
   'not-launchable': 409,
   'no-resume-support': 409,
   'launch-blocked': 409,
+  'shutting-down': 409,
+  'parameters-required': 400,
+  'not-a-factory': 409,
+  'invalid-parameters': 400,
 };
 
 const CANCEL_STATUS: Record<CancelFailureReasonType, 404 | 409> = {
@@ -323,12 +327,22 @@ const MESSAGES: Record<
   'not-launchable': 'Process is not in a launchable state',
   'no-resume-support': 'This task does not support resume',
   'launch-blocked': 'Launches matching this filter are currently blocked',
+  'shutting-down': 'The engine is shutting down',
+  'parameters-required': 'This task needs parameter values to be launched',
+  'not-a-factory': 'This process is not a task factory and takes no parameters',
+  // The engine's own text ("<id>: <what>") replaces this when it sent one.
+  'invalid-parameters': 'The parameter values were refused',
   'not-cancellable': 'Process is not cancellable in its current state',
   'not-dismissable': 'Process is not in a dismissable state',
 };
 
-function launchFail(reason: LaunchFailureReasonType): LaunchCommandResult {
-  return { status: LAUNCH_STATUS[reason], body: { reason, message: MESSAGES[reason] } };
+// `message` is the engine's text of an invalid-parameters refusal, passed on
+// unchanged (optio-ui reads the parameter's id from it).
+function launchFail(reason: LaunchFailureReasonType, message?: string): LaunchCommandResult {
+  return {
+    status: LAUNCH_STATUS[reason],
+    body: { reason, message: reason === 'invalid-parameters' && message ? message : MESSAGES[reason] },
+  };
 }
 
 function cancelFail(reason: CancelFailureReasonType): CancelCommandResult {
@@ -346,15 +360,16 @@ export async function launchProcess(
   resume: boolean = false,
   sessionId: string | null = null,
   access: Access = UNRESTRICTED,
+  params?: Record<string, unknown>,
 ): Promise<LaunchCommandResult> {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const reads = processReads(db, prefix, access.visibility);
   const gate = await gateProcess(reads, id, access, 'launch');
   if (!gate.ok) return gate.status === 404 ? launchFail('not-found') : FORBIDDEN;
   const engine = resolveOptioEngine(ctx, query);
-  const result = await engine.launch({ processId: id, resume, sessionId });
+  const result = await engine.launch({ processId: id, resume, sessionId, params });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
-  return launchFail(result.reason);
+  return launchFail(result.reason, result.message);
 }
 
 export async function cancelProcess(

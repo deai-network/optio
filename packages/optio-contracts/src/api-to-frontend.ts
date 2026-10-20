@@ -162,13 +162,16 @@ export const processesContract = c.router({
     body: z.object({
       resume: z.boolean().optional(),
       sessionId: z.string().nullable().optional(),
+      // A task factory's parameter values; the answer is the child's record.
+      params: z.record(z.unknown()).optional(),
     }).optional(),
     responses: {
       200: ProcessSchema,
+      400: LaunchErrorBody,
       404: LaunchErrorBody,
       409: LaunchErrorBody,
     },
-    summary: 'Launch a process (optionally in resume mode)',
+    summary: 'Launch a process (optionally in resume mode; a task factory with parameter values)',
   },
   cancel: {
     method: 'POST',

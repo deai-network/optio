@@ -175,6 +175,29 @@ describe('Fastify adapter integration tests', () => {
     });
   });
 
+  it('POST /api/processes/:id/launch — forwards params; invalid-parameters is 400 with the engine\'s text', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createApp();
+    const launch = vi.spyOn(OptioEngineClient.prototype, 'launch').mockImplementationOnce(async () => ({
+      ok: false,
+      reason: 'invalid-parameters',
+      message: 'n: must be at most 5',
+    } as any));
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/processes/${doc._id.toString()}/launch`,
+      payload: { params: { n: 9 } },
+    });
+
+    expect(launch.mock.calls[launch.mock.calls.length - 1][0]).toMatchObject({ params: { n: 9 } });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      reason: 'invalid-parameters',
+      message: 'n: must be at most 5',
+    });
+  });
+
   it('POST /api/processes/:id/cancel — cancels running cancellable process (200)', async () => {
     const doc = await seedProcess({ status: { state: 'running' }, cancellable: true });
     const app = createApp();

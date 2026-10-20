@@ -33,7 +33,7 @@ _PROCESS_WIRE_KEYS = frozenset({
     "depth", "order", "cancellable", "special", "warning", "description",
     "status", "progress", "log", "uiWidget", "widgetData", "supportsResume",
     "hasSavedState", "supportsResurrect", "hasUnsavedWork", "resurrecting",
-    "autoResumeScheduled", "createdAt", "browserOpenRequests", "sessionEvents",
+    "taskFactory", "parameters", "autoResumeScheduled", "createdAt", "browserOpenRequests", "sessionEvents",
 })
 
 
@@ -79,12 +79,14 @@ class OptioEngineService(OptioEngineServiceBase):
     async def launch(self, params: LaunchParams) -> LaunchResult:
         outcome = await self._optio.launch(
             params.process_id, resume=bool(params.resume),
-            session_id=params.session_id,
+            session_id=params.session_id, params=params.params,
         )
         if not outcome.ok:
-            return LaunchResult.model_validate(
-                {"ok": False, "reason": outcome.reason}
-            )
+            refusal: dict = {"ok": False, "reason": outcome.reason}
+            if outcome.message is not None:
+                # An invalid-parameters refusal: "<id>: <what>", unchanged.
+                refusal["message"] = outcome.message
+            return LaunchResult.model_validate(refusal)
         return LaunchResult.model_validate(
             {"ok": True, "process": _to_process_dict(outcome.proc)}
         )

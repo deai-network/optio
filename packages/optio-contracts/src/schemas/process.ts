@@ -70,6 +70,12 @@ export const ProcessSchema = z.object({
   uiWidget: z.string().nullable().optional(),
   widgetData: z.unknown().optional(),
 
+  // Task factory: the record of a factory carries taskFactory and its
+  // parameters (field definitions as data; optio-ui types them with
+  // vultus-core). Missing taskFactory = false.
+  taskFactory: z.boolean().optional(),
+  parameters: z.array(z.unknown()).optional(),
+
   // Resume feature — default false when absent in stored doc (UI treats
   // missing fields as false defensively)
   supportsResume: z.boolean().optional(),

@@ -129,6 +129,8 @@ z.enum(['idle', 'scheduled', 'running', 'done', 'failed',
 | `order` | `number` | int, min 0 |
 | `cancellable` | `boolean` | |
 | `special` | `boolean` | optional |
+| `taskFactory` | `boolean` | optional — the record is a `TaskFactory` (missing = false) |
+| `parameters` | `unknown[]` | optional — a factory's field definitions as data (optio-ui types them with vultus-core) |
 | `supportsResume` | `boolean` | optional — task opted into resume/checkpoint support |
 | `hasSavedState` | `boolean` | optional — task has a valid checkpoint ready to restore |
 | `supportsResurrect` | `boolean` | optional — task has a resurrect hook (missing = false) |
@@ -205,7 +207,7 @@ is `ProcessIdParamSchema` (a non-empty string): either the process `_id` (Object
 | `getLog` | GET | `/processes/:id/log` | `id: string` | `database?`, `prefix?`, `cursor?`, `limit` (1–100, default 20) | 200: `PaginatedResponse<LogEntry>`, 404: `Error` |
 | `getTreeLog` | GET | `/processes/:id/tree/log` | `id: string` | `database?`, `prefix?`, `cursor?`, `limit` (1–100, default 20), `maxDepth?: number` (int, min 0) | 200: `PaginatedResponse<LogEntry & { processId: ObjectId, processLabel: string }>`, 404: `Error` |
 | `getConversation` | GET | `/processes/:id/conversation` | `id: string` | `database?`, `prefix?` | 200: `ConversationRecord` (`{ events: unknown[], capturedAt: string \| null }`), 401: `Error`, 403/404/409/500/503: `{ reason: ConversationFailureReason, message: string }` |
-| `launch` | POST | `/processes/:id/launch` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: LaunchFailureReason, message: string }` (body: `{ resume?: boolean; sessionId?: string \| null }` — optional; omitting the body entirely is valid) |
+| `launch` | POST | `/processes/:id/launch` | `id: string` | `database?`, `prefix?` | 200: `Process`, 400/404/409: `{ reason: LaunchFailureReason, message: string }` (body: `{ resume?: boolean; sessionId?: string \| null; params?: Record<string, unknown> }` — optional; omitting the body entirely is valid) |
 | `cancel` | POST | `/processes/:id/cancel` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: CancelFailureReason, message: string }` |
 | `dismiss` | POST | `/processes/:id/dismiss` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: DismissFailureReason, message: string }` |
 | `resurrect` | POST | `/processes/:id/resurrect` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: ResurrectFailureReason, message: string }` (body: `{ sessionId?: string \| null }` — optional; omitting the body entirely is valid) |
@@ -220,7 +222,7 @@ optio-api mounts the contract under `/api` (`/api/processes/...`). The same file
 - `list` — filters are all optional and combinable. `rootId` scopes results to a process subtree. `state` accepts any `ProcessState` value. `metadataFilter` is a URL-encoded JSON string; the contract's transform schema (`MetadataFilterQueryParamSchema`) parses it into a `ProcessMetadataFilter` (a predicate tree, or a legacy flat exact-match map). The legacy `metadata.*` prefix form has been removed and now returns 400.
 - `getTree` — returns a `ProcessTreeNode`: a `Process` extended with `children: ProcessTreeNode[]` (recursive). `maxDepth` limits traversal depth.
 - `getTreeLog` — returns merged log entries across the process subtree, each augmented with `processId` (ObjectId) and `processLabel` (string) to identify the source process.
-- `launch` — optional body `{ resume?: boolean; sessionId?: string | null }`. Clients may omit the body entirely; setting `resume: true` requests a resume; `sessionId` is the initiating session. 409 indicates a state conflict (e.g., launching an already-running process) **or** `resume: true` against a task whose `supportsResume` is `false`.
+- `launch` — optional body `{ resume?: boolean; sessionId?: string | null }`. Clients may omit the body entirely; setting `resume: true` requests a resume; `sessionId` is the initiating session. 409 indicates a state conflict (e.g., launching an already-running process) **or** `resume: true` against a task whose `supportsResume` is `false`. `params` are a task factory's parameter values (the record's `parameters`); a factory's launch answers 200 with the child's record. 400 is `parameters-required` or `invalid-parameters` (whose `message` is optio-core's `"<id>: <what>"` text, unchanged); 409 also covers `not-a-factory` and `shutting-down`.
 - `cancel` / `dismiss` — no request body. 409 indicates a state conflict.
 - `getConversation` — the saved conversation record of a suspended process (cancelled, `supportsResume`, `hasSavedState`), read-only; optio-api proxies it from the engine's conversation archive, which decrypts. `events` are `[seq, event]` pairs (the recent part a resume replays); `capturedAt` is the ISO time of the snapshot, or null. The 401 is optio-api's authentication (`{ message }`); the others carry a `ConversationFailureReason`: 403 `forbidden`; 404 `not-found` / `no-conversation-support` / `no-conversation`; 409 `not-suspended`; 500 `read-failed`; 503 `engine-unavailable`.
 - `resurrect` — saves the work a failed run left on its host, then resumes (engine RPC `resurrect`). Optional body `{ sessionId?: string | null }`, the initiating session. Error responses carry a typed `{ reason, message }` body, `reason` being a `ResurrectFailureReason`.
@@ -233,7 +235,7 @@ clamator RPC contract exported from `optio-engine-to-api.ts` (service `'optio-en
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `launch` | `{ processId, resume?: boolean, sessionId: string \| null }` | `{ ok: true, process } \| { ok: false, reason: LaunchFailureReason }` |
+| `launch` | `{ processId, resume?: boolean, sessionId: string \| null, params?: Record<string, unknown> }` | `{ ok: true, process } \| { ok: false, reason: LaunchFailureReason, message?: string }` |
 | `cancel` | `{ processId }` | `{ ok: true, process } \| { ok: false, reason: CancelFailureReason }` |
 | `dismiss` | `{ processId }` | `{ ok: true, process } \| { ok: false, reason: DismissFailureReason }` |
 | `resurrect` | `{ processId, sessionId: string \| null }` | `{ ok: true, process } \| { ok: false, reason: ResurrectFailureReason }` |
@@ -253,7 +255,7 @@ re-exported from the package root. Browser-safe: they do not pull in `@clamator/
 
 | Enum | Values |
 |------|--------|
-| `LaunchFailureReason` | `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked` |
+| `LaunchFailureReason` | `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (every reason optio-core's `launch` can return; a refusal may carry `message`, the text of `invalid-parameters`) |
 | `CancelFailureReason` | `not-found`, `not-cancellable` |
 | `DismissFailureReason` | `not-found`, `not-dismissable` |
 | `ResurrectFailureReason` | `not-found`, `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, `launch-blocked`, `shutting-down` |

@@ -179,6 +179,8 @@ class Process(BaseModel):
     log: list[LogItem]
     ui_widget: str | None = Field(None, alias="uiWidget")
     widget_data: Any | None = Field(None, alias="widgetData")
+    task_factory: bool | None = Field(None, alias="taskFactory")
+    parameters: list[Any] | None = None
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
@@ -253,6 +255,8 @@ class Process1(BaseModel):
     log: list[LogItem]
     ui_widget: str | None = Field(None, alias="uiWidget")
     widget_data: Any | None = Field(None, alias="widgetData")
+    task_factory: bool | None = Field(None, alias="taskFactory")
+    parameters: list[Any] | None = None
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
@@ -396,6 +400,7 @@ class LaunchParams(BaseModel):
     process_id: str = Field(..., alias="processId", min_length=1)
     resume: bool | None = None
     session_id: str | None = Field(..., alias="sessionId")
+    params: dict[str, Any] | None = None
 
 
 class Progress2(Progress):
@@ -432,6 +437,8 @@ class Process2(BaseModel):
     log: list[LogItem]
     ui_widget: str | None = Field(None, alias="uiWidget")
     widget_data: Any | None = Field(None, alias="widgetData")
+    task_factory: bool | None = Field(None, alias="taskFactory")
+    parameters: list[Any] | None = None
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
@@ -462,8 +469,16 @@ class LaunchResult2(BaseModel):
     )
     ok: Literal[False]
     reason: Literal[
-        "not-found", "not-launchable", "no-resume-support", "launch-blocked"
+        "not-found",
+        "not-launchable",
+        "no-resume-support",
+        "launch-blocked",
+        "shutting-down",
+        "parameters-required",
+        "not-a-factory",
+        "invalid-parameters",
     ]
+    message: str | None = None
 
 
 class LaunchResult(RootModel[LaunchResult1 | LaunchResult2]):
@@ -543,6 +558,8 @@ class Process3(BaseModel):
     log: list[LogItem]
     ui_widget: str | None = Field(None, alias="uiWidget")
     widget_data: Any | None = Field(None, alias="widgetData")
+    task_factory: bool | None = Field(None, alias="taskFactory")
+    parameters: list[Any] | None = None
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")

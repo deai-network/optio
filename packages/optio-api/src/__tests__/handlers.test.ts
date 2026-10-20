@@ -192,6 +192,66 @@ describe('launchProcess — engine RPC', () => {
     expect(engine.launch).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards params to engine.launch, and answers the record the engine answers', async () => {
+    const engine = makeMockEngine();
+    const result = await launchProcess(
+      makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'f', false, null, undefined, { n: 3 },
+    );
+    expect(result.status).toBe(200);
+    expect(engine.launch).toHaveBeenCalledWith({ processId: 'f', resume: false, sessionId: null, params: { n: 3 } });
+  });
+
+  it('400 parameters-required from engine', async () => {
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'parameters-required' }));
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'f');
+    expect(result.status).toBe(400);
+    expect((result as any).body).toEqual({
+      reason: 'parameters-required',
+      message: 'This task needs parameter values to be launched',
+    });
+  });
+
+  it('400 invalid-parameters from engine: the message is optio-core\'s text, unchanged', async () => {
+    const engine = makeMockEngine(() => ({
+      ok: false, reason: 'invalid-parameters', message: 'n: must be at most 5',
+    }));
+    const result = await launchProcess(
+      makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'f', false, null, undefined, { n: 9 },
+    );
+    expect(result.status).toBe(400);
+    expect((result as any).body).toEqual({ reason: 'invalid-parameters', message: 'n: must be at most 5' });
+  });
+
+  it('400 invalid-parameters without a message falls back to a fixed text', async () => {
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'invalid-parameters' }));
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'f');
+    expect(result.status).toBe(400);
+    expect((result as any).body.reason).toBe('invalid-parameters');
+    expect(typeof (result as any).body.message).toBe('string');
+  });
+
+  it('409 not-a-factory from engine', async () => {
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'not-a-factory' }));
+    const result = await launchProcess(
+      makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p', false, null, undefined, { n: 1 },
+    );
+    expect(result.status).toBe(409);
+    expect((result as any).body).toEqual({
+      reason: 'not-a-factory',
+      message: 'This process is not a task factory and takes no parameters',
+    });
+  });
+
+  it('409 shutting-down from engine', async () => {
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'shutting-down' }));
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
+    expect(result.status).toBe(409);
+    expect((result as any).body).toEqual({
+      reason: 'shutting-down',
+      message: 'The engine is shutting down',
+    });
+  });
+
   it('404 not-found from engine: returns ok=false reason=not-found', async () => {
     const engine = makeMockEngine(() => ({ ok: false, reason: 'not-found' }));
     const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');

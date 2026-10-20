@@ -7,6 +7,7 @@ import {
   FilterFieldPath,
   FilterLeafOps,
 } from '../schemas/process.js';
+import { processesContract } from '../api-to-frontend.js';
 import {
   and, or, not, eq, ne, isIn, notIn, exists, gt, gte, lt, lte,
 } from '../process-filter-helpers.js';
@@ -26,6 +27,22 @@ function baseProcess() {
     createdAt: new Date(),
   };
 }
+
+describe('ProcessSchema task-factory fields', () => {
+  it('carries taskFactory and parameters (the field definitions as data)', () => {
+    const parameters = [{ kind: 'numeric', id: 'n', label: { en: 'N' }, min: 1 }];
+    const parsed = ProcessSchema.parse({ ...baseProcess(), taskFactory: true, parameters });
+    expect(parsed.taskFactory).toBe(true);
+    expect(parsed.parameters).toEqual(parameters);
+  });
+});
+
+describe('launch route body', () => {
+  it('carries params through', () => {
+    const body = processesContract.launch.body as any;
+    expect(body.parse({ params: { n: 3 } })).toEqual({ params: { n: 3 } });
+  });
+});
 
 describe('ProcessSchema widget fields', () => {
   it('accepts uiWidget as an optional string', () => {

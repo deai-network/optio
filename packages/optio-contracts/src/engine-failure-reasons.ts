@@ -12,6 +12,13 @@ export const LaunchFailureReason = z.enum([
   'not-launchable',
   'no-resume-support',
   'launch-blocked',
+  'shutting-down',
+  // Task factories: a launch of a factory without `params`, `params` on a
+  // process that is not a factory, and values the factory refused (the
+  // message names the parameter: "<id>: <what>").
+  'parameters-required',
+  'not-a-factory',
+  'invalid-parameters',
 ]);
 
 export const CancelFailureReason = z.enum([

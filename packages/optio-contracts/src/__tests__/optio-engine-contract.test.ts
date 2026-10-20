@@ -36,6 +36,25 @@ describe('optioEngineContract', () => {
     expect(() => LaunchFailureReason.parse('bogus')).toThrow();
   });
 
+  it('knows every reason optio-core can refuse a launch with', () => {
+    expect(LaunchFailureReason.options).toEqual([
+      'not-found', 'not-launchable', 'no-resume-support', 'launch-blocked',
+      'shutting-down', 'parameters-required', 'not-a-factory', 'invalid-parameters',
+    ]);
+  });
+
+  it('launch takes optional params and a refusal carries an optional message', () => {
+    const launch = optioEngineContract.methods.launch;
+    const withParams = launch.params.parse({ processId: 'f', sessionId: null, params: { n: 3 } });
+    expect(withParams.params).toEqual({ n: 3 });
+    expect(launch.params.parse({ processId: 'f', sessionId: null }).params).toBeUndefined();
+    const fail = launch.result.parse({ ok: false, reason: 'invalid-parameters', message: 'n: too big' });
+    expect(fail.ok).toBe(false);
+    if (!fail.ok) expect(fail.message).toBe('n: too big');
+    expect(launch.result.parse({ ok: false, reason: 'parameters-required' }).ok).toBe(false);
+    expect(launch.result.parse({ ok: false, reason: 'shutting-down' }).ok).toBe(false);
+  });
+
   it('exposes resync as a notification (no result schema)', () => {
     const resync = optioEngineContract.methods.resync;
     expect(resync).toBeDefined();
