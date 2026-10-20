@@ -11,7 +11,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import OperationFailure
 
 from optio_core.models import (
-    TaskInstance, ProcessStatus, Progress, InnerAuth, ProcessMetadataFilter,
+    TaskInstance, TaskFactory, ProcessStatus, Progress, InnerAuth,
+    ProcessMetadataFilter,
 )
 
 
@@ -81,32 +82,48 @@ async def ensure_process_indexes(db: AsyncIOMotorDatabase, prefix: str) -> None:
             )
 
 
-async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstance) -> dict:
-    """Upsert a process record from a task instance.
+async def upsert_process(
+    db: AsyncIOMotorDatabase, prefix: str, task: TaskInstance | TaskFactory,
+) -> dict:
+    """Upsert a process record from a task instance or a task factory.
 
     Creates the record if it doesn't exist (with idle status).
     Updates metadata fields if it does exist (preserves runtime state).
+
+    A TaskFactory's record also carries `taskFactory: true` and its
+    `parameters`; it has no params, no widget (the widget is its launches')
+    and no resume. A TaskInstance's record has neither field: they are unset,
+    in case its process id was a factory's. Spec:
+    docs/2026-10-20-task-factory-design.md §1.1
     """
     coll = _collection(db, prefix)
     now = datetime.now(timezone.utc)
+    factory = isinstance(task, TaskFactory)
+    fields: dict[str, Any] = {
+        "processId": task.process_id,
+        "name": task.name,
+        "params": {} if factory else task.params,
+        "metadata": task.metadata,
+        "cancellable": task.cancellable,
+        "description": task.description,
+        "special": task.special,
+        "warning": task.warning,
+        "uiWidget": None if factory else task.ui_widget,
+        "supportsResume": False if factory else task.supports_resume,
+        "supportsResurrect": getattr(task, "resurrect", None) is not None,
+        "ttlSeconds": task.ttl_seconds,
+    }
+    update: dict[str, Any] = {"$set": fields}
+    if factory:
+        fields["taskFactory"] = True
+        fields["parameters"] = task.parameters
+    else:
+        update["$unset"] = {"taskFactory": "", "parameters": ""}
 
     result = await coll.find_one_and_update(
         {"processId": task.process_id},
         {
-            "$set": {
-                "processId": task.process_id,
-                "name": task.name,
-                "params": task.params,
-                "metadata": task.metadata,
-                "cancellable": task.cancellable,
-                "description": task.description,
-                "special": task.special,
-                "warning": task.warning,
-                "uiWidget": task.ui_widget,
-                "supportsResume": task.supports_resume,
-                "supportsResurrect": getattr(task, "resurrect", None) is not None,
-                "ttlSeconds": task.ttl_seconds,
-            },
+            **update,
             "$setOnInsert": {
                 "parentId": None,
                 "rootId": None,
@@ -382,9 +399,13 @@ async def create_child_process(
     adhoc: bool = False,
     ephemeral: bool = False,
     ttl_seconds: int | None = None,
+    special: bool = False,
+    warning: str | None = None,
+    ui_widget: str | None = None,
 ) -> dict:
     """Create a child process record. `ttl_seconds` is the parent's, so a
-    child expires with its parent instead of outliving it."""
+    child expires with its parent instead of outliving it. `uiWidget` is
+    written only when `ui_widget` is given (an ad-hoc child's own task's)."""
     coll = _collection(db, prefix)
     now = datetime.now(timezone.utc)
     doc = {
@@ -400,14 +421,16 @@ async def create_child_process(
         "description": description,
         "adhoc": adhoc,
         "ephemeral": ephemeral,
-        "special": False,
-        "warning": None,
+        "special": special,
+        "warning": warning,
         "status": ProcessStatus(state=initial_state).to_dict(),
         "progress": Progress().to_dict(),
         "log": [],
         "ttlSeconds": ttl_seconds,
         "createdAt": now,
     }
+    if ui_widget is not None:
+        doc["uiWidget"] = ui_widget
     result = await coll.insert_one(doc)
     doc["_id"] = result.inserted_id
     return doc

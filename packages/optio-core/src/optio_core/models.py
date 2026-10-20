@@ -11,14 +11,18 @@ class LaunchOutcome:
     """Result of Optio.launch. ok=False carries a typed reason.
 
     `proc` is the post-action process doc snapshot when ok=True (lifecycle
-    resolves it after the state transition); None on failure.
+    resolves it after the state transition); None on failure. A TaskFactory's
+    launch answers its child's record. `message` is the refusal's text for
+    "invalid-parameters" ("<id>: <what>"); None otherwise.
     """
     ok: bool
     reason: Literal[
         "not-found", "not-launchable", "launch-blocked", "no-resume-support",
-        "shutting-down",
+        "shutting-down", "parameters-required", "not-a-factory",
+        "invalid-parameters",
     ] | None = None
     proc: dict[str, Any] | None = None
+    message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,43 @@ class TaskInstance(TaskInstanceCore):
 
 
 @dataclass
+class TaskFactory:
+    """A task launched with values, provided by the application's task
+    generator beside its TaskInstances.
+
+    `parameters` are vultus-core field definitions as plain data (checked at
+    task sync; see optio_core.task_factory). The factory is synced as a
+    process record with `taskFactory: true` and its `parameters`, and never
+    runs itself: a launch with values defines an ad-hoc child of that record
+    whose TaskInstance has `execute`, `params` = the values and the fields
+    below, and launches it. A launch is ephemeral unless `ttl_seconds` is set.
+    A factory has no schedule, resume, resurrect or auto-resume.
+    Spec: docs/2026-10-20-task-factory-design.md §1.
+    """
+    execute: Callable[..., Awaitable[None]]  # a launch's task; reads ctx.params
+    process_id: str
+    name: str
+    parameters: list[dict[str, Any]]
+    description: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    special: bool = False
+    # Shown before the launch form, as a task's warning before its launch.
+    warning: str | None = None
+    cancellable: bool = True
+    # A launch's widget (the factory's own record shows none).
+    ui_widget: str | None = None
+    # None: a launch is ephemeral (deleted when it ends); set: a launch is
+    # kept that long after it ends.
+    ttl_seconds: int | None = None
+    auto_cancel_children: bool = True
+    # Beyond the fields' own checks: a returned message ("<id>: <what>")
+    # refuses the values.
+    validate: Callable[[dict[str, Any]], str | None] | None = None
+    # A launch's name, from its values; default `name`.
+    name_for: Callable[[dict[str, Any]], str] | None = None
+
+
+@dataclass
 class ChildResult:
     """Result of a child process execution."""
     process_id: str
@@ -234,7 +275,9 @@ class OptioConfig:
     prefix: str = "optio"
     redis_url: str | None = None
     services: dict[str, Any] = field(default_factory=dict)
-    get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None
+    get_task_definitions: Callable[
+        ..., Awaitable[list[TaskInstance | TaskFactory]],
+    ] | None = None
     cancel_grace_seconds: float = 5.0
     # One-shot post-boot delay before auto-resume re-launches stamped
     # processes. The wait lets the environment settle (dev-mode code edits

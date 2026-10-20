@@ -27,13 +27,17 @@ class ChildProcessFailed(Exception):
 
 class LaunchError(Exception):
     """Raised by Optio.launch_and_await_result when the launch itself is
-    refused (the LaunchOutcome was not ok). ``reason`` carries the typed
-    LaunchOutcome reason string (e.g. "not-found", "not-launchable")."""
+    refused (the LaunchOutcome was not ok), and by Optio.launch_and_wait when
+    a TaskFactory's launch is. ``reason`` carries the typed LaunchOutcome
+    reason string (e.g. "not-found", "not-launchable"); ``message`` the
+    outcome's message (an "invalid-parameters" refusal's "<id>: <what>")."""
 
-    def __init__(self, process_id: str, reason: str):
+    def __init__(self, process_id: str, reason: str, message: str | None = None):
         self.process_id = process_id
         self.reason = reason
-        super().__init__(f"launch of '{process_id}' refused: {reason}")
+        self.message = message
+        text = f"launch of '{process_id}' refused: {reason}"
+        super().__init__(f"{text} ({message})" if message else text)
 
 
 class ResultNotPublished(Exception):

@@ -181,9 +181,14 @@ class Executor:
 
         If resume is True, ctx.resume will be True inside the execute function,
         signalling that the task should restore previous state rather than start fresh.
+        A TaskFactory's record is never launched (returns None).
         """
         proc = await get_process_by_process_id(self._db, self._prefix, process_id)
         if proc is None:
+            return None
+        if proc.get("taskFactory"):
+            # A TaskFactory's record never runs; its launches are its ad-hoc
+            # children (Optio.launch). Spec: docs/2026-10-20-task-factory-design.md §1.1
             return None
 
         current_state = proc["status"]["state"]

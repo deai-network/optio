@@ -158,13 +158,19 @@ await optio_core.shutdown(grace_seconds: float | None = None)  # graceful shutdo
 
 # Commands. session_id is keyword-only and required (None is valid): the session that started
 # the run (optio-ui sends its browser session's id), stored as originatingSessionId, read as ctx.session_id.
-await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down)
-await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None) -> None  # blocks until done; raises LaunchBlocked
-await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None) -> Any
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down, parameters-required, not-a-factory, invalid-parameters)
+await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError)
+await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None) -> Any
 # Launches like launch() and returns the object the task passes to ctx.publish_result(obj) while it keeps
-# running. Raises LaunchError(reason) on a refused launch, ResultNotPublished when the task ends without
+# running. Raises LaunchError(reason, message) on a refused launch, ResultNotPublished when the task ends without
 # publishing, asyncio.TimeoutError on timeout. optio_core.get_published_result(process_id) -> Any | None
 # reads a running process's published object.
+# params: a TaskFactory's launch values (see "TaskFactory Fields"). A factory's record launched with them
+# defines an ad-hoc child of the record with the values in ctx.params and launches it with the same
+# session_id; the outcome's proc is the child's record. Refusals, in this order: parameters-required (no
+# params), no-resume-support (resume=True), not-launchable (no synced definition), invalid-parameters
+# (LaunchOutcome.message "<id>: <what>": the fields' checks, then the factory's validate), launch-blocked
+# (the child's metadata). params on any other record: not-a-factory. A factory's record never runs itself.
 await optio_core.resurrect(process_id: str, *, session_id: str | None) -> ResurrectOutcome  # fire-and-forget
 # Saves the work a failed run left on its host, then resumes. Refusals come back as
 # ResurrectOutcome(ok=False, reason=...), checked in this order: shutting-down, not-found,
@@ -199,7 +205,8 @@ await optio_core.unblock_launches(launch_filter: dict) -> int                   
 await optio_core.dismiss(process_id: str) -> DismissOutcome          # reset done/failed/cancelled → idle
 await optio_core.resync(clean: bool = False, metadata_filter: dict | None = None) -> dict[str, str]  # re-sync task definitions (scoped to metadata_filter if given); clean=True deletes the (in-scope) records first; returns {processId: oid_hex}
 
-# Ad-hoc processes (not from get_task_definitions)
+# Ad-hoc processes (not from get_task_definitions). A child's record carries the task's cancellable,
+# description, special, warning and ui_widget, and the parent's ttlSeconds.
 await optio_core.adhoc_define(task: TaskInstance, parent_id: ObjectId | None = None, ephemeral: bool = False) -> dict
 await optio_core.adhoc_delete(process_id: str) -> None
 
@@ -228,7 +235,7 @@ optio_core.mongo_store: MongoStore
 | `redis_url` | `str \| None` | `None` | If None: command bus disabled; use direct method calls |
 | `rpc_server` | `RpcServerCore \| None` | `None` | Pre-built clamator RPC server. Mutually exclusive with `redis_url`. When supplied, optio-core registers `OptioEngineService` on it but does not own its lifecycle. |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
-| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init and resync. `metadata_filter` is `None` for a full sync. |
+| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance \| TaskFactory]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance \| TaskFactory]`; called on init and resync. `metadata_filter` is `None` for a full sync. |
 | `cancel_grace_seconds` | `float` | `5.0` | Cooperative-cancel deadline; after it the supervisor force-cancels and writes `failed`. Also the default `shutdown()` grace |
 | `auto_resume_delay_seconds` | `float` | `300.0` | Post-boot delay before the auto-resume sweep re-launches stamped processes |
 | `cancel_wait_ceiling_margin_seconds` | `float` | `25.0` | Budget on top of the grace before `cancel_and_wait` / `group_cancel_and_wait` give up with `TimeoutError` |
@@ -277,6 +284,60 @@ The engine's conversation archive listener (`optio_core.ConversationArchiveListe
 `NothingToResurrect` and `ResurrectOutcome` are exported from `optio_core`. The only task
 that sets `resurrect` today is optio-claudecode's (`create_claudecode_task`, when
 `supports_resume`); its hook is described under "Resurrect" in `packages/optio-claudecode/AGENTS.md`.
+
+---
+
+### TaskFactory Fields
+
+A task launched with values. `get_task_definitions` may return `TaskFactory`s among its
+`TaskInstance`s (exported from `optio_core`). Spec: `docs/2026-10-20-task-factory-design.md`.
+
+```python
+@dataclass
+class TaskFactory:
+    execute: Callable[..., Awaitable[None]]  # a launch's task; reads ctx.params
+    process_id: str
+    name: str
+    parameters: list[dict[str, Any]]         # vultus-core field definitions as plain JSON (below)
+    description: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    special: bool = False
+    warning: str | None = None               # shown before the launch form, as a task's
+    cancellable: bool = True                 # a launch's
+    ui_widget: str | None = None             # a launch's widget (the factory's record has none)
+    ttl_seconds: int | None = None           # None: a launch is ephemeral (deleted when it ends); set: kept that long after it ends
+    auto_cancel_children: bool = True
+    validate: Callable[[dict[str, Any]], str | None] | None = None  # after the fields' checks: a returned message ("<id>: <what>") refuses the values
+    name_for: Callable[[dict[str, Any]], str] | None = None        # a launch's name; default `name`
+```
+
+- **The record:** synced like a task's, plus `taskFactory: true` and `parameters` (both `$set` on
+  every sync); `params` `{}`, `uiWidget` null, `supportsResume` false. It never runs: it has no
+  schedule, resume, resurrect or auto-resume; `launch` without `params` refuses it
+  (`parameters-required`), the scheduler never gets it, the auto-resume sweep's `resume=True`
+  launch is refused (`no-resume-support`), `resurrect` answers `no-resurrect-support` (factories
+  stay out of the executor's task registry), and `Executor.launch_process` skips a `taskFactory`
+  record. A TaskInstance's record has neither field (unset on sync).
+- **The parameters** (checked at sync; a bad one raises `ValueError("Task factory '<id>':
+  parameters: <param id>: <what>")`; `optio_core.task_factory.check_parameters`): `kind` one of
+  `boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`; `id` (unique); `label`; the kind's
+  options (`choices: [{value: str, label?}]`, non-empty, for `oneOf`/`manyOf`; `min`, `max`, `step`
+  for `numeric`/`range`, a range needing `min` and `max`; `maxLength` for `text`); `initialValue`
+  (checked like a value, may be empty); `required` (default true). Any other key is refused. A
+  `label` (a field's, a choice's) is a string or a map of language code to string. A null key
+  counts as absent.
+- **A launch's values** (`optio_core.task_factory.check_values`, before the child exists): every
+  key a parameter's id; every required parameter has a value (null, and for `text`/`manyOf` the
+  empty string/list, is none); `boolean` a bool, `oneOf` one of its choices, `manyOf` a list of
+  distinct choices, `numeric` a number within `min`/`max`, `range` a `[from, to]` list within them
+  with `from <= to`, `text` a string within `maxLength`; nothing coerced (a bool is no number).
+  Then `validate`. The first problem refuses: `invalid-parameters`, message `"<id>: <what>"`.
+- **The launch's child:** an ad-hoc child of the factory's record (`adhoc_define(child,
+  parent_id=<record _id>, ephemeral=ttl_seconds is None)`), process id `<factory id>:<8 hex
+  digits>`, name `name_for(values)` or `name`, `params` the values, metadata the factory's plus
+  `taskFactory: <factory id>`, the factory's other fields, `ttlSeconds` copied from the record;
+  launched with the launch's `session_id`. If that launch is refused (a launch block or a shutdown
+  since), the child is deleted. Its TaskInstance lives only in memory (as any ad-hoc process's).
 
 ---
 
@@ -563,7 +624,7 @@ Collection: `{prefix}_processes`
 | `processId` | string | Application-defined unique identifier |
 | `name` | string | Human-readable display name |
 | `description` | string \| null | Optional description text |
-| `params` | object | Static parameters from TaskInstance |
+| `params` | object | Static parameters from TaskInstance; a TaskFactory launch's values |
 | `metadata` | object | Arbitrary metadata; fields can be filtered via `list_processes(metadata=...)` |
 | `parentId` | ObjectId \| null | Parent process `_id`; null for root processes |
 | `rootId` | ObjectId | Root process `_id`; equals `_id` for root processes |
@@ -604,7 +665,9 @@ Collection: `{prefix}_processes`
 | `controlUpstream` | `{ url, innerAuth } \| null` | Server-side only — never sent to clients. The session's in-process input listener, read by optio-api's widget-control route (set/cleared by `ctx.set_control_upstream` / `clear_control_upstream`) |
 | `browserOpenRequests` | array | `{requestId, url, createdAt}` records pushed by `ctx.request_browser_open`; append-only |
 | `sessionEvents` | array | `{requestId, type: "attention", reason}` / `{requestId, type: "client", keyword, data}` records pushed by `ctx.need_attention` / `ctx.client_message`; append-only |
-| `ttlSeconds` | int \| null | From `TaskInstance.ttl_seconds`; a child copies its parent's |
+| `ttlSeconds` | int \| null | From `TaskInstance.ttl_seconds` (or `TaskFactory.ttl_seconds`); a child copies its parent's |
+| `taskFactory` | bool \| absent | True on a `TaskFactory`'s record (`$set` on every sync; unset on a TaskInstance's); such a record never runs |
+| `parameters` | array \| absent | A `TaskFactory`'s field definitions, as plain JSON (`$set` on every sync; unset on a TaskInstance's) |
 | `expireAt` | datetime \| absent | Set at a terminal state to now + `ttlSeconds`; removed by relaunch and dismiss; the `expireAt_ttl` index evicts the record after it |
 | `createdAt` | datetime | Document creation timestamp |
 

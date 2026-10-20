@@ -274,21 +274,26 @@ await ctx.clear_widget_data() -> None
 | `supportsResurrect` | `bool` | Whether the task has a `resurrect` hook; refreshed via `$set` on every sync |
 | `hasUnsavedWork` | `bool` | The host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts and when a resurrect saves the work or finds nothing |
 | `resurrecting` | `bool` | Transient: true while a resurrect's background run is in progress; set and cleared by optio-core only (see `Optio.resurrect`); `init()` clears any marker a dead engine left behind |
+| `taskFactory` | `bool \| absent` | True on a `TaskFactory`'s record (see "TaskFactory"); `$set` on every sync, unset on a TaskInstance's; such a record never runs |
+| `parameters` | `array \| absent` | A `TaskFactory`'s field definitions as plain JSON; `$set` on every sync, unset on a TaskInstance's |
 
 `hasSavedState` is backfilled to `false` on all existing documents by migration `m003_backfill_has_saved_state`
 (runs on startup; depends on m002). `supportsResurrect`, `hasUnsavedWork` and `resurrecting` have
 no backfill; an absent field reads as `false`. All three are wire keys: the engine RPC's process
-payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them.
+payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them. `taskFactory` and
+`parameters` are not wire keys yet (the engine RPC strips them).
 
 ---
 
 ### Optio.launch / Optio.launch_and_wait
 
-Both methods gain a `resume` keyword argument (default `False`):
+Both methods gain a `resume` keyword argument (default `False`), and `params` (a TaskFactory's
+launch values; below):
 
 ```python
-await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None) -> LaunchOutcome
-await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None) -> None
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> LaunchOutcome
+await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> None
+await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None) -> Any
 ```
 
 When `resume=True`, the executor sets `ctx.resume = True` when the task starts. `launch`
@@ -298,6 +303,91 @@ launches fresh (`resume=False`) when it has no saved state (`hasSavedState` fals
 an unattended launch).
 
 While a resurrect of the process is in progress, `launch` returns `not-launchable`.
+
+`LaunchOutcome` (`ok`, `reason`, `proc`, `message`): `reason` is one of `not-found`,
+`not-launchable`, `launch-blocked`, `no-resume-support`, `shutting-down`, `parameters-required`,
+`not-a-factory`, `invalid-parameters`; `message` is set for `invalid-parameters` only.
+`LaunchError` (`process_id`, `reason`, `message`) is what `launch_and_await_result` raises on a
+refusal, and `launch_and_wait` on a TaskFactory's.
+
+---
+
+### TaskFactory
+
+```python
+from optio_core import TaskFactory
+
+@dataclass
+class TaskFactory:
+    execute: Callable[..., Awaitable[None]]  # a launch's task; reads ctx.params
+    process_id: str
+    name: str
+    parameters: list[dict[str, Any]]         # vultus-core field definitions as plain JSON
+    description: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    special: bool = False
+    warning: str | None = None               # shown before the launch form
+    cancellable: bool = True
+    ui_widget: str | None = None             # a launch's widget
+    ttl_seconds: int | None = None           # None: a launch is ephemeral; set: kept that long after it ends
+    auto_cancel_children: bool = True
+    validate: Callable[[dict[str, Any]], str | None] | None = None  # a returned message refuses the values
+    name_for: Callable[[dict[str, Any]], str] | None = None        # a launch's name; default `name`
+```
+
+A task launched with values. `get_task_definitions` may return factories among its
+TaskInstances. Spec: `docs/2026-10-20-task-factory-design.md`.
+
+**The record.** Synced like a task's, plus `taskFactory: true` and `parameters` (both `$set` on
+every sync); `params` is `{}`, `uiWidget` null (the widget is the launches'), `supportsResume`
+false. A TaskInstance's record has neither field (`$unset` on sync, for a process id that
+switched kind). Factories are kept in `Optio._factories`, apart from the executor's task
+registry, so nothing that resolves a task by process id (resurrect, the conversation archive,
+deferred migrations) finds one, and the scheduler never gets one.
+
+**It never runs.** `launch` without `params` answers `parameters-required`, with `resume=True`
+`no-resume-support` (so the auto-resume sweep skips it), `resurrect` answers
+`no-resurrect-support`, and `Executor.launch_process` returns None for a `taskFactory` record
+(any direct path). Its own state never changes.
+
+**Checks** (`optio_core.task_factory`):
+
+- `check_parameters(parameters: list[dict]) -> None` runs at sync and raises
+  `ValueError("<id>: <what>")` (a definition without a usable id: `"parameters[<i>]: ..."`); sync
+  re-raises it as `ValueError("Task factory '<process id>': parameters: <id>: <what>")`. A
+  definition has `kind` (`boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`), `id` (unique),
+  `label`, the kind's options (`choices: [{value: str, label?}]`, non-empty, distinct values;
+  `min`, `max`, `step` (> 0), `min <= max`, a range needing both; `maxLength`, a positive int),
+  `initialValue` (checked like a value, may be empty) and `required` (bool, default true); any
+  other key is refused. A `label` is a string or a non-empty map of language code to string. A
+  null key counts as absent.
+- `check_values(parameters, values) -> str | None` runs at launch, before the child exists, and
+  returns the first refusal `"<id>: <what>"` or None: an unknown key (`"<key>: not a
+  parameter"`), a required parameter without a value (`"<id>: required"`; null is no value, nor is
+  the empty string of a `text` or the empty list of a `manyOf`), then each value's kind: `boolean`
+  a bool; `oneOf` one of its choices' values; `manyOf` a list of distinct choice values; `numeric`
+  an int or finite float (never a bool) within `min`/`max`; `range` a 2-element list of numbers,
+  `from <= to`, within `min`/`max`; `text` a string within `maxLength`. Nothing is coerced. Then
+  the factory's `validate(values)`, whose message also refuses. A refusal is
+  `LaunchOutcome(ok=False, reason="invalid-parameters", message=...)`.
+
+**A launch** (`launch(factory_id, session_id=..., params=values)`), refusals in this order:
+`parameters-required`, `no-resume-support`, `not-launchable` (no definition synced for the
+record), `invalid-parameters`, `launch-blocked` (a block matching the child's metadata). Then
+`task_factory.child_task(factory, values)` is the child's TaskInstance: the factory's `execute`
+and fields, `params` = the values, metadata the factory's plus `taskFactory: <factory id>`,
+process id `f"{factory.process_id}:{secrets.token_hex(4)}"`, name `name_for(values)` or `name`.
+It is defined with `adhoc_define(child, parent_id=<factory record _id>,
+ephemeral=factory.ttl_seconds is None)` (its record copies the factory record's `ttlSeconds`) and
+launched with the same `session_id`; `LaunchOutcome(ok=True, proc=<the child's record>)`. A child
+whose launch is then refused (a block or a shutdown since its definition) is deleted. `params` on
+a record that is no factory's: `not-a-factory`. `launch_and_wait` and `launch_and_await_result`
+take `params` the same way; their refusals raise `LaunchError` (a launch block in
+`launch_and_wait`: `LaunchBlocked`), and `launch_and_await_result`'s result future is keyed by the
+child's process id before the child starts.
+
+**adhoc_define, a child:** its record now carries the task's `cancellable`, `description`,
+`special`, `warning` and `ui_widget` (`uiWidget`, written only when set), as a root's does.
 
 ---
 

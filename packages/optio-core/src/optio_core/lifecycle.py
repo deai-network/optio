@@ -27,10 +27,11 @@ except ImportError:
     Redis = None  # type: ignore[assignment,misc]
 
 from optio_core.models import (
-    TaskInstance, OptioConfig, MongoStore, ProcessStatus, ProcessMetadataFilter,
-    matches_filter, LaunchBlocked, Progress,
+    TaskInstance, TaskFactory, OptioConfig, MongoStore, ProcessStatus,
+    ProcessMetadataFilter, matches_filter, LaunchBlocked, Progress,
     LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome,
 )
+from optio_core.task_factory import check_parameters, check_values, child_task
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
     get_process_by_process_id, update_status, relaunch_reset, delete_descendants,
@@ -126,6 +127,11 @@ class Optio:
         # The engine-wide conversation archive listener; started by run(),
         # stopped by shutdown().
         self._archive_listener: ConversationArchiveListener | None = None
+        # The synced TaskFactory definitions, by process id. Kept apart from
+        # the executor's task registry: a factory's record never runs, and
+        # nothing that resolves a task by process id (resurrect, the
+        # conversation archive, deferred migrations) may find one.
+        self._factories: dict[str, TaskFactory] = {}
 
     @property
     def mongo_store(self) -> MongoStore:
@@ -150,7 +156,7 @@ class Optio:
         services: dict[str, Any] | None = None,
         get_task_definitions: Callable[
             [dict[str, Any], ProcessMetadataFilter | None],
-            Awaitable[list[TaskInstance]],
+            Awaitable[list[TaskInstance | TaskFactory]],
         ] | None = None,
         cancel_grace_seconds: float = 5.0,
         auto_resume_delay_seconds: float = 300.0,
@@ -174,7 +180,7 @@ class Optio:
                 tests and apps that share a server across services.
             services: Custom services dict passed to task execute functions.
             get_task_definitions: Async function (services, metadata_filter)
-                returning task definitions.
+                returning task definitions: TaskInstances and TaskFactories.
             cancel_grace_seconds: Cooperative-cancel deadline (seconds). After
                 this elapses without the task unwinding, the supervisor
                 force-cancels via asyncio.Task.cancel() and writes a terminal
@@ -401,7 +407,9 @@ class Optio:
 
         Creates the process in DB and registers the execute function.
         The process starts in 'idle' state — use the standard 'launch'
-        command to start it.
+        command to start it. A child's record carries the task's own
+        cancellable, description, special, warning and ui_widget (as a
+        root's does), and the parent's ttlSeconds.
         """
         self._check_launch_blocks(task.metadata)
         from optio_core.store import (
@@ -435,10 +443,15 @@ class Optio:
                 params=task.params,
                 depth=parent.get("depth", 0) + 1,
                 order=0,
+                cancellable=task.cancellable,
+                description=task.description,
                 metadata=task.metadata,
                 adhoc=True,
                 ephemeral=ephemeral,
                 ttl_seconds=parent.get("ttlSeconds"),
+                special=task.special,
+                warning=task.warning,
+                ui_widget=task.ui_widget,
             )
 
         self._executor._task_registry[task.process_id] = task
@@ -452,6 +465,7 @@ class Optio:
 
     async def launch(
         self, process_id: str, resume: bool = False, *, session_id: str | None,
+        params: dict[str, Any] | None = None,
     ) -> LaunchOutcome:
         """Fire-and-forget launch. Returns LaunchOutcome with a typed reason on
         precondition failure (not-found, not-launchable -- also while a
@@ -459,7 +473,15 @@ class Optio:
         launch-blocked); on success the executor task is scheduled in the
         background and the outcome is ok=True with `proc` populated from a
         post-schedule re-read (state will typically be 'scheduled' or
-        already advanced to 'running' depending on event-loop timing)."""
+        already advanced to 'running' depending on event-loop timing).
+
+        A TaskFactory's record is launched with `params`, its values: they
+        are checked, an ad-hoc child of the record is defined with them and
+        launched, and `proc` is the child's record. Refusals:
+        parameters-required (no `params`), no-resume-support (`resume`),
+        invalid-parameters (with `message`), launch-blocked; `params` on any
+        other record is not-a-factory. Spec:
+        docs/2026-10-20-task-factory-design.md §1.2"""
         # Stop sign: once shutdown has begun, refuse new launches so nothing
         # half-boots into a shutting-down engine. Covers scheduler, RPC, and
         # programmatic launch paths.
@@ -468,6 +490,15 @@ class Optio:
         proc = await self._resolve(process_id)
         if proc is None:
             return LaunchOutcome(ok=False, reason="not-found")
+        if proc.get("taskFactory") or params is not None:
+            # A factory's record never runs: its launch is a child's.
+            try:
+                child = await self._factory_child(proc, resume, params)
+            except LaunchBlocked:
+                return LaunchOutcome(ok=False, reason="launch-blocked")
+            if isinstance(child, LaunchOutcome):
+                return child
+            return await self._launch_child(child, session_id)
         if proc["_id"] in self._resurrecting:
             # The resurrect in progress ends in its own resume.
             return LaunchOutcome(ok=False, reason="not-launchable")
@@ -507,16 +538,66 @@ class Optio:
         post = await self._resolve(oid_str)
         return LaunchOutcome(ok=True, proc=post)
 
+    async def _factory_child(
+        self, proc: dict, resume: bool, params: dict[str, Any] | None,
+    ) -> dict | LaunchOutcome:
+        """The ad-hoc child (idle) of a factory's record `proc` for one launch
+        with `params`, or the launch's refusal: not-a-factory (`proc` is no
+        factory's), no-resume-support, parameters-required, not-launchable
+        (no factory definition is synced for the record), invalid-parameters
+        (the fields' checks, then the factory's `validate`). A launch block
+        on the child's metadata raises LaunchBlocked (adhoc_define's check).
+        Spec: docs/2026-10-20-task-factory-design.md §1.2, §1.4"""
+        if not proc.get("taskFactory"):
+            return LaunchOutcome(ok=False, reason="not-a-factory")
+        if resume:
+            return LaunchOutcome(ok=False, reason="no-resume-support")
+        if params is None:
+            return LaunchOutcome(ok=False, reason="parameters-required")
+        factory = self._factories.get(proc["processId"])
+        if factory is None:
+            return LaunchOutcome(ok=False, reason="not-launchable")
+        message = check_values(factory.parameters, params)
+        if message is None and factory.validate is not None:
+            message = factory.validate(params)
+        if message is not None:
+            return LaunchOutcome(ok=False, reason="invalid-parameters", message=message)
+        return await self.adhoc_define(
+            child_task(factory, params), parent_id=proc["_id"],
+            ephemeral=factory.ttl_seconds is None,
+        )
+
+    async def _launch_child(self, child: dict, session_id: str | None) -> LaunchOutcome:
+        """Launch a factory launch's child. If its launch is refused (a launch
+        block or a shutdown that came since its definition), it never runs,
+        so it is deleted."""
+        outcome = await self.launch(str(child["_id"]), session_id=session_id)
+        if not outcome.ok:
+            await self.adhoc_delete(child["processId"])
+        return outcome
+
     async def launch_and_wait(
         self, process_id: str, resume: bool = False, *, session_id: str | None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         """Launch and wait for the process to complete. Full progress tracking.
 
         If resume is True, the task is launched with ctx.resume=True so it can
         restore previous state rather than start fresh.
 
+        A TaskFactory's record is launched with `params`, as by launch(): the
+        launch's child is defined and run to completion; a refusal raises
+        LaunchError(reason, message).
+
         Raises LaunchBlocked if a registered launch block matches the task's metadata.
         """
+        proc = await self._resolve(process_id)
+        if proc is not None and (proc.get("taskFactory") or params is not None):
+            child = await self._factory_child(proc, resume, params)
+            if isinstance(child, LaunchOutcome):
+                raise LaunchError(process_id, child.reason, child.message)
+            await self._executor.launch_process(child["processId"], session_id=session_id)
+            return
         task = self._executor._task_registry.get(process_id)
         if task is not None:
             self._check_launch_blocks(task.metadata)
@@ -525,10 +606,12 @@ class Optio:
     async def launch_and_await_result(
         self, process_id: str, resume: bool = False, *,
         session_id: str | None, timeout: float | None = None,
+        params: dict[str, Any] | None = None,
     ) -> Any:
         """Launch like ``launch()`` and wait for the task to call
         ``ctx.publish_result(obj)``; return that object while the task keeps
-        running.
+        running. A TaskFactory's record is launched with `params`, as by
+        launch(), and the result is its launch's.
 
         Raises LaunchError(reason) when the launch is refused,
         ResultNotPublished when the task ends without publishing, and
@@ -537,14 +620,28 @@ class Optio:
         # Resolve the canonical processId first: the future map is keyed by
         # processId, but callers may pass OID hex (dual-form, like launch()).
         proc = await self._resolve(process_id)
+        child: dict | None = None
+        if proc is not None and (proc.get("taskFactory") or params is not None):
+            # The result comes from the launch's child: define it first, so
+            # that its future exists before it can publish.
+            try:
+                made = await self._factory_child(proc, resume, params)
+            except LaunchBlocked:
+                raise LaunchError(process_id, "launch-blocked") from None
+            if isinstance(made, LaunchOutcome):
+                raise LaunchError(process_id, made.reason, made.message)
+            proc = child = made
         canonical = proc["processId"] if proc is not None else process_id
         fut = self._executor.ensure_result_future(canonical)
-        outcome = await self.launch(
-            process_id, resume=resume, session_id=session_id,
-        )
+        if child is not None:
+            outcome = await self._launch_child(child, session_id)
+        else:
+            outcome = await self.launch(
+                process_id, resume=resume, session_id=session_id,
+            )
         if not outcome.ok:
             self._executor._result_futures.pop(canonical, None)
-            raise LaunchError(process_id, outcome.reason or "unknown")
+            raise LaunchError(process_id, outcome.reason or "unknown", outcome.message)
         if timeout is not None:
             return await asyncio.wait_for(fut, timeout)
         return await fut
@@ -1673,18 +1770,36 @@ class Optio:
         call. Callers that immediately want to launch by OID can read the
         OID from this map instead of doing a follow-up processId-keyed
         lookup. Empty dict if no generator is configured.
+
+        TaskFactory definitions are synced as records too (see
+        store.upsert_process), but kept out of the executor's task registry
+        and the scheduler: a factory's record never runs.
         """
         if self._config.get_task_definitions is None:
             return {}
 
-        tasks = await self._config.get_task_definitions(
+        definitions = await self._config.get_task_definitions(
             self._config.services, metadata_filter,
         )
 
         # Framework guarantees only in-scope tasks reach downstream layers,
         # so callback authors may ignore `metadata_filter` if they prefer.
         if metadata_filter:
-            tasks = [t for t in tasks if matches_filter(t.metadata, metadata_filter)]
+            definitions = [
+                d for d in definitions if matches_filter(d.metadata, metadata_filter)
+            ]
+        tasks = [d for d in definitions if not isinstance(d, TaskFactory)]
+        factories = [d for d in definitions if isinstance(d, TaskFactory)]
+
+        # A factory's parameters must be field definitions it can be launched
+        # with. Spec: docs/2026-10-20-task-factory-design.md §1.3
+        for factory in factories:
+            try:
+                check_parameters(factory.parameters)
+            except ValueError as e:
+                raise ValueError(
+                    f"Task factory '{factory.process_id}': parameters: {e}"
+                ) from e
 
         # Validate auto_resume coherence: you cannot resume a task that does
         # not support resume. Catch the misconfiguration loudly at sync time
@@ -1702,11 +1817,13 @@ class Optio:
                 )
 
         pid_to_oid: dict[str, str] = {}
-        for task in tasks:
-            proc = await upsert_process(self._config.mongo_db, self._config.prefix, task)
-            pid_to_oid[task.process_id] = str(proc["_id"])
+        for definition in definitions:
+            proc = await upsert_process(
+                self._config.mongo_db, self._config.prefix, definition,
+            )
+            pid_to_oid[definition.process_id] = str(proc["_id"])
 
-        valid_ids = {t.process_id for t in tasks}
+        valid_ids = {d.process_id for d in definitions}
 
         # B1: cooperatively cancel stale non-terminal tasks before their
         # records are deleted, so running tasks don't continue writing
@@ -1726,11 +1843,30 @@ class Optio:
             logger.info(f"Removed {removed} stale process records")
 
         self._executor.register_tasks(tasks, metadata_filter)
+        self._register_factories(factories, metadata_filter)
         await self._scheduler.sync_schedules(tasks, metadata_filter)
 
         scope = "(all)" if not metadata_filter else f"(filter={metadata_filter})"
-        logger.info(f"Synced {len(tasks)} task definitions {scope}")
+        logger.info(f"Synced {len(definitions)} task definitions {scope}")
         return pid_to_oid
+
+    def _register_factories(
+        self,
+        factories: list[TaskFactory],
+        metadata_filter: ProcessMetadataFilter | None,
+    ) -> None:
+        """Register factory definitions by processId, by the rule of
+        Executor.register_tasks: without a filter the set is replaced; with
+        one, only in-scope entries may be removed."""
+        if not metadata_filter:
+            self._factories = {f.process_id: f for f in factories}
+            return
+        new_ids = {f.process_id for f in factories}
+        for pid, existing in list(self._factories.items()):
+            if matches_filter(existing.metadata, metadata_filter) and pid not in new_ids:
+                del self._factories[pid]
+        for f in factories:
+            self._factories[f.process_id] = f
 
     async def _scheduler_launch_adapter(self, process_id: str) -> None:
         """Scheduler hook: funnel through Optio.launch, log on failure.
