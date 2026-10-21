@@ -362,6 +362,47 @@ async def test_a_settled_ephemeral_orphan_is_deleted(mongo_db, entry, state):
         await _stop_optio(optio, run_task)
 
 
+async def test_a_settled_ephemeral_orphan_stops_its_running_children_first(mongo_db):
+    """An ephemeral orphan P with an ad-hoc child C running in its own task:
+    the settle deletes P with its descendants, so it first force-cancels C
+    (as Executor.force_cancel cascades), else C would run on against a
+    deleted record that no cancel reaches any more."""
+    prefix = "lfw_eph_child"
+    optio, run_task = await _start_optio(
+        mongo_db, prefix, [], cancel_grace_seconds=60.0, run=False,
+    )
+    started, stopped = asyncio.Event(), asyncio.Event()
+
+    async def child(ctx):
+        started.set()
+        try:
+            await ctx.cancellation_flag.wait()
+        finally:
+            stopped.set()
+
+    try:
+        parent = await optio.adhoc_define(
+            TaskInstance(process_id="p.eph", name="Eph", params={}, execute=_done),
+            ephemeral=True,
+        )
+        await optio.adhoc_define(
+            TaskInstance(process_id="p.eph/c", name="C", params={}, execute=child),
+            parent_id=parent["_id"],
+        )
+        assert (await optio.launch("p.eph/c", session_id=None)).ok
+        await asyncio.wait_for(started.wait(), timeout=HANG_CEILING)
+        await _orphan(mongo_db, prefix, "p.eph", "running")
+
+        outcome = await optio.cancel("p.eph")
+        assert outcome.ok
+        # Stopped before cancel() returned: no waiting on it.
+        assert stopped.is_set()
+        assert await get_process_by_process_id(mongo_db, prefix, "p.eph") is None
+        assert await get_process_by_process_id(mongo_db, prefix, "p.eph/c") is None
+    finally:
+        await _stop_optio(optio, run_task)
+
+
 async def test_orphan_with_parked_final_gets_the_parked_state(mongo_db, monkeypatch):
     """A row whose final write is queued (Rule 3) settles to that state, not
     to the generic orphan failure. No run(): the supervisor must not retry first."""

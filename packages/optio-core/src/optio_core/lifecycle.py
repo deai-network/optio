@@ -1223,7 +1223,8 @@ class Optio:
         Returns True if the row is now settled. `scheduled` never
         qualifies: launch_process writes it before the task registers.
         An ephemeral row is then deleted, with its descendants (as at any
-        end of its run), so a caller's re-read finds nothing.
+        end of its run), so a caller's re-read finds nothing; its active
+        children are force-cancelled first (Executor._force_cancel_children).
 
         Assumes one engine per (database, prefix), as Rule 1 does.
         Spec: docs/2026-10-03-lost-final-state-writes-design.md (Rule 4)
@@ -1254,8 +1255,14 @@ class Optio:
         )
         # An ephemeral process is deleted when its run ends, this end too
         # (a parked final state written above is cleaned up by
-        # Executor._record_final).
-        await self._executor._cleanup_ephemeral(str(oid))
+        # Executor._record_final), with its descendants: so first, as
+        # Executor.force_cancel does, its active children are force-cancelled,
+        # else one running in its own task (an ad-hoc child) would run on
+        # against a deleted record that no cancel reaches.
+        row = await get_process_by_process_id(db, prefix, str(oid))
+        if row is not None and row.get("ephemeral"):
+            await self._executor._force_cancel_children(oid)
+            await self._executor._cleanup_ephemeral(str(oid))
         return True
 
     async def dismiss(self, process_id: str) -> DismissOutcome:

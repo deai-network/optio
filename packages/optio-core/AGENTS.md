@@ -546,7 +546,9 @@ this engine owns has lost its final-state write. Such a row is settled instead o
 waited on: to the final state the executor still has queued for it, if any, or else
 to `failed` with `"Process had no running task in this engine; its final state was
 never recorded"`; an ephemeral row is then deleted, with its descendants (its run has
-ended). `cancel()` and `cancel_and_wait()` do the same (`cancel_and_wait()` then returns
+ended), its active children force-cancelled first (`Executor._force_cancel_children`, as a
+force-cancel cascades), so that none runs on against a deleted record. `cancel()` and
+`cancel_and_wait()` do the same (`cancel_and_wait()` then returns
 `None`: the process no longer exists). This assumes one engine per (database, prefix).
 Spec: `docs/2026-10-03-lost-final-state-writes-design.md`.
 
@@ -626,7 +628,8 @@ Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`.
   ad-hoc task unregistered) whenever the run ends: at any terminal state the executor writes; after
   a force-cancel (`Executor.force_cancel`, once it has force-cancelled the active children); when a
   launch finds no execute function; and when a lost final write is settled
-  (`Optio._settle_if_orphaned`, Rule 4). On `init()`, before the reconcile of interrupted
+  (`Optio._settle_if_orphaned`, Rule 4, once it has force-cancelled the active children). On
+  `init()`, before the reconcile of interrupted
   processes, `Optio._delete_ephemeral_leftovers` (`store.delete_ephemeral_processes`) deletes
   every ephemeral record of the engine's (database, prefix), whatever its state: one the restart
   interrupted, one whose end did not delete it (e.g. a Mongo failure in a force-cancel), one
