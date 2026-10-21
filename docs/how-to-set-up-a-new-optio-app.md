@@ -2200,7 +2200,7 @@ of optio) touches the data layer only.
     "react-dom": "^19.3.1",
     "react-i18next": "^17.0.16",
     "react-router": "^7.18.4",
-    "vultus-antd": "^0.7.1",
+    "vultus-antd": "^0.7.2",
     "vultus-core": "^0.5.4",
     "zod": "^3.25.0"
   },
@@ -2218,13 +2218,13 @@ of optio) touches the data layer only.
 - **optio-ui is published as TypeScript source.** Your bundler compiles it (Vite does
   this without configuration) and your typecheck covers it.
 - **List optio-ui's peers yourself**: react, react-dom, `@tanstack/react-query`, antd,
-  `@ant-design/icons`, i18next, react-i18next and vultus-core. optio-ui then uses your
-  copies.
+  `@ant-design/icons`, i18next, react-i18next, vultus-core (>=0.5.4) and vultus-antd
+  (>=0.7.2). optio-ui then uses your copies.
 - **optio-contracts** is only needed for the filter helpers (`exists`, `eq`, …). Pin it
   to the exact version optio-ui depends on (`pnpm view optio-ui@0.8.2 dependencies`),
   so that there is one copy.
 - **vultus** (vultus-core and vultus-antd) is used here for actions, see below. optio-ui
-  needs vultus-core in any case.
+  needs both in any case (vultus-antd for a task factory's launch form).
 
 `packages/frontend/tsconfig.json`:
 
