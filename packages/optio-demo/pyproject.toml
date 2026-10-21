@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
 dependencies = [
-    "optio-core[redis]>=0.6,<0.7",
+    "optio-core[redis]>=0.7,<0.8",
     "marimo>=0.9",
     "optio-agents-all>=0.3,<0.4",
     "watchfiles>=1.0",
