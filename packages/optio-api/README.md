@@ -158,7 +158,7 @@ All adapters mount the same endpoints under `/api/processes/...`; the instance i
 | GET | `/api/processes/:id/log?database=&prefix=` | Get process log |
 | GET | `/api/processes/:id/tree/log?database=&prefix=` | Get merged subtree log |
 | GET | `/api/processes/:id/conversation?database=&prefix=` | Read a suspended process's saved conversation, proxied from the engine's conversation archive (the engine decrypts). 200 `{ events, capturedAt }`; 403/404/409/500/503 with `{reason, message}` per `ConversationFailureReason` (503 `engine-unavailable`: no engine, unreachable, no answer within 15 s, or a body over 64 MiB). Gated as the `'widget'` action; always `Cache-Control: no-store`. |
-| POST | `/api/processes/:id/launch?database=&prefix=` | Forward launch to engine. 200 on success; 404/409 with `{reason, message}` per `LaunchFailureReason`. |
+| POST | `/api/processes/:id/launch?database=&prefix=` | Forward launch to engine; optional body `{ resume?: boolean, sessionId?: string \| null, params?: Record<string, unknown> }` (`params`: a task factory's values). 200 on success (a task factory's launch: the child's record); 400/404/409 with `{reason, message}` per `LaunchFailureReason` (400 `parameters-required` / `invalid-parameters`, 404 `not-found`, 409 the others). |
 | POST | `/api/processes/:id/cancel?database=&prefix=` | Forward cancel to engine. 200 on success; 404/409 per `CancelFailureReason`. |
 | POST | `/api/processes/:id/dismiss?database=&prefix=` | Forward dismiss to engine. 200 on success; 404/409 per `DismissFailureReason`. |
 | POST | `/api/processes/:id/resurrect?database=&prefix=` | Forward resurrect (save a failed run's unsaved work, then resume) to engine; optional body `{ sessionId?: string \| null }`. 200 on success; 404/409 per `ResurrectFailureReason`. |
@@ -222,8 +222,8 @@ Handler functions take an `OptioContext` (constructed once via
 later positional args. Command handlers (`launchProcess`, `cancelProcess`,
 `dismissProcess`, `resurrectProcess`) return per-command result unions
 (`LaunchCommandResult` / `CancelCommandResult` / `DismissCommandResult` /
-`ResurrectCommandResult`) whose 404/409 bodies are `{ reason, message }` —
-map these to HTTP responses directly.
+`ResurrectCommandResult`) whose error bodies (404/409, and 400 for a launch)
+are `{ reason, message }` — map these to HTTP responses directly.
 
 `getProcessConversation` returns `{ status, body, headers }`: send `headers`
 (`Cache-Control: no-store`) with the response.

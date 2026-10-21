@@ -575,8 +575,8 @@ async function getProcessConversation(
 
 See "Conversation archive proxy" below.
 
-The 404/409 response body for `launchProcess` / `cancelProcess` / `dismissProcess` /
-`resurrectProcess` is `{ reason, message }`, typed via `LaunchErrorBody` / `CancelErrorBody` /
+The error response body (404/409, and 400 for a launch) for `launchProcess` / `cancelProcess` /
+`dismissProcess` / `resurrectProcess` is `{ reason, message }`, typed via `LaunchErrorBody` / `CancelErrorBody` /
 `DismissErrorBody` / `ResurrectErrorBody` in `optio-contracts/src/api-to-frontend.ts`. The
 `reason` discriminator is one of the engine failure-reason enums from
 `optio-contracts/src/engine-failure-reasons.ts`.
@@ -591,14 +591,14 @@ the fourth argument.
 Per the architectural rule above, command handlers do not validate state — they forward the raw
 id to the engine via `engine.launch / cancel / dismiss / resurrect` and translate the discriminated-union
 result into HTTP status + body. Failure reasons (`not-found`, `not-launchable`, `no-resume-support`,
-`launch-blocked`, `not-cancellable`, `not-dismissable`, and for resurrect `not-resurrectable`,
-`no-resurrect-support`, `resurrect-in-progress`, `shutting-down`) come from the engine; the API only
-maps each to a status (`not-found` is 404, every other reason 409). Launch adds `shutting-down`
-(409) and the task-factory reasons: `parameters-required` and `invalid-parameters` are 400,
-`not-a-factory` 409. A factory's launch answers 200 with the child's record. The body keeps
-`{ reason, message }`; for `invalid-parameters` the message is the engine's `"<id>: <what>"` text
-passed on unchanged (optio-ui reads the parameter's id from it; a fixed text only if the engine sent
-none), for the other reasons a fixed text.
+`launch-blocked`, `not-cancellable`, `not-dismissable`, `shutting-down` for launch and resurrect,
+for resurrect `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, and for launch
+the task-factory reasons `parameters-required`, `invalid-parameters`, `not-a-factory`) come from the
+engine; the API only maps each to a status: `not-found` is 404, launch's `parameters-required` and
+`invalid-parameters` are 400, every other reason is 409. A factory's launch answers 200 with the
+child's record. The body keeps `{ reason, message }`; for `invalid-parameters` the message is the
+engine's `"<id>: <what>"` text passed on unchanged (optio-ui reads the parameter's id from it; a
+fixed text only if the engine sent none), for the other reasons a fixed text.
 
 ## Conversation archive proxy
 
@@ -660,8 +660,8 @@ interface TreeLogQuery extends PaginationQuery {
   maxDepth?: number;  // relative depth limit from queried process
 }
 
-// Per-command result types. The 200 body is a process; the 404/409 body is
-// `{ reason, message }` where `reason` is the corresponding engine failure-reason
+// Per-command result types. The 200 body is a process; an error body (404/409,
+// and 400 for a launch) is `{ reason, message }` where `reason` is the corresponding engine failure-reason
 // enum from `optio-contracts/src/engine-failure-reasons.ts`.
 type LaunchCommandResult =
   | { status: 200; body: any }
