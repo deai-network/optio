@@ -6,8 +6,9 @@ them at task sync. `check_values` checks a launch's values before its child
 exists (spec 1.4). `child_task` is the TaskInstance of one launch (spec 1.2).
 Nothing is coerced: a value of the wrong JSON type is refused.
 
-Throughout, a key whose value is null (None) counts as absent; a launch's
-null values are dropped from its params.
+Throughout, a value that is no value (`_is_no_value`: None; for a text the
+empty string, for a manyOf the empty list) counts as absent: a required
+parameter needs another, and a launch's params leave it out.
 Spec: docs/2026-10-20-task-factory-design.md §1.
 """
 
@@ -87,20 +88,25 @@ def check_values(parameters: list[dict], values: dict[str, Any]) -> str | None:
     return None
 
 
-def without_nulls(values: dict[str, Any]) -> dict[str, Any]:
-    """`values` without the null ones: a launch's params as its task (and
-    the factory's `validate` and `name_for`) see them, so that a value left
-    out and a null value look the same."""
-    return {k: v for k, v in values.items() if v is not None}
+def without_no_values(parameters: list[dict], values: dict[str, Any]) -> dict[str, Any]:
+    """`values` without the ones that are no value of their parameter (as
+    the required check counts it: None; '' for a text, [] for a manyOf): a
+    launch's params as its task (and the factory's `validate` and
+    `name_for`) see them, so that a value left out, a null one and an empty
+    one look the same, whether a form or a program launched it. False and 0
+    are values."""
+    kinds = {p["id"]: p["kind"] for p in parameters}
+    return {k: v for k, v in values.items() if not _is_no_value(kinds.get(k, ""), v)}
 
 
 def child_task(factory: TaskFactory, values: dict[str, Any]) -> TaskInstance:
     """The TaskInstance of one launch of `factory` with `values` (already
     checked): the factory's `execute` and fields, `params` = the values
-    without their nulls, its metadata plus `taskFactory: <the factory's
-    process id>`, its process id plus ":" and 8 random hex digits, and the
-    name `name_for(values)` or the factory's (spec 1.2)."""
-    values = without_nulls(values)
+    without the ones that are no value (without_no_values), its metadata
+    plus `taskFactory: <the factory's process id>`, its process id plus ":"
+    and 8 random hex digits, and the name `name_for(values)` or the
+    factory's (spec 1.2)."""
+    values = without_no_values(factory.parameters, values)
     return TaskInstance(
         execute=factory.execute,
         process_id=f"{factory.process_id}:{secrets.token_hex(4)}",

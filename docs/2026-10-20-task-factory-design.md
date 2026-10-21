@@ -93,6 +93,11 @@ Before the child exists:
 A refusal is `reason="invalid-parameters"` with a message naming the parameter (`"<id>: <what>"`),
 which the UI shows on that field.
 
+A value that is no value, as the required check counts it (null; for a `text` the empty string, for
+a `manyOf` the empty list), is left out of the launch's `params` (and of what `validate` and
+`name_for` get): a launch from the form, which sends `''` and `[]`, and one from a program look the
+same to the task.
+
 ## 2. optio-contracts, the engine RPC, optio-api
 
 - `ProcessSchema`: `taskFactory?: boolean`, `parameters?: unknown[]` (the field definitions as

@@ -374,15 +374,18 @@ running launches: `_sync_definitions` cancels the stale roots' active descendant
   `integer`; `text` a string within `maxLength`. Nothing is coerced. Then the factory's
   `validate(values)`, whose message also refuses. A refusal is
   `LaunchOutcome(ok=False, reason="invalid-parameters", message=...)`.
-- `without_nulls(values)`: the values without the null ones. `validate`, `name_for` and the task's
-  `ctx.params` get these, so a left-out value and a null one are one shape.
+- `without_no_values(parameters, values)`: the values without the ones that are no value, as the
+  required check counts it (null; the empty string of a `text`; the empty list of a `manyOf`).
+  `validate`, `name_for` and the task's `ctx.params` get these, so a left-out value, a null one and
+  an empty one are one shape, whether a form (optio-ui sends `''` and `[]`) or a program launched
+  it. `False` and `0` are values and stay.
 
 **A launch** (`launch(factory_id, session_id=..., params=values)`), refusals in this order:
 `shutting-down`, `not-found`, `no-resume-support`, `parameters-required`, `not-launchable` (no
 definition synced for the record), `invalid-parameters`, `launch-blocked` (a block matching the
 child's metadata). No child is defined while shutting down, whichever entry point. Then
 `task_factory.child_task(factory, values)` is the child's TaskInstance: the factory's `execute`
-and fields, `params` = the values without nulls, metadata the factory's plus `taskFactory: <factory id>`,
+and fields, `params` = the values without the no-values (`without_no_values`), metadata the factory's plus `taskFactory: <factory id>`,
 process id `f"{factory.process_id}:{secrets.token_hex(4)}"`, name `name_for(values)` or `name`.
 It is defined with `adhoc_define(child, parent_id=<factory record _id>,
 ephemeral=factory.ttl_seconds is None)` (its record copies the factory record's `ttlSeconds`) and

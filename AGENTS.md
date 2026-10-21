@@ -336,8 +336,10 @@ class TaskFactory:
   distinct choices, `numeric` a number within `min`/`max` (a whole one with `integer`), `range` a
   `[from, to]` list within them with `from <= to` (whole ends with `integer`), `text` a string
   within `maxLength`; nothing coerced (a bool is no number). Then `validate`. The first problem
-  refuses: `invalid-parameters`, message `"<id>: <what>"`. Null values are then dropped: the task's
-  `ctx.params`, `validate` and `name_for` see a left-out value and a null one alike.
+  refuses: `invalid-parameters`, message `"<id>: <what>"`. Values that are no value (null; `''` for
+  a `text`, `[]` for a `manyOf`: the required check's rule) are then dropped
+  (`task_factory.without_no_values`): the task's `ctx.params`, `validate` and `name_for` see a
+  left-out value, a null one and an empty one alike, from a form or a program; `False` and `0` stay.
 - **The launch's child:** an ad-hoc child of the factory's record (`adhoc_define(child,
   parent_id=<record _id>, ephemeral=ttl_seconds is None)`), process id `<factory id>:<8 hex
   digits>`, name `name_for(values)` or `name`, `params` the values, metadata the factory's plus

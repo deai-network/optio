@@ -676,6 +676,47 @@ async def test_null_values_are_left_out_of_the_launchs_params(mongo_db):
         await fw.shutdown()
 
 
+async def test_empty_values_are_left_out_of_the_launchs_params(mongo_db):
+    # One convention for "no value" (the required check's): a launch from a
+    # form, which sends '' for an empty text and [] for an empty list, looks
+    # like one that leaves them out. False and 0 are values.
+    prefix = "tf_empty"
+    execute, seen, _ = _recorder()
+    validated: list[dict] = []
+    names: list[dict] = []
+
+    def validate(values):
+        validated.append(values)
+        return None
+
+    def name_for(values):
+        names.append(values)
+        return "Drop"
+
+    parameters = [
+        {"kind": "boolean", "id": "dry", "required": False},
+        {"kind": "text", "id": "note", "required": False},
+        {"kind": "manyOf", "id": "tags", "required": False, "choices": [{"value": "x"}]},
+        {"kind": "numeric", "id": "limit", "required": False},
+    ]
+    fw = await _init(mongo_db, prefix, [TaskFactory(
+        execute=execute, process_id="fac", name="Drop proposals",
+        parameters=parameters, ttl_seconds=3600, validate=validate, name_for=name_for,
+    )])
+    try:
+        values = {"dry": False, "note": "", "tags": [], "limit": 0}
+        outcome = await fw.launch("fac", session_id=None, params=values)
+        assert outcome.ok
+        pid = outcome.proc["processId"]
+        expected = {"dry": False, "limit": 0}
+        assert outcome.proc["params"] == expected
+        await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+        assert seen == {pid: expected}
+        assert validated == [expected] and names == [expected]
+    finally:
+        await fw.shutdown()
+
+
 async def test_no_child_is_defined_while_shutting_down(mongo_db):
     prefix = "tf_stop"
     execute, seen, _ = _recorder()

@@ -32,7 +32,7 @@ from optio_core.models import (
     LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome,
 )
 from optio_core.task_factory import (
-    check_parameters, check_values, child_task, without_nulls,
+    check_parameters, check_values, child_task, without_no_values,
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
@@ -550,9 +550,9 @@ class Optio:
         not-a-factory (`proc` is no factory's), no-resume-support,
         parameters-required, not-launchable (no factory definition is synced
         for the record), invalid-parameters (the fields' checks, then the
-        factory's `validate`, which gets the values without their nulls, as
-        the task does). A launch block on the child's metadata raises
-        LaunchBlocked (adhoc_define's check).
+        factory's `validate`, which gets the values without the ones that
+        are no value, as the task does). A launch block on the child's
+        metadata raises LaunchBlocked (adhoc_define's check).
         Spec: docs/2026-10-20-task-factory-design.md §1.2, §1.4"""
         if self._shutting_down:
             return LaunchOutcome(ok=False, reason="shutting-down")
@@ -567,10 +567,10 @@ class Optio:
             return LaunchOutcome(ok=False, reason="not-launchable")
         message = check_values(factory.parameters, params)
         if message is None and factory.validate is not None:
-            message = factory.validate(without_nulls(params))
+            message = factory.validate(without_no_values(factory.parameters, params))
         if message is not None:
             return LaunchOutcome(ok=False, reason="invalid-parameters", message=message)
-        # child_task drops the nulls too.
+        # child_task drops the no-values too.
         return await self.adhoc_define(
             child_task(factory, params), parent_id=proc["_id"],
             ephemeral=factory.ttl_seconds is None,
