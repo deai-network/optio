@@ -85,13 +85,13 @@ run the file 10–20×, then `kill $hogs`.
 | 1 — Core runtime | `optio-core` | Python | `pip install optio-core` (MongoDB + APScheduler); add `[redis]` for Redis command bus |
 | 2 — Remote control | `optio-core[redis]` | Python | `pip install optio-core[redis]` |
 | 3 — REST API | `optio-api` | TypeScript | `npm install optio-api optio-contracts` |
-| 4 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query i18next react-i18next antd @ant-design/icons vultus-core` |
+| 4 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query i18next react-i18next antd @ant-design/icons vultus-core vultus-antd` |
 | 1+ — Opencode runner | `optio-opencode` | Python | workspace; runs `opencode web` as an optio task (local subprocess or remote via SSH) |
 | 1+ — Claude Code runner | `optio-claudecode` | Python | workspace; runs `claude` as an optio task via ttyd-served iframe (local subprocess or remote via SSH) |
 | — Filter language (core) | `filtrum-core` | TypeScript | `npm install filtrum-core` (backend-agnostic filter schema + builders + `Dialect<T>` compiler) |
 | — Filter language (Mongo) | `filtrum-mongo` | TypeScript | `npm install filtrum-mongo` (Mongo dialect + `createMongoFilterTranslator`; type-only `mongodb` peer) |
 
-Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a6`, `mongo-quaestor>=0.1,<0.2` (the migration module; import name is still `quaestor` for backwards compatibility — note the upstream `quaestor` PyPI package is unrelated and will collide if installed), `clamator-over-redis>=0.1.9`, `clamator-protocol>=0.1.9`, `pydantic>=2.0`, `aiohttp>=3.9`. Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 18+, Ant Design 6+ (`antd` and `@ant-design/icons` are peers of `optio-ui`), `@tanstack/react-query` 5+, `i18next` 24+ / `react-i18next` 15+ and `vultus-core` >=0.5.3 (all peers of `optio-ui`; vultus-core: one copy, one components context).
+Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a6`, `mongo-quaestor>=0.1,<0.2` (the migration module; import name is still `quaestor` for backwards compatibility — note the upstream `quaestor` PyPI package is unrelated and will collide if installed), `clamator-over-redis>=0.1.9`, `clamator-protocol>=0.1.9`, `pydantic>=2.0`, `aiohttp>=3.9`. Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 18+, Ant Design 6+ (`antd` and `@ant-design/icons` are peers of `optio-ui`), `@tanstack/react-query` 5+, `i18next` 24+ / `react-i18next` 15+, `vultus-core` >=0.5.4 and `vultus-antd` >=0.7.2 (all peers of `optio-ui`; vultus-core: one copy, one components context, the one vultus-antd uses; vultus-antd: the task factory launch form's widgets).
 
 ---
 
@@ -1326,6 +1326,7 @@ Wrap your application (or subtree):
 interface LaunchControlsProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onLaunched?: (child: Process) => void;  // a task factory's launch form launched it: the child it made
   onResurrect?: (id: string) => void;  // save a failed run's host work, then resume
   size?: ButtonProps['size'];
   iconFontSize?: number;               // pixel size of the buttons' icons
@@ -1336,6 +1337,10 @@ interface LaunchControlsProps {
 Smart launch button. Renders nothing when not in a launchable state or `onLaunch` is absent.
 While `isResurrecting(process)` (`resurrecting` true) it renders a single disabled "Resurrecting" indicator
 (spinning icon, tooltip "Resurrecting: saving the unsaved work…") and nothing clickable.
+For a task factory's record (`isTaskFactory(process)`: `taskFactory: true`; exported from `optio-ui`) it
+renders a single play button that opens the factory's `TaskFactoryLaunchModal` (below) instead of calling
+`onLaunch`, which only allows it; no `Popconfirm` (the form shows the `warning`); the form's launch hands
+the child to `onLaunched`.
 When `onResurrect` is given and `isResurrectable(process)` (launchable, not resurrecting, and `supportsResurrect`
 and `hasUnsavedWork` both true; `isResurrectable` and `isResurrecting` are exported from `optio-ui`),
 renders a split button: primary = Resurrect (calls `onResurrect(id)`), menu = Resume from last snapshot (only
@@ -1352,13 +1357,14 @@ interface ProcessListProps {
   processes: any[];
   loading: boolean;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunched?: (child: Process) => void;  // forwarded to each ProcessItem
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
 }
 ```
 
-Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls` (`onResurrect` forwarded to it). `FilteredProcessList` takes the same callbacks, including `onResurrect`. optio-dashboard passes `useProcessActions()`'s `launch`, `resurrect` and `cancel` to its `FilteredProcessList` as `onLaunch` / `onResurrect` / `onCancel` when the selected instance is live (none for an offline one).
+Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls` (`onResurrect` and `onLaunched` forwarded to it). `FilteredProcessList` takes the same callbacks, including `onResurrect` and `onLaunched`. optio-dashboard passes `useProcessActions()`'s `launch`, `resurrect` and `cancel` to its `FilteredProcessList` as `onLaunch` / `onResurrect` / `onCancel` when the selected instance is live (none for an offline one).
 
 **`ProcessItem`**
 
@@ -1366,6 +1372,7 @@ Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set)
 interface ProcessItemProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onLaunched?: (child: Process) => void;  // forwarded to LaunchControls (a task factory's launch)
   onResurrect?: (id: string) => void;  // forwarded to LaunchControls
   onCancel?: (id: string) => void;
   readonly?: boolean;
@@ -1377,7 +1384,8 @@ interface ProcessItemProps {
 }
 ```
 
-Single process row. Launch button shows `Popconfirm` when `process.warning` is set. The progress
+Single process row. Launch button shows `Popconfirm` when `process.warning` is set (a task
+factory's opens its launch form instead, which shows the warning). The progress
 message is shown while the process is active or resurrecting (`isResurrecting`).
 
 **`ProcessStatusBadge`**
@@ -1415,6 +1423,7 @@ interface ProcessTreeViewProps {
   sseState: { connected: boolean };
   onCancel?: (processId: string) => void;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunched?: (child: Process) => void;      // forwarded to each node's LaunchControls
   onResurrect?: (processId: string) => void;  // forwarded to each node's LaunchControls
 }
 ```
@@ -1437,6 +1446,8 @@ interface ProcessNode {
   hasUnsavedWork?: boolean;
   resurrecting?: boolean;
   autoResumeScheduled?: boolean;
+  taskFactory?: boolean;        // a task factory's record: LaunchControls opens its launch form
+  parameters?: unknown[];       // the factory's parameters, for that form
   children?: ProcessNode[];
 }
 ```
@@ -1477,6 +1488,7 @@ interface ProcessDetailViewProps {
   showLogs?: boolean;  // default true; false renders only the widget, at full height
   waitForWidget?: boolean;  // default false; true shows a big spinner instead of "Loading…" and the process view until the widget shows
   widgetPlaceholder?: ReactNode;  // shown instead of that spinner; implies waitForWidget
+  onLaunched?: (child: Process) => void;  // a task factory's launch form (its play button in the tree) launched it
 }
 ```
 
@@ -1491,7 +1503,41 @@ and no suspended variant is registered. In suspended mode, also renders a `Launc
 default layout (a process left with `hasUnsavedWork` gets Resurrect, and Resume asks before it
 discards the unsaved work). The default layout wires `ProcessTreeView`'s
 `onLaunch`, `onResurrect` and `onCancel` to `useProcessActions()` itself (none when
-`readOnly`), so the host passes no action callbacks to it.
+`readOnly`), so the host passes no action callbacks to it; `onLaunched` is passed on, for a task
+factory's record (the root of its launches), whose launch shows under it in the tree.
+
+**`TaskFactoryLaunchModal`** (`packages/optio-ui/src/components/TaskFactoryLaunchModal.tsx`)
+
+```typescript
+interface TaskFactoryLaunchModalProps {
+  process: { _id: string; name: string; warning?: string | null; parameters?: unknown[] | null };  // TaskFactoryRecord
+  open: boolean;
+  onClose: () => void;                    // Cancel, the close icon, Escape, and after a launch
+  onLaunched?: (child: Process) => void;  // the launched child; the modal then closes
+}
+```
+
+A task factory's launch form (spec `docs/2026-10-20-task-factory-design.md` §3), opened by
+`LaunchControls` for a factory's record (which must carry `parameters`: the REST reads do; optio-api's
+list and tree streams do not send `taskFactory` / `parameters` yet). A vultus-antd `FormPanel`: the
+factory's `warning` on top, one antd `Form.Item` (name = the parameter's id) per parameter holding a
+vultus-antd `<Field>`, then Cancel and Launch (vultus actions). The definitions get their labels (and
+their choices') resolved for the UI language (that language, its base language, else `en`, else the
+first; no label: the id); `required` and a text's `maxLength`, which vultus-core has no option for, are
+left out and checked by the form (a required text or manyOf left empty, a text over `maxLength`: nothing
+is launched). Initial values: `initialValue`, else the kind's default. Launch calls
+`useProcessActions().launchAsync(_id, { params })` with every value (`errorRoute: 'processes.launch'`,
+`optioErrorRoutes`); success calls `onLaunched(child)` and closes. A refusal keeps the modal open with
+the values: `invalid-parameters` whose message `"<id>: <what>"` names a field shows `<what>` on it (and
+the reason's text in the form's error); one naming none shows its message in the form's error; the other
+reasons their text (`errors.processes.launch.<reason>`). Each opening starts from the initial values.
+Exported from `optio-ui` (with `TaskFactoryLaunchModalProps`, `TaskFactoryRecord`,
+`TaskFactoryParameter`, `ParameterChoice`, `ParameterLabel`).
+
+**`optioErrorRoutes`** (`packages/optio-ui/src/error-routes.ts`) — vultus-core's
+`ErrorRoutesRegistry<'processes.launch'>` (`OptioErrorRouteId`): every `LaunchFailureReason` →
+`{ i18nKey: 'errors.processes.launch.<reason>' }`, typed exhaustively (a reason added to
+optio-contracts fails the typecheck until it has an entry). Its texts are the app's (no default).
 
 ---
 
@@ -1568,7 +1614,8 @@ interface ProcessActionsOptions {
 }
 
 useProcessActions(options?: ProcessActionsOptions): {
-  launch: (processId: string, opts?: { resume?: boolean }) => void;
+  launch: (processId: string, opts?: { resume?: boolean; params?: Record<string, unknown> }) => void;
+  launchAsync: (processId: string, opts?: { resume?: boolean; params?: Record<string, unknown> }) => Promise<Process>;
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resurrect: (processId: string) => void;
@@ -1577,7 +1624,10 @@ useProcessActions(options?: ProcessActionsOptions): {
   isResyncing: boolean;
 }
 // Every call sends the provider's ?database=&prefix=.
-// launch sends body: { sessionId: getSessionId() }, plus resume: true when opts.resume is true.
+// launch sends body: { sessionId: getSessionId() }, plus resume: true when opts.resume is true and
+// params when opts.params is given (a task factory's values: the API makes and launches its child).
+// launchAsync sends the same, for an action that shows the outcome: it resolves with the launched
+// record (a factory's: the child) and rejects with ts-rest's { status, body: { reason, message } }.
 // resurrect POSTs /processes/:id/resurrect with body: { sessionId: getSessionId() }.
 ```
 
@@ -1752,6 +1802,10 @@ All components use `react-i18next`. Required keys:
 | `status.suspending` / `status.suspended` | ProcessStatusBadge (resumable process stopping / stopped with saved state; defaults "Suspending" / "Suspended") |
 | `status.autoResumeScheduled` | ProcessStatusBadge (auto-resume clock icon label; default "Scheduled for auto-restart") |
 | `common.noData` | ProcessLogPanel (empty state) |
+| `processes.factoryTitle` | TaskFactoryLaunchModal (title, `{{name}}` the factory's; default "Launch “{{name}}”") |
+| `processes.factoryLaunch` / `processes.factoryCancel` | TaskFactoryLaunchModal (buttons; defaults "Launch" / "Cancel") |
+| `processes.factoryRequired` / `processes.factoryMaxLength` | TaskFactoryLaunchModal (a required value missing, a text over `maxLength` with `{{count}}`; defaults "Required" / "At most {{count}} characters") |
+| `errors.processes.launch.<reason>` | TaskFactoryLaunchModal via `optioErrorRoutes`, one per `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`); no default (vultus-core's `routeApiError` reads `t(key)`) |
 
 ---
 

@@ -3,6 +3,7 @@ import { Tree, Progress, Button, Tooltip, Typography, Checkbox } from 'antd';
 import { CloseCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
+import type { Process } from 'optio-contracts';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
 import { isActive as isProcessActive, isResurrecting } from '../process-state.js';
@@ -24,6 +25,8 @@ interface ProcessNode {
   hasUnsavedWork?: boolean;
   resurrecting?: boolean;
   autoResumeScheduled?: boolean;
+  taskFactory?: boolean;        // a task factory's record: its launch opens its launch form
+  parameters?: unknown[];
   children?: ProcessNode[];
 }
 
@@ -31,12 +34,17 @@ interface SseState {
   connected: boolean;
 }
 
-interface ProcessTreeViewProps {
-  treeData: ProcessNode | null;
-  sseState: SseState;
+/** What a node's controls call. */
+interface NodeActions {
   onCancel?: (processId: string) => void;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunched?: (child: Process) => void;
   onResurrect?: (processId: string) => void;
+}
+
+interface ProcessTreeViewProps extends NodeActions {
+  treeData: ProcessNode | null;
+  sseState: SseState;
 }
 
 function filterDoneChildren(node: ProcessNode): ProcessNode {
@@ -56,13 +64,8 @@ function collectKeys(node: ProcessNode): string[] {
   return keys;
 }
 
-function treeNodeToDataNode(
-  node: ProcessNode,
-  onCancel: ((id: string) => void) | undefined,
-  onLaunch: ((id: string, opts?: { resume?: boolean }) => void) | undefined,
-  onResurrect: ((id: string) => void) | undefined,
-  t: TFunction,
-): DataNode {
+function treeNodeToDataNode(node: ProcessNode, actions: NodeActions, t: TFunction): DataNode {
+  const { onCancel, onLaunch, onLaunched, onResurrect } = actions;
   const isActive = isProcessActive(node);
   // A resurrect runs while the state stays failed; show its progress message.
   const showsProgressMessage = isActive || isResurrecting(node);
@@ -132,7 +135,9 @@ function treeNodeToDataNode(
             </Tooltip>
           )}
           {onLaunch && (
-            <LaunchControls process={node as any} onLaunch={onLaunch} onResurrect={onResurrect} size="small" />
+            <LaunchControls
+              process={node as any} onLaunch={onLaunch} onLaunched={onLaunched} onResurrect={onResurrect} size="small"
+            />
           )}
         </span>
         {showsProgressMessage && node.progress.message && (
@@ -140,11 +145,13 @@ function treeNodeToDataNode(
         )}
       </div>
     ),
-    children: node.children?.map((child) => treeNodeToDataNode(child, onCancel, onLaunch, onResurrect, t)) ?? [],
+    children: node.children?.map((child) => treeNodeToDataNode(child, actions, t)) ?? [],
   };
 }
 
-export function ProcessTreeView({ treeData, sseState, onCancel, onLaunch, onResurrect }: ProcessTreeViewProps) {
+export function ProcessTreeView({
+  treeData, sseState, onCancel, onLaunch, onLaunched, onResurrect,
+}: ProcessTreeViewProps) {
   const { t } = useTranslation();
   const [hideFinishedLeaves, setHideFinishedLeaves] = useState(true);
 
@@ -153,7 +160,7 @@ export function ProcessTreeView({ treeData, sseState, onCancel, onLaunch, onResu
 
   if (!treeData || !filtered) return null;
 
-  const treeNodes = [treeNodeToDataNode(filtered, onCancel, onLaunch, onResurrect, t)];
+  const treeNodes = [treeNodeToDataNode(filtered, { onCancel, onLaunch, onLaunched, onResurrect }, t)];
 
   return (
     <div>

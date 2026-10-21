@@ -1,10 +1,25 @@
 import { useQueryClient } from '@tanstack/react-query';
-import type { ProcessMetadataFilter } from 'optio-contracts';
+import type { Process, ProcessMetadataFilter } from 'optio-contracts';
 import { useOptioPrefix, useOptioClient, useOptioDatabase } from '../context/useOptioContext.js';
 import { getSessionId } from '../session/sessionEvents.js';
 
 interface ProcessActionsOptions {
   onResyncSuccess?: (clean: boolean) => void;
+}
+
+export interface LaunchOptions {
+  resume?: boolean;
+  /** A task factory's values, by parameter id: the launch makes the factory's child with them. */
+  params?: Record<string, unknown>;
+}
+
+/** The launch route's body: this tab's session, `resume: true` when asked, a task factory's values. */
+function launchBody(opts: LaunchOptions | undefined) {
+  return {
+    sessionId: getSessionId(),
+    ...(opts?.resume === true ? { resume: true } : {}),
+    ...(opts?.params !== undefined ? { params: opts.params } : {}),
+  };
 }
 
 export function useProcessActions(options?: ProcessActionsOptions) {
@@ -26,13 +41,19 @@ export function useProcessActions(options?: ProcessActionsOptions) {
     },
   });
 
+  const launchRequest = (processId: string, opts?: LaunchOptions) => ({
+    params: { id: processId },
+    query: { database, prefix },
+    body: launchBody(opts),
+  });
+
   return {
-    launch: (processId: string, opts?: { resume?: boolean }) =>
-      launchMutation.mutate({
-        params: { id: processId },
-        query: { database, prefix },
-        body: { sessionId: getSessionId(), ...(opts?.resume === true ? { resume: true } : {}) },
-      }),
+    launch: (processId: string, opts?: LaunchOptions) => launchMutation.mutate(launchRequest(processId, opts)),
+    /** As `launch`, for an action that shows the outcome (a vultus useAction): resolves with the
+     *  launched record (a task factory's: the child it made), rejects with ts-rest's
+     *  `{ status, body: { reason, message } }` on a refusal. */
+    launchAsync: async (processId: string, opts?: LaunchOptions): Promise<Process> =>
+      (await launchMutation.mutateAsync(launchRequest(processId, opts))).body,
     cancel: (processId: string) => cancelMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
     dismiss: (processId: string) => dismissMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
     resurrect: (processId: string) =>

@@ -22,9 +22,15 @@
 - `@tanstack/react-query: >=5`
 - `react-i18next: >=15`
 - `i18next: >=24`
-- `vultus-core: >=0.5.3` — a peer so the app has one copy and one components context
-  (see "Spinner slot"). In this workspace a dev dependency
-  linked to `../unitas/packages/vultus-core`.
+- `vultus-core: >=0.5.4` — a peer so the app has one copy and one components context
+  (see "Spinner slot"), the copy vultus-antd uses too (vultus-antd 0.7.2 depends on
+  `^0.5.4`): the task factory form's action finds its form through vultus-core's
+  `ActionErrorContext`, which vultus-antd's `FormPanel` provides.
+- `vultus-antd: >=0.7.2` — the task factory form's widgets (`Field`, `FormPanel`,
+  `FormSubmitButton`, `ActionButton`; see "TaskFactoryLaunchModal").
+
+In this workspace both vultus packages are dev dependencies (`^0.5.4`, `^0.7.2`), linked to
+`../unitas/packages/vultus-*` when that checkout exists (`pnpm-workspace.yaml`).
 
 ## Conventions
 
@@ -57,7 +63,9 @@ Do:
   unsaved work while the state stays as it was), `isSuspended(process)`
   (`status.state === 'cancelled'` AND `supportsResume === true` AND
   `hasSavedState === true`: a cancelled task whose saved conversation can be
-  read without launching it).
+  read without launching it), `isTaskFactory(process)` (`taskFactory === true`:
+  a task factory's record, whose launch opens its launch form; see
+  "TaskFactoryLaunchModal").
 - If you genuinely need a new state-derived concept (e.g. "show widget UI" —
   which is *almost* `isActive` but excludes `scheduled`), add a named
   predicate to `process-state.ts` rather than spelling out the set at the
@@ -146,6 +154,7 @@ interface OptioContextValue {
 interface LaunchControlsProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onLaunched?: (child: Process) => void;  // a task factory's form launched it: the child it made
   onResurrect?: (id: string) => void;  // save a failed run's host work, then resume
   size?: ButtonProps['size'];          // default 'small'
   iconFontSize?: number;               // pixel size of the button icons
@@ -158,6 +167,7 @@ Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`).
 Rendering rules:
 - Renders **nothing** when the process is not in a launchable state (`idle | done | failed | cancelled`), or when `onLaunch` is not provided.
 - Renders a single disabled **Resurrecting** indicator while `isResurrecting(process)` (spinning loading icon, or the app's lent Spinner — see "Spinner slot"; `aria-label` "Resurrecting", tooltip "Resurrecting: saving the unsaved work…"); clicking it does nothing. It takes precedence over all the cases below (a non-empty `denyReason` still wins).
+- For a task factory's record (`isTaskFactory(process)`), a single play button (tooltip `processes.launch`) that opens the factory's `TaskFactoryLaunchModal` instead of calling `onLaunch` (which only allows it, as for any process); no `Popconfirm`, the form shows the `warning`. The form's launch hands the child to `onLaunched`. It takes precedence over the cases below (`denyReason` and Resurrecting still win).
 - Renders a **Resurrect** split button when `onResurrect` is provided and `isResurrectable(process)` (`supportsResurrect=true` and `hasUnsavedWork=true`); it takes precedence over the two cases below (a non-empty `denyReason` still wins):
   - Primary button: **Resurrect** (medicine-box icon, `aria-label` "Resurrect") — calls `onResurrect(id)`.
   - Menu item **Resume from last snapshot**, only when `isResumable(process)` — calls `onLaunch(id, { resume: true })`.
@@ -180,14 +190,15 @@ interface ProcessListProps {
   processes: any[];
   loading: boolean;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunched?: (child: Process) => void;  // forwarded to each ProcessItem
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
 }
 ```
 
-Renders an Ant Design `List` (its loading indicator is the app's lent Spinner when one is set — see "Spinner slot"). Each item delegates to `ProcessItem`. The launch button is provided via `LaunchControls`; `onResurrect` is forwarded to it through `ProcessItem`.
-`FilteredProcessList` (`ProcessFilter.tsx`) takes the same callbacks, including `onResurrect`, and forwards them to `ProcessList`.
+Renders an Ant Design `List` (its loading indicator is the app's lent Spinner when one is set — see "Spinner slot"). Each item delegates to `ProcessItem`. The launch button is provided via `LaunchControls`; `onResurrect` and `onLaunched` are forwarded to it through `ProcessItem`.
+`FilteredProcessList` (`ProcessFilter.tsx`) takes the same callbacks, including `onResurrect` and `onLaunched`, and forwards them to `ProcessList`.
 
 Launchable states: `idle | done | failed | cancelled`.
 Active states: `running | scheduled | cancel_requested | cancelling`.
@@ -202,6 +213,7 @@ type ProcessItemSize = 'small' | 'default' | 'big';
 interface ProcessItemProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onLaunched?: (child: Process) => void;  // forwarded to LaunchControls (a task factory's launch)
   onResurrect?: (id: string) => void;  // forwarded to LaunchControls
   onCancel?: (id: string) => void;
   readonly?: boolean;
@@ -215,7 +227,8 @@ interface ProcessItemProps {
 
 Single process row. Behavioral rules:
 - Launch button visible when `!readonly && state in LAUNCHABLE_STATES && onLaunch provided`.
-- If `process.warning` is set, launch button is wrapped in `Popconfirm` requiring confirmation.
+- If `process.warning` is set, launch button is wrapped in `Popconfirm` requiring confirmation (a task factory's shows it in its launch form instead).
+- A task factory's launch button opens its `TaskFactoryLaunchModal` (see `LaunchControls`).
 - Cancel button visible when `!readonly && isCancellable(process) && onCancel provided` — i.e. state is `scheduled | running` AND `process.cancellable === true`. Hidden during `cancel_requested`/`cancelling` (cancel already in flight; re-click is a no-op). When `process.supportsResume` it is a **Suspend** button (pause icon, not `danger`, `processes.suspend`), otherwise **Cancel** (`processes.cancel`); `ProcessTreeView` does the same.
 - Progress bar: active + `progress.percent != null` → determinate bar; active + no percent → indeterminate animated gradient bar; not active → hidden.
 - Name rendered as `Button[type=link]` when `onProcessClick` provided, plain `Text` otherwise. If `process.description` is set, the name is wrapped in a `Tooltip` showing the description.
@@ -293,6 +306,8 @@ interface ProcessNode {
   hasUnsavedWork?: boolean;
   resurrecting?: boolean;
   autoResumeScheduled?: boolean;
+  taskFactory?: boolean;        // a task factory's record: LaunchControls opens its launch form
+  parameters?: unknown[];       // the factory's parameters, for that form
   children?: ProcessNode[];
 }
 
@@ -305,6 +320,7 @@ interface ProcessTreeViewProps {
   sseState: SseState;             // used to show 'Live' / 'Disconnected' label
   onCancel?: (processId: string) => void;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunched?: (child: Process) => void;  // forwarded to each node's LaunchControls
   onResurrect?: (processId: string) => void;
 }
 ```
@@ -327,7 +343,7 @@ or `isResurrecting(node)`.
 
 Cancel button appears per-node when `state in ACTIVE_STATES && node.cancellable && onCancel provided`.
 
-Launch affordances appear per-node via `LaunchControls` when `onLaunch` is provided; `onResurrect` is forwarded to it.
+Launch affordances appear per-node via `LaunchControls` when `onLaunch` is provided; `onResurrect` and `onLaunched` are forwarded to it.
 
 ---
 
@@ -398,6 +414,7 @@ interface ProcessDetailViewProps {
   showLogs?: boolean;            // default true; false: the widget alone, full height
   waitForWidget?: boolean;       // default false; true: a big spinner until the widget shows
   widgetPlaceholder?: ReactNode; // shown instead of that spinner; implies waitForWidget
+  onLaunched?: (child: Process) => void;  // a task factory's launch form (from the tree) launched it
 }
 
 function ProcessDetailView(props: ProcessDetailViewProps): JSX.Element
@@ -422,12 +439,84 @@ Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branch
 - **`tree.uiWidget` is set, the process `isSuspended`, but no suspended variant is
   registered** — falls back to the default tree+log view, silently (no warning — this is the
   normal case for a widget that doesn't support a read-only suspended view yet).
-- **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set) + `ProcessLogPanel`.
+- **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set, `onLaunched` passed on) + `ProcessLogPanel`. A task factory's record (the root of its launches) gets the play button that opens its `TaskFactoryLaunchModal`; the launch then shows under it in the tree.
 
 `widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${database}/${prefix}/${process._id}/`
 (database and prefix URI-encoded; trailing slash is load-bearing for relative URLs inside iframes).
 
 Exported from `optio-ui`.
+
+---
+
+### TaskFactoryLaunchModal
+
+```ts
+interface TaskFactoryRecord {          // what it needs of the factory's record
+  _id: string;
+  name: string;
+  warning?: string | null;
+  parameters?: unknown[] | null;       // TaskFactoryParameter[] (optio-core checked them at sync)
+}
+
+interface TaskFactoryLaunchModalProps {
+  process: TaskFactoryRecord;          // the factory's record (a Process, a list's or a tree's)
+  open: boolean;
+  onClose: () => void;                 // Cancel, the close icon, Escape, and after a launch
+  onLaunched?: (child: Process) => void;  // the launched child; the modal then closes
+}
+```
+
+The launch form of a task factory (`packages/optio-ui/src/components/TaskFactoryLaunchModal.tsx`;
+spec `docs/2026-10-20-task-factory-design.md` §3). `LaunchControls` opens it for a factory's
+record (`isTaskFactory`: `taskFactory: true`); the record must carry `parameters` (`ProcessSchema`,
+the REST reads; optio-api's list and tree streams do not send `taskFactory` / `parameters` yet).
+
+- An antd `Modal` (title `processes.factoryTitle`, "Launch “{{name}}”"; `destroyOnHidden`, so each
+  opening starts from the initial values) around a vultus-antd `FormPanel` (vertical): the factory's
+  `warning` (a warning `Alert`) on top, then one antd `Form.Item` per parameter (name = its id,
+  label, the value the form keeps) holding a vultus-antd `<Field>` of the parameter's definition,
+  then **Cancel** (a vultus action, `ActionButton`) and **Launch** (`FormSubmitButton`).
+- The definitions (`src/task-factory.ts`, `fieldDefinitionOf`): the parameter's label and its
+  choices' labels resolved for the UI language (`i18n.language`: that language, else its base
+  language for a regional code, else `en`, else the first; a parameter without a label is named by
+  its id); `required` and a text's `maxLength`, which vultus-core has no option for, left out. The
+  form checks them (the items' rules): a required parameter without a value (`isNoValue`: null;
+  `''` for a text; `[]` for a manyOf) shows `processes.factoryRequired`, a text over its
+  `maxLength` (in code points, as optio-core counts) `processes.factoryMaxLength`, and nothing
+  is launched. The other kinds always hold a value; only a required text or manyOf is marked
+  required. Initial values: `initialValue`, else the kind's own default (vultus-core's
+  `initialValueOf`).
+- **Launch** is the vultus action `useTaskFactoryLaunchAction(record, { onLaunched })`
+  (`src/hooks/useTaskFactoryLaunch.ts`, created inside the `FormPanel`): `fire(values)` calls
+  `useProcessActions().launchAsync(_id, { params: values })` (every parameter's value, as the form
+  holds it), `errorRoute: 'processes.launch'` with `optioErrorRoutes`. On success it calls
+  `onLaunched(child)` and closes. A refusal leaves the modal open with the values entered:
+  - `invalid-parameters` whose message `"<id>: <what>"` names a parameter of the form: `<what>` on
+    that field (`form.setFields`), and the reason's text (`errors.processes.launch.invalid-parameters`)
+    in the form's error (`FormPanel`'s inline `Alert`);
+  - `invalid-parameters` naming none: its message, as the engine wrote it, in the form's error;
+  - any other reason: its text (`errors.processes.launch.<reason>`) in the form's error; an error
+    without a reason (network, 401/403), its message.
+- React events inside the modal (click, mouse down, key down) stop at it: they would otherwise
+  bubble, along React's tree, to the handlers around the launch control (the process tree's
+  keyboard navigation took arrow keys, Home and End typed in a field).
+
+Exported from `optio-ui`, with the `TaskFactoryLaunchModalProps`, `TaskFactoryRecord`,
+`TaskFactoryParameter`, `ParameterChoice` and `ParameterLabel` types.
+
+### Error routes (`optioErrorRoutes`)
+
+```ts
+type OptioErrorRouteId = 'processes.launch';
+const optioErrorRoutes: ErrorRoutesRegistry<OptioErrorRouteId>;  // vultus-core's registry
+```
+
+The error routes of optio-ui's own actions (`src/error-routes.ts`): for `processes.launch`, every
+`LaunchFailureReason` (optio-contracts; typed `Record<LaunchFailureReason, RegistryEntry>`, so a
+reason added there fails the typecheck until it has an entry) → `{ i18nKey:
+'errors.processes.launch.<reason>' }`. vultus-core's `routeApiError` shows `t(i18nKey)`: the app
+translates these keys (no inline default; see "i18n Keys"). Exported from `optio-ui`, for apps that
+reuse or merge it.
 
 ---
 
@@ -582,10 +671,16 @@ state (`done`, `failed`, or `cancelled`).
 ### useProcessActions
 
 ```ts
+interface LaunchOptions {
+  resume?: boolean;
+  params?: Record<string, unknown>;  // a task factory's values, by parameter id
+}
+
 function useProcessActions(options?: {
   onResyncSuccess?: (clean: boolean) => void;
 }): {
-  launch: (processId: string, opts?: { resume?: boolean }) => void;
+  launch: (processId: string, opts?: LaunchOptions) => void;
+  launchAsync: (processId: string, opts?: LaunchOptions) => Promise<Process>;
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resurrect: (processId: string) => void;
@@ -599,7 +694,11 @@ All mutations invalidate the `['processes']` query key on success.
 `resync` sends `body: {}`, `resyncClean` sends `body: { clean: true }`; a `metadataFilter`
 is added to the body when given.
 `onResyncSuccess(clean)` is called after a successful resync with the `clean` flag value.
-`launch` sends `body: { sessionId: getSessionId() }`, plus `resume: true` when `opts.resume` is true.
+`launch` sends `body: { sessionId: getSessionId() }`, plus `resume: true` when `opts.resume` is true
+and `params` when `opts.params` is given (a task factory's launch: the API makes and launches its
+child). It reports nothing. `launchAsync` sends the same, for an action that shows the outcome (a
+vultus `useAction`, as the task factory form's): it resolves with the launched record (a factory's:
+its child) and rejects with ts-rest's `{ status, body: { reason, message } }` on a refusal.
 `resurrect` POSTs `/processes/:id/resurrect` with `body: { sessionId: getSessionId() }`.
 
 ---
@@ -833,6 +932,7 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.showSpecial` | `ProcessFilters` | Checkbox label |
 | `common.noData` | `ProcessLogPanel` | Empty state description |
 | `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
+| `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`) | A launch refusal in the form, one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
 | `processes.suspend` | `ProcessItem`, `ProcessTreeView` | Tooltip / `aria-label` of the stop button when the task can resume (default: "Suspend") |
 | `processes.resume` | `LaunchControls` | Resume button tooltip when `supportsResume` and `hasSavedState` (default: "Resume") |
 | `processes.restart` | `LaunchControls` | Dropdown menu item label (default: "Restart (discard saved state)") |
@@ -848,3 +948,8 @@ no inline default (the app must translate them); the second carries an English d
 | `status.suspending` | `ProcessStatusBadge` | `cancel_requested` / `cancelling` label when `supportsResume` (default: "Suspending") |
 | `status.suspended` | `ProcessStatusBadge` | `cancelled` label when `supportsResume` and `hasSavedState` (default: "Suspended") |
 | `status.autoResumeScheduled` | `ProcessStatusBadge` | Tooltip / `aria-label` of the auto-resume stopwatch icon (default: "Scheduled for auto-restart") |
+| `processes.factoryTitle` | `TaskFactoryLaunchModal` | The modal's title, `{{name}}` the factory's name (default: "Launch “{{name}}”") |
+| `processes.factoryLaunch` | `TaskFactoryLaunchModal` | The launch button (default: "Launch") |
+| `processes.factoryCancel` | `TaskFactoryLaunchModal` | The cancel button (default: "Cancel") |
+| `processes.factoryRequired` | `TaskFactoryLaunchModal` | A required parameter without a value (default: "Required") |
+| `processes.factoryMaxLength` | `TaskFactoryLaunchModal` | A text over its `maxLength`, `{{count}}` (default: "At most {{count}} characters") |

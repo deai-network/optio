@@ -1,15 +1,24 @@
+import { useState } from 'react';
 import { Button, Dropdown, Modal, Space, Tooltip, Popconfirm } from 'antd';
 import type { MenuProps, ButtonProps } from 'antd';
 import {
   DownOutlined, LoadingOutlined, MedicineBoxOutlined, PlayCircleOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import type { Process } from 'optio-contracts';
 import { useSpinnerKey, useVultusComponents } from 'vultus-core';
-import { isLaunchable, isResumable, isResurrectable, isResurrecting } from '../process-state.js';
+import {
+  isLaunchable, isResumable, isResurrectable, isResurrecting, isTaskFactory,
+} from '../process-state.js';
+import { TaskFactoryLaunchModal } from './TaskFactoryLaunchModal.js';
 
 export interface LaunchControlsProps {
   process: any;
+  /** Launches the process. A task factory's play button opens its launch form
+   *  instead, which launches it itself; `onLaunch` only allows it there. */
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  /** A task factory's launch form launched it: the child it made. */
+  onLaunched?: (child: Process) => void;
   /** Save the work a failed run left on its host, then resume. When given
    *  and the process is resurrectable, Resurrect becomes the primary action;
    *  Resume-from-snapshot and Restart move to the menu behind a confirmation. */
@@ -42,12 +51,14 @@ export interface LaunchControlsProps {
  *     saved state yet).
  *   * Split button (primary = Resume, menu = Restart) when supportsResume
  *     AND hasSavedState are both true.
+ *   * For a task factory's record, a single play button that opens its
+ *     launch form (TaskFactoryLaunchModal), which shows the warning itself.
  *
  * Defensive defaults: missing fields on the process document are treated
  * as false so the UI works against an unmigrated DB.
  */
 export function LaunchControls({
-  process, onLaunch, onResurrect, size = 'small', iconFontSize, denyReason,
+  process, onLaunch, onLaunched, onResurrect, size = 'small', iconFontSize, denyReason,
 }: LaunchControlsProps) {
   const { t } = useTranslation();
   const { Spinner } = useVultusComponents();
@@ -95,6 +106,13 @@ export function LaunchControls({
           />
         </span>
       </Tooltip>
+    );
+  }
+
+  // A task factory: its launch takes the values of its parameters first.
+  if (isTaskFactory(process)) {
+    return (
+      <TaskFactoryLaunchButton process={process} onLaunched={onLaunched} size={size} iconStyle={iconStyle} />
     );
   }
 
@@ -168,6 +186,38 @@ export function LaunchControls({
         </Tooltip>
       </Dropdown>
     </Space.Compact>
+  );
+}
+
+function TaskFactoryLaunchButton({ process, onLaunched, size, iconStyle }: {
+  process: any;
+  onLaunched?: (child: Process) => void;
+  size: ButtonProps['size'];
+  iconStyle: { fontSize: number } | undefined;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Tooltip title={t('processes.launch')}>
+        <Button
+          type="text"
+          size={size}
+          icon={<PlayCircleOutlined style={iconStyle} />}
+          style={{ color: '#52c41a' }}
+          onClick={(e) => {
+            e.preventDefault();
+            setOpen(true);
+          }}
+        />
+      </Tooltip>
+      <TaskFactoryLaunchModal
+        process={process}
+        open={open}
+        onClose={() => setOpen(false)}
+        onLaunched={onLaunched}
+      />
+    </>
   );
 }
 

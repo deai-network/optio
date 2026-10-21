@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Spin } from 'antd';
+import type { Process } from 'optio-contracts';
 import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import { useProcessStream } from '../hooks/useProcessStream.js';
 import { isActive } from '../process-state.js';
@@ -46,6 +47,11 @@ export interface ProcessDetailViewProps {
    * it implies `waitForWidget`.
    */
   widgetPlaceholder?: ReactNode;
+  /**
+   * A task factory's launch form (its play button in the tree opens it)
+   * launched it: the child it made, which shows under the factory.
+   */
+  onLaunched?: (child: Process) => void;
 }
 
 export function ProcessDetailView({
@@ -54,6 +60,7 @@ export function ProcessDetailView({
   showLogs = true,
   waitForWidget = false,
   widgetPlaceholder,
+  onLaunched,
 }: ProcessDetailViewProps) {
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
@@ -141,6 +148,7 @@ export function ProcessDetailView({
             <LaunchControls
               process={tree}
               onLaunch={(id, opts) => launch(id, opts)}
+              onLaunched={onLaunched}
               onResurrect={(id) => resurrect(id)}
             />
           </div>
@@ -161,6 +169,7 @@ export function ProcessDetailView({
         treeData={tree}
         sseState={{ connected }}
         onLaunch={readOnly ? undefined : (id, opts) => launch(id, opts)}
+        onLaunched={onLaunched}
         onResurrect={readOnly ? undefined : (id) => resurrect(id)}
         onCancel={readOnly ? undefined : (id) => cancel(id)}
       />

@@ -3,6 +3,7 @@ import { Checkbox, Select, Space } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { WithSearch, useFilterFunction } from '@quaesitor-textus/core';
 import { SearchInput } from '@quaesitor-textus/antd';
+import type { Process } from 'optio-contracts';
 import { ProcessList } from './ProcessList.js';
 
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
@@ -105,6 +106,7 @@ interface FilteredProcessListProps {
   processes: any[];
   loading: boolean;
   onLaunch?: (processId: string) => void;
+  onLaunched?: (child: Process) => void;
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;

@@ -14,6 +14,7 @@ import {
   isResurrectable,
   isResurrecting,
   isSuspended,
+  isTaskFactory,
 } from '../process-state.js';
 
 describe('isWidgetLiveState', () => {
@@ -273,5 +274,16 @@ describe('isSuspended', () => {
       supportsResume: 1 as unknown as boolean,
       hasSavedState: 1 as unknown as boolean,
     })).toBe(false);
+  });
+});
+
+describe('isTaskFactory', () => {
+  it('true only for a literal taskFactory: true', () => {
+    expect(isTaskFactory({ status: { state: 'idle' }, taskFactory: true })).toBe(true);
+    expect(isTaskFactory({ status: { state: 'idle' }, taskFactory: false })).toBe(false);
+    expect(isTaskFactory({ status: { state: 'idle' } })).toBe(false);
+    expect(isTaskFactory({ taskFactory: 1 as unknown as boolean })).toBe(false);
+    expect(isTaskFactory(null)).toBe(false);
+    expect(isTaskFactory(undefined)).toBe(false);
   });
 });

@@ -53,6 +53,7 @@ export interface ProcessStateLike {
   hasUnsavedWork?: boolean;
   resurrecting?: boolean;
   autoResumeScheduled?: boolean;
+  taskFactory?: boolean;
 }
 
 export function isLaunchableState(state: string | null | undefined): boolean {
@@ -121,4 +122,10 @@ export function isSuspended(process: ProcessStateLike | null | undefined): boole
   return process?.status?.state === 'cancelled'
     && process?.supportsResume === true
     && process?.hasSavedState === true;
+}
+
+/** A task factory's record: it never runs itself; its launch takes the values
+ *  of its parameters (TaskFactoryLaunchModal) and makes a child that runs. */
+export function isTaskFactory(process: ProcessStateLike | null | undefined): boolean {
+  return process?.taskFactory === true;
 }

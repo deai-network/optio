@@ -4,6 +4,7 @@ import type { ButtonProps, ProgressProps } from 'antd';
 import { CloseCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { HighlightedText } from '@quaesitor-textus/core';
+import type { Process } from 'optio-contracts';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
 import {
@@ -32,6 +33,8 @@ const SIZE_TOKENS: Record<ProcessItemSize, SizeTokens> = {
 export interface ProcessItemProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  /** A task factory's launch form launched it (forwarded to LaunchControls): the child it made. */
+  onLaunched?: (child: Process) => void;
   onResurrect?: (id: string) => void;
   onCancel?: (id: string) => void;
   readonly?: boolean;
@@ -56,7 +59,7 @@ export interface ProcessItemProps {
 }
 
 export function ProcessItem({
-  process, onLaunch, onResurrect, onCancel, readonly, onProcessClick,
+  process, onLaunch, onLaunched, onResurrect, onCancel, readonly, onProcessClick,
   size = 'default', inline = false, inactiveContent, launchDenyReason,
 }: ProcessItemProps) {
   const { t } = useTranslation();
@@ -123,6 +126,7 @@ export function ProcessItem({
         <LaunchControls
           process={process}
           onLaunch={onLaunch}
+          onLaunched={onLaunched}
           onResurrect={onResurrect}
           size={tokens.button}
           iconFontSize={tokens.iconFontSize}

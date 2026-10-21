@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, afterAll, beforeAll, vi, beforeEach } from 'vitest';
-import { render, cleanup, screen, fireEvent, within } from '@testing-library/react';
+import { render, cleanup, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import React from 'react';
 import { registerWidget, _clearWidgetRegistry } from '../widgets/registry.js';
 
@@ -12,8 +12,11 @@ vi.mock('../hooks/useProcessStream.js', () => ({
 const mockLaunch = vi.fn();
 const mockCancel = vi.fn();
 const mockResurrect = vi.fn();
+const mockLaunchAsync = vi.fn();
 vi.mock('../hooks/useProcessActions.js', () => ({
-  useProcessActions: () => ({ launch: mockLaunch, cancel: mockCancel, resurrect: mockResurrect }),
+  useProcessActions: () => ({
+    launch: mockLaunch, cancel: mockCancel, resurrect: mockResurrect, launchAsync: mockLaunchAsync,
+  }),
 }));
 
 // Mock context hooks — these live in useOptioContext.ts (imported by useProcessStream).
@@ -561,6 +564,48 @@ describe('ProcessDetailView', () => {
       mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: false, error: new Error('boom') });
       render(<ProcessDetailView processId="abc" waitForWidget />);
       expect(screen.getByTestId('optio-detail-error')).toBeTruthy();
+    });
+  });
+
+  // A task factory's record launches through its form (spec 2026-10-20-task-factory §3).
+  describe('a task factory', () => {
+    beforeAll(() => {
+      const real = globalThis.getComputedStyle.bind(globalThis);
+      vi.spyOn(globalThis, 'getComputedStyle').mockImplementation((elt) => real(elt));
+    });
+    afterAll(() => {
+      vi.restoreAllMocks();
+    });
+
+    const factoryTree = {
+      _id: 'f1', name: 'Drop proposals', status: { state: 'idle' },
+      progress: { percent: null }, cancellable: true,
+      depth: 0, order: 0, parentId: null, children: [],
+      taskFactory: true,
+      parameters: [{ kind: 'numeric', id: 'limit', label: 'Limit', min: 1, max: 9, initialValue: 3 }],
+    };
+
+    it('its launch opens the launch form, which launches with the values and reports the child', async () => {
+      const child = { _id: 'c1', name: 'Drop proposals' };
+      mockLaunchAsync.mockReset();
+      mockLaunchAsync.mockResolvedValue(child);
+      const onLaunched = vi.fn();
+      mockProcessStream.mockReturnValue({ tree: factoryTree, logs: [], connected: true });
+      const { container } = render(<ProcessDetailView processId="f1" onLaunched={onLaunched} />);
+      const play = container.querySelector('.anticon-play-circle')!.closest('button')!;
+      fireEvent.click(play);
+      const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+      expect(mockLaunch).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Launch' }));
+      await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(child), { timeout: 60_000 });
+      expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { limit: 3 } });
+      expect(mockLaunch).not.toHaveBeenCalled();
+    });
+
+    it('read-only, it offers no launch', () => {
+      mockProcessStream.mockReturnValue({ tree: factoryTree, logs: [], connected: true });
+      const { container } = render(<ProcessDetailView processId="f1" readOnly />);
+      expect(container.querySelector('.anticon-play-circle')).toBeNull();
     });
   });
 

@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { I18nextProvider } from 'react-i18next';
 import i18next from 'i18next';
+
+// A task factory's form launches through useProcessActions().launchAsync.
+const mockLaunchAsync = vi.fn();
+vi.mock('../hooks/useProcessActions.js', () => ({
+  useProcessActions: () => ({ launchAsync: mockLaunchAsync }),
+}));
 
 import { LaunchControls } from '../components/LaunchControls.js';
 
@@ -232,5 +238,70 @@ describe('LaunchControls resurrect', () => {
       </I18nextProvider>,
     );
     expect(screen.getByRole('button', { name: 'Feltámasztás' })).toBeTruthy();
+  });
+});
+
+// A task factory's record launches through its form (spec 2026-10-20-task-factory §3).
+describe('LaunchControls of a task factory', () => {
+  beforeAll(() => {
+    const real = globalThis.getComputedStyle.bind(globalThis);
+    vi.spyOn(globalThis, 'getComputedStyle').mockImplementation((elt) => real(elt));
+  });
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  const factory = {
+    _id: 'f1', name: 'Drop proposals', status: { state: 'idle' }, taskFactory: true,
+    warning: 'This deletes the proposals it finds.',
+    parameters: [{ kind: 'text', id: 'note', label: 'Note' }],
+  };
+
+  it('the play button opens the form instead of launching, with the warning in the form', async () => {
+    const { onLaunch } = renderWith(factory);
+    fireEvent.click(screen.getByRole('button'));
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+    expect(within(dialog).getByText(/Drop proposals/)).toBeTruthy();
+    expect(within(dialog).getByText(factory.warning)).toBeTruthy();
+    expect(within(dialog).getByRole('textbox', { name: 'Note' })).toBeTruthy();
+    expect(onLaunch).not.toHaveBeenCalled();
+    // No pop-confirm of its own: the warning is the form's.
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it("the form's launch hands the launched child to onLaunched", async () => {
+    const child = { _id: 'c1', name: 'Drop proposals' };
+    mockLaunchAsync.mockReset();
+    mockLaunchAsync.mockResolvedValue(child);
+    const onLaunched = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <LaunchControls process={factory} onLaunch={vi.fn()} onLaunched={onLaunched} size="small" />
+      </I18nextProvider>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Note' }), { target: { value: 'hi' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Launch' }));
+    await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(child), { timeout: 60_000 });
+    expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { note: 'hi' } });
+  });
+
+  it('renders nothing without onLaunch, as for any process', () => {
+    const { container } = render(
+      <I18nextProvider i18n={i18n}>
+        <LaunchControls process={factory} size="small" />
+      </I18nextProvider>,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("a record that is not a factory's launches as before, whatever it carries", () => {
+    const { onLaunch } = renderWith({
+      _id: 't1', status: { state: 'idle' }, parameters: [{ kind: 'text', id: 'note' }],
+    });
+    fireEvent.click(screen.getByRole('button'));
+    expect(onLaunch).toHaveBeenCalledWith('t1', undefined);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

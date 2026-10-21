@@ -1,12 +1,15 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { List } from 'antd';
 import { useSpinnerKey, useVultusComponents } from 'vultus-core';
+import type { Process } from 'optio-contracts';
 import { ProcessItem } from './ProcessItem.js';
 
 interface ProcessListProps {
   processes: any[];
   loading: boolean;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  /** A task factory's launch form launched it (forwarded to each ProcessItem): the child it made. */
+  onLaunched?: (child: Process) => void;
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
@@ -34,7 +37,9 @@ function SpinnerSlotIndicator({ className, style, children }: {
   );
 }
 
-export function ProcessList({ processes, loading, onLaunch, onResurrect, onCancel, onProcessClick }: ProcessListProps) {
+export function ProcessList({
+  processes, loading, onLaunch, onLaunched, onResurrect, onCancel, onProcessClick,
+}: ProcessListProps) {
   const { Spinner } = useVultusComponents();
   const spinnerKey = useSpinnerKey('optio:process-list');
   return (
@@ -50,7 +55,7 @@ export function ProcessList({ processes, loading, onLaunch, onResurrect, onCance
       renderItem={(item: any) => (
         <List.Item>
           <ProcessItem
-            process={item} onLaunch={onLaunch} onResurrect={onResurrect} onCancel={onCancel}
+            process={item} onLaunch={onLaunch} onLaunched={onLaunched} onResurrect={onResurrect} onCancel={onCancel}
             onProcessClick={onProcessClick} size="small"
           />
         </List.Item>

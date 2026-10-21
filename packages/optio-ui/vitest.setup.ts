@@ -7,3 +7,18 @@ if (!('ResizeObserver' in globalThis)) {
     disconnect(): void {}
   };
 }
+
+// antd's Form lays its items out on its grid, which asks window.matchMedia for
+// the breakpoints; jsdom has none, so no query matches.
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  window.matchMedia = (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener(): void {},
+    removeListener(): void {},
+    addEventListener(): void {},
+    removeEventListener(): void {},
+    dispatchEvent: () => false,
+  }) as MediaQueryList;
+}
