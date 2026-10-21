@@ -67,9 +67,10 @@ Do:
   read without launching it), `isTaskFactory(process)` (`taskFactory === true`:
   a task factory's record, whose launch opens its launch form; see
   "TaskFactoryLaunchModal"), `isTaskFactoryLaunch(process)` (`metadata.taskFactory`
-  a non-empty string, the factory's id: a launch the form made, which ran once
-  with its values and is never launched again, so `isLaunchable` is false for
-  it in any state; optio-core refuses its launch, `not-launchable`).
+  a non-empty string, the factory's id: a factory's launch, from its form or a
+  program, which ran once with its values and is never launched again, so
+  `isLaunchable` is false for it in any state; optio-core refuses its launch,
+  `not-launchable`).
 - If you genuinely need a new state-derived concept (e.g. "show widget UI" —
   which is *almost* `isActive` but excludes `scheduled`), add a named
   predicate to `process-state.ts` rather than spelling out the set at the

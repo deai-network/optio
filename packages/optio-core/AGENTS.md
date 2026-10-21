@@ -280,9 +280,8 @@ await ctx.clear_widget_data() -> None
 `hasSavedState` is backfilled to `false` on all existing documents by migration `m003_backfill_has_saved_state`
 (runs on startup; depends on m002). `supportsResurrect`, `hasUnsavedWork` and `resurrecting` have
 no backfill; an absent field reads as `false`. All three are wire keys: the engine RPC's process
-payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them, and so they do
-`taskFactory` and `parameters` (`_engine_service._PROCESS_WIRE_KEYS`; absent on a
-TaskInstance's record).
+payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them, and `taskFactory` and
+`parameters` too (`_engine_service._PROCESS_WIRE_KEYS`; absent on a TaskInstance's record).
 
 ---
 
