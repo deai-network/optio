@@ -1495,16 +1495,32 @@ Scrollable log viewer (max-height 400px, monospace). Auto-scrolls to bottom unle
 
 ```typescript
 function ProcessFilters(props?: { className?: string; style?: CSSProperties }): JSX.Element
-// Search box + filter-group select + "show details" / "show special" checkboxes. Holds no state
-// of its own: reads and sets it through useProcessFilter(), so it must sit inside
-// <WithFilteredProcesses>, next to the FilteredProcessList it filters.
+// Every filter a vultus-antd Field (local mode), in one row: the search (text, widget 'search',
+// quaesitor-textus' query), the filter group (oneOf, select), "show details" / "show special"
+// (boolean, checkbox), then the app's own `filters`. Holds no state of its own: reads and sets
+// it through useProcessFilter(), so it must sit inside <WithFilteredProcesses>, next to the
+// FilteredProcessList it filters.
 
-function WithFilteredProcesses(props: { children: ReactNode }): JSX.Element  // provides the filter state
+function WithFilteredProcesses(props: {         // provides the filter state
+  children: ReactNode;
+  filters?: readonly FieldDefinition[];            // the app's filters over the metadata: oneOf, manyOf, oneOfTree, manyOfTree
+  filterFields?: Readonly<Record<string, string>>; // filter id → metadata key, where they differ
+}): JSX.Element
 function useProcessFilter(): { filterGroup, setFilterGroup, showDetails, setShowDetails,
-                               showSpecial, setShowSpecial, filterFn: (processes: any[]) => any[] }
+                               showSpecial, setShowSpecial, filterFn: (processes: any[]) => any[],
+                               filters, filterValues, setFilterValue,
+                               metadataFilter: ProcessMetadataFilter | undefined }
 
 type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 ```
+
+`filterFn` applies the built-in filters in the browser. The app's `filters` start at their
+`initialValue`, else their kind's default (vultus-core's `initialValueOf`); `metadataFilter` is
+their predicate, vultus-filtrum's `toPredicate(filters, filterValues, { ctx, fields: filterFields })`
+(e.g. `{ module: { in: ['algebra'] } }`), `undefined` without app filters or when it is `{}`, and
+keeps its identity while it says the same. The app hands it to `useProcessListStream({ metadataFilter })`
+from inside `<WithFilteredProcesses>`; optio-api applies it to `metadata.*`. Details and an example:
+`packages/optio-ui/AGENTS.md` "ProcessFilters".
 
 **`ProcessDetailView`**
 
@@ -1768,6 +1784,7 @@ useProcessListStream(options?: {
 ```typescript
 // From optio-ui
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
+export interface WithFilteredProcessesProps { children; filters?; filterFields? }  // see ProcessFilters
 
 export interface ProcessTreeNode {   // ProcessUpdate (a tree-stream item) + children
   _id: string;
@@ -1814,13 +1831,13 @@ All components use `react-i18next`. Required keys:
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |
 | `processes.suspend` | ProcessItem, ProcessTreeView (stop button tooltip for a resumable process; default "Suspend") |
 | `processes.moreOptions` | LaunchControls (split-button menu tooltip; default "More options") |
-| `processes.search` | ProcessFilters (search box placeholder) |
-| `processes.filterAll` | ProcessFilters |
-| `processes.filterActive` | ProcessFilters |
-| `processes.filterHideCompleted` | ProcessFilters |
-| `processes.filterErrors` | ProcessFilters |
-| `processes.showDetails` | ProcessFilters |
-| `processes.showSpecial` | ProcessFilters |
+| `processes.search` | ProcessFilters (the search field's label and placeholder) |
+| `processes.filterAll` | ProcessFilters (a choice of the filter group) |
+| `processes.filterActive` | ProcessFilters (a choice of the filter group) |
+| `processes.filterHideCompleted` | ProcessFilters (a choice of the filter group) |
+| `processes.filterErrors` | ProcessFilters (a choice of the filter group) |
+| `processes.showDetails` | ProcessFilters (a checkbox's label) |
+| `processes.showSpecial` | ProcessFilters (a checkbox's label) |
 | `status.idle` | ProcessStatusBadge |
 | `status.scheduled` | ProcessStatusBadge |
 | `status.running` | ProcessStatusBadge |

@@ -99,7 +99,7 @@ wires a complete app (providers, i18n, proxy) this way.
 | `ProcessStatusBadge` | Colored tag showing process state with live elapsed-time counter |
 | `ProcessTreeView` | Ant Design `Tree` rendering a nested process hierarchy from SSE data |
 | `ProcessLogPanel` | Scrolling monospace log viewer with level-colored tags; auto-scrolls to bottom |
-| `ProcessFilters` | Search box, filter group selector (all/active/hide_completed/errors) and detail/special toggles; reads its state from an enclosing `WithFilteredProcesses`, whose `FilteredProcessList` applies it |
+| `ProcessFilters` | The filters of a process list, each a vultus field: search, filter group (all/active/hide_completed/errors), "show details" and "show special", then the app's own filters over the metadata; reads its state from an enclosing `WithFilteredProcesses`, whose `FilteredProcessList` applies it (see [Process filters](#process-filters)) |
 | `TaskFactoryLaunchModal` | A task factory's launch form: a field per parameter (vultus-antd), the factory's warning, Launch; a refusal shows on the field it names. The launch button of a factory's record (in `ProcessItem`, `ProcessTreeView`, `ProcessDetailView`) opens it; `onLaunched(child)` gets the launch |
 
 ## Hooks
@@ -114,6 +114,66 @@ wires a complete app (providers, i18n, proxy) this way.
 | `useProcessConversation` | Reads a suspended process's saved conversation record (`GET /processes/:id/conversation`); returns the ts-rest react-query result (`data.body` is `{ events, capturedAt }` on 200; non-2xx responses surface as `error`). Never retries a 4xx. |
 | `useProcessStream` | Opens an SSE connection to a single process tree stream; returns live `{ processes, tree, rootProcess, logs, connected, processNotFound, error }` |
 | `useProcessListStream` | Opens a module-level singleton SSE connection with optional metadata filtering; returns `{ processes, connected }`. Only one filter active at a time. |
+| `useProcessFilter` | The filter state of the enclosing `WithFilteredProcesses`: the built-in filters' values, `filterFn` (applies them), the app filters' `filterValues` and their `metadataFilter` |
+
+## Process filters
+
+`WithFilteredProcesses` holds the filter state of a process list; `ProcessFilters` renders
+its filters as vultus-antd fields in one row, and `FilteredProcessList` shows the processes
+that pass the built-in ones (search over name and description, the filter group, "show
+details", "show special"; applied in the browser).
+
+An app adds its own filters over the process metadata with `filters`: vultus-core field
+definitions of kind `oneOf`, `manyOf`, `oneOfTree` or `manyOfTree`. Each filters the metadata
+key of its id; `filterFields` names another (`{ modules: 'module' }`). They start at their
+`initialValue`, else at their kind's own default (a many-of: nothing chosen). Their predicate,
+made by [vultus-filtrum](https://www.npmjs.com/package/vultus-filtrum) (`toPredicate`), is
+`useProcessFilter().metadataFilter`; it is `undefined` while there are no app filters or none
+has a value, and keeps its identity while it says the same. Hand it to the list stream, from a
+component inside `WithFilteredProcesses`: optio-api applies it to the processes' metadata.
+
+```tsx
+import type { FieldDefinition } from 'vultus-core';
+import {
+  FilteredProcessList, ProcessFilters, WithFilteredProcesses, useProcessFilter, useProcessListStream,
+} from 'optio-ui';
+
+// A module constant (or memoised): the definitions of the app's own filters.
+const PROCESS_FILTERS: FieldDefinition[] = [{
+  kind: 'manyOf',
+  id: 'module',            // filters metadata.module
+  label: 'Module',
+  placeholder: 'All modules',
+  widget: 'select',        // a manyOf's default widget is a checkbox per choice
+  choices: [
+    { value: 'algebra', label: 'Algebra' },
+    { value: 'geometry', label: 'Geometry' },
+  ],
+}];
+
+export function ProcessesPage() {
+  return (
+    <WithFilteredProcesses filters={PROCESS_FILTERS}>
+      <Processes />
+    </WithFilteredProcesses>
+  );
+}
+
+function Processes() {
+  // With Algebra and Geometry chosen: { module: { in: ['algebra', 'geometry'] } }
+  const { metadataFilter } = useProcessFilter();
+  const { processes, connected } = useProcessListStream({ metadataFilter });
+  return (
+    <>
+      <ProcessFilters />
+      <FilteredProcessList processes={processes} loading={!connected} />
+    </>
+  );
+}
+```
+
+The list stream is one per page: every `useProcessListStream` on it should pass the same
+`metadataFilter`. `useProcessList({ metadataFilter })` takes it too.
 
 ## i18n
 
@@ -125,13 +185,13 @@ following keys:
 |-----|---------|
 | `processes.launch` | `LaunchControls` (in `ProcessItem`, `ProcessTreeView`) — tooltip on launch button |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView` — tooltip on cancel button (a task that can resume shows `processes.suspend` instead) |
-| `processes.search` | `ProcessFilters` — search box placeholder |
-| `processes.filterAll` | `ProcessFilters` — dropdown option |
-| `processes.filterActive` | `ProcessFilters` — dropdown option |
-| `processes.filterHideCompleted` | `ProcessFilters` — dropdown option |
-| `processes.filterErrors` | `ProcessFilters` — dropdown option |
-| `processes.showDetails` | `ProcessFilters` — checkbox label |
-| `processes.showSpecial` | `ProcessFilters` — checkbox label |
+| `processes.search` | `ProcessFilters` — the search field's label and placeholder |
+| `processes.filterAll` | `ProcessFilters` — a choice of the filter group |
+| `processes.filterActive` | `ProcessFilters` — a choice of the filter group |
+| `processes.filterHideCompleted` | `ProcessFilters` — a choice of the filter group |
+| `processes.filterErrors` | `ProcessFilters` — a choice of the filter group |
+| `processes.showDetails` | `ProcessFilters` — the "show details" checkbox's label |
+| `processes.showSpecial` | `ProcessFilters` — the "show special" checkbox's label |
 | `status.<state>` | `ProcessStatusBadge` — state label (e.g. `status.running`, `status.done`, `status.failed`) |
 | `common.noData` | `ProcessLogPanel` — empty state message |
 | `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` — a refused launch, one key per launch failure reason (`optioErrorRoutes`; e.g. `errors.processes.launch.shutting-down`) |

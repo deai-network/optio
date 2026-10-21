@@ -13,6 +13,8 @@
 - `@ts-rest/react-query: ^3.51.0`
 - `@quaesitor-textus/core: ^0.4.2`
 - `@quaesitor-textus/antd: ^0.4.2`
+- `vultus-filtrum: ^0.1.0` — the predicate of an app's own process filters (`toPredicate`, see
+  "ProcessFilters"); it brings `filtrum-core`, and its peer `vultus-core` is optio-ui's own peer.
 
 **Peer dependencies** (must be provided by the consuming app):
 - `antd: >=6`
@@ -30,7 +32,10 @@
   `FormSubmitButton`, `ActionButton`; see "TaskFactoryLaunchModal").
 
 In this workspace both vultus packages are dev dependencies (`^0.5.4`, `^0.7.2`), linked to
-`../unitas/packages/vultus-*` when that checkout exists (`pnpm-workspace.yaml`).
+`../unitas/packages/vultus-*` when that checkout exists (`pnpm-workspace.yaml`). vultus-filtrum
+is not linked: it comes from npm. Linked, its `filtrum-core` dependency would resolve to this
+workspace's `packages/filtrum-core`, and the lockfile would record that link from the unitas
+side, with the name of this checkout's directory in it.
 
 ## Conventions
 
@@ -393,22 +398,96 @@ Level-to-color mapping:
 ```ts
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 
-function WithFilteredProcesses({ children }: { children: ReactNode }): JSX.Element
+interface WithFilteredProcessesProps {
+  children: ReactNode;
+  filters?: readonly FieldDefinition[];            // the app's own filters over the metadata (vultus-core definitions)
+  filterFields?: Readonly<Record<string, string>>; // filter id → metadata key, where they differ
+}
+
+function WithFilteredProcesses(props: WithFilteredProcessesProps): JSX.Element
 function ProcessFilters({ className, style }?: { className?: string; style?: CSSProperties }): JSX.Element
 function FilteredProcessList(props: ProcessListProps): JSX.Element  // ProcessList over filterFn(processes)
 function useProcessFilter(): {
   filterGroup: FilterGroup; setFilterGroup: (g: FilterGroup) => void;
   showDetails: boolean; setShowDetails: (v: boolean) => void;
   showSpecial: boolean; setShowSpecial: (v: boolean) => void;
+  filters: readonly FieldDefinition[];               // the app's filters, [] without
+  filterValues: Readonly<Record<string, unknown>>;   // their values, by filter id
+  setFilterValue: (id: string, value: unknown) => void;
+  metadataFilter: ProcessMetadataFilter | undefined; // their predicate, for the list stream
   filterFn: (processes: any[]) => any[];
 }
 ```
 
-`ProcessFilters` renders a quaesitor-textus `SearchInput` (width 200, searches `name` and
-`description`), a `Select` (width 180) and two `Checkbox` controls in an Ant Design `Space`.
-It holds no state of its own: it reads and sets the state of the enclosing
-`WithFilteredProcesses` (via `useProcessFilter()`), which `FilteredProcessList` applies to
-its `processes`. All four are exported from `optio-ui`, as is the `FilterGroup` type.
+`ProcessFilters` renders every filter as a vultus-antd `Field` in local mode (the value and
+`onChange` given at the render site, as `TaskFactoryLaunchModal`'s fields), in an Ant Design
+`Space` (`size={[16, 8]}`, wrapping, a 16px bottom margin; `className` and `style` reach it):
+
+| Field id | Kind | Widget | Value | Label |
+|----------|------|--------|-------|-------|
+| `search` | `text` | `search`, width 200 | quaesitor-textus' query (`useSearchContext()`: `query` / `setQuery`); searches `name` and `description` | `processes.search`, also its placeholder |
+| `filterGroup` | `oneOf` | `select`, width 180 | `filterGroup` (default `'all'`) | none; the choices `processes.filterAll`, `processes.filterActive`, `processes.filterHideCompleted`, `processes.filterErrors` |
+| `showDetails` | `boolean` | `checkbox` | `showDetails` (default `false`) | `processes.showDetails` |
+| `showSpecial` | `boolean` | `checkbox` | `showSpecial` (default `false`) | `processes.showSpecial` |
+
+then the app's `filters`, in their order, each with its definition's widget hint, else its
+kind's default (a `manyOf`'s is `checkboxes`; `widget: 'select'` keeps the row compact). It
+holds no state of its own: it reads and sets the state of the enclosing
+`WithFilteredProcesses` (via `useProcessFilter()`). `FilteredProcessList` applies the
+built-in filters to its `processes` (`filterFn`, in the browser); the app's filters are not
+in `filterFn`.
+
+**An app's own filters.** `filters` are vultus-core field definitions over the process
+metadata, of the kinds vultus-filtrum gives a predicate for: `oneOf` and `oneOfTree` (`eq`),
+`manyOf` and `manyOfTree` (`in`). (vultus-filtrum gives a `text` filter a `search` leaf, which
+optio-api's metadata filter does not accept; any other kind throws its
+`UnsupportedFieldKindError` when WithFilteredProcesses renders.) Each matches the metadata key
+of its id, or the one `filterFields` names (`{ modules: 'module' }`). `WithFilteredProcesses`
+keeps their values in its own state: what was chosen, else the filter's default, its
+`initialValue`, else its kind's own (vultus-core's `initialValueOf`: a `oneOf`'s first enabled
+choice, a `manyOf`'s empty list, ...), as vultus-filtrum's README asks of its caller. Their
+definitions' functions get the field context (`useFieldContext()`) at WithFilteredProcesses;
+the fields get theirs at ProcessFilters, the same unless a `FieldContextProvider` sits between.
+
+`metadataFilter` is `toPredicate(filters, filterValues, { ctx, fields: filterFields })`
+(vultus-filtrum), or `undefined` when there are no app filters or the predicate is `{}` (no
+filter has a value). It keeps its identity while it says the same (it is memoised on its JSON),
+even when the app passes its definitions anew on each render. The app hands it to its list:
+`useProcessListStream({ metadataFilter })` (or `useProcessList`), which must then be called
+inside `WithFilteredProcesses`; optio-api applies it to `metadata.*` (filtrum-mongo with
+`fieldPrefix: 'metadata.'`), so `module` filters `metadata.module`. Its shapes
+(`{ module: { in: [...] } }`, `{ level: { eq: 'basic' } }`, several ANDed) are what
+`ProcessMetadataFilterSchema` accepts. The list stream is a module-level singleton: every
+`useProcessListStream` on the page should pass the same `metadataFilter`.
+
+```tsx
+const PROCESS_FILTERS: FieldDefinition[] = [{
+  kind: 'manyOf', id: 'module', label: 'Module', placeholder: 'All modules', widget: 'select',
+  choices: [{ value: 'algebra', label: 'Algebra' }, { value: 'geometry', label: 'Geometry' }],
+}];
+
+function ProcessesPage() {
+  return (
+    <WithFilteredProcesses filters={PROCESS_FILTERS}>
+      <Processes />
+    </WithFilteredProcesses>
+  );
+}
+
+function Processes() {
+  const { metadataFilter } = useProcessFilter();  // { module: { in: ['algebra'] } } once Algebra is chosen
+  const { processes, connected } = useProcessListStream({ metadataFilter });
+  return (
+    <>
+      <ProcessFilters />
+      <FilteredProcessList processes={processes} loading={!connected} />
+    </>
+  );
+}
+```
+
+The three components and the hook are exported from `optio-ui`, as are the `FilterGroup` and
+`WithFilteredProcessesProps` types. Tests: `src/__tests__/ProcessFilter.test.tsx`.
 
 ### ProcessDetailView
 
@@ -878,7 +957,8 @@ keyed on `(baseUrl, database, prefix, metadataFilter)` — supplying a different
 new one with the new query. Two components mounted concurrently with different
 filters will fight: the most recent render wins, the other gets data for the wrong
 filter. Hoist filter state above all consumers, or use a single top-level filter
-selector.
+selector. An app's own process filters give their filter as `useProcessFilter().metadataFilter`
+(see "ProcessFilters").
 
 ## Types
 
@@ -888,7 +968,8 @@ selector.
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 ```
 
-Exported from `ProcessFilter.tsx`, re-exported from `index.ts`.
+Exported from `ProcessFilter.tsx`, re-exported from `index.ts`, as is `WithFilteredProcessesProps`
+(see "ProcessFilters").
 
 ---
 
@@ -935,13 +1016,13 @@ no inline default (the app must translate them); the second carries an English d
 |-----|-----------|-------|
 | `processes.launch` | `LaunchControls` | Tooltip on the single launch button |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView` | Tooltip / `aria-label` of the stop button when the task cannot resume |
-| `processes.search` | `ProcessFilters` | Search box placeholder |
-| `processes.filterAll` | `ProcessFilters` | Select option label |
-| `processes.filterActive` | `ProcessFilters` | Select option label |
-| `processes.filterHideCompleted` | `ProcessFilters` | Select option label |
-| `processes.filterErrors` | `ProcessFilters` | Select option label |
-| `processes.showDetails` | `ProcessFilters` | Checkbox label |
-| `processes.showSpecial` | `ProcessFilters` | Checkbox label |
+| `processes.search` | `ProcessFilters` | The search field's label (its accessible name) and placeholder |
+| `processes.filterAll` | `ProcessFilters` | A choice of the group field (select) |
+| `processes.filterActive` | `ProcessFilters` | A choice of the group field (select) |
+| `processes.filterHideCompleted` | `ProcessFilters` | A choice of the group field (select) |
+| `processes.filterErrors` | `ProcessFilters` | A choice of the group field (select) |
+| `processes.showDetails` | `ProcessFilters` | The "show details" field's label (checkbox) |
+| `processes.showSpecial` | `ProcessFilters` | The "show special" field's label (checkbox) |
 | `common.noData` | `ProcessLogPanel` | Empty state description |
 | `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
 | `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`) | A launch refusal in the form, one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |

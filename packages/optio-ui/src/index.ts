@@ -43,7 +43,7 @@ export { useProcessListStream } from './hooks/useProcessListStream.js';
 export { usePrefixes, usePrefixDiscovery } from './hooks/usePrefixDiscovery.js';
 
 // Types
-export type { FilterGroup } from './components/ProcessFilter.js';
+export type { FilterGroup, WithFilteredProcessesProps } from './components/ProcessFilter.js';
 export type { ProcessTreeNode } from './hooks/useProcessStream.js';
 
 // Widgets
