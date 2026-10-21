@@ -304,4 +304,15 @@ describe('LaunchControls of a task factory', () => {
     expect(onLaunch).toHaveBeenCalledWith('t1', undefined);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+
+  it.each(['done', 'failed', 'cancelled'])(
+    "a factory's launch (kept by a TTL) gets no play button once %s: it is never launched again",
+    (state) => {
+      const { container } = renderWith({
+        _id: 'c1', name: 'Drop proposals', status: { state },
+        metadata: { module: 'm', taskFactory: 'fac' },
+      });
+      expect(container.firstChild).toBeNull();
+    },
+  );
 });

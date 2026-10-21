@@ -28,7 +28,8 @@ class ChildProcessFailed(Exception):
 class LaunchError(Exception):
     """Raised by Optio.launch_and_await_result when the launch itself is
     refused (the LaunchOutcome was not ok), and by Optio.launch_and_wait when
-    a TaskFactory's launch is. ``reason`` carries the typed LaunchOutcome
+    a TaskFactory's launch is, or a launch of a factory's launch (which is
+    never launched again). ``reason`` carries the typed LaunchOutcome
     reason string (e.g. "not-found", "not-launchable"); ``message`` the
     outcome's message (an "invalid-parameters" refusal's "<id>: <what>")."""
 

@@ -17,6 +17,8 @@
  *
  * Lifecycle vocabulary (mutually exclusive groups):
  *   - launchable: idle | done | failed | cancelled  — eligible to (re)start.
+ *                 `isLaunchable(process)` also leaves out a task factory's
+ *                 launch (`isTaskFactoryLaunch`), which is never launched again.
  *   - active:     running | scheduled | cancel_requested | cancelling  — alive / in-flight.
  *   - terminal:   done | failed | cancelled  — finished, will not progress further.
  *   - widget-live: running | cancel_requested | cancelling  — task code is up and
@@ -54,6 +56,7 @@ export interface ProcessStateLike {
   resurrecting?: boolean;
   autoResumeScheduled?: boolean;
   taskFactory?: boolean;
+  metadata?: Record<string, unknown> | null;
 }
 
 export function isLaunchableState(state: string | null | undefined): boolean {
@@ -76,8 +79,10 @@ export function isCancellableState(state: string | null | undefined): boolean {
   return !!state && CANCELLABLE_STATES.has(state);
 }
 
+/** In a launchable state, and not a task factory's launch (which ran once,
+ *  with its values: optio-core refuses to launch it again, `not-launchable`). */
 export function isLaunchable(process: ProcessStateLike | null | undefined): boolean {
-  return isLaunchableState(process?.status?.state);
+  return isLaunchableState(process?.status?.state) && !isTaskFactoryLaunch(process);
 }
 
 export function isActive(process: ProcessStateLike | null | undefined): boolean {
@@ -128,4 +133,13 @@ export function isSuspended(process: ProcessStateLike | null | undefined): boole
  *  of its parameters (TaskFactoryLaunchModal) and makes a child that runs. */
 export function isTaskFactory(process: ProcessStateLike | null | undefined): boolean {
   return process?.taskFactory === true;
+}
+
+/** A task factory's launch, the child its launch form made: its metadata
+ *  names the factory (`taskFactory: <factory id>`). It ran once, with its
+ *  values, and is never launched again (`isLaunchable` is false), whatever
+ *  its state; a TTL keeps it for reading only. */
+export function isTaskFactoryLaunch(process: ProcessStateLike | null | undefined): boolean {
+  const factory = process?.metadata?.taskFactory;
+  return typeof factory === 'string' && factory !== '';
 }

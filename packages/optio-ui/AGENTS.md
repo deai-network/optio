@@ -52,7 +52,8 @@ Do **not**:
 
 Do:
 
-- Use `isLaunchable(process)` / `isLaunchableState(state)`,
+- Use `isLaunchable(process)` (a launchable state, and not a task factory's
+  launch) / `isLaunchableState(state)` (the state alone),
   `isActive(process)` / `isActiveState(state)`,
   `isTerminal(process)` / `isTerminalState(state)`,
   `isWidgetLive(process)` / `isWidgetLiveState(state)`,
@@ -65,7 +66,10 @@ Do:
   `hasSavedState === true`: a cancelled task whose saved conversation can be
   read without launching it), `isTaskFactory(process)` (`taskFactory === true`:
   a task factory's record, whose launch opens its launch form; see
-  "TaskFactoryLaunchModal").
+  "TaskFactoryLaunchModal"), `isTaskFactoryLaunch(process)` (`metadata.taskFactory`
+  a non-empty string, the factory's id: a launch the form made, which ran once
+  with its values and is never launched again, so `isLaunchable` is false for
+  it in any state; optio-core refuses its launch, `not-launchable`).
 - If you genuinely need a new state-derived concept (e.g. "show widget UI" —
   which is *almost* `isActive` but excludes `scheduled`), add a named
   predicate to `process-state.ts` rather than spelling out the set at the
@@ -165,7 +169,7 @@ interface LaunchControlsProps {
 Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`).
 
 Rendering rules:
-- Renders **nothing** when the process is not in a launchable state (`idle | done | failed | cancelled`), or when `onLaunch` is not provided.
+- Renders **nothing** when the process is not launchable (`isLaunchable`: not in a launchable state, `idle | done | failed | cancelled`, or a task factory's launch, `isTaskFactoryLaunch`, which is never launched again, e.g. one a TTL keeps), or when `onLaunch` is not provided.
 - Renders a single disabled **Resurrecting** indicator while `isResurrecting(process)` (spinning loading icon, or the app's lent Spinner — see "Spinner slot"; `aria-label` "Resurrecting", tooltip "Resurrecting: saving the unsaved work…"); clicking it does nothing. It takes precedence over all the cases below (a non-empty `denyReason` still wins).
 - For a task factory's record (`isTaskFactory(process)`), a single play button (tooltip `processes.launch`) that opens the factory's `TaskFactoryLaunchModal` instead of calling `onLaunch` (which only allows it, as for any process); no `Popconfirm`, the form shows the `warning`. The form's launch hands the child to `onLaunched`. It takes precedence over the cases below (`denyReason` and Resurrecting still win).
 - Renders a **Resurrect** split button when `onResurrect` is provided and `isResurrectable(process)` (`supportsResurrect=true` and `hasUnsavedWork=true`); it takes precedence over the two cases below (a non-empty `denyReason` still wins):
@@ -439,7 +443,7 @@ Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branch
 - **`tree.uiWidget` is set, the process `isSuspended`, but no suspended variant is
   registered** — falls back to the default tree+log view, silently (no warning — this is the
   normal case for a widget that doesn't support a read-only suspended view yet).
-- **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set, `onLaunched` passed on) + `ProcessLogPanel`. A task factory's record (the root of its launches) gets the play button that opens its `TaskFactoryLaunchModal`; the launch then shows under it in the tree.
+- **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set, `onLaunched` passed on) + `ProcessLogPanel`. A task factory's record (the root of its launches) gets the play button that opens its `TaskFactoryLaunchModal`; the launch then shows under it in the tree, with no play button of its own (`isTaskFactoryLaunch`).
 
 `widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${database}/${prefix}/${process._id}/`
 (database and prefix URI-encoded; trailing slash is load-bearing for relative URLs inside iframes).

@@ -538,6 +538,43 @@ async def test_a_launch_runs_a_child_of_the_factory_with_the_values(mongo_db):
         await fw.shutdown()
 
 
+async def test_a_kept_launch_is_never_launched_again(mongo_db):
+    # A launch ran once, with its values (spec 1.2: it cannot be launched
+    # again). Its record, kept by the factory's TTL, refuses a launch
+    # (not-launchable) whatever the task registry holds: its TaskInstance
+    # still registered, or gone after a full resync (which once made the
+    # relaunch fail with "No execute function found").
+    prefix = "tf_again"
+    execute, seen, _ = _recorder()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
+    try:
+        outcome = await fw.launch("fac", session_id=None, params=GOOD)
+        pid, oid = outcome.proc["processId"], str(outcome.proc["_id"])
+        await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+        assert pid in fw._executor._task_registry
+
+        refused = LaunchOutcome(ok=False, reason="not-launchable")
+        assert await fw.launch(pid, session_id=None) == refused
+        assert await fw.launch(oid, session_id=None) == refused
+        with pytest.raises(LaunchError) as exc:
+            await fw.launch_and_wait(pid, session_id=None)
+        assert exc.value.reason == "not-launchable"
+        with pytest.raises(LaunchError) as exc:
+            await fw.launch_and_await_result(pid, session_id=None, timeout=60)
+        assert exc.value.reason == "not-launchable"
+
+        await fw.resync()
+        assert pid not in fw._executor._task_registry
+        assert await fw.launch(pid, session_id=None) == refused
+
+        rec = await get_process_by_process_id(mongo_db, prefix, pid)
+        assert rec["status"]["state"] == "done"
+        assert rec["log"][-1]["message"] == "State changed to done"
+        assert seen == {pid: GOOD}
+    finally:
+        await fw.shutdown()
+
+
 async def test_a_launch_without_ttl_is_ephemeral(mongo_db):
     prefix = "tf_eph"
     during: list[dict] = []

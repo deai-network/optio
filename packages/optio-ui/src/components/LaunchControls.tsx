@@ -39,7 +39,8 @@ export interface LaunchControlsProps {
 
 /**
  * Renders launch affordances for a process:
- *   * Nothing when the process is in a non-launchable state.
+ *   * Nothing when the process is not launchable (`isLaunchable`: a
+ *     non-launchable state, or a task factory's launch, never launched again).
  *   * A single disabled "Resurrecting" indicator while a resurrect of the
  *     process saves its unsaved work (`resurrecting`); nothing is clickable.
  *   * Split button (primary = Resurrect, menu = Resume from last snapshot /

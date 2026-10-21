@@ -32,7 +32,7 @@ from optio_core.models import (
     LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome,
 )
 from optio_core.task_factory import (
-    check_parameters, check_values, child_task, without_no_values,
+    check_parameters, check_values, child_task, is_factory_launch, without_no_values,
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
@@ -492,7 +492,10 @@ class Optio:
         (`resume`), parameters-required (no `params`), not-launchable (no
         factory definition synced for the record), invalid-parameters (with
         `message`), launch-blocked; `params` on any other record is
-        not-a-factory. Spec: docs/2026-10-20-task-factory-design.md §1.2"""
+        not-a-factory. A factory's launch (its child, and the records under
+        it) ran once, with its values: launching it again is not-launchable,
+        whatever the task registry holds.
+        Spec: docs/2026-10-20-task-factory-design.md §1.2"""
         # Stop sign: once shutdown has begun, refuse new launches so nothing
         # half-boots into a shutting-down engine. Covers scheduler, RPC, and
         # programmatic launch paths.
@@ -510,6 +513,17 @@ class Optio:
             if isinstance(child, LaunchOutcome):
                 return child
             return await self._launch_child(child, session_id)
+        if is_factory_launch(proc):
+            # Its only launch was the factory's (_launch_child).
+            return LaunchOutcome(ok=False, reason="not-launchable")
+        return await self._launch_record(proc, resume, session_id)
+
+    async def _launch_record(
+        self, proc: dict, resume: bool, session_id: str | None,
+    ) -> LaunchOutcome:
+        """launch() of the resolved record `proc`, which is no factory's:
+        its remaining refusals, then the run in the background and the
+        re-read. Also a factory launch's first and only launch."""
         if proc["_id"] in self._resurrecting:
             # The resurrect in progress ends in its own resume.
             return LaunchOutcome(ok=False, reason="not-launchable")
@@ -586,10 +600,15 @@ class Optio:
         )
 
     async def _launch_child(self, child: dict, session_id: str | None) -> LaunchOutcome:
-        """Launch a factory launch's child. If its launch is refused (a launch
-        block or a shutdown that came since its definition), it never runs,
-        so it is deleted."""
-        outcome = await self.launch(str(child["_id"]), session_id=session_id)
+        """Launch a factory launch's child, the only launch of its record
+        (launch() refuses any other). If it is refused (a launch block or a
+        shutdown that came since its definition), it never runs, so it is
+        deleted. On success, `proc` falls back to `child` if the record is
+        already gone by the re-read (a run that ended at once)."""
+        if self._shutting_down:
+            outcome = LaunchOutcome(ok=False, reason="shutting-down")
+        else:
+            outcome = await self._launch_record(child, False, session_id)
         if not outcome.ok:
             await self.adhoc_delete(child["processId"])
         return outcome
@@ -605,7 +624,8 @@ class Optio:
 
         A TaskFactory's record is launched with `params`, as by launch(): the
         launch's child is defined and run to completion; a refusal raises
-        LaunchError(reason, message).
+        LaunchError(reason, message). A factory's launch is never launched
+        again: LaunchError(not-launchable).
 
         Raises LaunchBlocked if a registered launch block matches the task's metadata.
         """
@@ -616,6 +636,8 @@ class Optio:
                 raise LaunchError(process_id, child.reason, child.message)
             await self._executor.launch_process(child["processId"], session_id=session_id)
             return
+        if proc is not None and is_factory_launch(proc):
+            raise LaunchError(process_id, "not-launchable")
         task = self._executor._task_registry.get(process_id)
         if task is not None:
             self._check_launch_blocks(task.metadata)

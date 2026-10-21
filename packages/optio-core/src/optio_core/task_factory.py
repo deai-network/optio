@@ -3,8 +3,9 @@
 A factory's `parameters` are vultus-core field definitions as plain JSON, the
 subset a definition can carry as data (spec 1.3): `check_parameters` checks
 them at task sync. `check_values` checks a launch's values before its child
-exists (spec 1.4). `child_task` is the TaskInstance of one launch (spec 1.2).
-Nothing is coerced: a value of the wrong JSON type is refused.
+exists (spec 1.4). `child_task` is the TaskInstance of one launch (spec 1.2),
+and `is_factory_launch` tells its record. Nothing is coerced: a value of the
+wrong JSON type is refused.
 
 Throughout, a value that is no value (`_is_no_value`: None; for a text the
 empty string, for a manyOf the empty list) counts as absent: a required
@@ -121,6 +122,15 @@ def child_task(factory: TaskFactory, values: dict[str, Any]) -> TaskInstance:
         ttl_seconds=factory.ttl_seconds,
         auto_cancel_children=factory.auto_cancel_children,
     )
+
+
+def is_factory_launch(proc: dict) -> bool:
+    """Whether the process record `proc` is a factory's launch (or a record
+    under one, which inherits its metadata): its metadata names the factory,
+    `taskFactory: <factory process id>` (child_task). Such a record ran once,
+    with its values, and is never launched again (spec 1.2)."""
+    factory = (proc.get("metadata") or {}).get("taskFactory")
+    return isinstance(factory, str) and factory != ""
 
 
 def _definition_problem(p: dict) -> str | None:

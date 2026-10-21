@@ -15,6 +15,7 @@ import {
   isResurrecting,
   isSuspended,
   isTaskFactory,
+  isTaskFactoryLaunch,
 } from '../process-state.js';
 
 describe('isWidgetLiveState', () => {
@@ -286,4 +287,32 @@ describe('isTaskFactory', () => {
     expect(isTaskFactory(null)).toBe(false);
     expect(isTaskFactory(undefined)).toBe(false);
   });
+});
+
+describe('isTaskFactoryLaunch', () => {
+  it("true when the metadata names the launch's factory (taskFactory: <factory id>)", () => {
+    expect(isTaskFactoryLaunch({ status: { state: 'done' }, metadata: { taskFactory: 'fac' } })).toBe(true);
+  });
+
+  it('false otherwise', () => {
+    expect(isTaskFactoryLaunch({ status: { state: 'done' }, metadata: {} })).toBe(false);
+    expect(isTaskFactoryLaunch({ status: { state: 'done' } })).toBe(false);
+    expect(isTaskFactoryLaunch({ metadata: null })).toBe(false);
+    expect(isTaskFactoryLaunch({ metadata: { taskFactory: '' } })).toBe(false);
+    expect(isTaskFactoryLaunch({ metadata: { taskFactory: true } })).toBe(false);
+    // A factory's own record is no launch of one.
+    expect(isTaskFactoryLaunch({ status: { state: 'idle' }, taskFactory: true })).toBe(false);
+    expect(isTaskFactoryLaunch(null)).toBe(false);
+    expect(isTaskFactoryLaunch(undefined)).toBe(false);
+  });
+
+  it.each(['idle', 'done', 'failed', 'cancelled'])(
+    'a launch is never launchable again, even in state=%s',
+    (state) => {
+      const launch = { status: { state }, metadata: { taskFactory: 'fac' } };
+      expect(isLaunchable(launch)).toBe(false);
+      expect(isLaunchableState(state)).toBe(true);
+      expect(isResurrectable({ ...launch, supportsResurrect: true, hasUnsavedWork: true })).toBe(false);
+    },
+  );
 });

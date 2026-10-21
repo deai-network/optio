@@ -302,7 +302,8 @@ launches fresh (`resume=False`) when it has no saved state (`hasSavedState` fals
 `launch_and_wait` does neither check. `session_id` is required (keyword-only; `None` for
 an unattended launch).
 
-While a resurrect of the process is in progress, `launch` returns `not-launchable`.
+While a resurrect of the process is in progress, `launch` returns `not-launchable`; so it does for
+a TaskFactory's launch, which runs once (see "TaskFactory").
 
 `LaunchOutcome` (`ok`, `reason`, `proc`, `message`): `reason` is one of `not-found`,
 `not-launchable`, `launch-blocked`, `no-resume-support`, `shutting-down`, `parameters-required`,
@@ -389,16 +390,26 @@ running launches: `_sync_definitions` cancels the stale roots' active descendant
 definition synced for the record), `invalid-parameters`, `launch-blocked` (a block matching the
 child's metadata). No child is defined while shutting down, whichever entry point. Then
 `task_factory.child_task(factory, values)` is the child's TaskInstance: the factory's `execute`
-and fields, `params` = the values without the no-values (`without_no_values`), metadata the factory's plus `taskFactory: <factory id>`,
-process id `f"{factory.process_id}:{secrets.token_hex(4)}"`, name `name_for(values)` or `name`.
+and fields, `params` = the values without the no-values (`without_no_values`), metadata the
+factory's plus `taskFactory: <factory id>`, process id
+`f"{factory.process_id}:{secrets.token_hex(4)}"`, name `name_for(values)` or `name`.
 It is defined with `adhoc_define(child, parent_id=<factory record _id>,
 ephemeral=factory.ttl_seconds is None)` (its record copies the factory record's `ttlSeconds`) and
-launched with the same `session_id`; `LaunchOutcome(ok=True, proc=<the child's record>)`. A child
-whose launch is then refused (a block or a shutdown since its definition) is deleted. `params` on
-a record that is no factory's: `not-a-factory`. `launch_and_wait` and `launch_and_await_result`
-take `params` the same way; their refusals raise `LaunchError` (a launch block in
-`launch_and_wait`: `LaunchBlocked`), and `launch_and_await_result`'s result future is keyed by the
-child's process id before the child starts.
+launched with the same `session_id` (`Optio._launch_child`, its only launch);
+`LaunchOutcome(ok=True, proc=<the child's record>)`. A child whose launch is then refused (a block
+or a shutdown since its definition) is deleted. `params` on a record that is no factory's:
+`not-a-factory`. `launch_and_wait` and `launch_and_await_result` take `params` the same way;
+their refusals raise `LaunchError` (a launch block in `launch_and_wait`: `LaunchBlocked`), and
+`launch_and_await_result`'s result future is keyed by the child's process id before the child
+starts.
+
+**A launch runs once** (spec §1.2). A record whose metadata carries `taskFactory`
+(`task_factory.is_factory_launch`: a launch, e.g. one its factory's `ttl_seconds` keeps, and the
+records under it, which inherit its metadata) is never launched again: `launch` answers
+`not-launchable` (`launch_and_wait` and `launch_and_await_result` raise
+`LaunchError("not-launchable")`) before it looks for an execute function, whatever the task
+registry holds (the launch's TaskInstance, or nothing once a full resync has replaced the
+registry). optio-ui shows it no play button (`isTaskFactoryLaunch`).
 
 **adhoc_define, a child:** its record now carries the task's `cancellable`, `description`,
 `special`, `warning` and `ui_widget` (`uiWidget`, written only when set), as a root's does.

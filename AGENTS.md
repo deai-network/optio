@@ -171,7 +171,8 @@ await optio_core.launch_and_await_result(process_id: str, resume: bool = False, 
 # no-resume-support (resume=True), parameters-required (no params), not-launchable (no synced definition),
 # invalid-parameters (LaunchOutcome.message "<id>: <what>": the fields' checks, then the factory's
 # validate), launch-blocked (the child's metadata). params on any other record: not-a-factory. No child is
-# defined while shutting down (all three entry points). A factory's record never runs itself.
+# defined while shutting down (all three entry points). A factory's record never runs itself, and a
+# factory's launch runs once: launching its record again is not-launchable (LaunchError in launch_and_wait).
 await optio_core.resurrect(process_id: str, *, session_id: str | None) -> ResurrectOutcome  # fire-and-forget
 # Saves the work a failed run left on its host, then resumes. Refusals come back as
 # ResurrectOutcome(ok=False, reason=...), checked in this order: shutting-down, not-found,
@@ -346,6 +347,12 @@ class TaskFactory:
   `taskFactory: <factory id>`, the factory's other fields, `ttlSeconds` copied from the record;
   launched with the launch's `session_id`. If that launch is refused (a launch block or a shutdown
   since), the child is deleted. Its TaskInstance lives only in memory (as any ad-hoc process's).
+- **A launch runs once.** `launch`, `launch_and_wait` and `launch_and_await_result` refuse a record
+  whose metadata carries `taskFactory` (a launch, kept by `ttl_seconds`, and the records under it,
+  which inherit its metadata) with `not-launchable`, before any lookup of its task, whatever the
+  task registry holds (its TaskInstance, or nothing after a full resync, which replaces the
+  registry); `task_factory.is_factory_launch`. optio-ui shows it no play button
+  (`isTaskFactoryLaunch`).
 
 ---
 
@@ -1342,7 +1349,9 @@ interface LaunchControlsProps {
 }
 ```
 
-Smart launch button. Renders nothing when not in a launchable state or `onLaunch` is absent.
+Smart launch button. Renders nothing when not launchable or `onLaunch` is absent: `isLaunchable(process)`
+is a launchable state and not a task factory's launch (`isTaskFactoryLaunch(process)`: `metadata.taskFactory`
+names the factory; it is never launched again, e.g. one a TTL keeps; both exported from `optio-ui`).
 While `isResurrecting(process)` (`resurrecting` true) it renders a single disabled "Resurrecting" indicator
 (spinning icon, tooltip "Resurrecting: saving the unsaved work…") and nothing clickable.
 For a task factory's record (`isTaskFactory(process)`: `taskFactory: true`; exported from `optio-ui`) it
