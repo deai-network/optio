@@ -280,8 +280,9 @@ await ctx.clear_widget_data() -> None
 `hasSavedState` is backfilled to `false` on all existing documents by migration `m003_backfill_has_saved_state`
 (runs on startup; depends on m002). `supportsResurrect`, `hasUnsavedWork` and `resurrecting` have
 no backfill; an absent field reads as `false`. All three are wire keys: the engine RPC's process
-payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them. `taskFactory` and
-`parameters` are not wire keys yet (the engine RPC strips them).
+payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them, and so they do
+`taskFactory` and `parameters` (`_engine_service._PROCESS_WIRE_KEYS`; absent on a
+TaskInstance's record).
 
 ---
 
@@ -354,8 +355,7 @@ deferred migrations) finds one, and the scheduler never gets one.
 `no-resume-support` (so the auto-resume sweep skips it), `resurrect` answers
 `no-resurrect-support`, and `Executor.launch_process` returns None for a `taskFactory` record
 (any direct path). Its own state never changes. A resync that removes the factory cancels its
-running launches: `_sync_definitions` cancels the stale roots' active descendants with them
-(`store.find_active_descendants`), as it does a stale running task.
+running launches, the active records under a stale root (see "Optio.resync").
 
 **Checks** (`optio_core.task_factory`):
 
@@ -486,6 +486,26 @@ launching another: `count_processes(states=ACTIVE_STATES, metadata={"sourceId": 
 "kind": ["sync", "sync-dry"]}, roots_only=True)`. Child processes inherit their
 parent's metadata, so `roots_only=True` is what counts each sync once. Store-level
 function: `optio_core.store.count_processes`.
+
+---
+
+### Optio.resync
+
+```python
+await optio_core.resync(clean: bool = False, metadata_filter: dict | None = None) -> dict[str, str]
+```
+
+Re-runs `get_task_definitions` and syncs the records (`_sync_definitions`); with a
+`metadata_filter`, only the matching definitions and records. `clean=True` deletes the
+(in-scope) records first. The root records of definitions no longer generated (stale roots) are
+deleted, but first what still runs there is asked to stop: the stale roots in an active state,
+and the active records under every stale root (`store.find_active_descendants`) — not only a
+removed TaskFactory's launches but also a stale task's children, those under a parent with
+`auto_cancel_children=False` included, since each gets its cancellation flag directly
+(`Executor.request_cancel_with_deadline`). The resync waits for all of them to reach a terminal
+state (or disappear) within the same `cancel_grace_seconds`; a record that no task of this engine
+runs never does, so it makes the resync wait the whole grace, after which the stale roots are
+deleted anyway (logged as a warning). Returns `{processId: oid_hex}` of the definitions synced.
 
 ---
 

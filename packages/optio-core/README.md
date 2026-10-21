@@ -74,7 +74,7 @@ await optio_core.init(
     redis_url: str | None = None,
     rpc_server: RpcServerCore | None = None,
     services: dict[str, Any] | None = None,
-    get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,
+    get_task_definitions: Callable[..., Awaitable[list[TaskInstance | TaskFactory]]] | None = None,
     cancel_grace_seconds: float = 5.0,
     auto_resume_delay_seconds: float = 300.0,
     cancel_wait_ceiling_margin_seconds: float = 25.0,
@@ -93,7 +93,7 @@ Initialize Optio. Must be called before any other function.
 | `redis_url` | `str \| None` | `None` | If `None` (and no `rpc_server`), Redis features are disabled; use direct method calls only. Mutually exclusive with `rpc_server` |
 | `rpc_server` | `RpcServerCore \| None` | `None` | A pre-built clamator RPC server to register the `optio-engine` service on, instead of building one from `redis_url`. The caller owns its start/stop. Mutually exclusive with `redis_url` |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
-| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init, when `run()` starts, and on resync. Optio passes both arguments positionally. `metadata_filter` is `None` for a full sync, or a dict of metadata key/value pairs to restrict which task definitions are regenerated; Optio drops the returned tasks that do not match it, so the function may ignore it. **This is the most important part — this is where you declare the tasks that Optio will manage.** See the [TaskInstance definition](#taskinstance) under Data Types. |
+| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance \| TaskFactory]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance \| TaskFactory]`; called on init, when `run()` starts, and on resync. Optio passes both arguments positionally. `metadata_filter` is `None` for a full sync, or a dict of metadata key/value pairs to restrict which task definitions are regenerated; Optio drops the returned tasks that do not match it, so the function may ignore it. **This is the most important part — this is where you declare the tasks that Optio will manage.** See the [TaskInstance](#taskinstance) and [TaskFactory](#taskfactory) definitions under Data Types. |
 | `cancel_grace_seconds` | `float` | `5.0` | How long a cancelled task has to unwind cooperatively before it is force-cancelled and ends `failed` (see [Cooperative Cancellation](#cooperative-cancellation)) |
 | `auto_resume_delay_seconds` | `float` | `300.0` | Delay after `run()` starts before the top-level processes of `auto_resume` tasks that the previous shutdown interrupted, and that saved their state, are re-launched with `resume=True` |
 | `cancel_wait_ceiling_margin_seconds` | `float` | `25.0` | Added to `cancel_grace_seconds` to give the ceiling after which `Optio.cancel_and_wait()` and `group_cancel_and_wait()` raise `asyncio.TimeoutError` |
@@ -221,7 +221,7 @@ async def execute(ctx: ProcessContext) -> None:
 | Property | Type | Description |
 |----------|------|-------------|
 | `ctx.process_id` | `str` | The process ID string |
-| `ctx.params` | `dict[str, Any]` | Parameters from the task definition. Useful when the same execute function is shared across multiple tasks — for example, a generic data fetcher where each task targets a different source. The source ID (different for each task) is passed in via `params`. |
+| `ctx.params` | `dict[str, Any]` | Parameters from the task definition. Useful when the same execute function is shared across multiple tasks — for example, a generic data fetcher where each task targets a different source. The source ID (different for each task) is passed in via `params`. A [task factory](#task-factories)'s launch gets the values it was launched with. |
 | `ctx.metadata` | `dict[str, Any]` | Metadata from the task definition. Use this for tagging your processes, which can be useful for finding or identifying them later. |
 | `ctx.services` | `dict[str, Any]` | Services dict passed to `init()`. Use this for dependency injection. |
 
@@ -401,20 +401,22 @@ Now that we have discussed what the individual processes can do, let's look at w
 ```python
 await optio_core.launch(
     process_id: str, resume: bool = False, *, session_id: str | None,
+    params: dict[str, Any] | None = None,
 ) -> LaunchOutcome
 ```
 
-Fire-and-forget launch. The process begins execution in a background task and the call returns immediately. The process must be in a launchable state (`idle`, `done`, `failed`, or `cancelled`). `session_id` is required (keyword-only): the id of the session that initiated the launch, or `None` for an unattended launch; it is stored on the process as `originatingSessionId`. `resume=True` starts the task with `ctx.resume=True` (the task needs `supports_resume=True`; without saved state it starts fresh). Returns a `LaunchOutcome`: `ok=True` with `proc` the process document, or `ok=False` with a `reason`: `not-found`, `not-launchable`, `launch-blocked`, `no-resume-support` or `shutting-down`.
+Fire-and-forget launch. The process begins execution in a background task and the call returns immediately. The process must be in a launchable state (`idle`, `done`, `failed`, or `cancelled`). `session_id` is required (keyword-only): the id of the session that initiated the launch, or `None` for an unattended launch; it is stored on the process as `originatingSessionId`. `resume=True` starts the task with `ctx.resume=True` (the task needs `supports_resume=True`; without saved state it starts fresh). `params` are a [task factory](#task-factories)'s values, and only a factory takes them: its launch makes and launches a child process with them. Returns a `LaunchOutcome`: `ok=True` with `proc` the process document (a factory's launch: the child's), or `ok=False` with a `reason`: `not-found`, `not-launchable`, `launch-blocked`, `no-resume-support`, `shutting-down`, `parameters-required` (a factory without `params`), `not-a-factory` (`params` for a process that is no factory) or `invalid-parameters` (with `message`, `"<id>: <what>"`).
 
 ### `launch_and_wait()`
 
 ```python
 await optio_core.launch_and_wait(
     process_id: str, resume: bool = False, *, session_id: str | None,
+    params: dict[str, Any] | None = None,
 ) -> None
 ```
 
-Launch a process and block until it reaches a terminal state (`done`, `failed`, or `cancelled`). Useful for scripting and tests. `session_id` is as for `launch()`; `resume` reaches the task as `ctx.resume` unchecked (no `supports_resume` or saved-state check). Raises `LaunchBlocked` if a launch block matches the task's metadata. If the process is not found or not in a launchable state, it returns at once without launching.
+Launch a process and block until it reaches a terminal state (`done`, `failed`, or `cancelled`). Useful for scripting and tests. `session_id` is as for `launch()`; `resume` reaches the task as `ctx.resume` unchecked (no `supports_resume` or saved-state check). `params` are as for `launch()`: a factory's launch runs its child to completion, and a refused one raises `LaunchError` (`.reason`, `.message`). Raises `LaunchBlocked` if a launch block matches the task's metadata. If the process is not found or not in a launchable state, it returns at once without launching.
 
 ### `cancel()`
 
@@ -441,7 +443,7 @@ await optio_core.resync(
 ) -> dict[str, str]
 ```
 
-Re-run the task generator and sync definitions with the database. New tasks are created, the root records of tasks no longer generated are deleted (an active one is cancelled first, waiting up to `cancel_grace_seconds`), and metadata on existing tasks is updated without disturbing runtime state. Returns a `{processId: oid_hex}` map of the tasks synced.
+Re-run the task generator and sync definitions with the database. New tasks are created, the root records of tasks no longer generated are deleted, and metadata on existing tasks is updated without disturbing runtime state. Before the deletion, what still runs there is cancelled: an active root and the active processes under it (its children, even under a parent with `auto_cancel_children=False`, or a removed task factory's launches), all waited for within one `cancel_grace_seconds`. Returns a `{processId: oid_hex}` map of the tasks synced.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -544,6 +546,39 @@ proc = await adhoc_define(
 await launch("one-off-123", session_id=None)
 ```
 
+## Task Factories
+
+A `TaskFactory` is a task launched with values. It declares parameters; each launch with values for them makes a child process that runs the factory's `execute` with the values in `ctx.params`. `get_task_definitions` returns factories among its `TaskInstance`s (the fields: [TaskFactory](#taskfactory) under Data Types). optio-ui renders a launch form from the parameters.
+
+```python
+from optio_core import TaskFactory, launch
+
+async def export_report(ctx):
+    fmt, days = ctx.params["format"], ctx.params.get("days", 7)
+    ...
+
+factory = TaskFactory(
+    execute=export_report,
+    process_id="export-report",
+    name="Export report",
+    parameters=[
+        {"kind": "oneOf", "id": "format", "label": "Format",
+         "choices": [{"value": "csv"}, {"value": "pdf", "label": "PDF"}]},
+        {"kind": "numeric", "id": "days", "label": "Days", "min": 1, "max": 90,
+         "integer": True, "required": False},
+    ],
+    name_for=lambda values: f"Export report ({values['format']})",
+)
+
+outcome = await launch("export-report", session_id=None, params={"format": "csv", "days": 30})
+child = outcome.proc  # the launch's process document
+```
+
+- **The factory's record** is synced like a task's, with `taskFactory: true` and its `parameters`. It never runs itself: launched without `params` it is refused (`parameters-required`), and it has no schedule, resume or resurrect.
+- **The parameters** are vultus-core field definitions as plain JSON: `kind` one of `boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`; a unique `id` (letters, digits and `_`); a `label` (a string, or a map of language code to string); the kind's options (`choices` for `oneOf` and `manyOf`; `min`, `max`, `step` and `integer` for `numeric` and `range`; `maxLength` for `text`); `initialValue`; `required` (default `True`). A bad definition makes the sync raise `ValueError`.
+- **A launch's values** are checked before anything is made: every key a parameter's, every required one given, each value of its kind's type and within its options (nothing coerced), then the factory's `validate(values)`, whose returned message refuses them too. A refusal is `invalid-parameters`, its `message` `"<id>: <what>"`. A value that is no value (`None`; `''` for a `text`, `[]` for a `manyOf`) is left out of `ctx.params`.
+- **The launch** is an ad-hoc child of the factory's record: process id `<factory id>:<8 hex digits>`, named `name_for(values)` (or the factory's `name`), its metadata the factory's plus `taskFactory: <factory id>`. It is [ephemeral](#adhoc_define) unless the factory sets `ttl_seconds`, which keeps it that long after it ends. It runs once: a launch of it is refused (`not-launchable`).
+
 ## Remote Control via Clamator RPC
 
 When Redis is configured (by passing `redis_url` to `init()`), `optio-core`
@@ -629,6 +664,29 @@ class TaskInstance:
 
 The fields after `cancellable` are covered in more detail in [AGENTS.md](AGENTS.md).
 
+### `TaskFactory`
+
+```python
+@dataclass
+class TaskFactory:
+    execute: Callable[..., Awaitable[None]]  # a launch's task; reads ctx.params
+    process_id: str
+    name: str
+    parameters: list[dict[str, Any]]         # field definitions as plain JSON
+    description: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    special: bool = False
+    warning: str | None = None               # shown before the launch form
+    cancellable: bool = True                 # a launch's
+    ui_widget: str | None = None             # a launch's widget
+    ttl_seconds: int | None = None           # None: a launch is ephemeral; set: kept that long after it ends
+    auto_cancel_children: bool = True        # a launch's
+    validate: Callable[[dict[str, Any]], str | None] | None = None  # a returned message refuses the values
+    name_for: Callable[[dict[str, Any]], str] | None = None        # a launch's name; default `name`
+```
+
+The fields a `TaskInstance` has too mean the same, for each launch. See [Task Factories](#task-factories).
+
 ### `ChildResult`
 
 ```python
@@ -669,7 +727,7 @@ Collection: `{prefix}_processes`
 | `processId` | string | Application-defined unique identifier |
 | `name` | string | Human-readable display name |
 | `description` | string \| null | Optional description text |
-| `params` | object | Static parameters from TaskInstance |
+| `params` | object | Static parameters from TaskInstance; a task factory's launch's values |
 | `metadata` | object | Arbitrary metadata; fields can be filtered via `list_processes(metadata=...)` |
 | `parentId` | ObjectId \| null | Parent process `_id`; null for root processes |
 | `rootId` | ObjectId | Root process `_id`; equals `_id` for root processes |

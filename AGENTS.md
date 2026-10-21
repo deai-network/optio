@@ -206,6 +206,11 @@ async with optio_core.block_launches(launch_filter: dict, *, persist: bool = Fal
 await optio_core.unblock_launches(launch_filter: dict) -> int                                              # remove every persistent record + in-memory block whose filter equals launch_filter exactly; returns count of in-memory entries removed
 await optio_core.dismiss(process_id: str) -> DismissOutcome          # reset done/failed/cancelled → idle
 await optio_core.resync(clean: bool = False, metadata_filter: dict | None = None) -> dict[str, str]  # re-sync task definitions (scoped to metadata_filter if given); clean=True deletes the (in-scope) records first; returns {processId: oid_hex}
+# Before it deletes the root records of definitions no longer generated (stale roots), it sets the cancel
+# flag of each one still active and of the active records under every stale root (a removed factory's
+# launches, but also a stale task's children, those under a parent with auto_cancel_children=False too),
+# and waits for them all within the same cancel_grace_seconds (one no task of this engine runs: the whole
+# grace); then deletes the stale roots regardless.
 
 # Ad-hoc processes (not from get_task_definitions). A child's record carries the task's cancellable,
 # description, special, warning and ui_widget, and the parent's ttlSeconds.
@@ -320,8 +325,7 @@ class TaskFactory:
   launch is refused (`no-resume-support`), `resurrect` answers `no-resurrect-support` (factories
   stay out of the executor's task registry), and `Executor.launch_process` skips a `taskFactory`
   record. A TaskInstance's record has neither field (unset on sync). A resync that removes the
-  factory cancels its running launches (the stale records' active descendants are cancelled with
-  them).
+  factory cancels its running launches (see `resync` above).
 - **The parameters** (checked at sync; a bad one raises `ValueError("Task factory '<id>':
   parameters: <param id>: <what>")`; `optio_core.task_factory.check_parameters`): `kind` one of
   `boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`; `id` (unique, an identifier:
