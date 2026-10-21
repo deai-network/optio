@@ -23,6 +23,9 @@ export interface MultiProcessUpdate {
   autoResumeScheduled?: boolean;
   metadata?: Record<string, unknown>;
   browserOpenRequests?: { requestId: string; url: string }[];
+  warning?: string;
+  taskFactory?: boolean;    // a task factory's record: its launch opens its launch form
+  parameters?: unknown[];   // the factory's parameters, for that form
 }
 
 export interface MultiLogEntry {

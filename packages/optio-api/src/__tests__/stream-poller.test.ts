@@ -739,12 +739,106 @@ describe('resurrect fields propagation', () => {
   );
 });
 
+// A task factory's record carries taskFactory, its parameters and its warning:
+// optio-ui opens the factory's launch form from them (spec 2026-10-20-task-factory §3).
+describe('task factory fields propagation', () => {
+  const PARAMETERS = [{ kind: 'text', id: 'note', label: 'Note' }];
+
+  async function insertFactory() {
+    const rootId = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: rootId, processId: 'fac', name: 'Factory', rootId, parentId: null,
+      depth: 0, order: 0, status: { state: 'idle' }, progress: { percent: null },
+      cancellable: true, log: [],
+      taskFactory: true, parameters: PARAMETERS, warning: 'It deletes things.',
+    });
+    return rootId;
+  }
+
+  async function pollerOf(kind: 'list' | 'tree' | 'multiTree', rootId: ObjectId, updates: any[]) {
+    const sendEvent = (e: any) => { if (e.type === 'update') updates.push(e); };
+    const base = { db, prefix: PREFIX, sendEvent, onError: () => {}, visibility: null };
+    const { createMultiTreePoller } = await import('../stream-poller.js');
+    return kind === 'list'
+      ? createListPoller(base)
+      : kind === 'tree'
+        ? createTreePoller({ ...base, rootId: rootId.toString(), baseDepth: 0 })
+        : createMultiTreePoller({ ...base, treeRoots: [{ rootId, baseDepth: 0 }], flatIds: [] });
+  }
+
+  it.each(['list', 'tree', 'multiTree'] as const)(
+    '%s poller sends taskFactory, parameters and warning',
+    async (kind) => {
+      const rootId = await insertFactory();
+      const updates: any[] = [];
+      const poller = await pollerOf(kind, rootId, updates);
+      poller.start();
+      try {
+        await waitUntil(() => updates.length > 0);
+      } finally {
+        poller.stop();
+      }
+      const p = updates[0].processes.find((x: any) => x._id === rootId.toString());
+      expect(p.taskFactory).toBe(true);
+      expect(p.parameters).toEqual(PARAMETERS);
+      expect(p.warning).toBe('It deletes things.');
+    },
+  );
+
+  it.each(['list', 'tree', 'multiTree'] as const)(
+    '%s poller sends taskFactory false for a record that is no factory',
+    async (kind) => {
+      const rootId = new ObjectId();
+      await db.collection(`${PREFIX}_processes`).insertOne({
+        _id: rootId, processId: 'task', name: 'Task', rootId, parentId: null,
+        depth: 0, order: 0, status: { state: 'idle' }, progress: { percent: null },
+        cancellable: true, log: [],
+      });
+      const updates: any[] = [];
+      const poller = await pollerOf(kind, rootId, updates);
+      poller.start();
+      try {
+        await waitUntil(() => updates.length > 0);
+      } finally {
+        poller.stop();
+      }
+      const p = updates[0].processes.find((x: any) => x._id === rootId.toString());
+      expect(p.taskFactory).toBe(false);
+      expect(p.parameters).toBeUndefined();
+    },
+  );
+
+  it.each(['list', 'tree', 'multiTree'] as const)(
+    '%s poller emits a new update when only the parameters change (a resync)',
+    async (kind) => {
+      const rootId = await insertFactory();
+      const updates: any[] = [];
+      const poller = await pollerOf(kind, rootId, updates);
+      const ids = () => updates.at(-1)?.processes
+        .find((x: any) => x._id === rootId.toString())?.parameters?.map((d: any) => d.id);
+      poller.start();
+      try {
+        await waitUntil(() => ids()?.join() === 'note');
+        await db.collection(`${PREFIX}_processes`).updateOne(
+          { _id: rootId },
+          { $set: { parameters: [...PARAMETERS, { kind: 'boolean', id: 'dry_run' }] } },
+        );
+        await waitUntil(() => ids()?.join() === 'note,dry_run');
+      } finally {
+        poller.stop();
+      }
+    },
+    120_000,
+  );
+});
+
 describe('createListPoller reads only what it sends', () => {
   const LIST_FIELDS = {
     processId: 1, name: 1, status: 1, progress: 1, cancellable: 1, special: 1,
     warning: 1, metadata: 1, depth: 1, supportsResume: 1, hasSavedState: 1,
     supportsResurrect: 1, hasUnsavedWork: 1, resurrecting: 1,
     autoResumeScheduled: 1, browserOpenRequests: 1,
+    taskFactory: 1, parameters: 1,
   };
 
   /** `db` whose process collection records the options of every find(). */
@@ -828,7 +922,7 @@ describe('createListPoller reads only what it sends', () => {
       cancellable: true, special: false, warning: null, metadata: { project: 'x' },
       depth: 0, supportsResume: false, hasSavedState: false,
       supportsResurrect: false, hasUnsavedWork: false, resurrecting: false,
-      autoResumeScheduled: false, browserOpenRequests: [],
+      autoResumeScheduled: false, browserOpenRequests: [], taskFactory: false,
     }]);
   });
 });

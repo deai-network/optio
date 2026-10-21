@@ -468,8 +468,9 @@ interface TaskFactoryLaunchModalProps {
 
 The launch form of a task factory (`packages/optio-ui/src/components/TaskFactoryLaunchModal.tsx`;
 spec `docs/2026-10-20-task-factory-design.md` §3). `LaunchControls` opens it for a factory's
-record (`isTaskFactory`: `taskFactory: true`); the record must carry `parameters` (`ProcessSchema`,
-the REST reads; optio-api's list and tree streams do not send `taskFactory` / `parameters` yet).
+record (`isTaskFactory`: `taskFactory: true`), which carries `parameters` and `warning`: the REST
+reads (`ProcessSchema`) and optio-api's list, tree and multi-tree streams (`ProcessUpdate`) all send
+them.
 
 - An antd `Modal` (title `processes.factoryTitle`, "Launch “{{name}}”"; `destroyOnHidden`, so each
   opening starts from the initial values) around a vultus-antd `FormPanel` (vertical): the factory's
@@ -905,12 +906,18 @@ interface ProcessUpdate {
   autoResumeScheduled?: boolean;
   supportsResume?: boolean;
   hasSavedState?: boolean;
+  warning?: string;                  // shown before a launch (a task factory's form shows it on top)
+  taskFactory?: boolean;             // a task factory's record: its launch opens its launch form
+  parameters?: unknown[];            // a task factory's parameters, for that form
 }
 
 export interface ProcessTreeNode extends ProcessUpdate {
   children: ProcessTreeNode[];
 }
 ```
+
+`MultiProcessUpdate` (`MultiProcessStreamContext.tsx`, the multi-tree stream's items) carries
+`warning`, `taskFactory` and `parameters` too.
 
 Exported from `useProcessStream.ts`, re-exported from `index.ts`.
 

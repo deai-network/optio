@@ -1258,19 +1258,25 @@ diverged-metadata edge case; details: packages/optio-api/AGENTS.md
 **List stream process shape:**
 ```typescript
 { _id, processId, name, status, progress, cancellable, special, warning, metadata, depth,
-  supportsResume, hasSavedState, autoResumeScheduled, browserOpenRequests }
+  supportsResume, hasSavedState, autoResumeScheduled, browserOpenRequests, taskFactory, parameters }
 ```
 
 **Tree stream process shape:**
 ```typescript
 { _id, parentId: string | null, rootId, processId, launchMode, name, status, progress, cancellable,
-  depth, order, widgetData, uiWidget, metadata,
-  supportsResume, hasSavedState, autoResumeScheduled, browserOpenRequests }
+  depth, order, widgetData, uiWidget, metadata, warning,
+  supportsResume, hasSavedState, autoResumeScheduled, browserOpenRequests, taskFactory, parameters }
 ```
 
 Both streams, and the multi-tree stream (`GET /api/processes/tree/multi/stream`), also carry
 `supportsResurrect`, `hasUnsavedWork` and `resurrecting` (`false` when absent), tracked in the
 snapshot fingerprint. Neither carries `description`.
+
+All three also carry a task factory's `taskFactory` (`false` when absent) and `parameters` (absent
+on other records), and the tree streams `warning` (the list stream always did): optio-ui opens a
+factory's launch form from them. The list stream reads them (`LIST_PROJECTION`); `warning`,
+`taskFactory` and `parameters` are in every stream's snapshot fingerprint, so a resync that changes
+only a factory's definition is sent again.
 
 `widgetData` is included in tree-stream payloads and tracked in the snapshot fingerprint so
 worker-side mutations trigger SSE events. The list stream does **not** include `widgetData`.
@@ -1518,8 +1524,8 @@ interface TaskFactoryLaunchModalProps {
 ```
 
 A task factory's launch form (spec `docs/2026-10-20-task-factory-design.md` §3), opened by
-`LaunchControls` for a factory's record (which must carry `parameters`: the REST reads do; optio-api's
-list and tree streams do not send `taskFactory` / `parameters` yet). A vultus-antd `FormPanel`: the
+`LaunchControls` for a factory's record (`taskFactory` and `parameters`: the REST reads and every
+optio-api stream carry them, see "List stream process shape"). A vultus-antd `FormPanel`: the
 factory's `warning` on top, one antd `Form.Item` (name = the parameter's id) per parameter holding a
 vultus-antd `<Field>`, then Cancel and Launch (vultus actions). The definitions get their labels (and
 their choices') resolved for the UI language (that language, its base language, else `en`, else the
@@ -1758,6 +1764,9 @@ export interface ProcessTreeNode {   // ProcessUpdate (a tree-stream item) + chi
   autoResumeScheduled?: boolean;
   supportsResume?: boolean;
   hasSavedState?: boolean;
+  warning?: string;
+  taskFactory?: boolean;     // a task factory's record: its launch opens its launch form
+  parameters?: unknown[];    // a task factory's parameters, for that form
   children: ProcessTreeNode[];
 }
 ```

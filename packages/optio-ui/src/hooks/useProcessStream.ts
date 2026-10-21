@@ -30,6 +30,12 @@ interface ProcessUpdate {
   supportsResume?: boolean;
   /** A saved state exists (a cancelled, resumable process is suspended). */
   hasSavedState?: boolean;
+  /** Shown before launching (a confirmation; a task factory's launch form shows it on top). */
+  warning?: string;
+  /** A task factory's record: its launch opens its launch form (TaskFactoryLaunchModal). */
+  taskFactory?: boolean;
+  /** A task factory's parameters (field definitions as data), for that form. */
+  parameters?: unknown[];
 }
 
 export interface ProcessTreeNode extends ProcessUpdate {

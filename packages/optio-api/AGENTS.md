@@ -807,6 +807,15 @@ again every 5 minutes; after any other error it polls and reopens with backoff
 Every poller's `update` processes also carry `supportsResurrect`, `hasUnsavedWork` and
 `resurrecting` (`false` when absent), all part of the snapshot fingerprint.
 
+The list, tree and multi-tree pollers' `update` processes carry a task factory's `taskFactory`
+(`false` when absent) and `parameters` (absent on other records), and the tree and multi-tree ones
+`warning` too (the list's always did): optio-ui opens a factory's launch form from them (spec
+`docs/2026-10-20-task-factory-design.md` §3). `LIST_PROJECTION` reads `taskFactory` and
+`parameters`, so the list re-reads when a shown process's change touches them; `warning`,
+`taskFactory` and `parameters` are in every poller's snapshot fingerprint, so a resync that changes
+only a factory's definition sends the update again. The tree and multi-tree pollers share one
+snapshot and one payload builder (`treeSnapshotOf`, `treeUpdateOf` in `stream-poller.ts`).
+
 `createTreePoller` sends all existing log entries on the first poll, then only deltas. It detects log truncation (e.g. after resync) and emits `log-clear` before new entries.
 
 The `widgetData` field is included in tree-stream `update` events and is part of the snapshot fingerprint, so worker-side mutations (via `ctx.set_widget_data`) trigger a new SSE event. The list stream (`createListPoller`) does **not** include `widgetData` — it is omitted from sidebar payloads.

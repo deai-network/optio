@@ -125,6 +125,10 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
         resurrecting: p.resurrecting ?? false,
         autoResumeScheduled: p.autoResumeScheduled ?? false,
         browserOpenRequests: p.browserOpenRequests ?? [],
+        // A resync may change a task factory's definition alone.
+        warning: p.warning,
+        taskFactory: p.taskFactory ?? false,
+        parameters: p.parameters,
       })),
     );
 
@@ -150,12 +154,66 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
           resurrecting: p.resurrecting ?? false,
           autoResumeScheduled: p.autoResumeScheduled ?? false,
           browserOpenRequests: p.browserOpenRequests ?? [],
+          taskFactory: p.taskFactory ?? false,
+          parameters: p.parameters,
         })),
       });
     }
   }
 
   return driveByChanges(opts, read, (c) => listRelevant(c, members));
+}
+
+/** What a tree or multi-tree stream compares between reads: a change of any of
+ *  it sends the update again (a resync may change a task factory's
+ *  `parameters` or `warning` alone). */
+function treeSnapshotOf(p: any) {
+  return {
+    id: p._id, status: p.status, progress: p.progress,
+    widgetData: p.widgetData, uiWidget: p.uiWidget,
+    supportsResume: p.supportsResume ?? false,
+    hasSavedState: p.hasSavedState ?? false,
+    supportsResurrect: p.supportsResurrect ?? false,
+    hasUnsavedWork: p.hasUnsavedWork ?? false,
+    resurrecting: p.resurrecting ?? false,
+    autoResumeScheduled: p.autoResumeScheduled ?? false,
+    browserOpenRequests: p.browserOpenRequests ?? [],
+    metadata: p.metadata,
+    warning: p.warning,
+    taskFactory: p.taskFactory ?? false,
+    parameters: p.parameters,
+  };
+}
+
+/** A process as a tree or multi-tree stream's update sends it. */
+function treeUpdateOf(p: any) {
+  return {
+    _id: p._id.toString(),
+    parentId: p.parentId?.toString() ?? null,
+    rootId: p.rootId?.toString() ?? null,
+    processId: p.processId,
+    launchMode: p.launchMode,
+    name: p.name,
+    status: p.status,
+    progress: p.progress,
+    cancellable: p.cancellable ?? false,
+    depth: p.depth,
+    order: p.order,
+    widgetData: p.widgetData,
+    uiWidget: p.uiWidget,
+    supportsResume: p.supportsResume ?? false,
+    hasSavedState: p.hasSavedState ?? false,
+    supportsResurrect: p.supportsResurrect ?? false,
+    hasUnsavedWork: p.hasUnsavedWork ?? false,
+    resurrecting: p.resurrecting ?? false,
+    autoResumeScheduled: p.autoResumeScheduled ?? false,
+    browserOpenRequests: p.browserOpenRequests ?? [],
+    metadata: p.metadata,
+    // A task factory's record: optio-ui opens its launch form from them.
+    warning: p.warning,
+    taskFactory: p.taskFactory ?? false,
+    parameters: p.parameters,
+  };
 }
 
 export interface TreePollerOptions extends Omit<StreamPollerOptions, 'metadataFilter' | 'scope'> {
@@ -186,49 +244,11 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
       allProcs = pruneOrphans(allProcs);
     }
     members = new Set(allProcs.map((p: any) => String(p._id)));
-    const snapshot = JSON.stringify(
-      allProcs.map((p: any) => ({
-        id: p._id, status: p.status, progress: p.progress,
-        widgetData: p.widgetData, uiWidget: p.uiWidget,
-        supportsResume: p.supportsResume ?? false,
-        hasSavedState: p.hasSavedState ?? false,
-        supportsResurrect: p.supportsResurrect ?? false,
-        hasUnsavedWork: p.hasUnsavedWork ?? false,
-        resurrecting: p.resurrecting ?? false,
-        autoResumeScheduled: p.autoResumeScheduled ?? false,
-        browserOpenRequests: p.browserOpenRequests ?? [],
-        metadata: p.metadata,
-      })),
-    );
+    const snapshot = JSON.stringify(allProcs.map(treeSnapshotOf));
 
     if (snapshot !== lastSnapshot) {
       lastSnapshot = snapshot;
-      sendEvent({
-        type: 'update',
-        processes: allProcs.map((p: any) => ({
-          _id: p._id.toString(),
-          parentId: p.parentId?.toString() ?? null,
-          rootId: p.rootId?.toString() ?? null,
-          processId: p.processId,
-          launchMode: p.launchMode,
-          name: p.name,
-          status: p.status,
-          progress: p.progress,
-          cancellable: p.cancellable ?? false,
-          depth: p.depth,
-          order: p.order,
-          widgetData: p.widgetData,
-          uiWidget: p.uiWidget,
-          supportsResume: p.supportsResume ?? false,
-          hasSavedState: p.hasSavedState ?? false,
-          supportsResurrect: p.supportsResurrect ?? false,
-          hasUnsavedWork: p.hasUnsavedWork ?? false,
-          resurrecting: p.resurrecting ?? false,
-          autoResumeScheduled: p.autoResumeScheduled ?? false,
-          browserOpenRequests: p.browserOpenRequests ?? [],
-          metadata: p.metadata,
-        })),
-      });
+      sendEvent({ type: 'update', processes: allProcs.map(treeUpdateOf) });
     }
 
     // Detect log changes
@@ -342,49 +362,11 @@ export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerH
     // becoming visible again is already caught by the metadata-change
     // relevance fix below.
     members = new Set([...allProcs.map((p: any) => String(p._id)), ...flatIds.map(String)]);
-    const snapshot = JSON.stringify(
-      allProcs.map((p: any) => ({
-        id: p._id, status: p.status, progress: p.progress,
-        widgetData: p.widgetData, uiWidget: p.uiWidget,
-        supportsResume: p.supportsResume ?? false,
-        hasSavedState: p.hasSavedState ?? false,
-        supportsResurrect: p.supportsResurrect ?? false,
-        hasUnsavedWork: p.hasUnsavedWork ?? false,
-        resurrecting: p.resurrecting ?? false,
-        autoResumeScheduled: p.autoResumeScheduled ?? false,
-        browserOpenRequests: p.browserOpenRequests ?? [],
-        metadata: p.metadata,
-      })),
-    );
+    const snapshot = JSON.stringify(allProcs.map(treeSnapshotOf));
 
     if (snapshot !== lastSnapshot) {
       lastSnapshot = snapshot;
-      sendEvent({
-        type: 'update',
-        processes: allProcs.map((p: any) => ({
-          _id: p._id.toString(),
-          parentId: p.parentId?.toString() ?? null,
-          rootId: p.rootId?.toString() ?? null,
-          processId: p.processId,
-          launchMode: p.launchMode,
-          name: p.name,
-          status: p.status,
-          progress: p.progress,
-          cancellable: p.cancellable ?? false,
-          depth: p.depth,
-          order: p.order,
-          widgetData: p.widgetData,
-          uiWidget: p.uiWidget,
-          supportsResume: p.supportsResume ?? false,
-          hasSavedState: p.hasSavedState ?? false,
-          supportsResurrect: p.supportsResurrect ?? false,
-          hasUnsavedWork: p.hasUnsavedWork ?? false,
-          resurrecting: p.resurrecting ?? false,
-          autoResumeScheduled: p.autoResumeScheduled ?? false,
-          browserOpenRequests: p.browserOpenRequests ?? [],
-          metadata: p.metadata,
-        })),
-      });
+      sendEvent({ type: 'update', processes: allProcs.map(treeUpdateOf) });
     }
 
     const logClearedRoots = new Set<string>();
