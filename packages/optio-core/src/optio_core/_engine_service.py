@@ -69,6 +69,18 @@ def _to_process_dict(doc: dict) -> dict:
     return out
 
 
+def _ok_payload(proc: dict | None) -> dict:
+    """The payload of an ok outcome: the process, as the wire renders it.
+
+    Optio's outcomes carry a record whenever they are ok (an ephemeral one
+    deleted before the re-read: the one read before the action). Should one
+    come without, there is no process to answer: not-found, rather than an
+    RPC that fails."""
+    if proc is None:
+        return {"ok": False, "reason": "not-found"}
+    return {"ok": True, "process": _to_process_dict(proc)}
+
+
 class OptioEngineService(OptioEngineServiceBase):
     """Concrete OptioEngineService backing the clamator optio-engine contract."""
 
@@ -87,9 +99,7 @@ class OptioEngineService(OptioEngineServiceBase):
                 # An invalid-parameters refusal: "<id>: <what>", unchanged.
                 refusal["message"] = outcome.message
             return LaunchResult.model_validate(refusal)
-        return LaunchResult.model_validate(
-            {"ok": True, "process": _to_process_dict(outcome.proc)}
-        )
+        return LaunchResult.model_validate(_ok_payload(outcome.proc))
 
     # --------------------------------------------------------------- cancel
     async def cancel(self, params: CancelParams) -> CancelResult:
@@ -98,9 +108,7 @@ class OptioEngineService(OptioEngineServiceBase):
             return CancelResult.model_validate(
                 {"ok": False, "reason": outcome.reason}
             )
-        return CancelResult.model_validate(
-            {"ok": True, "process": _to_process_dict(outcome.proc)}
-        )
+        return CancelResult.model_validate(_ok_payload(outcome.proc))
 
     # --------------------------------------------------------------- dismiss
     async def dismiss(self, params: DismissParams) -> DismissResult:
@@ -109,9 +117,7 @@ class OptioEngineService(OptioEngineServiceBase):
             return DismissResult.model_validate(
                 {"ok": False, "reason": outcome.reason}
             )
-        return DismissResult.model_validate(
-            {"ok": True, "process": _to_process_dict(outcome.proc)}
-        )
+        return DismissResult.model_validate(_ok_payload(outcome.proc))
 
     # --------------------------------------------------------------- resurrect
     async def resurrect(self, params: ResurrectParams) -> ResurrectResult:
@@ -122,9 +128,7 @@ class OptioEngineService(OptioEngineServiceBase):
             return ResurrectResult.model_validate(
                 {"ok": False, "reason": outcome.reason}
             )
-        return ResurrectResult.model_validate(
-            {"ok": True, "process": _to_process_dict(outcome.proc)}
-        )
+        return ResurrectResult.model_validate(_ok_payload(outcome.proc))
 
     # --------------------------------------------------------------- resync
     async def resync(self, params: ResyncParams) -> None:

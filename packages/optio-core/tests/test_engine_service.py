@@ -293,6 +293,29 @@ async def test_dismiss_not_found(fake_optio):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("verb,outcome,params", [
+    ("launch", LaunchOutcome, {"processId": "p1", "sessionId": None}),
+    ("cancel", CancelOutcome, {"processId": "p1"}),
+    ("dismiss", DismissOutcome, {"processId": "p1"}),
+    ("resurrect", ResurrectOutcome, {"processId": "p1", "sessionId": None}),
+])
+async def test_an_ok_outcome_without_a_record_is_not_found(fake_optio, verb, outcome, params):
+    """Defensive: Optio's outcomes carry a record (the one read before the
+    action when it is gone by the re-read), but one without must not fail the
+    RPC: there is no record to answer, so it is not-found."""
+    from optio_core._engine_service import OptioEngineService
+    param_types = {
+        "launch": LaunchParams, "cancel": CancelParams,
+        "dismiss": DismissParams, "resurrect": ResurrectParams,
+    }
+    setattr(fake_optio, verb, AsyncMock(return_value=outcome(ok=True, proc=None)))
+    svc = OptioEngineService(fake_optio)
+    result = await getattr(svc, verb)(param_types[verb].model_validate(params))
+    assert result.root.ok is False
+    assert result.root.reason == "not-found"
+
+
+@pytest.mark.asyncio
 async def test_dismiss_not_dismissable(fake_optio):
     from optio_core._engine_service import OptioEngineService
     fake_optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=False, reason="not-dismissable"))

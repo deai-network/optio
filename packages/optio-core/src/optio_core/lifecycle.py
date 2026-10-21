@@ -476,7 +476,9 @@ class Optio:
         launch-blocked); on success the executor task is scheduled in the
         background and the outcome is ok=True with `proc` populated from a
         post-schedule re-read (state will typically be 'scheduled' or
-        already advanced to 'running' depending on event-loop timing).
+        already advanced to 'running' depending on event-loop timing; an
+        ephemeral record that a run ended at once has deleted by then is
+        answered as read before the launch).
 
         A TaskFactory's record is launched with `params`, its values: they
         are checked, an ad-hoc child of the record is defined with them and
@@ -537,10 +539,12 @@ class Optio:
             )
         # Yield once so the executor's first state-write (idle→scheduled)
         # lands before we re-read; then return the post-launch snapshot
-        # via OID (unambiguous).
+        # via OID (unambiguous). A run that ended at once may have deleted an
+        # ephemeral record by then: the record read before the launch stands
+        # in for it.
         await asyncio.sleep(0)
         post = await self._resolve(oid_str)
-        return LaunchOutcome(ok=True, proc=post)
+        return LaunchOutcome(ok=True, proc=post if post is not None else proc)
 
     async def _factory_child(
         self, proc: dict, resume: bool, params: dict[str, Any] | None,
@@ -977,9 +981,11 @@ class Optio:
         _trace("CANCEL-TRACE %s: exit ok=True", process_id)
         # Re-read by OID for the post-cancel snapshot; state has advanced
         # to cancel_requested / cancelling / cancelled depending on the
-        # arm taken above.
+        # arm taken above. An ephemeral record may be gone by then (its run
+        # ended on the flag, and was deleted): the cancel still happened, and
+        # the record read before it stands in.
         post = await self._resolve(str(proc["_id"]))
-        return CancelOutcome(ok=True, proc=post)
+        return CancelOutcome(ok=True, proc=post if post is not None else proc)
 
     async def cancel_and_wait(self, process_id: str) -> str | None:
         """Cancel and wait until the process reaches a terminal state.

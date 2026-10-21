@@ -818,6 +818,157 @@ async def test_a_resync_that_removes_a_factory_cancels_its_running_launches(mong
         await fw.shutdown()
 
 
+# ---------------------------------------------------------------- a launch gone before the re-read
+
+
+def _gone_signal(fw):
+    """An event set once the executor's cleanup has deleted an ephemeral
+    record (the end of its run)."""
+    gone = asyncio.Event()
+    real = fw._executor._cleanup_ephemeral
+
+    async def cleanup(process_id):
+        await real(process_id)
+        if await get_process_by_process_id(
+            fw._config.mongo_db, fw._config.prefix, process_id,
+        ) is None:
+            gone.set()
+
+    fw._executor._cleanup_ephemeral = cleanup
+    return gone
+
+
+def _cancel_rereads_after(fw, gone):
+    """Make an ephemeral launch's cleanup win the race against cancel()'s
+    re-read of the record: cancel() propagates to the children (and then
+    re-reads) only once the record is gone."""
+    real = fw._cancel_active_children
+
+    async def after_cleanup(process_id, **kwargs):
+        await asyncio.wait_for(gone.wait(), timeout=60.0)
+        return await real(process_id, **kwargs)
+
+    fw._cancel_active_children = after_cleanup
+
+
+def _launch_rereads_after(fw, gone):
+    """Make a launch's run (ended at once) and its cleanup win the race
+    against launch()'s re-read of the record: once the run's task is made,
+    a read of a record waits until the record is gone."""
+    launched = asyncio.Event()
+    real_launch_process = fw._executor.launch_process
+    real_resolve = fw._resolve
+
+    def launch_process(*args, **kwargs):
+        launched.set()
+        return real_launch_process(*args, **kwargs)
+
+    async def resolve(id_str):
+        if launched.is_set():
+            await asyncio.wait_for(gone.wait(), timeout=60.0)
+        return await real_resolve(id_str)
+
+    fw._executor.launch_process = launch_process
+    fw._resolve = resolve
+
+
+async def _start_until_cancelled(mongo_db, prefix):
+    """An Optio with an ephemeral factory whose launch waits for its
+    cancellation flag, and that launch, running."""
+    started = asyncio.Event()
+
+    async def until_cancelled(ctx):
+        started.set()
+        await ctx.cancellation_flag.wait()
+
+    fw = await _init(mongo_db, prefix, [_factory(until_cancelled)])
+    outcome = await fw.launch("fac", session_id=None, params=GOOD)
+    assert outcome.ok and outcome.proc["ephemeral"] is True
+    await asyncio.wait_for(started.wait(), timeout=60.0)
+    return fw, outcome.proc
+
+
+async def test_a_cancel_whose_ephemeral_launch_is_gone_by_its_re_read_answers_the_record(
+    mongo_db,
+):
+    # The launch ends as soon as its flag is set, and its record is deleted;
+    # the cancel succeeded all the same, so its outcome carries the record
+    # read before it.
+    prefix = "tf_gone_cancel"
+    fw, child = await _start_until_cancelled(mongo_db, prefix)
+    try:
+        _cancel_rereads_after(fw, _gone_signal(fw))
+        outcome = await fw.cancel(str(child["_id"]))
+        assert outcome.ok
+        assert outcome.proc is not None
+        assert outcome.proc["_id"] == child["_id"]
+        assert await get_process_by_process_id(mongo_db, prefix, child["processId"]) is None
+    finally:
+        await fw.shutdown()
+
+
+async def test_the_engine_rpc_answers_such_a_cancel_with_the_record(mongo_db):
+    from optio_core._engine_service import OptioEngineService
+    from optio_core._generated.optio_engine import CancelParams
+
+    prefix = "tf_gone_cancel_rpc"
+    fw, child = await _start_until_cancelled(mongo_db, prefix)
+    try:
+        _cancel_rereads_after(fw, _gone_signal(fw))
+        result = await OptioEngineService(fw).cancel(
+            CancelParams.model_validate({"processId": str(child["_id"])}),
+        )
+        assert result.root.ok is True
+        assert result.root.process.process_id == child["processId"]
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("kind", ["factory", "adhoc"])
+async def test_a_launch_whose_ephemeral_record_is_gone_by_its_re_read_answers_the_record(
+    mongo_db, kind,
+):
+    prefix = f"tf_gone_launch_{kind}"
+    execute, seen, _ = _recorder()
+    fw = await _init(mongo_db, prefix, [_factory(execute)])
+    try:
+        if kind == "factory":
+            target, params = "fac", GOOD
+        else:
+            await fw.adhoc_define(
+                TaskInstance(execute=execute, process_id="eph", name="Eph"),
+                ephemeral=True,
+            )
+            target, params = "eph", None
+        _launch_rereads_after(fw, _gone_signal(fw))
+        outcome = await fw.launch(target, session_id=None, params=params)
+        assert outcome.ok
+        assert outcome.proc is not None
+        pid = outcome.proc["processId"]
+        assert pid in seen
+        assert await get_process_by_process_id(mongo_db, prefix, pid) is None
+    finally:
+        await fw.shutdown()
+
+
+async def test_the_engine_rpc_answers_such_a_launch_with_the_record(mongo_db):
+    from optio_core._engine_service import OptioEngineService
+    from optio_core._generated.optio_engine import LaunchParams
+
+    prefix = "tf_gone_launch_rpc"
+    execute, seen, _ = _recorder()
+    fw = await _init(mongo_db, prefix, [_factory(execute)])
+    try:
+        _launch_rereads_after(fw, _gone_signal(fw))
+        result = await OptioEngineService(fw).launch(LaunchParams.model_validate(
+            {"processId": "fac", "sessionId": None, "params": GOOD},
+        ))
+        assert result.root.ok is True
+        assert result.root.process.process_id in seen
+    finally:
+        await fw.shutdown()
+
+
 # ---------------------------------------------------------------- the factory never runs
 
 

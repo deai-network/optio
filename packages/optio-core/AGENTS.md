@@ -306,7 +306,11 @@ While a resurrect of the process is in progress, `launch` returns `not-launchabl
 
 `LaunchOutcome` (`ok`, `reason`, `proc`, `message`): `reason` is one of `not-found`,
 `not-launchable`, `launch-blocked`, `no-resume-support`, `shutting-down`, `parameters-required`,
-`not-a-factory`, `invalid-parameters`; `message` is set for `invalid-parameters` only.
+`not-a-factory`, `invalid-parameters`; `message` is set for `invalid-parameters` only. On
+`ok=True`, `proc` is the record re-read after the launch, as `cancel`'s `CancelOutcome.proc` is
+after the cancel; an ephemeral record that its run has already deleted by then (a run that
+ended at once, or on the cancel's flag) is answered as read before the action. The engine RPC
+answers an ok outcome without a record (none comes) `not-found`.
 `LaunchError` (`process_id`, `reason`, `message`) is what `launch_and_await_result` raises on a
 refusal, and `launch_and_wait` on a TaskFactory's.
 
