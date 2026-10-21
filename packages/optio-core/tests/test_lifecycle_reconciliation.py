@@ -132,8 +132,9 @@ async def test_startup_deletes_every_ephemeral_leftover_whatever_its_state(mongo
     deletes every one, with its descendants, whatever its state -- one whose
     deletion after its end was lost (here a settled orphan, kept as failed),
     and an idle one that was never launched (a crash between adhoc_define and
-    launch). Other records stay, and so does another engine's (another
-    prefix) ephemeral one."""
+    launch). Other records stay (a kept factory launch among them: ad-hoc,
+    but not ephemeral), and so does another engine's (another prefix)
+    ephemeral one."""
     prefix = "recontest_eph_any"
     coll = mongo_db[f"{prefix}_processes"]
     ended = await coll.insert_one({
@@ -153,6 +154,13 @@ async def test_startup_deletes_every_ephemeral_leftover_whatever_its_state(mongo
         "status": {"state": "idle"}, "adhoc": True, "ephemeral": True,
         "parentId": factory.inserted_id, "rootId": factory.inserted_id, "depth": 1,
     })
+    # A launch its factory's TTL keeps: ad-hoc, but not ephemeral.
+    await coll.insert_one({
+        **_make_active_seed("p_factory:4e5f6a7b", "Kept launch", "running"),
+        "status": {"state": "done"}, "adhoc": True, "ephemeral": False,
+        "metadata": {"taskFactory": "p_factory"}, "ttlSeconds": 3600,
+        "parentId": factory.inserted_id, "rootId": factory.inserted_id, "depth": 1,
+    })
     await coll.insert_one({
         **_make_active_seed("p_done", "Done", "running"), "status": {"state": "done"},
     })
@@ -169,6 +177,8 @@ async def test_startup_deletes_every_ephemeral_leftover_whatever_its_state(mongo
             assert await get_process_by_process_id(mongo_db, prefix, pid) is None, pid
         factory_rec = await get_process_by_process_id(mongo_db, prefix, "p_factory")
         assert factory_rec["status"]["state"] == "idle"
+        kept = await get_process_by_process_id(mongo_db, prefix, "p_factory:4e5f6a7b")
+        assert kept is not None and kept["status"]["state"] == "done"
         done = await get_process_by_process_id(mongo_db, prefix, "p_done")
         assert done["status"]["state"] == "done"
         other_rec = await get_process_by_process_id(mongo_db, "recontest_eph_other", "p_other")
