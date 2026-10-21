@@ -14,6 +14,9 @@ const QUIET_STATES = new Set(['idle', 'done']);
 
 const NO_FILTERS: readonly FieldDefinition[] = [];
 
+/** The width of each of an app's own filters in ProcessFilters' row, in pixels. */
+const APP_FILTER_WIDTH = 240;
+
 interface ProcessFilterContextValue {
   filterGroup: FilterGroup;
   setFilterGroup: (g: FilterGroup) => void;
@@ -141,7 +144,7 @@ type DefinitionOf<K extends FieldDefinition['kind']> = Extract<FieldDefinition, 
  * The filter controls of a process list, each a vultus-antd `Field` (local mode: the value is
  * the enclosing WithFilteredProcesses' state): the search, a text field whose value is
  * quaesitor-textus' query; the group, a one-of; "show details" and "show special", booleans;
- * then the app's own filters. `style`/`className` reach the row of controls (it keeps a 16px
+ * then the app's own filters, each 240px wide. `style`/`className` reach the row of controls (it keeps a 16px
  * bottom margin unless the style sets another), so a host app can place it in its own filter bar.
  */
 export function ProcessFilters({ className, style }: { className?: string; style?: CSSProperties } = {}) {
@@ -188,6 +191,10 @@ export function ProcessFilters({ className, style }: { className?: string; style
           // A value the field itself asked for (or the definition's default), so it fits the kind.
           value={filterValues[definition.id] as FieldProps['value']}
           onChange={(value) => setFilterValue(definition.id, value)}
+          // A fixed width, as the built-in filters have: at its natural width a many-of's
+          // responsive tags ("+N ...") and the select's width decide each other, and in this
+          // wrapping row they never settle.
+          style={{ width: APP_FILTER_WIDTH }}
         />
       ))}
     </Space>

@@ -359,6 +359,18 @@ describe("WithFilteredProcesses — an app's own filters over the metadata", () 
     expect(shown()).toEqual(['alpha-idle', 'beta-done', 'gamma-failed']);
   });
 
+  it('an app filter has a fixed width, as the built-in ones do', () => {
+    // At its natural width a many-of's responsive tags ("+N ...") decide the select's width,
+    // which decides the tags: in the wrapping row the two never settle (the select and its open
+    // list re-laid out without end). jsdom lays nothing out, so this pins the width alone.
+    renderFilters({ filters: [MODULE_FILTER] });
+    const select = screen.getByRole('combobox', { name: 'Module' }).closest('.ant-select') as HTMLElement;
+    // vultus-antd gives the width to the select's layout box (its tooltip anchor), and the
+    // select fills it.
+    expect((select.closest('.vultus-tooltip-anchor') as HTMLElement).style.width).toBe('240px');
+    expect(select.style.width).toBe('100%');
+  });
+
   it("a filter starts at its initialValue, else at its kind's own default", () => {
     renderFilters({
       filters: [
