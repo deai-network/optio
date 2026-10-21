@@ -5,6 +5,7 @@ Spec: docs/2026-10-20-task-factory-design.md §1, §4.
 """
 import asyncio
 import dataclasses
+import re
 import time
 
 import pytest
@@ -507,9 +508,11 @@ async def test_a_launch_runs_a_child_of_the_factory_with_the_values(mongo_db):
         assert outcome.ok and outcome.reason is None and outcome.message is None
         child = outcome.proc
         pid = child["processId"]
-        head, _, suffix = pid.partition(":")
+        head, _, suffix = pid.rpartition("_")
         assert head == "fac" and len(suffix) == 8
         int(suffix, 16)
+        # A path segment (optio-host's rule for an agent task's id), so a launch may run an agent.
+        assert re.fullmatch(r"[A-Za-z0-9._-]+", pid)
         assert child["parentId"] == fac["_id"]
         assert child["rootId"] == fac["_id"]
         assert child["depth"] == 1
@@ -880,8 +883,8 @@ async def test_a_child_whose_launch_is_refused_after_its_definition_is_deleted(
                 )
             assert exc.value.reason == "shutting-down"
         assert await _children(mongo_db, prefix, fac["_id"]) == []
-        assert not any(pid.startswith("fac:") for pid in fw._executor._task_registry)
-        assert not any(pid.startswith("fac:") for pid in fw._executor._result_futures)
+        assert not any(pid.startswith("fac_") for pid in fw._executor._task_registry)
+        assert not any(pid.startswith("fac_") for pid in fw._executor._result_futures)
         assert seen == {}
     finally:
         await fw.shutdown()

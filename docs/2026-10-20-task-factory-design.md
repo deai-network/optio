@@ -57,7 +57,9 @@ class TaskFactory:
 - **A factory, with `params`:** the values are checked (1.4). Then a child process is made:
   - its `TaskInstance` has the factory's `execute`, `params` = the values, the factory's metadata
     plus `taskFactory: <factory process id>`, and the factory's other fields;
-  - its process id is the factory's plus `:` and 8 random hex digits;
+  - its process id is the factory's plus `_` and 8 random hex digits: a path segment when the
+    factory's id is one, so a launch can run an agent task (optio-host takes `[A-Za-z0-9._-]`;
+    0.7.0 used `:`, the owner, 2026-10-21);
   - its name is `name_for(values)`, or the factory's name;
   - it is defined with `adhoc_define(child, parent_id=<the factory record's _id>,
     ephemeral=<ttl_seconds is None>)`, with `ttl_seconds` copied, and launched with the

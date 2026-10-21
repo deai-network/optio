@@ -348,7 +348,8 @@ class TaskFactory:
   left-out value, a null one and an empty one alike, from a form or a program; `False` and `0` stay.
 - **The launch's child:** an ad-hoc child of the factory's record (defined as by
   `adhoc_define(child, parent_id=<record _id>, ephemeral=ttl_seconds is None)`), process id
-  `<factory id>:<8 hex digits>`, name `name_for(values)` or `name`, `params` the values, metadata
+  `<factory id>_<8 hex digits>` (a path segment when the factory's id is one, as optio-host wants
+  an agent task's), name `name_for(values)` or `name`, `params` the values, metadata
   the factory's plus `taskFactory: <factory id>`, the factory's other fields, `ttlSeconds` copied
   from the record; launched with the launch's `session_id`. If that launch is refused (a launch
   block or a shutdown since), the child is deleted. Its TaskInstance lives only in memory (as any

@@ -104,13 +104,14 @@ def child_task(factory: TaskFactory, values: dict[str, Any]) -> TaskInstance:
     """The TaskInstance of one launch of `factory` with `values` (already
     checked): the factory's `execute` and fields, `params` = the values
     without the ones that are no value (without_no_values), its metadata
-    plus `taskFactory: <the factory's process id>`, its process id plus ":"
-    and 8 random hex digits, and the name `name_for(values)` or the
-    factory's (spec 1.2)."""
+    plus `taskFactory: <the factory's process id>`, its process id plus "_"
+    and 8 random hex digits (a path segment when the factory's id is one, as
+    optio-host wants an agent task's: [A-Za-z0-9._-]), and the name
+    `name_for(values)` or the factory's (spec 1.2)."""
     values = without_no_values(factory.parameters, values)
     return TaskInstance(
         execute=factory.execute,
-        process_id=f"{factory.process_id}:{secrets.token_hex(4)}",
+        process_id=f"{factory.process_id}_{secrets.token_hex(4)}",
         name=factory.name_for(values) if factory.name_for is not None else factory.name,
         description=factory.description,
         params=values,
