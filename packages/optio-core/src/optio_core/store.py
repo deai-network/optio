@@ -488,6 +488,21 @@ async def delete_process(
     await _collection(db, prefix).delete_one({"_id": proc["_id"]})
 
 
+async def delete_ephemeral_processes(db: AsyncIOMotorDatabase, prefix: str) -> int:
+    """Delete every ephemeral process record, whatever its state, with its
+    descendants. Returns the number of records deleted. Used by Optio.init:
+    an ephemeral process's TaskInstance lived in the memory of the engine
+    that defined it, so after a restart its record can never run again."""
+    coll = _collection(db, prefix)
+    oids = [doc["_id"] async for doc in coll.find({"ephemeral": True}, {"_id": 1})]
+    deleted = 0
+    for oid in oids:
+        # One ephemeral record may be another's descendant, already gone.
+        deleted += await delete_descendants(db, prefix, oid)
+        deleted += (await coll.delete_one({"_id": oid})).deleted_count
+    return deleted
+
+
 async def purge_processes(
     db: AsyncIOMotorDatabase,
     prefix: str,

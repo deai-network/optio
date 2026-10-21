@@ -515,8 +515,10 @@ A matching row in `running`, `cancel_requested` or `cancelling` that no task in
 this engine owns has lost its final-state write. Such a row is settled instead of
 waited on: to the final state the executor still has queued for it, if any, or else
 to `failed` with `"Process had no running task in this engine; its final state was
-never recorded"`. `cancel()` and `cancel_and_wait()` do the same. This assumes one
-engine per (database, prefix). Spec: `docs/2026-10-03-lost-final-state-writes-design.md`.
+never recorded"`; an ephemeral row is then deleted, with its descendants (its run has
+ended). `cancel()` and `cancel_and_wait()` do the same (`cancel_and_wait()` then returns
+`None`: the process no longer exists). This assumes one engine per (database, prefix).
+Spec: `docs/2026-10-03-lost-final-state-writes-design.md`.
 
 `metadata_filter` is a non-empty `dict[str, Any]` (AND-equality match against task
 metadata); `{}` / `None` is rejected with `ValueError` (use `Optio.shutdown()` to
@@ -593,8 +595,14 @@ Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`.
   TaskFactory launch without `ttl_seconds`): the record and its descendants are deleted (and the
   ad-hoc task unregistered) whenever the run ends: at any terminal state the executor writes; after
   a force-cancel (`Executor.force_cancel`, once it has force-cancelled the active children); when a
-  launch finds no execute function; and on `init()`, when a restart interrupted it
-  (`_reconcile_interrupted_processes` deletes it instead of reconciling it to `failed`).
+  launch finds no execute function; and when a lost final write is settled
+  (`Optio._settle_if_orphaned`, Rule 4). On `init()`, before the reconcile of interrupted
+  processes, `Optio._delete_ephemeral_leftovers` (`store.delete_ephemeral_processes`) deletes
+  every ephemeral record of the engine's (database, prefix), whatever its state: one the restart
+  interrupted, one whose end did not delete it (e.g. a Mongo failure in a force-cancel), one
+  defined and never launched (a crash between `adhoc_define` and its launch). Its TaskInstance
+  lived in the memory of the engine that defined it, so it can never run again. Records of
+  another prefix are not touched.
 
 ---
 

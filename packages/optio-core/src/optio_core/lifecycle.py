@@ -36,7 +36,7 @@ from optio_core.task_factory import (
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
-    find_active_descendants, delete_process,
+    find_active_descendants, delete_ephemeral_processes,
     get_process_by_process_id, update_status, relaunch_reset, delete_descendants,
     append_log, compute_expire_at, purge_processes, set_auto_resume_scheduled,
     finalize_if_active, set_has_unsaved_work, set_resurrecting, update_progress,
@@ -267,6 +267,11 @@ class Optio:
         self._scheduler = ProcessScheduler(
             launch_fn=self._scheduler_launch_adapter,
         )
+
+        # A previous session's ephemeral records go first, whatever their
+        # state (their TaskInstances died with it), so the reconcile below
+        # never sees one.
+        await self._delete_ephemeral_leftovers()
 
         # Reconcile any processes left in active states by a previous session.
         # Spec: docs/2026-04-22-process-reconciliation-design.md
@@ -1195,6 +1200,8 @@ class Optio:
         ORPHAN_ERROR, but only while it is still in `observed_state`.
         Returns True if the row is now settled. `scheduled` never
         qualifies: launch_process writes it before the task registers.
+        An ephemeral row is then deleted, with its descendants (as at any
+        end of its run), so a caller's re-read finds nothing.
 
         Assumes one engine per (database, prefix), as Rule 1 does.
         Spec: docs/2026-10-03-lost-final-state-writes-design.md (Rule 4)
@@ -1223,6 +1230,10 @@ class Optio:
             "Settled process %s (%s): it was %s with no running task in this engine",
             proc.get("processId"), oid, observed_state,
         )
+        # An ephemeral process is deleted when its run ends, this end too
+        # (a parked final state written above is cleaned up by
+        # Executor._record_final).
+        await self._executor._cleanup_ephemeral(str(oid))
         return True
 
     async def dismiss(self, process_id: str) -> DismissOutcome:
@@ -1580,31 +1591,23 @@ class Optio:
         Also clears every `resurrecting` marker: no resurrect runs in a fresh
         engine, so a marker still set was left by a dead one.
 
-        An ephemeral record is deleted instead (with its descendants): its
-        run ended, and an ephemeral process is deleted when it ends.
+        No ephemeral record is left to reconcile: _delete_ephemeral_leftovers
+        has deleted them all, in any state, before.
         """
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
         await coll.update_many({"resurrecting": True}, {"$set": {"resurrecting": False}})
         cursor = coll.find(
             {"status.state": {"$in": list(ACTIVE_STATES)}},
-            {"_id": 1, "status.state": 1, "ephemeral": 1},
+            {"_id": 1, "status.state": 1},
         )
-        stale = [
-            (doc["_id"], doc["status"]["state"], doc.get("ephemeral", False))
-            async for doc in cursor
-        ]
+        stale = [(doc["_id"], doc["status"]["state"]) async for doc in cursor]
         if not stale:
             return
 
         now = datetime.now(timezone.utc)
         error_msg = "Process was interrupted by server restart"
-        deleted = 0
         # Re-read each record for ttlSeconds so we can set expireAt for TTL eviction.
-        for oid, prev_state, ephemeral in stale:
-            if ephemeral:
-                await delete_process(self._config.mongo_db, self._config.prefix, str(oid))
-                deleted += 1
-                continue
+        for oid, prev_state in stale:
             ttl_doc = await coll.find_one({"_id": oid}, {"ttlSeconds": 1})
             expire_at = compute_expire_at((ttl_doc or {}).get("ttlSeconds"), now=now)
             await update_status(
@@ -1620,10 +1623,25 @@ class Optio:
                 self._config.mongo_db, self._config.prefix, oid,
                 "event", f"State reconciled: {prev_state} -> failed (server restart)",
             )
-        logger.info(
-            f"Reconciled {len(stale) - deleted} interrupted process(es) to 'failed'"
-            f" and deleted {deleted} ephemeral one(s)"
+        logger.info(f"Reconciled {len(stale)} interrupted process(es) to 'failed'")
+
+    async def _delete_ephemeral_leftovers(self) -> None:
+        """At init(), delete every ephemeral record of this engine's
+        (database, prefix), the reconcile's scope (Rule 1: one engine per
+        pair), with its descendants, whatever its state. Its TaskInstance
+        lived in the memory of the engine that defined it, so it can never
+        run again, and an ephemeral process is deleted when its run ends: a
+        run the restart interrupted, an end whose deletion was lost (e.g. a
+        Mongo failure in a force-cancel), a definition never launched (a
+        crash between adhoc_define and its launch)."""
+        deleted = await delete_ephemeral_processes(
+            self._config.mongo_db, self._config.prefix,
         )
+        if deleted:
+            logger.info(
+                f"Deleted {deleted} record(s) of ephemeral processes (with their "
+                f"descendants) left by a previous session"
+            )
 
     async def _supervisor_loop(self) -> None:
         """Scan for past-deadline cancellations every 500 ms; force-cancel them.

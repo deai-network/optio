@@ -101,7 +101,7 @@ Every task `execute` function receives a single `ProcessContext` argument — th
 - **`ctx.should_continue()`** — Returns `False` if cancellation was requested
 - **`ctx.run_child(...)`** — Run a sequential child process
 - **`ctx.parallel_group(...)`** — Create a parallel execution group
-- **`ctx.mark_ephemeral()`** — Mark this process for deletion after completion
+- **`ctx.mark_ephemeral()`** — Mark this process for deletion when its run ends
 
 ### Child Processes
 

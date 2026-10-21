@@ -249,7 +249,7 @@ Returns `False` when cancellation has been requested. Poll this in loops to supp
 await ctx.mark_ephemeral() -> None
 ```
 
-Mark this process for deletion after it completes (reaches a terminal state).
+Mark this process ephemeral: its record (with its descendants) is deleted when its run ends, as for an [ephemeral ad-hoc process](#adhoc_define).
 
 #### `run_child()`
 
@@ -517,7 +517,7 @@ Create an ad-hoc process at runtime. Returns the MongoDB process document. The p
 |-----------|------|---------|-------------|
 | `task` | `TaskInstance` | required | Task instance with execute function, process_id, name, etc. |
 | `parent_id` | `ObjectId \| None` | `None` | If set, creates the process as a child of the given parent (by MongoDB `_id`) |
-| `ephemeral` | `bool` | `False` | If `True`, the process is automatically deleted after reaching a terminal state |
+| `ephemeral` | `bool` | `False` | If `True`, the process's record (with its descendants) is deleted when its run ends: whatever its end state, a force-cancel included. Its task lives only in this engine's memory, so `init()` deletes every ephemeral record a previous session left, whatever its state (even one defined and never launched) |
 
 ### `adhoc_delete()`
 
@@ -538,7 +538,7 @@ proc = await adhoc_define(
         process_id="one-off-123",
         name="One-off Import",
     ),
-    ephemeral=True,  # Auto-delete after completion
+    ephemeral=True,  # Deleted when its run ends
 )
 
 await launch("one-off-123", session_id=None)
@@ -677,7 +677,7 @@ Collection: `{prefix}_processes`
 | `order` | int | Sort order among siblings |
 | `cancellable` | bool | Whether cancel is permitted |
 | `adhoc` | bool | True if created via `adhoc_define()` |
-| `ephemeral` | bool | True if process should be deleted after completion |
+| `ephemeral` | bool | True if the record (with its descendants) is deleted when its run ends; `init()` deletes those a previous session left |
 | `special` | bool | Marks administrative/special-purpose processes |
 | `warning` | string \| null | Warning text shown before launch |
 | `status` | object | Runtime status sub-document |

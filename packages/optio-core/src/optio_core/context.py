@@ -273,7 +273,8 @@ class ProcessContext:
         return not self._cancellation_flag.is_set()
 
     async def mark_ephemeral(self) -> None:
-        """Mark this process for deletion after completion."""
+        """Mark this process for deletion (with its descendants) when its run
+        ends."""
         from optio_core.store import _collection
         await _collection(self._db, self._prefix).update_one(
             {"_id": self._process_oid},

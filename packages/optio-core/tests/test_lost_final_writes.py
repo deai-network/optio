@@ -328,6 +328,40 @@ async def test_cancel_settles_running_orphan(mongo_db):
         await _stop_optio(optio, run_task)
 
 
+@pytest.mark.parametrize("entry,state", [
+    ("cancel", "running"),                              # cancel()'s own settle
+    ("cancel_and_wait", "cancelling"),                  # its wait loop's
+    ("group_cancel_and_wait", "cancel_requested"),      # its wait loop's
+])
+async def test_a_settled_ephemeral_orphan_is_deleted(mongo_db, entry, state):
+    """An ephemeral process is deleted when its run ends, a settle included:
+    nothing is left of it, and no caller trips over the missing record. No
+    run(): its sync would prune the ad-hoc root as a stale record."""
+    prefix = f"lfw_eph_{entry}"
+    optio, run_task = await _start_optio(
+        mongo_db, prefix, [], cancel_grace_seconds=0.2, run=False,
+    )
+    try:
+        await optio.adhoc_define(
+            TaskInstance(process_id="p.eph", name="Eph", params={}, execute=_done,
+                         metadata={"grp": "eph"}),
+            ephemeral=True,
+        )
+        await _orphan(mongo_db, prefix, "p.eph", state)
+        if entry == "cancel":
+            outcome = await optio.cancel("p.eph")
+            assert outcome.ok and outcome.proc is not None
+        elif entry == "cancel_and_wait":
+            # The process no longer exists once settled.
+            assert await optio.cancel_and_wait("p.eph") is None
+        else:
+            assert await optio.group_cancel_and_wait({"grp": "eph"}) == 1
+        assert await get_process_by_process_id(mongo_db, prefix, "p.eph") is None
+        assert "p.eph" not in optio._executor._task_registry
+    finally:
+        await _stop_optio(optio, run_task)
+
+
 async def test_orphan_with_parked_final_gets_the_parked_state(mongo_db, monkeypatch):
     """A row whose final write is queued (Rule 3) settles to that state, not
     to the generic orphan failure. No run(): the supervisor must not retry first."""

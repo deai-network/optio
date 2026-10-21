@@ -126,6 +126,57 @@ async def test_startup_deletes_interrupted_ephemeral_processes(mongo_db):
         await fw.shutdown()
 
 
+async def test_startup_deletes_every_ephemeral_leftover_whatever_its_state(mongo_db):
+    """An ephemeral record's TaskInstance lived in the memory of the engine
+    that made it, so after a restart the record can never run again: init()
+    deletes every one, with its descendants, whatever its state -- one whose
+    deletion after its end was lost (here a settled orphan, kept as failed),
+    and an idle one that was never launched (a crash between adhoc_define and
+    launch). Other records stay, and so does another engine's (another
+    prefix) ephemeral one."""
+    prefix = "recontest_eph_any"
+    coll = mongo_db[f"{prefix}_processes"]
+    ended = await coll.insert_one({
+        **_make_active_seed("p_eph_failed", "Ended", "running"),
+        "status": {"state": "failed"}, "adhoc": True, "ephemeral": True,
+    })
+    await coll.insert_one({
+        **_make_active_seed("p_eph_failed_child", "Its child", "running"),
+        "status": {"state": "done"},
+        "parentId": ended.inserted_id, "rootId": ended.inserted_id, "depth": 1,
+    })
+    factory = await coll.insert_one({
+        **_make_active_seed("p_factory", "Factory", "running"), "status": {"state": "idle"},
+    })
+    await coll.insert_one({
+        **_make_active_seed("p_factory:0a1b2c3d", "Never launched", "running"),
+        "status": {"state": "idle"}, "adhoc": True, "ephemeral": True,
+        "parentId": factory.inserted_id, "rootId": factory.inserted_id, "depth": 1,
+    })
+    await coll.insert_one({
+        **_make_active_seed("p_done", "Done", "running"), "status": {"state": "done"},
+    })
+    other = mongo_db["recontest_eph_other_processes"]
+    await other.insert_one({
+        **_make_active_seed("p_other", "Another engine's", "running"),
+        "status": {"state": "failed"}, "adhoc": True, "ephemeral": True,
+    })
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix)
+    try:
+        for pid in ("p_eph_failed", "p_eph_failed_child", "p_factory:0a1b2c3d"):
+            assert await get_process_by_process_id(mongo_db, prefix, pid) is None, pid
+        factory_rec = await get_process_by_process_id(mongo_db, prefix, "p_factory")
+        assert factory_rec["status"]["state"] == "idle"
+        done = await get_process_by_process_id(mongo_db, prefix, "p_done")
+        assert done["status"]["state"] == "done"
+        other_rec = await get_process_by_process_id(mongo_db, "recontest_eph_other", "p_other")
+        assert other_rec is not None and other_rec["status"]["state"] == "failed"
+    finally:
+        await fw.shutdown()
+
+
 async def test_startup_reconciliation_is_noop_on_fresh_db(mongo_db):
     """Startup reconciliation does nothing when no active-state rows exist."""
     prefix = "recontest_clean"
