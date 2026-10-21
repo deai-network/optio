@@ -1038,7 +1038,9 @@ class Optio:
         Accepts processId OR OID hex (via the widened lookup primitive).
 
         Returns the terminal state ('cancelled', 'failed', 'done', ...) or
-        None if the process does not exist. Raises asyncio.TimeoutError if
+        None if the process does not exist, or no longer does: an ephemeral
+        process is deleted when it ends, a settle of its lost final write
+        (_settle_if_orphaned) included. Raises asyncio.TimeoutError if
         the process has not reached a terminal state within
         cancel_grace_seconds + 25s — strictly a backstop against supervisor
         or DB anomalies.

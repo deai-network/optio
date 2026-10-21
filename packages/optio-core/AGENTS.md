@@ -313,7 +313,8 @@ after the cancel; an ephemeral record that its run has already deleted by then (
 ended at once, or on the cancel's flag) is answered as read before the action. The engine RPC
 answers an ok outcome without a record (none comes) `not-found`.
 `LaunchError` (`process_id`, `reason`, `message`) is what `launch_and_await_result` raises on a
-refusal, and `launch_and_wait` on a TaskFactory's.
+refusal, and `launch_and_wait` on a TaskFactory's refused launch and on a launch of a
+TaskFactory's launch (`not-launchable`: it runs once).
 
 ---
 

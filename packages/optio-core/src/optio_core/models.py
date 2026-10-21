@@ -33,7 +33,8 @@ class CancelOutcome:
 
     `proc` is the post-action process doc snapshot when ok=True (an
     ephemeral record already deleted by then, its run having ended on the
-    cancel, is the one read before it); None on failure.
+    cancel or been settled as an orphan, is the one read before it); None
+    on failure.
     """
     ok: bool
     reason: Literal["not-found", "not-cancellable"] | None = None

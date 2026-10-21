@@ -416,7 +416,7 @@ await optio_core.launch_and_wait(
 ) -> None
 ```
 
-Launch a process and block until it reaches a terminal state (`done`, `failed`, or `cancelled`). Useful for scripting and tests. `session_id` is as for `launch()`; `resume` reaches the task as `ctx.resume` unchecked (no `supports_resume` or saved-state check). `params` are as for `launch()`: a factory's launch runs its child to completion, and a refused one raises `LaunchError` (`.reason`, `.message`). Raises `LaunchBlocked` if a launch block matches the task's metadata. If the process is not found or not in a launchable state, it returns at once without launching.
+Launch a process and block until it reaches a terminal state (`done`, `failed`, or `cancelled`). Useful for scripting and tests. `session_id` is as for `launch()`; `resume` reaches the task as `ctx.resume` unchecked (no `supports_resume` or saved-state check). `params` are as for `launch()`: a factory's launch runs its child to completion, and a refused one raises `LaunchError` (`.reason`, `.message`). Raises `LaunchBlocked` if a launch block matches the task's metadata. If the process is not found or not in a launchable state, it returns at once without launching; a task factory's launch, which runs once, raises `LaunchError("not-launchable")` instead.
 
 ### `cancel()`
 
