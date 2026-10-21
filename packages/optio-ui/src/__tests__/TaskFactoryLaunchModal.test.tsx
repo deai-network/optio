@@ -57,7 +57,7 @@ function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function renderModal(process: any = FACTORY) {
+function renderModal(process: any = FACTORY, host: { onKeyDown?: () => void; onClick?: () => void } = {}) {
   const onClose = vi.fn();
   const onLaunched = vi.fn();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -65,7 +65,10 @@ function renderModal(process: any = FACTORY) {
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
         <OptioProvider prefix="test" database="test-db">
-          <TaskFactoryLaunchModal process={process} open onClose={onClose} onLaunched={onLaunched} />
+          {/* The host around the launch control (a process tree, a clickable row). */}
+          <div onKeyDown={host.onKeyDown} onClick={host.onClick}>
+            <TaskFactoryLaunchModal process={process} open onClose={onClose} onLaunched={onLaunched} />
+          </div>
         </OptioProvider>
       </QueryClientProvider>
     </I18nextProvider>,
@@ -234,6 +237,20 @@ describe('TaskFactoryLaunchModal', () => {
       expect(within(itemOf(note)).getByText('At most 5 characters')).toBeTruthy();
     }, { timeout: 60_000 });
     expect(requests).toHaveLength(0);
+  });
+
+  it("keeps its events from the host's handlers around it", () => {
+    // React carries a portal's events up its own tree: without the boundary, a
+    // process tree's keyboard navigation would take Home, End and the arrows.
+    const onKeyDown = vi.fn();
+    const onClick = vi.fn();
+    const { dialog } = renderModal(FACTORY, { onKeyDown, onClick });
+    const note = within(dialog).getByRole('textbox', { name: 'Note' });
+    fireEvent.keyDown(note, { key: 'Home' });
+    fireEvent.keyDown(note, { key: 'ArrowDown' });
+    fireEvent.click(note);
+    expect(onKeyDown).not.toHaveBeenCalled();
+    expect(onClick).not.toHaveBeenCalled();
   });
 
   it('closes on Cancel without launching', async () => {
