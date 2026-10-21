@@ -408,7 +408,16 @@ records under it, which inherit its metadata) is never launched again: `launch` 
 `not-launchable` (`launch_and_wait` and `launch_and_await_result` raise
 `LaunchError("not-launchable")`) before it looks for an execute function, whatever the task
 registry holds (the launch's TaskInstance, or nothing once a full resync has replaced the
-registry). optio-ui shows it no play button (`isTaskFactoryLaunch`).
+registry). Nor is it dismissed: `dismiss` answers `not-dismissable`, since the reset would leave
+an idle record that never runs and never expires (it removes `expireAt`); its TTL removes it.
+optio-ui shows it no play button (`isTaskFactoryLaunch`).
+
+**The reserved key.** `metadata.taskFactory` is optio's: only a launch's definition writes it
+(`_factory_child`, through the internal `Optio._adhoc_define`, which keeps it). The public
+`adhoc_define` drops a `taskFactory` key from the task's metadata, for a root and for a child, so
+a process a launch's task defines with its `ctx.metadata` (or `{**ctx.metadata, ...}`) is no
+launch of a factory, and launches. A `run_child` child inherits its parent's metadata as given
+(it never goes through `launch`).
 
 **adhoc_define, a child:** its record now carries the task's `cancellable`, `description`,
 `special`, `warning` and `ui_widget` (`uiWidget`, written only when set), as a root's does.

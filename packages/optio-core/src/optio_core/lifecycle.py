@@ -1,6 +1,7 @@
 """Optio lifecycle management — init, run, shutdown."""
 
 import asyncio
+import dataclasses
 import functools
 import logging
 import os as _os
@@ -418,7 +419,23 @@ class Optio:
         command to start it. A child's record carries the task's own
         cancellable, description, special, warning and ui_widget (as a
         root's does), and the parent's ttlSeconds.
+
+        `metadata.taskFactory` is optio's reserved key (it marks a
+        TaskFactory's launch, which runs once): a `taskFactory` in
+        `task.metadata` is dropped, e.g. one a launch's task passes on with
+        its ctx.metadata.
         """
+        if "taskFactory" in task.metadata:
+            task = dataclasses.replace(task, metadata={
+                k: v for k, v in task.metadata.items() if k != "taskFactory"
+            })
+        return await self._adhoc_define(task, parent_id, ephemeral)
+
+    async def _adhoc_define(
+        self, task: TaskInstance, parent_id: ObjectId | None, ephemeral: bool,
+    ) -> dict:
+        """adhoc_define, the metadata as given: a TaskFactory's launch
+        (_factory_child) keeps the `taskFactory` key child_task wrote."""
         self._check_launch_blocks(task.metadata)
         from optio_core.store import (
             upsert_process, get_process_by_id, create_child_process,
@@ -593,8 +610,9 @@ class Optio:
             message = factory.validate(without_no_values(factory.parameters, params))
         if message is not None:
             return LaunchOutcome(ok=False, reason="invalid-parameters", message=message)
-        # child_task drops the no-values too.
-        return await self.adhoc_define(
+        # child_task drops the no-values too. The internal define keeps the
+        # reserved metadata.taskFactory key child_task writes.
+        return await self._adhoc_define(
             child_task(factory, params), parent_id=proc["_id"],
             ephemeral=factory.ttl_seconds is None,
         )
@@ -1267,11 +1285,15 @@ class Optio:
 
     async def dismiss(self, process_id: str) -> DismissOutcome:
         """Dismiss a completed process (reset to idle). Returns DismissOutcome
-        with `proc` populated from a post-dismiss re-read on success."""
+        with `proc` populated from a post-dismiss re-read on success.
+
+        A TaskFactory's launch is not-dismissable: reset, it would be an idle
+        record that cannot run (a launch runs once) and never expires (the
+        reset removes expireAt). Its TTL removes it."""
         proc = await self._resolve(process_id)
         if proc is None:
             return DismissOutcome(ok=False, reason="not-found")
-        if proc["status"]["state"] not in DISMISSABLE_STATES:
+        if is_factory_launch(proc) or proc["status"]["state"] not in DISMISSABLE_STATES:
             return DismissOutcome(ok=False, reason="not-dismissable")
 
         await delete_descendants(

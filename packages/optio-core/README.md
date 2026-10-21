@@ -432,7 +432,7 @@ Cancel a running or scheduled process. If `scheduled`, it transitions directly t
 await optio_core.dismiss(process_id: str) -> DismissOutcome
 ```
 
-Reset a completed process back to `idle`. Only works on processes in a dismissable state (`done`, `failed`, or `cancelled`). Clears the previous run's result fields (status timestamps, progress, logs) and deletes all descendant child processes. Returns a `DismissOutcome`: `ok=True` with `proc` the process document, or `ok=False` with `reason` `not-found` or `not-dismissable`.
+Reset a completed process back to `idle`. Only works on processes in a dismissable state (`done`, `failed`, or `cancelled`). Clears the previous run's result fields (status timestamps, progress, logs) and deletes all descendant child processes. Returns a `DismissOutcome`: `ok=True` with `proc` the process document, or `ok=False` with `reason` `not-found` or `not-dismissable` (also for a task factory's launch, which runs once: its TTL removes it).
 
 ### `resync()`
 
@@ -577,7 +577,7 @@ child = outcome.proc  # the launch's process document
 - **The factory's record** is synced like a task's, with `taskFactory: true` and its `parameters`. It never runs itself: launched without `params` it is refused (`parameters-required`), and it has no schedule, resume or resurrect.
 - **The parameters** are vultus-core field definitions as plain JSON: `kind` one of `boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`; a unique `id` (letters, digits and `_`); a `label` (a string, or a map of language code to string); the kind's options (`choices` for `oneOf` and `manyOf`; `min`, `max`, `step` and `integer` for `numeric` and `range`; `maxLength` for `text`); `initialValue`; `required` (default `True`). A bad definition makes the sync raise `ValueError`.
 - **A launch's values** are checked before anything is made: every key a parameter's, every required one given, each value of its kind's type and within its options (nothing coerced), then the factory's `validate(values)`, whose returned message refuses them too. A refusal is `invalid-parameters`, its `message` `"<id>: <what>"`. A value that is no value (`None`; `''` for a `text`, `[]` for a `manyOf`) is left out of `ctx.params`.
-- **The launch** is an ad-hoc child of the factory's record: process id `<factory id>:<8 hex digits>`, named `name_for(values)` (or the factory's `name`), its metadata the factory's plus `taskFactory: <factory id>`. It is [ephemeral](#adhoc_define) unless the factory sets `ttl_seconds`, which keeps it that long after it ends. It runs once: a launch of it is refused (`not-launchable`).
+- **The launch** is an ad-hoc child of the factory's record: process id `<factory id>:<8 hex digits>`, named `name_for(values)` (or the factory's `name`), its metadata the factory's plus `taskFactory: <factory id>` (a reserved key: `adhoc_define` drops a caller's, so a process the launch's task defines with `ctx.metadata` launches normally). It is [ephemeral](#adhoc_define) unless the factory sets `ttl_seconds`, which keeps it that long after it ends. It runs once: a launch of it is refused (`not-launchable`), and so is a dismiss (`not-dismissable`).
 
 ## Remote Control via Clamator RPC
 
@@ -647,7 +647,7 @@ class TaskInstance:
 | `name` | `str` | Human-readable display name |
 | `description` | `str \| None` | Optional description text, shown as tooltip on process name in the UI |
 | `params` | `dict[str, Any]` | Parameters passed to the execute function via `ctx.params` |
-| `metadata` | `dict[str, Any]` | Application metadata stored on the process document. Use this for tagging processes so you can find them later — e.g., `{"customer": "2"}` to associate a task with a specific customer. See `list_processes(metadata=...)` for querying. |
+| `metadata` | `dict[str, Any]` | Application metadata stored on the process document. Use this for tagging processes so you can find them later — e.g., `{"customer": "2"}` to associate a task with a specific customer. See `list_processes(metadata=...)` for querying. The key `taskFactory` is reserved: optio writes it on a [task factory](#task-factories)'s launch, and `adhoc_define` drops a caller's. |
 | `schedule` | `str \| None` | Cron expression (5 fields) for automatic scheduling, or `None` |
 | `special` | `bool` | Hidden from default UI views when `True` |
 | `warning` | `str \| None` | Warning message shown as confirmation prompt before launch |

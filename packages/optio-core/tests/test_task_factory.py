@@ -12,7 +12,7 @@ import pytest
 import optio_core
 from optio_core import TaskFactory, TaskInstance, LaunchOutcome, LaunchError
 from optio_core.lifecycle import Optio
-from optio_core.models import LaunchBlocked
+from optio_core.models import DismissOutcome, LaunchBlocked
 from optio_core.store import get_process_by_process_id, upsert_process
 from optio_core.task_factory import check_parameters, check_values
 
@@ -575,6 +575,68 @@ async def test_a_kept_launch_is_never_launched_again(mongo_db):
         await fw.shutdown()
 
 
+async def test_a_kept_launch_is_never_dismissed(mongo_db):
+    # A dismiss would reset a kept launch to an idle record that cannot run
+    # (a launch runs once) and never expires (a dismiss removes expireAt):
+    # refused, the record left to its TTL.
+    prefix = "tf_dismiss"
+    execute, _seen, _ = _recorder()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
+    try:
+        outcome = await fw.launch("fac", session_id=None, params=GOOD)
+        pid = outcome.proc["processId"]
+        done = await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+        assert await fw.dismiss(pid) == DismissOutcome(ok=False, reason="not-dismissable")
+        rec = await get_process_by_process_id(mongo_db, prefix, pid)
+        assert rec["status"] == done["status"]
+        assert rec["expireAt"] == done["expireAt"]
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("parent", ["root", "under-the-launch"])
+async def test_an_adhoc_process_a_launch_defines_with_its_metadata_can_be_launched(
+    mongo_db, parent,
+):
+    # metadata.taskFactory is optio's: adhoc_define drops a caller's, so a
+    # process a launch's task defines with ctx.metadata is no launch of a
+    # factory, and launches.
+    prefix = f"tf_inner_{parent}"
+    ran: list[dict] = []
+    seen: dict = {}
+
+    async def inner(ctx):
+        ran.append(ctx.metadata)
+
+    async def execute(ctx):
+        pid = f"{ctx.process_id}/inner"
+        parent_id = None
+        if parent == "under-the-launch":
+            parent_id = (await get_process_by_process_id(mongo_db, prefix, ctx.process_id))["_id"]
+        rec = await fw.adhoc_define(
+            TaskInstance(execute=inner, process_id=pid, name="Inner", metadata=ctx.metadata),
+            parent_id=parent_id,
+        )
+        seen["stored"] = rec["metadata"]
+        seen["outcome"] = await fw.launch(pid, session_id=None)
+
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
+    try:
+        launch = await fw.launch("fac", session_id=None, params=GOOD)
+        await _wait_until(lambda: _state_is(mongo_db, prefix, launch.proc["processId"], "done"))
+        assert seen["outcome"].ok, seen["outcome"]
+        await _wait_until(lambda: _state_is(
+            mongo_db, prefix, f"{launch.proc['processId']}/inner", "done",
+        ))
+        assert seen["stored"] == {"module": "m"}
+        assert ran == [{"module": "m"}]
+        # The launch's own record keeps the key: only optio writes it.
+        rec = await get_process_by_process_id(mongo_db, prefix, launch.proc["processId"])
+        assert rec["metadata"] == {"module": "m", "taskFactory": "fac"}
+    finally:
+        await fw.shutdown()
+
+
 async def test_a_launch_without_ttl_is_ephemeral(mongo_db):
     prefix = "tf_eph"
     during: list[dict] = []
@@ -761,13 +823,15 @@ async def test_no_child_is_defined_while_shutting_down(mongo_db):
     try:
         fac = await get_process_by_process_id(mongo_db, prefix, "fac")
         defined: list[str] = []
-        original = fw.adhoc_define
+        # A launch's child is defined through the internal define (it keeps
+        # the reserved metadata.taskFactory key).
+        original = fw._adhoc_define
 
         async def recording_define(task, *args, **kwargs):
             defined.append(task.process_id)
             return await original(task, *args, **kwargs)
 
-        fw.adhoc_define = recording_define
+        fw._adhoc_define = recording_define
         fw._shutting_down = True
         assert await fw.launch("fac", session_id=None, params=GOOD) == LaunchOutcome(
             ok=False, reason="shutting-down",
@@ -796,7 +860,7 @@ async def test_a_child_whose_launch_is_refused_after_its_definition_is_deleted(
     fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
     try:
         fac = await get_process_by_process_id(mongo_db, prefix, "fac")
-        original = fw.adhoc_define
+        original = fw._adhoc_define
 
         async def define_then_stop(task, *args, **kwargs):
             # A shutdown that comes between the child's definition and its
@@ -805,7 +869,7 @@ async def test_a_child_whose_launch_is_refused_after_its_definition_is_deleted(
             fw._shutting_down = True
             return proc
 
-        fw.adhoc_define = define_then_stop
+        fw._adhoc_define = define_then_stop
         if entry == "launch":
             outcome = await fw.launch("fac", session_id=None, params=GOOD)
             assert outcome == LaunchOutcome(ok=False, reason="shutting-down")

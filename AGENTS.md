@@ -204,7 +204,7 @@ await optio_core.group_cancel(metadata_filter: dict, block_new_launches: bool = 
 await optio_core.group_cancel_and_wait(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None, purge_records: bool = False) -> int    # blocks until every matching process is terminal (persist=True requires block_new_launches=True)
 async with optio_core.block_launches(launch_filter: dict, *, persist: bool = False, reason: str | None = None): ...   # async CM; rejects matching launches with LaunchBlocked. persist=True writes a Mongo record and the block survives the CM
 await optio_core.unblock_launches(launch_filter: dict) -> int                                              # remove every persistent record + in-memory block whose filter equals launch_filter exactly; returns count of in-memory entries removed
-await optio_core.dismiss(process_id: str) -> DismissOutcome          # reset done/failed/cancelled → idle
+await optio_core.dismiss(process_id: str) -> DismissOutcome          # reset done/failed/cancelled → idle (a TaskFactory's launch: not-dismissable)
 await optio_core.resync(clean: bool = False, metadata_filter: dict | None = None) -> dict[str, str]  # re-sync task definitions (scoped to metadata_filter if given); clean=True deletes the (in-scope) records first; returns {processId: oid_hex}
 # Before it deletes the root records of definitions no longer generated (stale roots), it sets the cancel
 # flag of each one still active and of the active records under every stale root (a removed factory's
@@ -213,7 +213,8 @@ await optio_core.resync(clean: bool = False, metadata_filter: dict | None = None
 # grace); then deletes the stale roots regardless.
 
 # Ad-hoc processes (not from get_task_definitions). A child's record carries the task's cancellable,
-# description, special, warning and ui_widget, and the parent's ttlSeconds.
+# description, special, warning and ui_widget, and the parent's ttlSeconds. metadata.taskFactory is
+# reserved (optio writes it on a TaskFactory's launch): a taskFactory key in task.metadata is dropped.
 await optio_core.adhoc_define(task: TaskInstance, parent_id: ObjectId | None = None, ephemeral: bool = False) -> dict
 await optio_core.adhoc_delete(process_id: str) -> None
 
@@ -345,18 +346,22 @@ class TaskFactory:
   a `text`, `[]` for a `manyOf`: the required check's rule) are then dropped
   (`task_factory.without_no_values`): the task's `ctx.params`, `validate` and `name_for` see a
   left-out value, a null one and an empty one alike, from a form or a program; `False` and `0` stay.
-- **The launch's child:** an ad-hoc child of the factory's record (`adhoc_define(child,
-  parent_id=<record _id>, ephemeral=ttl_seconds is None)`), process id `<factory id>:<8 hex
-  digits>`, name `name_for(values)` or `name`, `params` the values, metadata the factory's plus
-  `taskFactory: <factory id>`, the factory's other fields, `ttlSeconds` copied from the record;
-  launched with the launch's `session_id`. If that launch is refused (a launch block or a shutdown
-  since), the child is deleted. Its TaskInstance lives only in memory (as any ad-hoc process's).
+- **The launch's child:** an ad-hoc child of the factory's record (defined as by
+  `adhoc_define(child, parent_id=<record _id>, ephemeral=ttl_seconds is None)`), process id
+  `<factory id>:<8 hex digits>`, name `name_for(values)` or `name`, `params` the values, metadata
+  the factory's plus `taskFactory: <factory id>`, the factory's other fields, `ttlSeconds` copied
+  from the record; launched with the launch's `session_id`. If that launch is refused (a launch
+  block or a shutdown since), the child is deleted. Its TaskInstance lives only in memory (as any
+  ad-hoc process's). `metadata.taskFactory` is optio's reserved key: only the launch's definition
+  writes it, and `adhoc_define` drops a caller's (so a process a launch's task defines with its
+  `ctx.metadata` is no launch of a factory).
 - **A launch runs once.** `launch`, `launch_and_wait` and `launch_and_await_result` refuse a record
   whose metadata carries `taskFactory` (a launch, kept by `ttl_seconds`, and the records under it,
   which inherit its metadata) with `not-launchable`, before any lookup of its task, whatever the
   task registry holds (its TaskInstance, or nothing after a full resync, which replaces the
-  registry); `task_factory.is_factory_launch`. optio-ui shows it no play button
-  (`isTaskFactoryLaunch`).
+  registry); `task_factory.is_factory_launch`. `dismiss` answers it `not-dismissable` (reset, it
+  would be an idle record that never runs nor expires; its TTL removes it). optio-ui shows it no
+  play button (`isTaskFactoryLaunch`).
 
 ---
 
@@ -644,7 +649,7 @@ Collection: `{prefix}_processes`
 | `name` | string | Human-readable display name |
 | `description` | string \| null | Optional description text |
 | `params` | object | Static parameters from TaskInstance; a TaskFactory launch's values |
-| `metadata` | object | Arbitrary metadata; fields can be filtered via `list_processes(metadata=...)` |
+| `metadata` | object | Arbitrary metadata; fields can be filtered via `list_processes(metadata=...)`. The key `taskFactory` is reserved: optio writes it on a TaskFactory's launch (the factory's process id; records under the launch inherit it), and `adhoc_define` drops a caller's |
 | `parentId` | ObjectId \| null | Parent process `_id`; null for root processes |
 | `rootId` | ObjectId | Root process `_id`; equals `_id` for root processes |
 | `depth` | int | Tree depth; 0 for root |
