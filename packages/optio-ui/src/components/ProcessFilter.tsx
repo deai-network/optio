@@ -24,8 +24,10 @@ interface ProcessFilterContextValue {
   setShowDetails: (v: boolean) => void;
   showSpecial: boolean;
   setShowSpecial: (v: boolean) => void;
-  /** The app's own filters (WithFilteredProcesses' `filters`), `[]` without. */
-  filters: readonly FieldDefinition[];
+  /** The app's own filters before the built-in ones (WithFilteredProcesses' `customFiltersBegin`), `[]` without. */
+  customFiltersBegin: readonly FieldDefinition[];
+  /** The app's own filters after the built-in ones (`customFiltersEnd`), `[]` without. */
+  customFiltersEnd: readonly FieldDefinition[];
   /** Their values, by filter id: what was chosen, else the filter's default. */
   filterValues: Readonly<Record<string, unknown>>;
   setFilterValue: (id: string, value: unknown) => void;
@@ -43,11 +45,14 @@ const ProcessFilterContext = createContext<ProcessFilterContextValue>(null as an
 export interface WithFilteredProcessesProps {
   children: ReactNode;
   /**
-   * The app's own filters over the process metadata: vultus field definitions of the kinds
-   * vultus-filtrum gives a predicate for (`oneOf`, `manyOf`, `oneOfTree`, `manyOfTree`).
-   * ProcessFilters renders them after its own; their predicate is `metadataFilter`.
+   * The app's own filters over the process metadata that ProcessFilters renders before its own:
+   * vultus field definitions of the kinds vultus-filtrum gives a predicate for (`oneOf`,
+   * `manyOf`, `oneOfTree`, `manyOfTree`), their ids unique across both slots. The predicate of
+   * the two slots' filters together is `metadataFilter`.
    */
-  filters?: readonly FieldDefinition[];
+  customFiltersBegin?: readonly FieldDefinition[];
+  /** The app's own filters that ProcessFilters renders after its own (as `customFiltersBegin`). */
+  customFiltersEnd?: readonly FieldDefinition[];
   /** The metadata key of each filter whose id is not its key (filter id → key). */
   filterFields?: Readonly<Record<string, string>>;
 }
@@ -82,10 +87,13 @@ function useMetadataFilters(filters: readonly FieldDefinition[], filterFields: R
   return { filterValues, setFilterValue, metadataFilter };
 }
 
-function ProcessFilterInner({ children, filters = NO_FILTERS, filterFields }: WithFilteredProcessesProps) {
+function ProcessFilterInner({
+  children, customFiltersBegin = NO_FILTERS, customFiltersEnd = NO_FILTERS, filterFields,
+}: WithFilteredProcessesProps) {
   const [filterGroup, setFilterGroup] = useState<FilterGroup>('all');
   const [showDetails, setShowDetails] = useState(false);
   const [showSpecial, setShowSpecial] = useState(false);
+  const filters = useMemo(() => [...customFiltersBegin, ...customFiltersEnd], [customFiltersBegin, customFiltersEnd]);
   const { filterValues, setFilterValue, metadataFilter } = useMetadataFilters(filters, filterFields);
 
   const searchFilter = useFilterFunction();
@@ -113,7 +121,7 @@ function ProcessFilterInner({ children, filters = NO_FILTERS, filterFields }: Wi
     <ProcessFilterContext.Provider
       value={{
         filterGroup, setFilterGroup, showDetails, setShowDetails, showSpecial, setShowSpecial,
-        filters, filterValues, setFilterValue, metadataFilter, filterFn,
+        customFiltersBegin, customFiltersEnd, filterValues, setFilterValue, metadataFilter, filterFn,
       }}
     >
       {children}
@@ -123,8 +131,9 @@ function ProcessFilterInner({ children, filters = NO_FILTERS, filterFields }: Wi
 
 /**
  * The filter state of a process list: the built-in filters (search, group, details, special),
- * applied by `filterFn` (FilteredProcessList), and the app's own `filters` over the metadata,
- * whose predicate (`useProcessFilter().metadataFilter`) the app hands to its list stream.
+ * applied by `filterFn` (FilteredProcessList), and the app's own filters over the metadata
+ * (`customFiltersBegin`, `customFiltersEnd`), whose predicate (`useProcessFilter().metadataFilter`)
+ * the app hands to its list stream.
  */
 export function WithFilteredProcesses({ children, ...appFilters }: WithFilteredProcessesProps) {
   return (
@@ -142,15 +151,16 @@ type DefinitionOf<K extends FieldDefinition['kind']> = Extract<FieldDefinition, 
 
 /**
  * The filter controls of a process list, each a vultus-antd `Field` (local mode: the value is
- * the enclosing WithFilteredProcesses' state): the search, a text field whose value is
- * quaesitor-textus' query; the group, a one-of; "show details" and "show special", booleans;
- * then the app's own filters, each 240px wide. `style`/`className` reach the row of controls (it keeps a 16px
- * bottom margin unless the style sets another), so a host app can place it in its own filter bar.
+ * the enclosing WithFilteredProcesses' state): the app's `customFiltersBegin`; the search, a
+ * text field whose value is quaesitor-textus' query; the group, a one-of; "show details" and
+ * "show special", booleans; the app's `customFiltersEnd`. An app filter is 240px wide.
+ * `style`/`className` reach the row of controls (it keeps a 16px bottom margin unless the style
+ * sets another), so a host app can place it in its own filter bar.
  */
 export function ProcessFilters({ className, style }: { className?: string; style?: CSSProperties } = {}) {
   const {
     filterGroup, setFilterGroup, showDetails, setShowDetails, showSpecial, setShowSpecial,
-    filters, filterValues, setFilterValue,
+    customFiltersBegin, customFiltersEnd, filterValues, setFilterValue,
   } = useProcessFilter();
   const { query, setQuery } = useSearchContext();
   const { t } = useTranslation();
@@ -173,8 +183,23 @@ export function ProcessFilters({ className, style }: { className?: string; style
     showSpecial: { kind: 'boolean', id: 'showSpecial', label: t('processes.showSpecial') } satisfies DefinitionOf<'boolean'>,
   }), [t]);
 
+  const appFilter = (definition: FieldDefinition) => (
+    <Field<FieldDefinition>
+      key={definition.id}
+      definition={definition}
+      // A value the field itself asked for (or the definition's default), so it fits the kind.
+      value={filterValues[definition.id] as FieldProps['value']}
+      onChange={(value) => setFilterValue(definition.id, value)}
+      // A fixed width, as the built-in filters have: at its natural width a many-of's
+      // responsive tags ("+N ...") and the select's width decide each other, and in this
+      // wrapping row they never settle.
+      style={{ width: APP_FILTER_WIDTH }}
+    />
+  );
+
   return (
     <Space size={[16, 8]} wrap className={className} style={{ marginBottom: 16, ...style }}>
+      {customFiltersBegin.map(appFilter)}
       <Field definition={builtIn.search} widget="search" value={query} onChange={setQuery} style={{ width: 200 }} />
       <Field
         definition={builtIn.filterGroup}
@@ -184,19 +209,7 @@ export function ProcessFilters({ className, style }: { className?: string; style
       />
       <Field definition={builtIn.showDetails} widget="checkbox" value={showDetails} onChange={setShowDetails} />
       <Field definition={builtIn.showSpecial} widget="checkbox" value={showSpecial} onChange={setShowSpecial} />
-      {filters.map((definition) => (
-        <Field<FieldDefinition>
-          key={definition.id}
-          definition={definition}
-          // A value the field itself asked for (or the definition's default), so it fits the kind.
-          value={filterValues[definition.id] as FieldProps['value']}
-          onChange={(value) => setFilterValue(definition.id, value)}
-          // A fixed width, as the built-in filters have: at its natural width a many-of's
-          // responsive tags ("+N ...") and the select's width decide each other, and in this
-          // wrapping row they never settle.
-          style={{ width: APP_FILTER_WIDTH }}
-        />
-      ))}
+      {customFiltersEnd.map(appFilter)}
     </Space>
   );
 }

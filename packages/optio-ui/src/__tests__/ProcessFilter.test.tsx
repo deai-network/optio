@@ -254,7 +254,11 @@ function Probe() {
   return null;
 }
 
-type AppFilterProps = { filters?: FieldDefinition[]; filterFields?: Record<string, string> };
+type AppFilterProps = {
+  customFiltersBegin?: FieldDefinition[];
+  customFiltersEnd?: FieldDefinition[];
+  filterFields?: Record<string, string>;
+};
 
 function FiltersOverList(props: AppFilterProps) {
   return (
@@ -334,12 +338,12 @@ describe("WithFilteredProcesses — an app's own filters over the metadata", () 
   it('without app filters, metadataFilter is undefined', () => {
     renderFilters();
     expect(filter.metadataFilter).toBeUndefined();
-    renderFilters({ filters: [] });
+    renderFilters({ customFiltersBegin: [], customFiltersEnd: [] });
     expect(filter.metadataFilter).toBeUndefined();
   });
 
-  it('renders a many-of after the built-in filters; the values chosen give metadataFilter, the predicate toPredicate makes', async () => {
-    const { container } = renderFilters({ filters: [MODULE_FILTER] });
+  it('customFiltersEnd renders a many-of after the built-in filters; the values chosen give metadataFilter, the predicate toPredicate makes', async () => {
+    const { container } = renderFilters({ customFiltersEnd: [MODULE_FILTER] });
     expect(fieldIds(container)).toEqual(['search', 'filterGroup', 'showDetails', 'showSpecial', 'module']);
     // Nothing chosen: the predicate is empty, so no filter.
     expect(filter.metadataFilter).toBeUndefined();
@@ -359,11 +363,21 @@ describe("WithFilteredProcesses — an app's own filters over the metadata", () 
     expect(shown()).toEqual(['alpha-idle', 'beta-done', 'gamma-failed']);
   });
 
+  it('customFiltersBegin renders before the built-in filters, customFiltersEnd after; one predicate over both', () => {
+    const level = { kind: 'oneOf', id: 'level', choices: [{ value: 'basic' }, { value: 'advanced' }] } as FieldDefinition;
+    const { container } = renderFilters({
+      customFiltersBegin: [{ ...MODULE_FILTER, initialValue: ['logic'] } as FieldDefinition],
+      customFiltersEnd: [level],
+    });
+    expect(fieldIds(container)).toEqual(['module', 'search', 'filterGroup', 'showDetails', 'showSpecial', 'level']);
+    expect(filter.metadataFilter).toEqual({ AND: [{ module: { in: ['logic'] } }, { level: { eq: 'basic' } }] });
+  });
+
   it('an app filter has a fixed width, as the built-in ones do', () => {
     // At its natural width a many-of's responsive tags ("+N ...") decide the select's width,
     // which decides the tags: in the wrapping row the two never settle (the select and its open
     // list re-laid out without end). jsdom lays nothing out, so this pins the width alone.
-    renderFilters({ filters: [MODULE_FILTER] });
+    renderFilters({ customFiltersBegin: [MODULE_FILTER] });
     const select = screen.getByRole('combobox', { name: 'Module' }).closest('.ant-select') as HTMLElement;
     // vultus-antd gives the width to the select's layout box (its tooltip anchor), and the
     // select fills it.
@@ -373,7 +387,7 @@ describe("WithFilteredProcesses — an app's own filters over the metadata", () 
 
   it("a filter starts at its initialValue, else at its kind's own default", () => {
     renderFilters({
-      filters: [
+      customFiltersEnd: [
         { kind: 'oneOf', id: 'level', choices: [{ value: 'basic' }, { value: 'advanced' }] },
         { ...MODULE_FILTER, initialValue: ['geometry'] },
       ] as FieldDefinition[],
@@ -384,14 +398,14 @@ describe("WithFilteredProcesses — an app's own filters over the metadata", () 
 
   it('filterFields names the metadata key of a filter whose id differs', () => {
     renderFilters({
-      filters: [{ ...MODULE_FILTER, id: 'modules', initialValue: ['logic'] } as FieldDefinition],
+      customFiltersEnd: [{ ...MODULE_FILTER, id: 'modules', initialValue: ['logic'] } as FieldDefinition],
       filterFields: { modules: 'module' },
     });
     expect(filter.metadataFilter).toEqual({ module: { in: ['logic'] } });
   });
 
   it('metadataFilter keeps its identity while it says the same, even when the app passes its filters anew', () => {
-    const props = { filters: [{ ...MODULE_FILTER, initialValue: ['logic'] } as FieldDefinition] };
+    const props = { customFiltersEnd: [{ ...MODULE_FILTER, initialValue: ['logic'] } as FieldDefinition] };
     const { rerender } = render(<FiltersOverList {...props} />);
     const first = filter.metadataFilter;
     expect(first).toEqual({ module: { in: ['logic'] } });
@@ -399,7 +413,7 @@ describe("WithFilteredProcesses — an app's own filters over the metadata", () 
     fireEvent.change(screen.getByRole('textbox', { name: 'Search' }), { target: { value: 'al' } });
     expect(filter.metadataFilter).toBe(first);
     // The app renders again, with equal but new definitions and fields.
-    rerender(<FiltersOverList filters={props.filters.map((d) => ({ ...d }))} filterFields={{}} />);
+    rerender(<FiltersOverList customFiltersEnd={props.customFiltersEnd.map((d) => ({ ...d }))} filterFields={{}} />);
     expect(filter.metadataFilter).toBe(first);
   });
 });

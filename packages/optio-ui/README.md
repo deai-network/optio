@@ -99,7 +99,7 @@ wires a complete app (providers, i18n, proxy) this way.
 | `ProcessStatusBadge` | Colored tag showing process state with live elapsed-time counter |
 | `ProcessTreeView` | Ant Design `Tree` rendering a nested process hierarchy from SSE data |
 | `ProcessLogPanel` | Scrolling monospace log viewer with level-colored tags; auto-scrolls to bottom |
-| `ProcessFilters` | The filters of a process list, each a vultus field: search, filter group (all/active/hide_completed/errors), "show details" and "show special", then the app's own filters over the metadata; reads its state from an enclosing `WithFilteredProcesses`, whose `FilteredProcessList` applies it (see [Process filters](#process-filters)) |
+| `ProcessFilters` | The filters of a process list, each a vultus field: the app's own filters over the metadata that come first, search, filter group (all/active/hide_completed/errors), "show details" and "show special", then the app's own that come last; reads its state from an enclosing `WithFilteredProcesses`, whose `FilteredProcessList` applies it (see [Process filters](#process-filters)) |
 | `TaskFactoryLaunchModal` | A task factory's launch form: a field per parameter (vultus-antd), the factory's warning, Launch; a refusal shows on the field it names. The launch button of a factory's record (in `ProcessItem`, `ProcessTreeView`, `ProcessDetailView`) opens it; `onLaunched(child)` gets the launch |
 
 ## Hooks
@@ -123,9 +123,11 @@ its filters as vultus-antd fields in one row, and `FilteredProcessList` shows th
 that pass the built-in ones (search over name and description, the filter group, "show
 details", "show special"; applied in the browser).
 
-An app adds its own filters over the process metadata with `filters`: vultus-core field
-definitions of kind `oneOf`, `manyOf`, `oneOfTree` or `manyOfTree`. Each filters the metadata
-key of its id; `filterFields` names another (`{ modules: 'module' }`). They start at their
+An app adds its own filters over the process metadata in two slots, `customFiltersBegin`
+(before the built-in filters in `ProcessFilters`' row) and `customFiltersEnd` (after them):
+vultus-core field definitions of kind `oneOf`, `manyOf`, `oneOfTree` or `manyOfTree`, their ids
+unique across both, each 240px wide in the row. Each filters the metadata key of its id;
+`filterFields` names another (`{ modules: 'module' }`). They start at their
 `initialValue`, else at their kind's own default (a many-of: nothing chosen). Their predicate,
 made by [vultus-filtrum](https://www.npmjs.com/package/vultus-filtrum) (`toPredicate`), is
 `useProcessFilter().metadataFilter`; it is `undefined` while there are no app filters or none
@@ -153,7 +155,7 @@ const PROCESS_FILTERS: FieldDefinition[] = [{
 
 export function ProcessesPage() {
   return (
-    <WithFilteredProcesses filters={PROCESS_FILTERS}>
+    <WithFilteredProcesses customFiltersBegin={PROCESS_FILTERS}>
       <Processes />
     </WithFilteredProcesses>
   );
