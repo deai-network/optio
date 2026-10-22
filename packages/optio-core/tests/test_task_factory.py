@@ -885,6 +885,32 @@ async def test_dismissing_a_launch_deletes_its_own_records_only(mongo_db):
         await fw.shutdown()
 
 
+async def test_a_kept_launch_whose_factory_is_gone_can_still_be_dismissed(mongo_db):
+    # A sync that removes a factory deletes its record only (a root): its
+    # kept launches stay. A launch without a TTL would stay forever if its
+    # dismiss needed the factory's record.
+    prefix = "tf_dismiss_orphan"
+    defs = [_factory(_with_a_step)]
+    fw = await _init(mongo_db, prefix, defs)
+    try:
+        outcome = await fw.launch("fac", session_id=None, params=GOOD, ephemeral=False)
+        pid = outcome.proc["processId"]
+        launch = await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+        [step] = await _children(mongo_db, prefix, launch["_id"])
+        defs.clear()
+        await fw.resync()
+        coll = mongo_db[f"{prefix}_processes"]
+        assert await coll.find_one({"processId": "fac"}) is None
+        assert await coll.find_one({"_id": launch["_id"]}) is not None
+        # A record under it is still refused; the launch itself is deleted.
+        assert await fw.dismiss(str(step["_id"])) == DismissOutcome(ok=False, reason="not-dismissable")
+        assert await fw.dismiss(pid) == DismissOutcome(ok=True, proc=None)
+        assert await coll.find_one({"_id": launch["_id"]}) is None
+        assert await coll.find_one({"_id": step["_id"]}) is None
+    finally:
+        await fw.shutdown()
+
+
 async def test_dismiss_of_a_task_still_resets_it(mongo_db):
     prefix = "tf_dismiss_task"
     task = TaskInstance(execute=_noop, process_id="plain", name="Plain")

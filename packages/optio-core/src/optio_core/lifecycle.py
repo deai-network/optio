@@ -1349,20 +1349,16 @@ class Optio:
         A running one is not-dismissable, like any process, and so is a
         record under a launch (a run_child sub-task, which inherits the
         launch's metadata): only the launch itself is deleted
-        (is_the_launch_itself), by its _id."""
+        (is_the_launch_itself: depth 1; its factory's record may be gone), by
+        its _id."""
         proc = await self._resolve(process_id)
         if proc is None:
             return DismissOutcome(ok=False, reason="not-found")
         if proc["status"]["state"] not in DISMISSABLE_STATES:
             return DismissOutcome(ok=False, reason="not-dismissable")
         if is_factory_launch(proc):
-            from optio_core.store import delete_process, get_process_by_id
-            parent = None
-            if proc.get("parentId") is not None:
-                parent = await get_process_by_id(
-                    self._config.mongo_db, self._config.prefix, proc["parentId"],
-                )
-            if not is_the_launch_itself(proc, parent):
+            from optio_core.store import delete_process
+            if not is_the_launch_itself(proc):
                 return DismissOutcome(ok=False, reason="not-dismissable")
             # The deletion an ephemeral launch's end takes (record, its
             # descendants, its task), here for a kept one: by its _id, as

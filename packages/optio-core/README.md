@@ -432,7 +432,7 @@ Cancel a running or scheduled process. If `scheduled`, it transitions directly t
 await optio_core.dismiss(process_id: str) -> DismissOutcome
 ```
 
-Reset a completed process back to `idle`. Only works on processes in a dismissable state (`done`, `failed`, or `cancelled`). Clears the previous run's result fields (status timestamps, progress, logs) and deletes all descendant child processes. Returns a `DismissOutcome`: `ok=True` with `proc` the process document, or `ok=False` with `reason` `not-found` or `not-dismissable`. A task factory's ended launch runs once, so it is not reset: it is deleted with its descendants, and the outcome is `ok=True` with `proc=None`. Only the launch itself is: a record under it (a sub-task its run started with `run_child`) is `not-dismissable`.
+Reset a completed process back to `idle`. Only works on processes in a dismissable state (`done`, `failed`, or `cancelled`). Clears the previous run's result fields (status timestamps, progress, logs) and deletes all descendant child processes. Returns a `DismissOutcome`: `ok=True` with `proc` the process document, or `ok=False` with `reason` `not-found` or `not-dismissable`. A task factory's ended launch runs once, so it is not reset: it is deleted with its descendants, and the outcome is `ok=True` with `proc=None`. Only the launch itself is (also once a re-sync removed its factory, which leaves its kept launches): a record under it (a sub-task its run started with `run_child`) is `not-dismissable`.
 
 ### `resync()`
 

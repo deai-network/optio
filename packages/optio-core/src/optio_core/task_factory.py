@@ -182,21 +182,15 @@ def is_factory_launch(proc: dict) -> bool:
     return isinstance(factory, str) and factory != ""
 
 
-def is_the_launch_itself(proc: dict, parent: dict | None) -> bool:
-    """Whether the factory launch's record `proc` (is_factory_launch) is the
-    launch itself, not a record under it (a run_child sub-task, which
-    inherits the launch's metadata): depth 1, its parent (`parent`, the
-    record its parentId names) the record of the factory its metadata
-    names. Only the launch itself is deleted by a dismiss (launch options
-    spec 1.2)."""
-    return (
-        is_factory_launch(proc)
-        and proc.get("depth") == 1
-        and parent is not None
-        and proc.get("parentId") == parent["_id"]
-        and bool(parent.get("taskFactory"))
-        and parent.get("processId") == proc["metadata"]["taskFactory"]
-    )
+def is_the_launch_itself(proc: dict) -> bool:
+    """Whether the record `proc` is a factory's launch itself (is_factory_launch
+    at depth 1, right under its factory's record), not a record under it (a
+    run_child sub-task, which inherits the launch's metadata, at depth 2 or
+    more); a top-level task is at depth 0. Its factory's record need not
+    exist: a sync that removes a factory deletes that record only, and its
+    kept launches stay, to be dismissed. Only the launch itself is deleted
+    by a dismiss (launch options spec 1.2)."""
+    return is_factory_launch(proc) and proc.get("depth") == 1
 
 
 def _definition_problem(p: dict) -> str | None:

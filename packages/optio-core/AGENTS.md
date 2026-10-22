@@ -447,9 +447,10 @@ never expires (it removes `expireAt`): `dismiss` of an ended launch (done, faile
 deletes it with its descendants and its task (the deletion an ephemeral launch's end takes, by
 its `_id`: resolving its process id again could find another record) and answers `ok=True` with
 `proc=None`; a running one is `not-dismissable`. Only the launch itself is deleted
-(`task_factory.is_the_launch_itself`: depth 1, its parent the record of the factory its metadata
-names): a record under it (a `run_child` sub-task, which inherits its metadata, and may share its
-process id with another launch's) is `not-dismissable`, ended or not.
+(`task_factory.is_the_launch_itself`: `is_factory_launch` at depth 1; its factory's record need not
+exist, as a sync that removes a factory deletes that record only and its kept launches stay, to
+be dismissed): a record under it (a `run_child` sub-task, depth 2 or more, which inherits its
+metadata, and may share its process id with another launch's) is `not-dismissable`, ended or not.
 optio-ui shows it no play button (`isTaskFactoryLaunch`), and the remove button on the launch
 itself only (`isTaskFactoryLaunchItself`).
 
