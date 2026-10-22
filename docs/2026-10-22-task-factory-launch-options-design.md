@@ -161,8 +161,14 @@ a refusal through the error routes (`optioErrorRoutes`, the dismiss route).
 
 ### 3.5 The detail view's last view of a deleted process
 
+- **A factory launch is its own view's root** (the owner, 2026-10-22: "yes, add the tree-subtree fix
+  so that we can see the real conversation for the launches"): the stream of a launch carries its
+  factory's tree (the root's), so the detail view of a factory launch (depth 1) takes the launch's
+  node from it: its subtree, the logs of that subtree, its widget (an agent launch's conversation)
+  and its actions. Any other process keeps its root's view.
 - **The cache:** module-level, in memory, the last 5 processes `ProcessDetailView` has shown, each
-  with the last snapshot it saw (the stream's `tree` and `logs`), updated as the stream changes and
+  with the last snapshot it saw (the subtree of the process asked for and its logs: a launch's own,
+  not its factory's other launches), updated as the stream changes and
   moved to the front when shown again. A reload empties it; nothing is written to the browser's
   storage.
 - **A process the stream reports gone** (`processNotFound`) that is in the cache: the view shows its
