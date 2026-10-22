@@ -99,12 +99,12 @@ def test_task_factory_fields_are_the_specs():
     assert names == [
         "process_id", "name", "parameters", "execute", "description",
         "metadata", "special", "warning", "cancellable", "supports_resume",
-        "ui_widget", "ttl_seconds", "auto_cancel_children", "validate",
-        "name_for", "task_for",
+        "auto_resume", "ui_widget", "ttl_seconds", "auto_cancel_children",
+        "validate", "name_for", "task_for",
     ]
     f = TaskFactory(execute=_noop, process_id="f", name="F", parameters=[])
     assert f.metadata == {} and f.cancellable is True and f.ttl_seconds is None
-    assert f.supports_resume is False
+    assert f.supports_resume is False and f.auto_resume is False
     assert f.auto_cancel_children is True and f.validate is None and f.name_for is None
     assert optio_core.TaskFactory is TaskFactory
     assert "TaskFactory" in optio_core.__all__
@@ -578,11 +578,13 @@ async def test_sync_refuses_a_factory_without_exactly_one_of_execute_and_task_fo
         await fw.init(mongo_db=mongo_db, prefix=f"tf_one_{what}", get_task_definitions=get_defs)
 
 
-async def test_sync_refuses_supports_resume_with_task_for(mongo_db):
-    # With task_for, the instance's supports_resume rules (spec 1.4).
+@pytest.mark.parametrize("field", ["supports_resume", "auto_resume"])
+async def test_sync_refuses_supports_resume_or_auto_resume_with_task_for(mongo_db, field):
+    # With task_for, the instance's supports_resume and auto_resume rule
+    # (spec 1.4).
     bad = TaskFactory(
         task_for=lambda v, pid: None, process_id="fac", name="F", parameters=[],
-        supports_resume=True,
+        **{field: True},
     )
     fw = Optio()
 
@@ -591,9 +593,27 @@ async def test_sync_refuses_supports_resume_with_task_for(mongo_db):
 
     with pytest.raises(
         ValueError,
-        match="Task factory 'fac': supports_resume is the task_for instance's",
+        match=f"Task factory 'fac': {field} is the task_for instance's; "
+              f"it cannot be set on a factory with task_for",
     ):
-        await fw.init(mongo_db=mongo_db, prefix="tf_resume_task_for", get_task_definitions=get_defs)
+        await fw.init(mongo_db=mongo_db, prefix=f"tf_{field}_task_for", get_task_definitions=get_defs)
+
+
+async def test_sync_refuses_auto_resume_without_supports_resume(mongo_db):
+    # As a task's: an auto-resume needs a task that can resume.
+    bad = TaskFactory(
+        execute=_noop, process_id="fac", name="F", parameters=[], auto_resume=True,
+    )
+    fw = Optio()
+
+    async def get_defs(_services, metadata_filter=None):
+        return [bad]
+
+    with pytest.raises(
+        ValueError,
+        match=r"Task factory 'fac': auto_resume=True requires supports_resume=True",
+    ):
+        await fw.init(mongo_db=mongo_db, prefix="tf_auto_no_resume", get_task_definitions=get_defs)
 
 
 async def test_task_for_builds_each_launchs_task_from_its_values(mongo_db):
@@ -805,6 +825,63 @@ async def test_dismiss_of_a_running_launch_is_refused(mongo_db):
         await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
     finally:
         release.set()
+        await fw.shutdown()
+
+
+async def _with_a_step(ctx):
+    # A sub-task: its record inherits the launch's metadata, taskFactory too.
+    await ctx.run_child(execute=_noop, process_id="step", name="Step")
+
+
+async def test_dismiss_of_a_record_under_a_kept_launch_is_refused(mongo_db):
+    # Only the launch itself is deleted by a dismiss; a record under it (it
+    # inherits the launch's metadata, so it is a factory launch's record too)
+    # stays not-dismissable, as before launches could be dismissed.
+    prefix = "tf_dismiss_sub"
+    fw = await _init(mongo_db, prefix, [_factory(_with_a_step, ttl_seconds=3600)])
+    try:
+        pid = (await fw.launch("fac", session_id=None, params=GOOD)).proc["processId"]
+        launch = await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+        [step] = await _children(mongo_db, prefix, launch["_id"])
+        assert step["status"]["state"] == "done"
+        assert step["metadata"]["taskFactory"] == "fac"
+        refused = DismissOutcome(ok=False, reason="not-dismissable")
+        assert await fw.dismiss(str(step["_id"])) == refused
+        assert await fw.dismiss("step") == refused
+        coll = mongo_db[f"{prefix}_processes"]
+        assert await coll.find_one({"_id": step["_id"]}) is not None
+        assert await coll.find_one({"_id": launch["_id"]}) is not None
+    finally:
+        await fw.shutdown()
+
+
+async def test_dismissing_a_launch_deletes_its_own_records_only(mongo_db):
+    # Two kept launches whose sub-tasks share a process id ("step"): a dismiss
+    # deletes the launch it names, by its _id, with what is under it, and
+    # never a record of the other launch's that has the same process id.
+    prefix = "tf_dismiss_two"
+    fw = await _init(mongo_db, prefix, [_factory(_with_a_step, ttl_seconds=3600)])
+    try:
+        first = (await fw.launch("fac", session_id=None, params=GOOD)).proc["processId"]
+        a = await _wait_until(lambda: _state_is(mongo_db, prefix, first, "done"))
+        second = (await fw.launch("fac", session_id=None, params=GOOD)).proc["processId"]
+        b = await _wait_until(lambda: _state_is(mongo_db, prefix, second, "done"))
+        [a_step] = await _children(mongo_db, prefix, a["_id"])
+        [b_step] = await _children(mongo_db, prefix, b["_id"])
+        assert a_step["processId"] == b_step["processId"] == "step"
+
+        # The first launch's step (the newest "step" is the second's) is refused.
+        assert await fw.dismiss(str(a_step["_id"])) == DismissOutcome(
+            ok=False, reason="not-dismissable",
+        )
+        assert (await fw.dismiss(str(a["_id"]))).ok is True
+        coll = mongo_db[f"{prefix}_processes"]
+        assert await coll.find_one({"_id": a["_id"]}) is None
+        assert await coll.find_one({"_id": a_step["_id"]}) is None
+        assert await coll.find_one({"_id": b["_id"]}) is not None
+        assert await coll.find_one({"_id": b_step["_id"]}) is not None
+        assert first not in fw._executor._task_registry
+    finally:
         await fw.shutdown()
 
 
@@ -1789,6 +1866,42 @@ async def test_a_kept_launch_of_an_execute_factory_resumes_when_the_factory_supp
         assert runs == [(pid, False, GOOD), (pid, True, GOOD)]
     finally:
         await fw.shutdown()
+
+
+async def test_a_kept_launch_of_an_execute_factory_with_auto_resume_is_auto_resumed(mongo_db):
+    # Spec 1.5: a rebuilt launch "resumes as any task does (auto-resume, ...)".
+    # An execute factory's auto_resume is its launches' task's, as its
+    # supports_resume is: a shutdown stamps the running launch, and run()'s
+    # sweep after the restart resumes it.
+    prefix = "tf_resume_execute_auto"
+    runs: list = []
+
+    async def execute(ctx):
+        runs.append((ctx.process_id, ctx.resume, ctx.params))
+        if ctx.resume:
+            return
+        await ctx.mark_has_saved_state()
+        await ctx.cancellation_flag.wait()
+
+    defs = [_factory(execute, ttl_seconds=3600, supports_resume=True, auto_resume=True)]
+    fw = await _init(mongo_db, prefix, defs)
+    pid = (await fw.launch("fac", session_id=None, params=GOOD)).proc["processId"]
+    await _wait_until(lambda: _saved_and_running(mongo_db, prefix, pid))
+    assert fw._executor._task_registry[pid].auto_resume is True
+    await fw.shutdown(grace_seconds=60.0)
+    stopped = await get_process_by_process_id(mongo_db, prefix, pid)
+    assert stopped["status"]["state"] == "cancelled"
+    assert stopped["autoResumeScheduled"] is True
+
+    fw = await _init(mongo_db, prefix, defs, auto_resume_delay_seconds=0.05)
+    run_task = asyncio.create_task(fw.run())
+    try:
+        done = await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+        assert runs == [(pid, False, GOOD), (pid, True, GOOD)]
+        assert done["autoResumeScheduled"] is False
+    finally:
+        await fw.shutdown()
+        await asyncio.wait_for(run_task, timeout=60.0)
 
 
 async def test_a_kept_launch_of_an_execute_factory_without_supports_resume_does_not_resume(

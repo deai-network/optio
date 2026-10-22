@@ -287,13 +287,13 @@ payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them, and `t
 
 ### Optio.launch / Optio.launch_and_wait
 
-Both methods gain a `resume` keyword argument (default `False`), and `params` (a TaskFactory's
-launch values; below):
+Both methods gain a `resume` keyword argument (default `False`), and `params` and `ephemeral` (a
+TaskFactory's launch values, and whether its launch's record is deleted when its run ends; below):
 
 ```python
-await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> LaunchOutcome
-await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> None
-await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None) -> Any
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None) -> LaunchOutcome
+await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None) -> None
+await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None, ephemeral: bool | None = None) -> Any
 ```
 
 When `resume=True`, the executor sets `ctx.resume = True` when the task starts. `launch`
@@ -335,6 +335,7 @@ class TaskFactory:
     warning: str | None = None               # shown before the launch form
     cancellable: bool = True
     supports_resume: bool = False            # with execute: a launch's task supports resume; with task_for the instance's rules (True refused at sync)
+    auto_resume: bool = False                # with execute: a launch's task is auto-resumed (needs supports_resume); with task_for the instance's rules (True refused at sync)
     ui_widget: str | None = None             # a launch's widget
     ttl_seconds: int | None = None           # None: a launch is ephemeral; set: kept that long after it ends
     auto_cancel_children: bool = True
@@ -356,10 +357,15 @@ needs for its directory). optio overrides on the returned instance: `process_id`
 values, `metadata` (the instance's, the factory's over it, then `taskFactory`), `name` =
 `name_for(values)` if the factory has one, else the instance's, and `ttl_seconds` = the factory's;
 the rest is the instance's. An exception from `task_for` is not caught: `launch` raises it.
-The factory's `supports_resume` is an `execute` factory's launches' (their task's
-`supports_resume`); with `task_for` the instance's rules, so sync refuses a factory with both
-(`ValueError("Task factory '<id>': supports_resume is the task_for instance's; it cannot be set
-on a factory with task_for")`).
+The factory's `supports_resume` and `auto_resume` are an `execute` factory's launches' (their
+task's); with `task_for` the instance's rule, so sync refuses a factory with `task_for` that sets
+either (`ValueError("Task factory '<id>': supports_resume is the task_for instance's; it cannot be
+set on a factory with task_for")`, the same for `auto_resume`). `auto_resume` needs
+`supports_resume`, as a task's does (`ValueError("Task factory '<id>': auto_resume=True requires
+supports_resume=True")`). With `task_for`, the factory's fields that apply are its own record's
+(`name`, `description`, `parameters`, `metadata`, `special`, `warning`) and what optio sets on
+every launch (`metadata`, `ttl_seconds`, `name_for`), with `validate`; its `ui_widget`,
+`cancellable` and `auto_cancel_children` are not used (the instance's are).
 `child_task(factory, values, process_id=None)` is the single builder (a given `process_id` is
 reused, for rebuilding a kept launch). Spec: `docs/2026-10-22-task-factory-launch-options-design.md` 1.4.
 
@@ -437,10 +443,15 @@ records under it, which inherit its metadata) is never launched again: `launch` 
 `LaunchError("not-launchable")`) before it looks for an execute function, whatever the task
 registry holds (the launch's TaskInstance, which a sync keeps while the factory is synced and
 the launch can still run, or nothing once the factory is gone). Nor is it reset by a dismiss, which would leave an idle record that never runs and
-never expires (it removes `expireAt`): `dismiss` of an ended one (done, failed, cancelled)
-deletes it with its descendants and its task (`adhoc_delete`, the deletion an ephemeral launch's
-end takes) and answers `ok=True` with `proc=None`; a running one is `not-dismissable`.
-optio-ui shows it no play button (`isTaskFactoryLaunch`).
+never expires (it removes `expireAt`): `dismiss` of an ended launch (done, failed, cancelled)
+deletes it with its descendants and its task (the deletion an ephemeral launch's end takes, by
+its `_id`: resolving its process id again could find another record) and answers `ok=True` with
+`proc=None`; a running one is `not-dismissable`. Only the launch itself is deleted
+(`task_factory.is_the_launch_itself`: depth 1, its parent the record of the factory its metadata
+names): a record under it (a `run_child` sub-task, which inherits its metadata, and may share its
+process id with another launch's) is `not-dismissable`, ended or not.
+optio-ui shows it no play button (`isTaskFactoryLaunch`), and the remove button on the launch
+itself only (`isTaskFactoryLaunchItself`).
 
 **Resuming a kept launch** (launch options spec §1.5). A launch's task supports resume when it
 is an `execute` factory's whose `supports_resume` is set, or a `task_for` instance with
@@ -458,7 +469,8 @@ launches' records that are not running (`_end_resume_of_launches`: no Resume the
 refuse). A factory changed by a re-sync keeps its launches' existing tasks until the next
 restart, which rebuilds them from the new definition. A launch counts as top-level
 for auto-resume (depth 1, its parent the factory's record, which never runs): its task's
-`auto_resume` stamps it at shutdown, and the post-restart sweep resumes it. At `init()`, after
+`auto_resume` (an `execute` factory's `auto_resume`, a `task_for` instance's) stamps it at
+shutdown, and the post-restart sweep resumes it. At `init()`, after
 the sync and before the deferred migrations, `Optio._rebuild_kept_launches` rebuilds the task of
 every kept launch that can resume (`metadata.taskFactory`, `supportsResume` and `hasSavedState`
 true, in a launchable state: a crashed run is `failed` by then, a stopped one `cancelled`, a

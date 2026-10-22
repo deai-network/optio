@@ -4,7 +4,8 @@ A factory's `parameters` are vultus-core field definitions as plain JSON, the
 subset a definition can carry as data (spec 1.3): `check_parameters` checks
 them at task sync. `check_values` checks a launch's values before its child
 exists (spec 1.4). `child_task` is the TaskInstance of one launch (spec 1.2),
-and `is_factory_launch` tells its record. `check_factory_values` is the whole
+`is_factory_launch` tells its record (and the records under it), and
+`is_the_launch_itself` the launch's own record. `check_factory_values` is the whole
 check of a launch's values (the fields', then the factory's `validate`).
 Nothing is coerced: a value of the wrong JSON type is refused.
 
@@ -154,6 +155,7 @@ def child_task(
             warning=factory.warning,
             cancellable=factory.cancellable,
             supports_resume=factory.supports_resume,
+            auto_resume=factory.auto_resume,
             ui_widget=factory.ui_widget,
             auto_cancel_children=factory.auto_cancel_children,
         )
@@ -178,6 +180,23 @@ def is_factory_launch(proc: dict) -> bool:
     1.5)."""
     factory = (proc.get("metadata") or {}).get("taskFactory")
     return isinstance(factory, str) and factory != ""
+
+
+def is_the_launch_itself(proc: dict, parent: dict | None) -> bool:
+    """Whether the factory launch's record `proc` (is_factory_launch) is the
+    launch itself, not a record under it (a run_child sub-task, which
+    inherits the launch's metadata): depth 1, its parent (`parent`, the
+    record its parentId names) the record of the factory its metadata
+    names. Only the launch itself is deleted by a dismiss (launch options
+    spec 1.2)."""
+    return (
+        is_factory_launch(proc)
+        and proc.get("depth") == 1
+        and parent is not None
+        and proc.get("parentId") == parent["_id"]
+        and bool(parent.get("taskFactory"))
+        and parent.get("processId") == proc["metadata"]["taskFactory"]
+    )
 
 
 def _definition_problem(p: dict) -> str | None:

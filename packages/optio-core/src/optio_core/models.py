@@ -160,17 +160,29 @@ class TaskFactory:
     runs itself: a launch with values defines an ad-hoc child of that record
     whose TaskInstance has `execute`, `params` = the values and the fields
     below, and launches it. A launch is ephemeral unless `ttl_seconds` is set.
-    A factory has no schedule, resurrect or auto-resume, and its own record
-    never resumes; its launches may (below).
+    A factory has no schedule or resurrect, and its own record never runs
+    or resumes; its launches may resume and auto-resume (below).
     Exactly one of `execute` and `task_for` is set (sync refuses otherwise):
     `execute` is every launch's task, reading its values from ctx.params;
     `task_for` builds a launch's whole TaskInstance from its values. A kept
     launch whose task supports resume (an `execute` factory's
     `supports_resume`, a `task_for` instance's) is resumed as a task is,
-    after an engine restart too: init() rebuilds its task from the factory
-    and its stored values. A factory changed by a re-sync keeps its
-    launches' existing tasks until the next restart, which rebuilds them
-    from the new definition.
+    auto-resume included (an `execute` factory's `auto_resume`, a
+    `task_for` instance's), after an engine restart too: init() rebuilds
+    its task from the factory and its stored values. A factory changed by a
+    re-sync keeps its launches' existing tasks until the next restart,
+    which rebuilds them from the new definition.
+
+    With `task_for`, the factory's fields that apply are its own record's
+    (`name`, `description`, `parameters`, `metadata`, `special`, `warning`)
+    and what optio sets on every launch (`metadata` over the instance's,
+    `ttl_seconds`, `name_for`), with `validate`; a launch's task is
+    otherwise the instance's (its `ui_widget`, `cancellable`,
+    `supports_resume`, `auto_resume`, `auto_cancel_children`, ...), so the
+    factory's `ui_widget`, `cancellable` and `auto_cancel_children` are not
+    used, and sync refuses a factory with `task_for` that sets
+    `supports_resume` or `auto_resume`. `auto_resume` needs
+    `supports_resume`, as a task's does (sync refuses it otherwise).
     Spec: docs/2026-10-20-task-factory-design.md §1,
     docs/2026-10-22-task-factory-launch-options-design.md §1.4, §1.5.
     """
@@ -189,6 +201,10 @@ class TaskFactory:
     # supports_resume). With `task_for` the instance's rules, and sync
     # refuses True here.
     supports_resume: bool = False
+    # With `execute`: a launch's task is auto-resumed after an engine
+    # restart (TaskInstance's auto_resume; needs supports_resume). With
+    # `task_for` the instance's rules, and sync refuses True here.
+    auto_resume: bool = False
     # A launch's widget (the factory's own record shows none).
     ui_widget: str | None = None
     # None: a launch is ephemeral (deleted when it ends); set: a launch is

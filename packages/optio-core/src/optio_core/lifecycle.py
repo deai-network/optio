@@ -34,6 +34,7 @@ from optio_core.models import (
 )
 from optio_core.task_factory import (
     check_factory_values, check_parameters, child_task, is_factory_launch,
+    is_the_launch_itself,
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
@@ -1345,16 +1346,31 @@ class Optio:
         A TaskFactory's ended launch is deleted instead, with its descendants
         (`proc` is None): reset, it would be an idle record that cannot run
         (a launch runs once) and never expires (the reset removes expireAt).
-        A running one is not-dismissable, like any process."""
+        A running one is not-dismissable, like any process, and so is a
+        record under a launch (a run_child sub-task, which inherits the
+        launch's metadata): only the launch itself is deleted
+        (is_the_launch_itself), by its _id."""
         proc = await self._resolve(process_id)
         if proc is None:
             return DismissOutcome(ok=False, reason="not-found")
         if proc["status"]["state"] not in DISMISSABLE_STATES:
             return DismissOutcome(ok=False, reason="not-dismissable")
         if is_factory_launch(proc):
+            from optio_core.store import delete_process, get_process_by_id
+            parent = None
+            if proc.get("parentId") is not None:
+                parent = await get_process_by_id(
+                    self._config.mongo_db, self._config.prefix, proc["parentId"],
+                )
+            if not is_the_launch_itself(proc, parent):
+                return DismissOutcome(ok=False, reason="not-dismissable")
             # The deletion an ephemeral launch's end takes (record, its
-            # descendants, its task), here for a kept one.
-            await self.adhoc_delete(proc["processId"])
+            # descendants, its task), here for a kept one: by its _id, as
+            # resolving its processId again could find another record.
+            await delete_process(
+                self._config.mongo_db, self._config.prefix, str(proc["_id"]),
+            )
+            self._executor._task_registry.pop(proc["processId"], None)
             return DismissOutcome(ok=True, proc=None)
 
         await delete_descendants(
@@ -2079,11 +2095,18 @@ class Optio:
                     f"Task factory '{factory.process_id}': exactly one of "
                     f"execute and task_for must be set"
                 )
-            if factory.task_for is not None and factory.supports_resume:
-                # Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.4
+            for name in ("supports_resume", "auto_resume"):
+                if factory.task_for is not None and getattr(factory, name):
+                    # Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.4
+                    raise ValueError(
+                        f"Task factory '{factory.process_id}': {name} is the "
+                        f"task_for instance's; it cannot be set on a factory with task_for"
+                    )
+            if factory.auto_resume and not factory.supports_resume:
+                # As a task's (below): only a task that can resume is resumed.
                 raise ValueError(
-                    f"Task factory '{factory.process_id}': supports_resume is the "
-                    f"task_for instance's; it cannot be set on a factory with task_for"
+                    f"Task factory '{factory.process_id}': auto_resume=True requires "
+                    f"supports_resume=True"
                 )
             try:
                 check_parameters(factory.parameters)
