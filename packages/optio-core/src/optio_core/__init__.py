@@ -9,6 +9,7 @@ from optio_core.exceptions import (
     LaunchError, ResultNotPublished, NothingToResurrect,
 )
 from optio_core.lifecycle import Optio
+from optio_core.task_factory import check_factory
 from optio_core.deferred_migrations import deferred_migrations, DeferredMigrationContext
 from optio_core.conversation_archive import ConversationArchiveListener, ReadOnlyProcessContext
 
@@ -40,6 +41,7 @@ __all__ = [
     "ChildHandle", "LaunchBlocked",
     "LaunchOutcome", "CancelOutcome", "DismissOutcome", "ResurrectOutcome",
     "LaunchError", "ResultNotPublished", "NothingToResurrect",
+    "check_factory",
     "init", "run", "shutdown",
     "adhoc_define", "adhoc_delete",
     "launch", "launch_and_wait", "launch_and_await_result", "resurrect",

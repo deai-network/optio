@@ -384,9 +384,17 @@ running launches, the active records under a stale root (see "Optio.resync").
 
 **Checks** (`optio_core.task_factory`):
 
-- `check_parameters(parameters: list[dict]) -> None` runs at sync and raises
-  `ValueError("<id>: <what>")` (a definition without a usable id: `"parameters[<i>]: ..."`); sync
-  re-raises it as `ValueError("Task factory '<process id>': parameters: <id>: <what>")`. A
+- `check_factory(factory: TaskFactory) -> None` (also exported from `optio_core`) is the sync's
+  whole check of a factory, which the sync runs for each one and whose `ValueError` it raises: in
+  order, exactly one of `execute` and `task_for`, neither `supports_resume` nor `auto_resume` with
+  `task_for`, `auto_resume` only with `supports_resume` (the messages above), then
+  `check_parameters`. It is public so that a host whose definitions come from several parts (a
+  plugin's) can check one factory first and leave out what it refuses, instead of failing the
+  whole sync.
+- `check_parameters(parameters: list[dict]) -> None` runs at sync (in `check_factory`) and raises
+  `ValueError("<id>: <what>")` (a definition without a usable id: `"parameters[<i>]: ..."`);
+  `check_factory` re-raises it as `ValueError("Task factory '<process id>': parameters: <id>:
+  <what>")`. A
   definition has `kind` (`boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`), `id` (unique,
   an identifier, `^[A-Za-z_][A-Za-z0-9_]*$`, so the `"<id>: "` prefix is unambiguous and the id a
   plain Mongo key), `label`, the kind's options (`choices: [{value: str, label?}]`, non-empty,

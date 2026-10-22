@@ -616,6 +616,40 @@ async def test_sync_refuses_auto_resume_without_supports_resume(mongo_db):
         await fw.init(mongo_db=mongo_db, prefix="tf_auto_no_resume", get_task_definitions=get_defs)
 
 
+@pytest.mark.parametrize("kw,error", [
+    ({"execute": _noop, "task_for": lambda v, pid: None},
+     "Task factory 'fac': exactly one of execute and task_for must be set"),
+    ({}, "Task factory 'fac': exactly one of execute and task_for must be set"),
+    ({"task_for": lambda v, pid: None, "supports_resume": True},
+     "Task factory 'fac': supports_resume is the task_for instance's; "
+     "it cannot be set on a factory with task_for"),
+    ({"task_for": lambda v, pid: None, "auto_resume": True},
+     "Task factory 'fac': auto_resume is the task_for instance's; "
+     "it cannot be set on a factory with task_for"),
+    ({"execute": _noop, "auto_resume": True},
+     "Task factory 'fac': auto_resume=True requires supports_resume=True"),
+    ({"execute": _noop, "parameters": [{"kind": "oneOf", "id": "mode"}]},
+     "Task factory 'fac': parameters: mode: choices must be a non-empty list"),
+])
+def test_check_factory_raises_the_syncs_refusals(kw, error):
+    # The sync's own check of a factory, public: a host can refuse one factory
+    # without failing the whole sync.
+    bad = TaskFactory(**{"process_id": "fac", "name": "F", "parameters": [], **kw})
+    with pytest.raises(ValueError) as exc:
+        optio_core.check_factory(bad)
+    assert str(exc.value) == error
+
+
+@pytest.mark.parametrize("kw", [
+    {"execute": _noop},
+    {"execute": _noop, "supports_resume": True, "auto_resume": True},
+    {"task_for": lambda v, pid: None},
+])
+def test_check_factory_passes_a_factory_the_sync_takes(kw):
+    good = TaskFactory(process_id="fac", name="F", parameters=PARAMS, **kw)
+    assert optio_core.check_factory(good) is None
+
+
 async def test_task_for_builds_each_launchs_task_from_its_values(mongo_db):
     prefix = "tf_taskfor"
     ran: dict[str, asyncio.Event] = {"agent": asyncio.Event(), "plain": asyncio.Event()}

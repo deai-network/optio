@@ -33,7 +33,7 @@ from optio_core.models import (
     LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome,
 )
 from optio_core.task_factory import (
-    check_factory_values, check_parameters, child_task, is_factory_launch,
+    check_factory, check_factory_values, child_task, is_factory_launch,
     is_the_launch_itself,
 )
 from optio_core.store import (
@@ -2083,33 +2083,11 @@ class Optio:
         tasks = [d for d in definitions if not isinstance(d, TaskFactory)]
         factories = [d for d in definitions if isinstance(d, TaskFactory)]
 
-        # A factory's parameters must be field definitions it can be launched
-        # with. Spec: docs/2026-10-20-task-factory-design.md §1.3
+        # A factory must be one a launch can run: its fields' rules, and
+        # parameters that are field definitions it can be launched with
+        # (check_factory). Spec: docs/2026-10-20-task-factory-design.md §1.3
         for factory in factories:
-            if (factory.execute is None) == (factory.task_for is None):
-                raise ValueError(
-                    f"Task factory '{factory.process_id}': exactly one of "
-                    f"execute and task_for must be set"
-                )
-            for name in ("supports_resume", "auto_resume"):
-                if factory.task_for is not None and getattr(factory, name):
-                    # Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.4
-                    raise ValueError(
-                        f"Task factory '{factory.process_id}': {name} is the "
-                        f"task_for instance's; it cannot be set on a factory with task_for"
-                    )
-            if factory.auto_resume and not factory.supports_resume:
-                # As a task's (below): only a task that can resume is resumed.
-                raise ValueError(
-                    f"Task factory '{factory.process_id}': auto_resume=True requires "
-                    f"supports_resume=True"
-                )
-            try:
-                check_parameters(factory.parameters)
-            except ValueError as e:
-                raise ValueError(
-                    f"Task factory '{factory.process_id}': parameters: {e}"
-                ) from e
+            check_factory(factory)
 
         # Validate auto_resume coherence: you cannot resume a task that does
         # not support resume. Catch the misconfiguration loudly at sync time

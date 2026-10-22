@@ -2,7 +2,8 @@
 
 A factory's `parameters` are vultus-core field definitions as plain JSON, the
 subset a definition can carry as data (spec 1.3): `check_parameters` checks
-them at task sync. `check_values` checks a launch's values before its child
+them at task sync, as part of `check_factory`, the sync's whole check of a
+factory (also exported from `optio_core`). `check_values` checks a launch's values before its child
 exists (spec 1.4). `child_task` is the TaskInstance of one launch (spec 1.2),
 `is_factory_launch` tells its record (and the records under it), and
 `is_the_launch_itself` the launch's own record. `check_factory_values` is the whole
@@ -67,6 +68,41 @@ def check_parameters(parameters: list[dict]) -> None:
         problem = _definition_problem(definition)
         if problem is not None:
             raise ValueError(f"{pid}: {problem}")
+
+
+def check_factory(factory: TaskFactory) -> None:
+    """Check a factory as the sync does, which raises its error: exactly one
+    of `execute` and `task_for`; neither `supports_resume` nor `auto_resume`
+    with `task_for` (the instance's rule, launch options spec 1.4);
+    `auto_resume` only with `supports_resume`; then its parameters
+    (check_parameters). Raises ValueError("Task factory '<process id>':
+    <what>") at the first problem, a parameters one as "Task factory
+    '<process id>': parameters: <id>: <what>". Public so that a host can
+    leave out one refused factory instead of failing the whole sync."""
+    if (factory.execute is None) == (factory.task_for is None):
+        raise ValueError(
+            f"Task factory '{factory.process_id}': exactly one of "
+            f"execute and task_for must be set"
+        )
+    for name in ("supports_resume", "auto_resume"):
+        if factory.task_for is not None and getattr(factory, name):
+            # Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.4
+            raise ValueError(
+                f"Task factory '{factory.process_id}': {name} is the "
+                f"task_for instance's; it cannot be set on a factory with task_for"
+            )
+    if factory.auto_resume and not factory.supports_resume:
+        # As a task's: only a task that can resume is resumed.
+        raise ValueError(
+            f"Task factory '{factory.process_id}': auto_resume=True requires "
+            f"supports_resume=True"
+        )
+    try:
+        check_parameters(factory.parameters)
+    except ValueError as e:
+        raise ValueError(
+            f"Task factory '{factory.process_id}': parameters: {e}"
+        ) from e
 
 
 def check_values(parameters: list[dict], values: dict[str, Any]) -> str | None:
