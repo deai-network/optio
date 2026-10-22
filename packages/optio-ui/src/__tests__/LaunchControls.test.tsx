@@ -5,8 +5,9 @@ import i18next from 'i18next';
 
 // A task factory's form launches through useProcessActions().launchAsync.
 const mockLaunchAsync = vi.fn();
+const mockDismissAsync = vi.fn();
 vi.mock('../hooks/useProcessActions.js', () => ({
-  useProcessActions: () => ({ launchAsync: mockLaunchAsync }),
+  useProcessActions: () => ({ launchAsync: mockLaunchAsync, dismissAsync: mockDismissAsync }),
 }));
 
 import { LaunchControls } from '../components/LaunchControls.js';
@@ -308,11 +309,50 @@ describe('LaunchControls of a task factory', () => {
   it.each(['done', 'failed', 'cancelled'])(
     "a factory's launch (kept by a TTL) gets no play button once %s: it is never launched again",
     (state) => {
-      const { container } = renderWith({
+      renderWith({
         _id: 'c1', name: 'Drop proposals', status: { state },
         metadata: { module: 'm', taskFactory: 'fac' },
       });
-      expect(container.firstChild).toBeNull();
+      expect(document.querySelector('.anticon-play-circle')).toBeNull();
     },
   );
+});
+
+// An ended launch that is kept (spec 2026-10-22-task-factory-launch-options §3.4) can be removed.
+describe('LaunchControls: the remove button', () => {
+  const launch = { _id: 'c1', name: 'Drop proposals', metadata: { module: 'm', taskFactory: 'fac' } };
+
+  it('the remove button only on an ended launch', () => {
+    mockDismissAsync.mockReset();
+    const remove = () => screen.queryByRole('button', { name: 'Remove' });
+    const ended = renderWith({ ...launch, status: { state: 'done' } });
+    expect(remove()).not.toBeNull();
+    ended.unmount();
+    // A launch still running (an ephemeral one is gone once it ended, so it never shows one).
+    const running = renderWith({ ...launch, status: { state: 'running' } });
+    expect(remove()).toBeNull();
+    running.unmount();
+    const factory = renderWith({ _id: 'f1', status: { state: 'idle' }, taskFactory: true, parameters: [] });
+    expect(remove()).toBeNull();
+    factory.unmount();
+    renderWith({ _id: 't1', status: { state: 'done' }, metadata: { module: 'm' } });
+    expect(remove()).toBeNull();
+  });
+
+  it('Remove dismisses the launch', async () => {
+    mockDismissAsync.mockReset();
+    mockDismissAsync.mockResolvedValue(null);
+    renderWith({ ...launch, status: { state: 'failed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(mockDismissAsync).toHaveBeenCalledWith('c1'), { timeout: 60_000 });
+  });
+
+  it('is not offered where launching is not (no onLaunch: a read-only view)', () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <LaunchControls process={{ ...launch, status: { state: 'done' } }} size="small" />
+      </I18nextProvider>,
+    );
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+  });
 });

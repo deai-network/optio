@@ -100,7 +100,8 @@ wires a complete app (providers, i18n, proxy) this way.
 | `ProcessTreeView` | Ant Design `Tree` rendering a nested process hierarchy from SSE data |
 | `ProcessLogPanel` | Scrolling monospace log viewer with level-colored tags; auto-scrolls to bottom |
 | `ProcessFilters` | The filters of a process list, each a vultus field: the app's own filters over the metadata that come first, search, filter group (all/active/hide_completed/errors), "show details" and "show special", then the app's own that come last; reads its state from an enclosing `WithFilteredProcesses`, whose `FilteredProcessList` applies it (see [Process filters](#process-filters)) |
-| `TaskFactoryLaunchModal` | A task factory's launch form: a field per parameter (vultus-antd), a built-in "Remove when finished" field (the launch's `ephemeral`), the factory's warning, Launch; a refusal shows on the field it names. `overrides` (field id to a partial vultus definition, `mergeOverrides`) changes any field, e.g. hides one and launches with its value. The launch button of a factory's record (in `ProcessItem`, `ProcessTreeView`, `ProcessDetailView`) opens it; `onLaunched(child)` gets the launch |
+| `TaskFactoryLaunchModal` | A task factory's launch form: a field per parameter (vultus-antd), a built-in "Remove when finished" field (the launch's `ephemeral`), the factory's warning, Launch; a refusal shows on the field it names. `overrides` (field id to a partial vultus definition, `mergeOverrides`) changes any field, e.g. hides one and launches with its value. The launch button of a factory's record (in `ProcessItem`, `ProcessTreeView`, `ProcessDetailView`) opens it; `onLaunched(child)` gets the launch. `launchOverrides` (a factory's `processId` to its overrides) on `ProcessItem`, `ProcessList`, `FilteredProcessList`, `ProcessTreeView` and `ProcessDetailView` gives a factory's play button its overrides |
+| `TaskFactoryLaunchButton` | A button (`factoryId`, `overrides?`, `onLaunched?`, `size?`) that opens a task factory's launch form from anywhere in an app; `useTaskFactory(factoryId, { overrides, onLaunched })` gives `{ launch, isPending, dialog }` for a custom control |
 
 ## Hooks
 
@@ -185,7 +186,10 @@ following keys:
 
 | Key | Used by |
 |-----|---------|
-| `processes.launch` | `LaunchControls` (in `ProcessItem`, `ProcessTreeView`) — tooltip on launch button |
+| `processes.launch` | `LaunchControls` (in `ProcessItem`, `ProcessTreeView`), `useTaskFactory` — tooltip on launch button; label of a factory's launch action |
+| `processes.removeLaunch` | `LaunchControls` — tooltip of the remove button of an ended launch (default "Remove") |
+| `processes.factoryLoading`, `processes.factoryNotAFactory`, `processes.factoryLaunching` | `useTaskFactory` — why `launch` is disabled (defaults "Loading…", "Not a task factory", "Launching…") |
+| `errors.processes.dismiss.<reason>` | `LaunchControls` — a refused removal (`optioErrorRoutes`; `not-found`, `not-dismissable`) |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView` — tooltip on cancel button (a task that can resume shows `processes.suspend` instead) |
 | `processes.search` | `ProcessFilters` — the search field's label and placeholder |
 | `processes.filterAll` | `ProcessFilters` — a choice of the filter group |

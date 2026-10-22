@@ -9,6 +9,7 @@ import { ProcessLogPanel } from './ProcessLogPanel.js';
 import { useProcessWidgetState } from './ProcessWidget.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
 import { LaunchControls } from './LaunchControls.js';
+import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 
 export interface ProcessDetailViewProps {
   processId: string | null | undefined;
@@ -52,6 +53,11 @@ export interface ProcessDetailViewProps {
    * launched it: the child it made, which shows under the factory.
    */
   onLaunched?: (child: Process) => void;
+  /**
+   * Overrides of a task factory's launch form, by the factory's `processId`
+   * (`Record<string, TaskFactoryOverrides>`): its play button in the tree takes its entry.
+   */
+  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
 }
 
 export function ProcessDetailView({
@@ -61,6 +67,7 @@ export function ProcessDetailView({
   waitForWidget = false,
   widgetPlaceholder,
   onLaunched,
+  launchOverrides,
 }: ProcessDetailViewProps) {
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
@@ -149,6 +156,7 @@ export function ProcessDetailView({
               process={tree}
               onLaunch={(id, opts) => launch(id, opts)}
               onLaunched={onLaunched}
+              launchOverrides={launchOverrides}
               onResurrect={(id) => resurrect(id)}
             />
           </div>
@@ -170,6 +178,7 @@ export function ProcessDetailView({
         sseState={{ connected }}
         onLaunch={readOnly ? undefined : (id, opts) => launch(id, opts)}
         onLaunched={onLaunched}
+        launchOverrides={launchOverrides}
         onResurrect={readOnly ? undefined : (id) => resurrect(id)}
         onCancel={readOnly ? undefined : (id) => cancel(id)}
       />

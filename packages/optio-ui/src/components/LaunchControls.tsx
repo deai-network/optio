@@ -1,16 +1,19 @@
-import { useState } from 'react';
 import { Button, Dropdown, Modal, Space, Tooltip, Popconfirm } from 'antd';
 import type { MenuProps, ButtonProps } from 'antd';
 import {
-  DownOutlined, LoadingOutlined, MedicineBoxOutlined, PlayCircleOutlined, ReloadOutlined,
+  DeleteOutlined, DownOutlined, LoadingOutlined, MedicineBoxOutlined, PlayCircleOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { Process } from 'optio-contracts';
-import { useSpinnerKey, useVultusComponents } from 'vultus-core';
+import { useAction, useSpinnerKey, useVultusComponents } from 'vultus-core';
+import { ActionButton } from 'vultus-antd';
+import { optioErrorRoutes, type OptioErrorRouteId } from '../error-routes.js';
+import { useProcessActions } from '../hooks/useProcessActions.js';
+import { useTaskFactoryOf } from '../hooks/useTaskFactory.js';
 import {
-  isLaunchable, isResumable, isResurrectable, isResurrecting, isTaskFactory,
+  isLaunchable, isResumable, isResurrectable, isResurrecting, isTaskFactory, isTaskFactoryLaunch, isTerminal,
 } from '../process-state.js';
-import { TaskFactoryLaunchModal } from './TaskFactoryLaunchModal.js';
+import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 
 export interface LaunchControlsProps {
   process: any;
@@ -19,6 +22,8 @@ export interface LaunchControlsProps {
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   /** A task factory's launch form launched it: the child it made. */
   onLaunched?: (child: Process) => void;
+  /** Overrides of a task factory's launch form, by the factory's `processId`; its play button takes its entry. */
+  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
   /** Save the work a failed run left on its host, then resume. When given
    *  and the process is resurrectable, Resurrect becomes the primary action;
    *  Resume-from-snapshot and Restart move to the menu behind a confirmation. */
@@ -59,13 +64,19 @@ export interface LaunchControlsProps {
  * as false so the UI works against an unmigrated DB.
  */
 export function LaunchControls({
-  process, onLaunch, onLaunched, onResurrect, size = 'small', iconFontSize, denyReason,
+  process, onLaunch, onLaunched, launchOverrides, onResurrect, size = 'small', iconFontSize, denyReason,
 }: LaunchControlsProps) {
   const { t } = useTranslation();
   const { Spinner } = useVultusComponents();
   const resurrectingKey = useSpinnerKey(`optio:process:${process?._id}:resurrecting`);
-  if (!isLaunchable(process) || !onLaunch) return null;
+  if (!onLaunch) return null;
   const iconStyle = iconFontSize ? { fontSize: iconFontSize } : undefined;
+
+  // A launch that ended and was kept is never launched again; it can be removed.
+  if (isTaskFactoryLaunch(process) && isTerminal(process)) {
+    return <RemoveLaunchButton process={process} size={size} iconStyle={iconStyle} />;
+  }
+  if (!isLaunchable(process)) return null;
 
   // Caller-injected gate: launchable per state machine but domain-denied.
   // Render a single disabled play button with the reason as tooltip.
@@ -113,7 +124,10 @@ export function LaunchControls({
   // A task factory: its launch takes the values of its parameters first.
   if (isTaskFactory(process)) {
     return (
-      <TaskFactoryLaunchButton process={process} onLaunched={onLaunched} size={size} iconStyle={iconStyle} />
+      <FactoryPlayButton
+        process={process} overrides={launchOverrides?.[process.processId]}
+        onLaunched={onLaunched} size={size} iconStyle={iconStyle}
+      />
     );
   }
 
@@ -190,36 +204,49 @@ export function LaunchControls({
   );
 }
 
-function TaskFactoryLaunchButton({ process, onLaunched, size, iconStyle }: {
+// The play button of a task factory's record (already in hand: no read of its own): the same
+// action as TaskFactoryLaunchButton's, as the row's green icon button.
+function FactoryPlayButton({ process, overrides, onLaunched, size, iconStyle }: {
   process: any;
+  overrides: TaskFactoryOverrides | undefined;
   onLaunched?: (child: Process) => void;
   size: ButtonProps['size'];
   iconStyle: { fontSize: number } | undefined;
 }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  const { launch, dialog } = useTaskFactoryOf(process, false, { overrides, onLaunched });
   return (
     <>
-      <Tooltip title={t('processes.launch')}>
-        <Button
-          type="text"
-          size={size}
-          icon={<PlayCircleOutlined style={iconStyle} />}
-          style={{ color: '#52c41a' }}
-          onClick={(e) => {
-            e.preventDefault();
-            setOpen(true);
-          }}
-        />
-      </Tooltip>
-      <TaskFactoryLaunchModal
-        process={process}
-        open={open}
-        onClose={() => setOpen(false)}
-        onLaunched={onLaunched}
+      <ActionButton
+        action={{ ...launch, icon: <PlayCircleOutlined style={iconStyle} /> }}
+        size={size}
+        iconOnly
+        buttonVariant="text"
+        buttonColor="green"
       />
+      {dialog}
     </>
   );
+}
+
+// Removes an ended launch that was kept (dismissing it deletes it).
+function RemoveLaunchButton({ process, size, iconStyle }: {
+  process: any;
+  size: ButtonProps['size'];
+  iconStyle: { fontSize: number } | undefined;
+}) {
+  const { t } = useTranslation();
+  const { dismissAsync } = useProcessActions();
+  const remove = useAction<void, void, OptioErrorRouteId>(
+    {
+      id: 'optio.taskFactory.removeLaunch',
+      label: t('processes.removeLaunch', 'Remove'),
+      icon: <DeleteOutlined style={iconStyle} />,
+      errorRoute: 'processes.dismiss',
+      fire: () => dismissAsync(process._id),
+    },
+    optioErrorRoutes,
+  );
+  return <ActionButton action={remove} size={size} iconOnly buttonVariant="text" />;
 }
 
 function ResurrectControls({ process, onLaunch, onResurrect, size, iconStyle }: {

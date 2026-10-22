@@ -3,13 +3,14 @@
  * route an optio-ui action reaches through its `errorRoute`, the failure
  * reasons the API answers with (optio-contracts' apiToFrontendRouteErrorReasons
  * lists them per route) and the text each shows, `t(i18nKey)` — the app's
- * translation (optio-ui ships no texts of its own for them). Today one route:
- * `processes.launch`, the launch of TaskFactoryLaunchModal.
+ * translation (optio-ui ships no texts of its own for them). Two routes:
+ * `processes.launch`, the launch of TaskFactoryLaunchModal, and
+ * `processes.dismiss`, the removal of an ended launch (LaunchControls).
  */
-import type { LaunchFailureReason } from 'optio-contracts';
+import type { DismissFailureReason, LaunchFailureReason } from 'optio-contracts';
 import type { ErrorRoutesRegistry, RegistryEntry } from 'vultus-core';
 
-export type OptioErrorRouteId = 'processes.launch';
+export type OptioErrorRouteId = 'processes.launch' | 'processes.dismiss';
 
 // Every launch refusal: a reason optio-contracts adds fails the typecheck here until it has its text.
 const launchReasons: Record<LaunchFailureReason, RegistryEntry> = {
@@ -24,6 +25,13 @@ const launchReasons: Record<LaunchFailureReason, RegistryEntry> = {
   'invalid-parameters': { i18nKey: 'errors.processes.launch.invalid-parameters' },
 };
 
+// Every dismiss refusal (removing an ended launch).
+const dismissReasons: Record<DismissFailureReason, RegistryEntry> = {
+  'not-found': { i18nKey: 'errors.processes.dismiss.not-found' },
+  'not-dismissable': { i18nKey: 'errors.processes.dismiss.not-dismissable' },
+};
+
 export const optioErrorRoutes: ErrorRoutesRegistry<OptioErrorRouteId> = {
   'processes.launch': launchReasons,
+  'processes.dismiss': dismissReasons,
 };

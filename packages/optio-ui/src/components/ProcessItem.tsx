@@ -10,6 +10,7 @@ import { LaunchControls } from './LaunchControls.js';
 import {
   isActive as isProcessActive, isCancellable as isProcessCancellable, isResurrecting,
 } from '../process-state.js';
+import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 
 const { Text } = Typography;
 
@@ -35,6 +36,8 @@ export interface ProcessItemProps {
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
   /** A task factory's launch form launched it (forwarded to LaunchControls): the child it made. */
   onLaunched?: (child: Process) => void;
+  /** Overrides of a task factory's launch form, by the factory's `processId` (forwarded to LaunchControls). */
+  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
   onResurrect?: (id: string) => void;
   onCancel?: (id: string) => void;
   readonly?: boolean;
@@ -59,7 +62,7 @@ export interface ProcessItemProps {
 }
 
 export function ProcessItem({
-  process, onLaunch, onLaunched, onResurrect, onCancel, readonly, onProcessClick,
+  process, onLaunch, onLaunched, launchOverrides, onResurrect, onCancel, readonly, onProcessClick,
   size = 'default', inline = false, inactiveContent, launchDenyReason,
 }: ProcessItemProps) {
   const { t } = useTranslation();
@@ -127,6 +130,7 @@ export function ProcessItem({
           process={process}
           onLaunch={onLaunch}
           onLaunched={onLaunched}
+          launchOverrides={launchOverrides}
           onResurrect={onResurrect}
           size={tokens.button}
           iconFontSize={tokens.iconFontSize}

@@ -602,6 +602,17 @@ describe('ProcessDetailView', () => {
       expect(mockLaunch).not.toHaveBeenCalled();
     });
 
+    it("launchOverrides reach the tree's play button, by the factory's processId", async () => {
+      mockProcessStream.mockReturnValue({ tree: { ...factoryTree, processId: 'app.drop' }, logs: [], connected: true });
+      const { container } = render(
+        <ProcessDetailView processId="f1" launchOverrides={{ 'app.drop': { limit: { visible: false } } }} />,
+      );
+      fireEvent.click(container.querySelector('.anticon-play-circle')!.closest('button')!);
+      const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+      // antd keeps a hidden item (its value is still sent), out of sight.
+      expect(within(dialog).getByText('Limit').closest('.ant-form-item')!.classList.contains('ant-form-item-hidden')).toBe(true);
+    });
+
     it('read-only, it offers no launch', () => {
       mockProcessStream.mockReturnValue({ tree: factoryTree, logs: [], connected: true });
       const { container } = render(<ProcessDetailView processId="f1" readOnly />);

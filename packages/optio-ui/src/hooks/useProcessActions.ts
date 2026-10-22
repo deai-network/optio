@@ -59,6 +59,12 @@ export function useProcessActions(options?: ProcessActionsOptions) {
       (await launchMutation.mutateAsync(launchRequest(processId, opts))).body,
     cancel: (processId: string) => cancelMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
     dismiss: (processId: string) => dismissMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
+    /** As `dismiss`, for an action that shows the outcome (a vultus useAction): resolves when it is
+     *  done (an ended factory launch is deleted by it), rejects with ts-rest's
+     *  `{ status, body: { reason, message } }` on a refusal. */
+    dismissAsync: async (processId: string): Promise<void> => {
+      await dismissMutation.mutateAsync({ params: { id: processId }, query: { database, prefix } });
+    },
     resurrect: (processId: string) =>
       resurrectMutation.mutate({
         params: { id: processId },

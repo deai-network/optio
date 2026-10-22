@@ -165,6 +165,7 @@ interface LaunchControlsProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
   onLaunched?: (child: Process) => void;  // a task factory's form launched it: the child it made
+  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // by a factory's processId
   onResurrect?: (id: string) => void;  // save a failed run's host work, then resume
   size?: ButtonProps['size'];          // default 'small'
   iconFontSize?: number;               // pixel size of the button icons
@@ -175,9 +176,10 @@ interface LaunchControlsProps {
 Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`).
 
 Rendering rules:
-- Renders **nothing** when the process is not launchable (`isLaunchable`: not in a launchable state, `idle | done | failed | cancelled`, or a task factory's launch, `isTaskFactoryLaunch`, which is never launched again, e.g. one a TTL keeps), or when `onLaunch` is not provided.
+- Renders **nothing** when `onLaunch` is not provided (a read-only view), or when the process is not launchable (`isLaunchable`: not in a launchable state, `idle | done | failed | cancelled`, or a task factory's launch, `isTaskFactoryLaunch`, which is never launched again) and is not removable (next rule).
+- An **ended launch** (`isTaskFactoryLaunch` and `isTerminal`: one a TTL keeps, or a non-ephemeral one, which stays until dismissed) gets a **Remove** icon button instead (trash icon, tooltip and `aria-label` `processes.removeLaunch`, default "Remove"): a vultus action (`useAction`) whose `fire` calls `useProcessActions().dismissAsync(id)` (dismissing an ended launch deletes it); a refusal goes through `optioErrorRoutes`, route `processes.dismiss`. A running launch, a factory and an ordinary task have none; an ephemeral launch is deleted when it ends, so it never shows one.
 - Renders a single disabled **Resurrecting** indicator while `isResurrecting(process)` (spinning loading icon, or the app's lent Spinner — see "Spinner slot"; `aria-label` "Resurrecting", tooltip "Resurrecting: saving the unsaved work…"); clicking it does nothing. It takes precedence over all the cases below (a non-empty `denyReason` still wins).
-- For a task factory's record (`isTaskFactory(process)`), a single play button (tooltip `processes.launch`) that opens the factory's `TaskFactoryLaunchModal` instead of calling `onLaunch` (which only allows it, as for any process); no `Popconfirm`, the form shows the `warning`. The form's launch hands the child to `onLaunched`. It takes precedence over the cases below (`denyReason` and Resurrecting still win).
+- For a task factory's record (`isTaskFactory(process)`), a single play button (an icon `ActionButton` of `useTaskFactoryOf`, the record-in-hand form of `useTaskFactory`; tooltip `processes.launch`) that opens the factory's `TaskFactoryLaunchModal` (with `launchOverrides[process.processId]` as its `overrides`) instead of calling `onLaunch` (which only allows it, as for any process); no `Popconfirm`, the form shows the `warning`. The form's launch hands the child to `onLaunched`. It takes precedence over the cases below (`denyReason` and Resurrecting still win).
 - Renders a **Resurrect** split button when `onResurrect` is provided and `isResurrectable(process)` (`supportsResurrect=true` and `hasUnsavedWork=true`); it takes precedence over the two cases below (a non-empty `denyReason` still wins):
   - Primary button: **Resurrect** (medicine-box icon, `aria-label` "Resurrect") — calls `onResurrect(id)`.
   - Menu item **Resume from last snapshot**, only when `isResumable(process)` — calls `onLaunch(id, { resume: true })`.
@@ -201,6 +203,7 @@ interface ProcessListProps {
   loading: boolean;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   onLaunched?: (child: Process) => void;  // forwarded to each ProcessItem
+  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // by a factory's processId; forwarded as onLaunched is
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
@@ -224,6 +227,7 @@ interface ProcessItemProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
   onLaunched?: (child: Process) => void;  // forwarded to LaunchControls (a task factory's launch)
+  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // forwarded to LaunchControls
   onResurrect?: (id: string) => void;  // forwarded to LaunchControls
   onCancel?: (id: string) => void;
   readonly?: boolean;
@@ -331,6 +335,7 @@ interface ProcessTreeViewProps {
   onCancel?: (processId: string) => void;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   onLaunched?: (child: Process) => void;  // forwarded to each node's LaunchControls
+  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // forwarded to each node's LaunchControls
   onResurrect?: (processId: string) => void;
 }
 ```
@@ -499,6 +504,7 @@ interface ProcessDetailViewProps {
   waitForWidget?: boolean;       // default false; true: a big spinner until the widget shows
   widgetPlaceholder?: ReactNode; // shown instead of that spinner; implies waitForWidget
   onLaunched?: (child: Process) => void;  // a task factory's launch form (from the tree) launched it
+  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // by a factory's processId; to the tree and the suspended widget's controls
 }
 
 function ProcessDetailView(props: ProcessDetailViewProps): JSX.Element
@@ -613,14 +619,48 @@ them.
 `useProcessActions().launch/launchAsync(id, { resume?, params?, ephemeral? })`: `ephemeral` goes in
 the launch body when given (a factory launch's removal when it ends).
 
-Exported from `optio-ui`, with `mergeOverrides` and the `TaskFactoryLaunchModalProps`,
-`TaskFactoryOverrides`, `TaskFactoryRecord`, `TaskFactoryParameter`, `ParameterChoice` and
+`overrides` and `onPendingChange?: (pending: boolean) => void` (true from the submit to the engine's
+answer, false when the form is gone) are the modal's props; the hook below uses the latter.
+
+Exported from `optio-ui`, with `mergeOverrides`, `useTaskFactory`, `TaskFactoryLaunchButton` and the
+`TaskFactoryLaunchModalProps`, `TaskFactoryOverrides`, `TaskFactoryRecord`, `UseTaskFactoryOptions`,
+`UseTaskFactoryResult`, `TaskFactoryLaunchButtonProps`, `TaskFactoryParameter`, `ParameterChoice` and
 `ParameterLabel` types.
+
+### useTaskFactory / TaskFactoryLaunchButton
+
+```ts
+function useTaskFactory(
+  factoryId: string,   // the factory's process id as the app declared it, or its record's _id
+  opts?: { overrides?: TaskFactoryOverrides; onLaunched?: (child: Process) => void },
+): { launch: ActionStatus; isPending: boolean; dialog: ReactNode };
+
+function TaskFactoryLaunchButton(props: {
+  factoryId: string; overrides?: TaskFactoryOverrides; onLaunched?: (child: Process) => void; size?: ButtonProps['size'];
+}): JSX.Element;
+```
+
+Launching a task factory from anywhere (`src/hooks/useTaskFactory.tsx`,
+`src/components/TaskFactoryLaunchButton.tsx`). The hook reads the record with `useProcess(factoryId)`.
+`launch` is a vultus action (label `processes.launch`, default "Launch") that opens the launch form;
+it is disabled, with its reason, while the record loads (`processes.factoryLoading`), when the
+process is no factory (`processes.factoryNotAFactory`) and while `isPending`
+(`processes.factoryLaunching`). `isPending` is the launch request in flight (the form's submit to the
+engine's answer); `launch.pending` is not that. `dialog` is the form's modal, rendered once by the
+app. `TaskFactoryLaunchButton` is `<ActionButton action={launch} />` plus the dialog.
+
+`launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>` (a factory's `processId` to its
+overrides) is a prop of `ProcessItem`, `ProcessList`, `FilteredProcessList`, `ProcessTreeView`,
+`ProcessDetailView` and `LaunchControls`, passed down as `onLaunched` is; a factory's play button
+takes its factory's entry.
+
+`useProcessActions().dismissAsync(id)`: as `dismiss`, resolves when done and rejects with the
+refusal (for a vultus action).
 
 ### Error routes (`optioErrorRoutes`)
 
 ```ts
-type OptioErrorRouteId = 'processes.launch';
+type OptioErrorRouteId = 'processes.launch' | 'processes.dismiss';
 const optioErrorRoutes: ErrorRoutesRegistry<OptioErrorRouteId>;  // vultus-core's registry
 ```
 
@@ -628,7 +668,8 @@ The error routes of optio-ui's own actions (`src/error-routes.ts`): for `process
 `LaunchFailureReason` (optio-contracts; typed `Record<LaunchFailureReason, RegistryEntry>`, so a
 reason added there fails the typecheck until it has an entry) → `{ i18nKey:
 'errors.processes.launch.<reason>' }`. vultus-core's `routeApiError` shows `t(i18nKey)`: the app
-translates these keys (no inline default; see "i18n Keys"). Exported from `optio-ui`, for apps that
+translates these keys (no inline default; see "i18n Keys"). `processes.dismiss` (removing an ended
+launch) likewise maps every `DismissFailureReason` to `errors.processes.dismiss.<reason>`. Exported from `optio-ui`, for apps that
 reuse or merge it.
 
 ---
@@ -1042,7 +1083,12 @@ no inline default (the app must translate them); the second carries an English d
 
 | Key | Component | Usage |
 |-----|-----------|-------|
-| `processes.launch` | `LaunchControls` | Tooltip on the single launch button |
+| `processes.launch` | `LaunchControls`, `useTaskFactory` | Tooltip on the single launch button; the label of a task factory's launch action (default: "Launch") |
+| `processes.removeLaunch` | `LaunchControls` | Tooltip / `aria-label` of the remove button of an ended launch (default: "Remove") |
+| `processes.factoryLoading` | `useTaskFactory` | Why `launch` is disabled while the record loads (default: "Loading…") |
+| `processes.factoryNotAFactory` | `useTaskFactory` | Why `launch` is disabled for a process that is no task factory (default: "Not a task factory") |
+| `processes.factoryLaunching` | `useTaskFactory` | Why `launch` is disabled while a launch is pending (default: "Launching…") |
+| `errors.processes.dismiss.<reason>` | `LaunchControls` (`optioErrorRoutes`) | A refused removal, one key per `DismissFailureReason`: `not-found`, `not-dismissable`. No default: without the app's text the key shows |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView` | Tooltip / `aria-label` of the stop button when the task cannot resume |
 | `processes.search` | `ProcessFilters` | The search field's label (its accessible name) and placeholder |
 | `processes.filterAll` | `ProcessFilters` | A choice of the group field (select) |

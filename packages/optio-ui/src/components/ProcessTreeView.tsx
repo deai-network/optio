@@ -4,6 +4,7 @@ import { CloseCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import type { Process } from 'optio-contracts';
+import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
 import { isActive as isProcessActive, isResurrecting } from '../process-state.js';
@@ -39,6 +40,8 @@ interface NodeActions {
   onCancel?: (processId: string) => void;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   onLaunched?: (child: Process) => void;
+  /** Overrides of a task factory's launch form, by the factory's `processId`. */
+  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
   onResurrect?: (processId: string) => void;
 }
 
@@ -65,7 +68,7 @@ function collectKeys(node: ProcessNode): string[] {
 }
 
 function treeNodeToDataNode(node: ProcessNode, actions: NodeActions, t: TFunction): DataNode {
-  const { onCancel, onLaunch, onLaunched, onResurrect } = actions;
+  const { onCancel, onLaunch, onLaunched, launchOverrides, onResurrect } = actions;
   const isActive = isProcessActive(node);
   // A resurrect runs while the state stays failed; show its progress message.
   const showsProgressMessage = isActive || isResurrecting(node);
@@ -136,7 +139,8 @@ function treeNodeToDataNode(node: ProcessNode, actions: NodeActions, t: TFunctio
           )}
           {onLaunch && (
             <LaunchControls
-              process={node as any} onLaunch={onLaunch} onLaunched={onLaunched} onResurrect={onResurrect} size="small"
+              process={node as any} onLaunch={onLaunch} onLaunched={onLaunched} launchOverrides={launchOverrides}
+              onResurrect={onResurrect} size="small"
             />
           )}
         </span>
@@ -150,7 +154,7 @@ function treeNodeToDataNode(node: ProcessNode, actions: NodeActions, t: TFunctio
 }
 
 export function ProcessTreeView({
-  treeData, sseState, onCancel, onLaunch, onLaunched, onResurrect,
+  treeData, sseState, onCancel, onLaunch, onLaunched, launchOverrides, onResurrect,
 }: ProcessTreeViewProps) {
   const { t } = useTranslation();
   const [hideFinishedLeaves, setHideFinishedLeaves] = useState(true);
@@ -160,7 +164,7 @@ export function ProcessTreeView({
 
   if (!treeData || !filtered) return null;
 
-  const treeNodes = [treeNodeToDataNode(filtered, { onCancel, onLaunch, onLaunched, onResurrect }, t)];
+  const treeNodes = [treeNodeToDataNode(filtered, { onCancel, onLaunch, onLaunched, launchOverrides, onResurrect }, t)];
 
   return (
     <div>

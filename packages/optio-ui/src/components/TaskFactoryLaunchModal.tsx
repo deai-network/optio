@@ -1,4 +1,4 @@
-import { useMemo, type SyntheticEvent } from 'react';
+import { useEffect, useMemo, type SyntheticEvent } from 'react';
 import { Alert, Form, Modal, Space } from 'antd';
 import type { FormRule } from 'antd';
 import { useTranslation } from 'react-i18next';
@@ -26,6 +26,8 @@ export interface TaskFactoryLaunchModalProps {
    * field and launches with its value. An id the form lacks, or a `kind`/`id` override, throws.
    */
   overrides?: TaskFactoryOverrides;
+  /** Called with true when the form's submit is sent and false when the engine has answered (or the form is gone). */
+  onPendingChange?: (pending: boolean) => void;
 }
 
 // Events inside the modal bubble, along React's tree, to the handlers around
@@ -44,7 +46,7 @@ const stop = (e: SyntheticEvent) => e.stopPropagation();
  * from the initial values again.
  */
 export function TaskFactoryLaunchModal({
-  process, open, onClose, onLaunched, overrides,
+  process, open, onClose, onLaunched, overrides, onPendingChange,
 }: TaskFactoryLaunchModalProps) {
   const { t } = useTranslation();
   return (
@@ -61,7 +63,10 @@ export function TaskFactoryLaunchModal({
         destroyOnHidden
       >
         <FormPanel layout="vertical">
-          <LaunchForm process={process} onClose={onClose} onLaunched={onLaunched} overrides={overrides} />
+          <LaunchForm
+            process={process} onClose={onClose} onLaunched={onLaunched} overrides={overrides}
+            onPendingChange={onPendingChange}
+          />
         </FormPanel>
       </Modal>
     </span>
@@ -69,7 +74,9 @@ export function TaskFactoryLaunchModal({
 }
 
 // Inside the FormPanel, as its actions must be: that is where a refusal finds the form.
-function LaunchForm({ process, onClose, onLaunched, overrides }: Omit<TaskFactoryLaunchModalProps, 'open'>) {
+function LaunchForm({
+  process, onClose, onLaunched, overrides, onPendingChange,
+}: Omit<TaskFactoryLaunchModalProps, 'open'>) {
   const { t, i18n } = useTranslation();
   const ctx = useFieldContext();
   // Throws, as it renders, for an override of a field the form lacks or of a kind or id.
@@ -86,6 +93,14 @@ function LaunchForm({ process, onClose, onLaunched, overrides }: Omit<TaskFactor
     },
     hiddenLabels,
   });
+  // The form unmounts when a launch closes it, possibly before the action reports it is done.
+  const pending = launch.pending;
+  useEffect(() => {
+    onPendingChange?.(pending);
+    return () => {
+      if (pending) onPendingChange?.(false);
+    };
+  }, [pending, onPendingChange]);
   const cancel = useAction({
     id: 'optio.taskFactory.cancel',
     label: t('processes.factoryCancel', { defaultValue: 'Cancel' }),
