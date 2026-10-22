@@ -76,7 +76,11 @@ export function ProcessDetailView({
   const { t } = useTranslation();
   // The last state of the process shown, for when it is deleted while open.
   useEffect(() => {
-    if (processId && tree) rememberProcess(processId, { tree, logs });
+    // Only the process asked for (by its _id or its processId): right after a switch the stream
+    // may still carry the previous process's state.
+    if (processId && tree && (tree._id === processId || tree.processId === processId)) {
+      rememberProcess(processId, { tree, logs });
+    }
   }, [processId, tree, logs]);
   const { launch, cancel, resurrect } = useProcessActions();
   // readOnly reaches the widget too: a suspended conversation's composer

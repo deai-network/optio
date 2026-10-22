@@ -664,6 +664,24 @@ describe('ProcessDetailView', () => {
       expect(container.querySelector('.anticon-delete')).toBeNull();
     });
 
+    it("does not cache the previous process's state under the one switched to", () => {
+      mockProcessStream.mockReturnValue({
+        tree: runningTree('A'),
+        logs: [{ timestamp: '2026-04-22T10:00:00Z', level: 'info', message: 'last words of A' }],
+        connected: true,
+      });
+      const view = render(<ProcessDetailView processId="A" />);
+      // The switch to B: the stream still carries A's state for a render, then reports B gone.
+      view.rerender(<ProcessDetailView processId="B" />);
+      mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: false, processNotFound: true });
+      view.rerender(<ProcessDetailView processId="B" />);
+      expect(screen.getByTestId('optio-detail-not-found').textContent).toBe('Process not found.');
+      expect(screen.queryByText('last words of A')).toBeNull();
+      view.rerender(<ProcessDetailView processId="A" />);
+      expect(screen.getByText('Process deleted.')).toBeTruthy();
+      expect(screen.getByText('last words of A')).toBeTruthy();
+    });
+
     it('says not found for a process it never showed', () => {
       mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: false, processNotFound: true });
       render(<ProcessDetailView processId="never" />);
