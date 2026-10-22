@@ -52,6 +52,45 @@ Every record already has `ttlSeconds`; it now reaches the clients: the engine's 
 list's and the tree's snapshots and updates). The launch form starts its checkbox at
 `ttlSeconds == null` and says how long a kept launch stays (3.1).
 
+### 1.4 `task_for`: a launch's task built from its values
+
+The owner, 2026-10-22 (Praeceptor's proposal generator, whose launches are an agent run or a DeepL
+run by the chosen source): from the outside a factory is the same either way (values in, a new run
+out); its author chooses how much a launch may differ. "if only mild differences is needed, he
+writes execute which gets the params in context. if he wants completely different codepath or
+widget then he writes task_for which can return a different task definition per launch".
+
+- `TaskFactory.task_for: Callable[[dict[str, Any], str], TaskInstance] | None = None`; a factory has
+  exactly one of `execute` and `task_for` (sync refuses both or neither, as other definition errors).
+- At a launch, after the values are checked (and `without_no_values`): `instance = task_for(values,
+  process_id)`, `process_id` the launch's (`<factory>_<8 hex>`), which an agent task needs for its
+  directory. The launch's task is that instance with, set by optio whatever it returned:
+  `process_id`; `params` = the values; `metadata` = the instance's, then the factory's over it, then
+  `taskFactory`; `name` = `name_for(values)` when the factory has one, else the instance's; the
+  factory's `ttl_seconds`. Everything else (`execute`, `ui_widget`, `supports_resume`, `cancellable`,
+  …) is the instance's.
+- An exception from `task_for` is not caught: the launch fails as any engine error does.
+
+### 1.5 Resuming a kept launch
+
+The owner, 2026-10-22: "why no resume?" (the TaskFactory design had none, a launch's task living in
+memory only), then accepted resuming kept launches.
+
+- A kept launch's record holds what rebuilding its task needs: its values (`params`), its factory
+  (`metadata.taskFactory`), its process id. At `init()`, after the factories are synced, each kept
+  launch whose run was interrupted (the states optio resumes or auto-resumes a task from) gets its
+  task rebuilt from its factory and its stored values, as at the launch (`child_task`, or
+  `task_for(values, process_id)`), and registered: it then resumes as any task does (auto-resume,
+  `launch(id, resume=True)`), an agent's session included.
+- Not rebuildable (its factory gone or no longer a factory, its stored values refused by the
+  factory's checks or `validate`, `task_for` raising): the launch is settled `failed`, its message
+  naming why, as an orphan is settled.
+- `launch(<a kept launch's id>, resume=True)` resumes it when its task supports resume; without
+  `resume` a launch still runs once (`not-launchable`).
+- Ephemeral launches are unchanged: deleted at `init()`.
+- optio-ui: a kept launch that can resume shows the resume control a task shows (its play button
+  for a new launch never: that is its factory's).
+
 ## 2. optio-contracts, the engine RPC, optio-api
 
 - `ProcessSchema`: `ttlSeconds?: number | null`.
@@ -168,6 +207,13 @@ current filters, Back does not step through them.
   notice with the last log, not found without an entry); the filters with a given store (a value
   written there and read back, a default absent, the search too), and without one (as before).
 - vultus-core: `useStoredFields(...).values` (defaults, sanitized values, identity kept).
+- optio-core (`task_for`): a factory with `task_for` launches the instance it returns, with optio's
+  fields set over it; both or neither of `execute`/`task_for` refused at sync; different values give
+  different kinds of task (an execute and a widget each). Resume: a kept launch interrupted by a
+  restart is rebuilt at `init()` and resumes (with `execute` and with `task_for`); one whose factory
+  is gone, or whose values are now refused, is settled failed with the reason; ephemeral ones still
+  deleted; `resume=True` on a kept launch resumes it, without it `not-launchable`.
+- optio-ui: a resumable kept launch shows the resume control, never a play button.
 
 ## 5. Docs and release
 

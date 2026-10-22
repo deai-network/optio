@@ -168,7 +168,41 @@
 - [ ] **Step 4:** optio-ui's suite and type check pass.
 - [ ] **Step 5:** Commit (`feat(optio-ui): the process filters keep their state in a store (an app's, e.g. the URL)`).
 
-### Task 8 (controller): finish
+### Task 8: optio-core: `task_for`
+
+**Files:**
+- Modify: `packages/optio-core/src/optio_core/models.py` (`TaskFactory.task_for`, `execute` optional; the exactly-one rule), `packages/optio-core/src/optio_core/task_factory.py` (`child_task`), the sync's factory check (where sync refuses bad definitions, `lifecycle.py`)
+- Test: `packages/optio-core/tests/test_task_factory.py`
+- Docs: optio-core `AGENTS.md`, README; the root `AGENTS.md`'s optio-core reference
+
+**Interfaces:**
+- Produces: `TaskFactory.task_for: Callable[[dict[str, Any], str], TaskInstance] | None = None`; `child_task(factory, values) -> TaskInstance` (process id generated first and passed to `task_for`; the fields optio sets per spec 1.4).
+
+- [ ] **Step 1: Failing tests:** sync refuses a factory with both `execute` and `task_for`, and one with neither (`ValueError` naming the factory); a factory with `task_for` returning, by a value `kind`, one of two `TaskInstance`s with different `execute`s and `ui_widget`s: launching each runs its own execute (an event set per kind) and its record carries its own `uiWidget`; `task_for` gets the checked values (no-values left out) and the launch's process id (`<factory>_` + 8 hex), and optio's fields win (`process_id`, `params`, `metadata` with the factory's over the instance's and `taskFactory`, `name_for`'s name, the factory's TTL); an exception from `task_for` propagates out of `launch`.
+- [ ] **Step 2:** Run — FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** The file and the whole optio-core suite (only the three Redis-bound failures).
+- [ ] **Step 5:** Commit (`feat(optio-core): a factory's task_for builds each launch's task from its values`).
+
+### Task 9: resuming a kept launch (optio-core, optio-ui)
+
+**Files:**
+- Modify: `packages/optio-core/src/optio_core/lifecycle.py` (at `init()`, after the factories' sync: rebuild interrupted kept launches; `launch(..., resume=True)` on a kept launch; the `not-launchable` path keeps refusing a fresh launch of a launch), `packages/optio-ui/src/components/LaunchControls.tsx` (a resumable kept launch: the resume control a task shows, no play button)
+- Test: `packages/optio-core/tests/test_task_factory.py` (or a new `test_task_factory_resume.py`), `packages/optio-ui/src/__tests__/LaunchControls.test.tsx`
+- Docs: optio-core and optio-ui `AGENTS.md`, READMEs
+
+**Interfaces:**
+- Consumes: Task 2's kept launches (`ephemeral: False` records), Task 8's `task_for`.
+- Produces: a kept launch interrupted by an engine restart is resumable after `init()`; `launch(<launch id>, resume=True)` resumes it.
+
+- [ ] **Step 1: Failing tests (optio-core):** a kept launch of an `execute` factory with `supports_resume` (its task's own field: for an `execute` factory, add `supports_resume` to `TaskFactory` only if the code needs it; otherwise use a `task_for` instance that supports resume) interrupted by a simulated restart (the existing restart helpers of the resume tests: `test_context_resume.py`, `test_auto_resume.py`) is rebuilt at `init()` with its stored params and resumes (its execute sees `ctx.resume`/the resume flag as a task's does); the same with `task_for`, which receives the stored values and the same process id; a kept launch whose factory is gone at the next start, and one whose stored values its factory now refuses, are settled `failed` with a message naming why; an ephemeral launch is still deleted at `init()`; `launch(<kept launch>, resume=True)` resumes, `launch(<kept launch>)` is `not-launchable`.
+- [ ] **Step 2 (optio-ui):** failing test: a kept launch record in a resumable state (as `isResumable` judges a task's) shows the resume control and no play button.
+- [ ] **Step 3:** Run — FAIL.
+- [ ] **Step 4:** Implement, reusing optio-core's resume machinery for tasks (the registration a synced task gets) rather than a second path.
+- [ ] **Step 5:** optio-core's suite (only the Redis-bound failures), optio-ui's suite and type check pass.
+- [ ] **Step 6:** Commit (`feat: a kept launch resumes after a restart: its task rebuilt from its factory and values`).
+
+### Task 10 (controller): finish
 
 - [ ] The whole optio-core suite, optio-contracts, optio-api (with the exclusion), optio-ui, vultus-core; the type checks; `make -C /home/csillag/praeceptor-dev/praeceptor siblings`.
 - [ ] Praeceptor's plan (`/home/csillag/praeceptor-dev/praeceptor/docs/superpowers/plans/2026-10-22-task-factory-overrides.md`) runs on top.
