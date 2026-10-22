@@ -305,10 +305,10 @@ A task launched with values. `get_task_definitions` may return `TaskFactory`s am
 ```python
 @dataclass
 class TaskFactory:
-    execute: Callable[..., Awaitable[None]]  # a launch's task; reads ctx.params
     process_id: str
     name: str
     parameters: list[dict[str, Any]]         # vultus-core field definitions as plain JSON (below)
+    execute: Callable[..., Awaitable[None]] | None = None  # a launch's task; reads ctx.params (exactly one of execute / task_for)
     description: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     special: bool = False
@@ -319,8 +319,16 @@ class TaskFactory:
     auto_cancel_children: bool = True
     validate: Callable[[dict[str, Any]], str | None] | None = None  # after the fields' checks: a returned message ("<id>: <what>") refuses the values
     name_for: Callable[[dict[str, Any]], str] | None = None        # a launch's name; default `name`
+    task_for: Callable[[dict[str, Any], str], TaskInstance] | None = None  # instead of execute: a launch's whole task
 ```
 
+- **`execute` or `task_for`:** exactly one (sync raises `ValueError` for both or neither). `task_for(values,
+  process_id)` is called after the values are checked (no-values left out) with the launch's process id
+  (`<factory id>_<8 hex>`); its `TaskInstance` is the launch's task, optio setting its `process_id`,
+  `params` (the values), `metadata` (the instance's, the factory's over it, plus `taskFactory`), `name`
+  (`name_for(values)` if any) and `ttl_seconds` (the factory's). An exception from it propagates out of
+  `launch`. `child_task(factory, values, process_id=None)` builds either kind. Spec:
+  `docs/2026-10-22-task-factory-launch-options-design.md` 1.4.
 - **The record:** synced like a task's, plus `taskFactory: true` and `parameters` (both `$set` on
   every sync); `params` `{}`, `uiWidget` null, `supportsResume` false. It never runs: it has no
   schedule, resume, resurrect or auto-resume; `launch` without `params` refuses it

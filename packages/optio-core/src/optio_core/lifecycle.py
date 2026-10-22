@@ -1910,6 +1910,11 @@ class Optio:
         # A factory's parameters must be field definitions it can be launched
         # with. Spec: docs/2026-10-20-task-factory-design.md §1.3
         for factory in factories:
+            if (factory.execute is None) == (factory.task_for is None):
+                raise ValueError(
+                    f"Task factory '{factory.process_id}': exactly one of "
+                    f"execute and task_for must be set"
+                )
             try:
                 check_parameters(factory.parameters)
             except ValueError as e:

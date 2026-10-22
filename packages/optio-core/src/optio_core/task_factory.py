@@ -13,6 +13,7 @@ parameter needs another, and a launch's params leave it out.
 Spec: docs/2026-10-20-task-factory-design.md §1.
 """
 
+import dataclasses
 import math
 import re
 import secrets
@@ -104,28 +105,53 @@ def without_no_values(parameters: list[dict], values: dict[str, Any]) -> dict[st
     return {k: v for k, v in values.items() if not _is_no_value(kinds.get(k, ""), v)}
 
 
-def child_task(factory: TaskFactory, values: dict[str, Any]) -> TaskInstance:
+def child_task(
+    factory: TaskFactory, values: dict[str, Any], process_id: str | None = None,
+) -> TaskInstance:
     """The TaskInstance of one launch of `factory` with `values` (already
-    checked): the factory's `execute` and fields, `params` = the values
-    without the ones that are no value (without_no_values), its metadata
-    plus `taskFactory: <the factory's process id>`, its process id plus "_"
-    and 8 random hex digits (a path segment when the factory's id is one, as
-    optio-host wants an agent task's: [A-Za-z0-9._-]), and the name
-    `name_for(values)` or the factory's (spec 1.2)."""
+    checked), the one place a launch's task is built (a launch, and the
+    rebuild of a kept one from its stored values and id).
+
+    `params` = the values without the ones that are no value
+    (without_no_values); the process id is `process_id` or the factory's plus
+    "_" and 8 random hex digits (a path segment when the factory's id is one,
+    as optio-host wants an agent task's: [A-Za-z0-9._-]); the name is
+    `name_for(values)` or the factory's (the instance's, with `task_for`);
+    the metadata is the factory's plus `taskFactory: <the factory's process
+    id>` (with `task_for`, over the instance's). With `execute`, the other
+    fields are the factory's (spec 1.2). With `task_for`, they are those of
+    the instance `task_for(values, process_id)` returns, whose own
+    process_id, params, metadata, name and ttl_seconds optio overrides, as
+    the factory's `ttl_seconds` is the launch's (launch options spec 1.4).
+    An exception from `task_for` propagates."""
     values = without_no_values(factory.parameters, values)
-    return TaskInstance(
-        execute=factory.execute,
-        process_id=f"{factory.process_id}_{secrets.token_hex(4)}",
-        name=factory.name_for(values) if factory.name_for is not None else factory.name,
-        description=factory.description,
+    if process_id is None:
+        process_id = f"{factory.process_id}_{secrets.token_hex(4)}"
+    if factory.task_for is not None:
+        instance = factory.task_for(values, process_id)
+        name = instance.name
+        metadata = {**instance.metadata, **factory.metadata}
+    else:
+        instance = TaskInstance(
+            execute=factory.execute,
+            process_id=process_id,
+            name=factory.name,
+            description=factory.description,
+            special=factory.special,
+            warning=factory.warning,
+            cancellable=factory.cancellable,
+            ui_widget=factory.ui_widget,
+            auto_cancel_children=factory.auto_cancel_children,
+        )
+        name = factory.name
+        metadata = factory.metadata
+    return dataclasses.replace(
+        instance,
+        process_id=process_id,
+        name=factory.name_for(values) if factory.name_for is not None else name,
         params=values,
-        metadata={**factory.metadata, "taskFactory": factory.process_id},
-        special=factory.special,
-        warning=factory.warning,
-        cancellable=factory.cancellable,
-        ui_widget=factory.ui_widget,
+        metadata={**metadata, "taskFactory": factory.process_id},
         ttl_seconds=factory.ttl_seconds,
-        auto_cancel_children=factory.auto_cancel_children,
     )
 
 

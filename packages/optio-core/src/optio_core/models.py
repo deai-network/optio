@@ -161,12 +161,17 @@ class TaskFactory:
     whose TaskInstance has `execute`, `params` = the values and the fields
     below, and launches it. A launch is ephemeral unless `ttl_seconds` is set.
     A factory has no schedule, resume, resurrect or auto-resume.
-    Spec: docs/2026-10-20-task-factory-design.md §1.
+    Exactly one of `execute` and `task_for` is set (sync refuses otherwise):
+    `execute` is every launch's task, reading its values from ctx.params;
+    `task_for` builds a launch's whole TaskInstance from its values.
+    Spec: docs/2026-10-20-task-factory-design.md §1,
+    docs/2026-10-22-task-factory-launch-options-design.md §1.4.
     """
-    execute: Callable[..., Awaitable[None]]  # a launch's task; reads ctx.params
     process_id: str
     name: str
     parameters: list[dict[str, Any]]
+    # A launch's task; reads ctx.params.
+    execute: Callable[..., Awaitable[None]] | None = None
     description: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     special: bool = False
@@ -184,6 +189,12 @@ class TaskFactory:
     validate: Callable[[dict[str, Any]], str | None] | None = None
     # A launch's name, from its values; default `name`.
     name_for: Callable[[dict[str, Any]], str] | None = None
+    # Instead of `execute`: `(values, process_id) -> TaskInstance`, a launch's
+    # task, called after the values are checked (without the no-values) with
+    # the launch's process id. optio sets the instance's process_id, params,
+    # metadata (the factory's over the instance's, plus `taskFactory`), name
+    # (`name_for`'s, if any) and ttl_seconds; the rest is the instance's.
+    task_for: Callable[[dict[str, Any], str], TaskInstance] | None = None
 
 
 @dataclass

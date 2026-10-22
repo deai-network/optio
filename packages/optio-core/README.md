@@ -578,6 +578,7 @@ child = outcome.proc  # the launch's process document
 - **The parameters** are vultus-core field definitions as plain JSON: `kind` one of `boolean`, `oneOf`, `manyOf`, `numeric`, `range`, `text`; a unique `id` (letters, digits and `_`); a `label` (a string, or a map of language code to string); the kind's options (`choices` for `oneOf` and `manyOf`; `min`, `max`, `step` and `integer` for `numeric` and `range`; `maxLength` for `text`); `initialValue`; `required` (default `True`). A bad definition makes the sync raise `ValueError`.
 - **A launch's values** are checked before anything is made: every key a parameter's, every required one given, each value of its kind's type and within its options (nothing coerced), then the factory's `validate(values)`, whose returned message refuses them too. A refusal is `invalid-parameters`, its `message` `"<id>: <what>"`. A value that is no value (`None`; `''` for a `text`, `[]` for a `manyOf`) is left out of `ctx.params`.
 - **The launch** is an ad-hoc child of the factory's record: process id `<factory id>_<8 hex digits>` (a path segment when the factory's id is one, so a launch can run an agent task: optio-host takes `[A-Za-z0-9._-]` only), named `name_for(values)` (or the factory's `name`), its metadata the factory's plus `taskFactory: <factory id>` (a reserved key: `adhoc_define` drops a caller's, so a process the launch's task defines with `ctx.metadata` launches normally). It is [ephemeral](#adhoc_define) unless the factory sets `ttl_seconds`, which keeps it that long after it ends; the launch's `ephemeral` argument overrides either default. `ephemeral` is therefore a reserved parameter id. It runs once: a launch of it is refused (`not-launchable`), and a dismiss of it once it ended deletes it instead of resetting it.
+- **`execute` or `task_for`.** A factory has exactly one of them (sync raises `ValueError` for both or neither). With `execute`, every launch runs it and reads its values from `ctx.params`: enough for mild differences. With `task_for(values, process_id)`, each launch gets the `TaskInstance` the function returns, so its values can choose a different `execute`, `ui_widget` and so on; `values` are the checked ones (no-values left out) and `process_id` is the launch's (`<factory id>_<8 hex digits>`, which an agent task needs for its directory). optio overrides the instance's `process_id`, `params` (the values), `metadata` (the instance's, the factory's over it, plus `taskFactory`), `name` (`name_for(values)` when the factory has one) and `ttl_seconds` (the factory's); everything else is the instance's. An exception from `task_for` is not caught: the launch raises it.
 
 ## Remote Control via Clamator RPC
 
@@ -669,10 +670,10 @@ The fields after `cancellable` are covered in more detail in [AGENTS.md](AGENTS.
 ```python
 @dataclass
 class TaskFactory:
-    execute: Callable[..., Awaitable[None]]  # a launch's task; reads ctx.params
     process_id: str
     name: str
     parameters: list[dict[str, Any]]         # field definitions as plain JSON
+    execute: Callable[..., Awaitable[None]] | None = None  # a launch's task; reads ctx.params (exactly one of execute / task_for)
     description: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     special: bool = False
@@ -683,6 +684,7 @@ class TaskFactory:
     auto_cancel_children: bool = True        # a launch's
     validate: Callable[[dict[str, Any]], str | None] | None = None  # a returned message refuses the values
     name_for: Callable[[dict[str, Any]], str] | None = None        # a launch's name; default `name`
+    task_for: Callable[[dict[str, Any], str], TaskInstance] | None = None  # instead of execute: a launch's whole task
 ```
 
 The fields a `TaskInstance` has too mean the same, for each launch. See [Task Factories](#task-factories).

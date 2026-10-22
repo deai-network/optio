@@ -15,7 +15,7 @@ from optio_core import TaskFactory, TaskInstance, LaunchOutcome, LaunchError
 from optio_core.lifecycle import Optio
 from optio_core.models import DismissOutcome, LaunchBlocked
 from optio_core.store import get_process_by_process_id, upsert_process
-from optio_core.task_factory import check_parameters, check_values
+from optio_core.task_factory import check_parameters, check_values, child_task
 
 
 PARAMS = [
@@ -96,9 +96,10 @@ async def _noop(ctx):  # noqa: ARG001
 def test_task_factory_fields_are_the_specs():
     names = [f.name for f in dataclasses.fields(TaskFactory)]
     assert names == [
-        "execute", "process_id", "name", "parameters", "description",
+        "process_id", "name", "parameters", "execute", "description",
         "metadata", "special", "warning", "cancellable", "ui_widget",
         "ttl_seconds", "auto_cancel_children", "validate", "name_for",
+        "task_for",
     ]
     f = TaskFactory(execute=_noop, process_id="f", name="F", parameters=[])
     assert f.metadata == {} and f.cancellable is True and f.ttl_seconds is None
@@ -539,6 +540,115 @@ async def test_a_launch_runs_a_child_of_the_factory_with_the_values(mongo_db):
         assert fac["status"]["state"] == "idle"
     finally:
         await fw.shutdown()
+
+
+# ---------------------------------------------------------------- task_for (spec 1.4)
+
+
+KIND_PARAMS = [
+    {"kind": "oneOf", "id": "kind", "label": "Kind",
+     "choices": [{"value": "agent"}, {"value": "plain"}]},
+    {"kind": "text", "id": "note", "label": "Note", "required": False},
+]
+
+
+def _task_for_factory(task_for, **kw):
+    return TaskFactory(
+        task_for=task_for, process_id="tfor", name="Proposals",
+        parameters=KIND_PARAMS, **kw,
+    )
+
+
+@pytest.mark.parametrize("kw,what", [
+    ({"execute": _noop, "task_for": lambda v, pid: None}, "both"),
+    ({}, "neither"),
+])
+async def test_sync_refuses_a_factory_without_exactly_one_of_execute_and_task_for(
+    mongo_db, kw, what,
+):
+    bad = TaskFactory(process_id="fac", name="F", parameters=[], **kw)
+    fw = Optio()
+
+    async def get_defs(_services, metadata_filter=None):
+        return [bad]
+
+    with pytest.raises(ValueError, match="fac.*exactly one of execute and task_for"):
+        await fw.init(mongo_db=mongo_db, prefix=f"tf_one_{what}", get_task_definitions=get_defs)
+
+
+async def test_task_for_builds_each_launchs_task_from_its_values(mongo_db):
+    prefix = "tf_taskfor"
+    ran: dict[str, asyncio.Event] = {"agent": asyncio.Event(), "plain": asyncio.Event()}
+    calls: list[tuple[dict, str]] = []
+
+    def task_for(values, process_id):
+        calls.append((dict(values), process_id))
+
+        async def execute(ctx):  # noqa: ARG001
+            ran[values["kind"]].set()
+
+        if values["kind"] == "agent":
+            return TaskInstance(
+                execute=execute, process_id="ignored", name="Instance name",
+                params={"ignored": 1}, metadata={"a": 1, "module": "instance"},
+                ui_widget="agent-widget", description="Agent run", ttl_seconds=5,
+            )
+        return TaskInstance(
+            execute=execute, process_id="ignored", name="Plain",
+            ui_widget="plain-widget",
+        )
+
+    defs = [_task_for_factory(
+        task_for, metadata={"module": "m"}, ttl_seconds=3600,
+        name_for=lambda v: f"Run ({v['kind']})",
+    )]
+    fw = await _init(mongo_db, prefix, defs)
+    try:
+        agent = await fw.launch("tfor", session_id=None, params={"kind": "agent", "note": ""})
+        plain = await fw.launch("tfor", session_id=None, params={"kind": "plain"})
+        assert agent.ok and plain.ok
+        await asyncio.wait_for(ran["agent"].wait(), 60)
+        await asyncio.wait_for(ran["plain"].wait(), 60)
+
+        # task_for got the checked values (no-values left out) and the launch's id.
+        assert calls == [
+            ({"kind": "agent"}, agent.proc["processId"]),
+            ({"kind": "plain"}, plain.proc["processId"]),
+        ]
+        assert re.fullmatch(r"tfor_[0-9a-f]{8}", agent.proc["processId"])
+
+        a = await _wait_until(lambda: _state_is(mongo_db, prefix, agent.proc["processId"], "done"))
+        p = await _wait_until(lambda: _state_is(mongo_db, prefix, plain.proc["processId"], "done"))
+        # Each launch has its own instance's widget and description ...
+        assert a["uiWidget"] == "agent-widget" and p["uiWidget"] == "plain-widget"
+        assert a["description"] == "Agent run"
+        # ... and optio's fields win over what the instance returned.
+        assert a["processId"] == agent.proc["processId"]
+        assert a["params"] == {"kind": "agent"}
+        assert a["metadata"] == {"a": 1, "module": "m", "taskFactory": "tfor"}
+        assert a["name"] == "Run (agent)"
+        assert a["ttlSeconds"] == 3600
+        assert p["metadata"] == {"module": "m", "taskFactory": "tfor"}
+    finally:
+        await fw.shutdown()
+
+
+async def test_an_exception_from_task_for_propagates_out_of_launch(mongo_db):
+    def task_for(values, process_id):
+        raise RuntimeError("no task for you")
+
+    fw = await _init(mongo_db, "tf_taskfor_raises", [_task_for_factory(task_for)])
+    try:
+        with pytest.raises(RuntimeError, match="no task for you"):
+            await fw.launch("tfor", session_id=None, params={"kind": "plain"})
+    finally:
+        await fw.shutdown()
+
+
+def test_child_task_reuses_a_given_process_id():
+    factory = TaskFactory(execute=_noop, process_id="fac", name="F", parameters=[])
+    assert child_task(factory, {}, "fac_00112233").process_id == "fac_00112233"
+    assert re.fullmatch(r"fac_[0-9a-f]{8}", child_task(factory, {}).process_id)
 
 
 async def test_a_kept_launch_is_never_launched_again(mongo_db):

@@ -325,10 +325,10 @@ from optio_core import TaskFactory
 
 @dataclass
 class TaskFactory:
-    execute: Callable[..., Awaitable[None]]  # a launch's task; reads ctx.params
     process_id: str
     name: str
     parameters: list[dict[str, Any]]         # vultus-core field definitions as plain JSON
+    execute: Callable[..., Awaitable[None]] | None = None  # a launch's task; reads ctx.params (exactly one of execute / task_for)
     description: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     special: bool = False
@@ -339,10 +339,24 @@ class TaskFactory:
     auto_cancel_children: bool = True
     validate: Callable[[dict[str, Any]], str | None] | None = None  # a returned message refuses the values
     name_for: Callable[[dict[str, Any]], str] | None = None        # a launch's name; default `name`
+    task_for: Callable[[dict[str, Any], str], TaskInstance] | None = None  # instead of execute: a launch's whole task
 ```
 
 A task launched with values. `get_task_definitions` may return factories among its
 TaskInstances. Spec: `docs/2026-10-20-task-factory-design.md`.
+
+**`execute` or `task_for`.** A factory has exactly one (sync raises `ValueError("Task factory
+'<id>': exactly one of execute and task_for must be set")` for both or neither). With `execute`,
+every launch runs it, the values in `ctx.params` (mild differences). With `task_for(values,
+process_id)`, each launch gets the `TaskInstance` it returns (a different `execute`, `ui_widget`,
+`supports_resume`, ... per launch); it is called after the values are checked, with the
+no-values left out, and the launch's process id (`<factory id>_<8 hex>`, which an agent task
+needs for its directory). optio overrides on the returned instance: `process_id`, `params` = the
+values, `metadata` (the instance's, the factory's over it, then `taskFactory`), `name` =
+`name_for(values)` if the factory has one, else the instance's, and `ttl_seconds` = the factory's;
+the rest is the instance's. An exception from `task_for` is not caught: `launch` raises it.
+`child_task(factory, values, process_id=None)` is the single builder (a given `process_id` is
+reused, for rebuilding a kept launch). Spec: `docs/2026-10-22-task-factory-launch-options-design.md` 1.4.
 
 **The record.** Synced like a task's, plus `taskFactory: true` and `parameters` (both `$set` on
 every sync); `params` is `{}`, `uiWidget` null (the widget is the launches'), `supportsResume`
@@ -389,7 +403,8 @@ running launches, the active records under a stale root (see "Optio.resync").
 `shutting-down`, `not-found`, `no-resume-support`, `parameters-required`, `not-launchable` (no
 definition synced for the record), `invalid-parameters`, `launch-blocked` (a block matching the
 child's metadata). No child is defined while shutting down, whichever entry point. Then
-`task_factory.child_task(factory, values)` is the child's TaskInstance: the factory's `execute`
+`task_factory.child_task(factory, values)` is the child's TaskInstance (with `task_for`, the one
+it returns, see above): the factory's `execute`
 and fields, `params` = the values without the no-values (`without_no_values`), metadata the
 factory's plus `taskFactory: <factory id>`, process id
 `f"{factory.process_id}:{secrets.token_hex(4)}"`, name `name_for(values)` or `name`.
