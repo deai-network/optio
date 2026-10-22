@@ -131,6 +131,29 @@ a refusal through the error routes (`optioErrorRoutes`, the dismiss route).
   `t('processes.deleted', 'Process deleted.')`; no widget, no action.
 - **One not in the cache:** `t('processes.notFound', 'Process not found.')`, as today's text.
 
+### 3.6 The process filters' state in a store
+
+The owner, 2026-10-22: "we are not saving filter state ... ProcessFilter is not integrated to
+history because it's intended to be a generic component, usable by any app, therefore can't be
+bound to a specific router. but we still need a solution ... an optional prop for a data store
+plug". A filter change replaces the stored value (the owner: "replace"): the URL always shows the
+current filters, Back does not step through them.
+
+- **`WithFilteredProcesses`'s `store?: ArgStore`** (vultus-core's interface: `read`, `write`,
+  `subscribe`): where every filter's value lives, under its field id (`search`, `filterGroup`,
+  `showDetails`, `showSpecial`, and the app filters' ids); a value at its default is absent. Without
+  one, a `memoryStore()` of its own, made once per mount: today's behaviour (local, gone on unmount).
+- **The fields** are rendered in vultus's `stored` mode, under an `ArgStoreProvider` of that store
+  that `WithFilteredProcesses` sets up; their writes are `'replace'` (vultus's for stored fields).
+- **The search:** quaesitor-textus's `WithSearch` controlled, `query` read from the store and
+  `onSetQuery` writing it.
+- **`useProcessFilter()`** keeps its shape: the values come from the store, the setters write it,
+  `filterFn` and `metadataFilter` are computed from it.
+- **vultus-core (unitas):** `useStoredFields(definitions)` also returns `values`: each field's
+  value by id, as its `<Field stored>` shows it (sanitized, its default where absent), one
+  subscription for all, each value keeping its identity while unchanged (as `useStoredField`'s).
+  optio-ui reads the filters' values with it.
+
 ## 4. Testing (no wall-clock dependence: AGENTS.md)
 
 - optio-core: `ephemeral` None/True/False on a factory (the child's `ephemeral` flag, its TTL); on a
@@ -142,14 +165,17 @@ a refusal through the error routes (`optioErrorRoutes`, the dismiss route).
   hidden whole and still sent; a refusal on a hidden field in the form; `useTaskFactory`'s states
   (loading, not a factory, pending) and its dialog; `launchOverrides` reaching a list row's form;
   the remove button on an ended launch only; the cache (5 entries, the oldest dropped, the deleted
-  notice with the last log, not found without an entry).
+  notice with the last log, not found without an entry); the filters with a given store (a value
+  written there and read back, a default absent, the search too), and without one (as before).
+- vultus-core: `useStoredFields(...).values` (defaults, sanitized values, identity kept).
 
 ## 5. Docs and release
 
 - The packages' `AGENTS.md` and READMEs (`optio-core`, `optio-contracts`, `optio-api`, `optio-ui`) in
   the same commits as their API changes; the optio-ui key list (its `AGENTS.md`) gets the new keys.
 - Released per `docs/release-cookbook.md`: optio-core, optio-contracts, optio-api (minor: new API),
-  optio-ui 0.11.0 (with the filter slots of the same branch, which break 0.10.0's `filters`).
+  optio-ui 0.11.0 (with the filter slots of the same branch, which break 0.10.0's `filters`), after
+  the vultus-core release with `useStoredFields(...).values` (optio-ui's range raised to it).
 
 ## 6. Out
 
