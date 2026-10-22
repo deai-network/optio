@@ -102,7 +102,7 @@ export function ProcessDetailView({
   waitForWidget = false,
   widgetPlaceholder,
   onLaunched,
-}:ProcessDetailViewProps) {
+}: ProcessDetailViewProps) {
   const stream = useProcessStream(processId ?? undefined);
   const { connected, processNotFound, error } = stream;
   const { tree, logs } = useMemo(
