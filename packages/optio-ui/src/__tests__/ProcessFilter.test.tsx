@@ -31,7 +31,11 @@ function makeProcess(overrides: Record<string, any> = {}) {
 }
 
 function wrapper({ children }: { children: React.ReactNode }) {
-  return <WithFilteredProcesses>{children}</WithFilteredProcesses>;
+  return (
+    <I18nextProvider i18n={i18n}>
+      <WithFilteredProcesses>{children}</WithFilteredProcesses>
+    </I18nextProvider>
+  );
 }
 
 // Used in search tests: exposes both filterFn and setQuery from the same render
@@ -142,9 +146,11 @@ describe('FilteredProcessList', () => {
       makeProcess({ _id: 'root-running', status: { state: 'running' }, depth: 0 }),
     ];
     render(
-      <WithFilteredProcesses>
-        <FilteredProcessList processes={processes} loading={false} />
-      </WithFilteredProcesses>,
+      <I18nextProvider i18n={i18n}>
+        <WithFilteredProcesses>
+          <FilteredProcessList processes={processes} loading={false} />
+        </WithFilteredProcesses>
+      </I18nextProvider>,
     );
     const items = screen.getAllByTestId('item');
     // Default: showDetails=false hides child-idle
