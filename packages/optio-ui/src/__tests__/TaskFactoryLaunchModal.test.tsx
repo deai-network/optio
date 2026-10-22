@@ -246,8 +246,11 @@ describe('TaskFactoryLaunchModal', () => {
 
   it('has the ephemeral checkbox last, checked, and sends it apart from the params', async () => {
     const { dialog } = renderModal();
-    const ephemeral = within(dialog).getByRole('switch', { name: 'Remove when finished' });
-    expect(ephemeral.getAttribute('aria-checked')).toBe('true');
+    const ephemeral = within(dialog).getByRole('checkbox', { name: 'Remove when finished' }) as HTMLInputElement;
+    expect(ephemeral.checked).toBe(true);
+    expect(within(dialog).queryByRole('switch', { name: 'Remove when finished' })).toBeNull();
+    // The label appears once, and the help reaches the user as the control's accessible description.
+    expect(within(dialog).getAllByText('Remove when finished')).toHaveLength(1);
     expect(ephemeral.getAttribute('aria-description')).toMatch(/^Checked: the launch disappears/);
     const note = within(dialog).getByRole('textbox', { name: 'Note' });
     expect(note.compareDocumentPosition(ephemeral) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -258,7 +261,7 @@ describe('TaskFactoryLaunchModal', () => {
 
   it('sends ephemeral false when it is unchecked', async () => {
     const { dialog } = renderModal();
-    fireEvent.click(within(dialog).getByRole('switch', { name: 'Remove when finished' }));
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Remove when finished' }));
     fireEvent.click(launchButton());
     await launchedWith();
     expect(requests[0].body.ephemeral).toBe(false);
@@ -266,8 +269,9 @@ describe('TaskFactoryLaunchModal', () => {
 
   it('starts the checkbox unchecked for a factory with a TTL, and says how long it keeps', () => {
     const { dialog } = renderModal({ ...FACTORY, ttlSeconds: 3600 });
-    const ephemeral = within(dialog).getByRole('switch', { name: 'Remove when finished' });
-    expect(ephemeral.getAttribute('aria-checked')).toBe('false');
+    const ephemeral = within(dialog).getByRole('checkbox', { name: 'Remove when finished' }) as HTMLInputElement;
+    expect(ephemeral.checked).toBe(false);
+    expect(within(dialog).getAllByText('Remove when finished')).toHaveLength(1);
     expect(ephemeral.getAttribute('aria-description')).toMatch(/at most 1 hour after it ends\.$/);
   });
 

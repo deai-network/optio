@@ -117,6 +117,12 @@ interface FormItem {
   initialValue: unknown;
 }
 
+/** The name of the widget a definition's `widget` hint gives (a name, or `{ name, ... }`). */
+function widgetNameOf(definition: FieldDefinition): string | undefined {
+  const widget = (definition as { widget?: string | { name: string } }).widget;
+  return typeof widget === 'string' ? widget : widget?.name;
+}
+
 function resolveItem(definition: FieldDefinition, ctx: FieldCtx): FormItem {
   const where = (name: string) => `Field '${definition.id}': option '${name}'`;
   return {
@@ -149,7 +155,8 @@ function FieldItem({ item, parameter }: { item: FormItem; parameter: TaskFactory
   return (
     <Form.Item
       name={item.definition.id}
-      label={item.label}
+      // A checkbox widget shows its own label: the item's would show it twice.
+      label={widgetNameOf(item.definition) === 'checkbox' ? undefined : item.label}
       initialValue={item.initialValue}
       hidden={!item.visible}
       // The mark only where a value can be missing (the other kinds always have one).

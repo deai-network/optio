@@ -577,7 +577,7 @@ them.
   required. Initial values: `initialValue`, else the kind's own default (vultus-core's
   `initialValueOf`).
 - **The built-in `ephemeral` field** (`launchFormDefinitions(record, language, t)` in
-  `src/task-factory.ts`, `EPHEMERAL_FIELD_ID`): after the parameters, a boolean with the label
+  `src/task-factory.ts`, `EPHEMERAL_FIELD_ID`): after the parameters, a boolean rendered as a checkbox (`widget: 'checkbox'`, which an override may change; the form item then leaves the label to the widget, so it shows once) with the label
   `processes.launchEphemeral` ("Remove when finished"), initially `ttlSeconds == null` (checked
   unless the factory keeps ended launches for a TTL), and a description (the field's help):
   `processes.launchEphemeralHelp` ("Checked: the launch disappears from the list when it ends.

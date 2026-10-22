@@ -131,6 +131,7 @@ describe('launchFormDefinitions (spec 3.1: the parameters, then the built-in eph
   it('the ephemeral checkbox last, checked without a TTL, with the no-TTL help', () => {
     expect(lastOf({ parameters })).toMatchObject({
       kind: 'boolean',
+      widget: 'checkbox',
       id: 'ephemeral',
       label: 'Remove when finished',
       initialValue: true,

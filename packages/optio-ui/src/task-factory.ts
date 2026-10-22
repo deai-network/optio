@@ -125,6 +125,7 @@ export function launchFormDefinitions(
   const ephemeral: FieldDefinition = {
     kind: 'boolean',
     id: EPHEMERAL_FIELD_ID,
+    widget: 'checkbox',
     label: t('processes.launchEphemeral', 'Remove when finished'),
     description: help,
     initialValue: ttl === null,
