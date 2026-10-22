@@ -816,8 +816,10 @@ The list, tree and multi-tree pollers' `update` processes carry a task factory's
 `taskFactory` and `parameters` are in every poller's snapshot fingerprint, so a resync that changes
 only a factory's definition sends the update again. The tree and multi-tree pollers share one
 snapshot and one payload builder (`treeSnapshotOf`, `treeUpdateOf` in `stream-poller.ts`). All
-three also carry `ttlSeconds` (a factory's default retention of a launch's record; absent on other
-records), read by `LIST_PROJECTION` and part of every snapshot fingerprint.
+three also carry `ttlSeconds` (how long the record is kept after its run ended, in seconds; a
+factory's is its launches', which optio-ui's launch form reads): every record has it, `null` when
+it has no TTL (spec `docs/2026-10-22-task-factory-launch-options-design.md` §1.3). It is read by
+`LIST_PROJECTION` and part of every snapshot fingerprint.
 
 `createTreePoller` sends all existing log entries on the first poll, then only deltas. It detects log truncation (e.g. after resync) and emits `log-clear` before new entries.
 

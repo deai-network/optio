@@ -131,7 +131,7 @@ z.enum(['idle', 'scheduled', 'running', 'done', 'failed',
 | `special` | `boolean` | optional |
 | `taskFactory` | `boolean` | optional — the record is a `TaskFactory` (missing = false) |
 | `parameters` | `unknown[]` | optional — a factory's field definitions as data (optio-ui types them with vultus-core) |
-| `ttlSeconds` | `number \| null` | optional — a factory's default retention of a launch's record after it ended, in seconds (null = kept until dismissed) |
+| `ttlSeconds` | `number \| null` | optional — how long the record is kept after its run ended, in seconds (a factory's is its launches'); every record has it, null when it has no TTL (kept until dismissed) |
 | `supportsResume` | `boolean` | optional — task opted into resume/checkpoint support |
 | `hasSavedState` | `boolean` | optional — task has a valid checkpoint ready to restore |
 | `supportsResurrect` | `boolean` | optional — task has a resurrect hook (missing = false) |

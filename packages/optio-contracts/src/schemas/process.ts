@@ -75,8 +75,10 @@ export const ProcessSchema = z.object({
   // vultus-core). Missing taskFactory = false.
   taskFactory: z.boolean().optional(),
   parameters: z.array(z.unknown()).optional(),
-  // A factory's default retention of a launch's record after it ended, in
-  // seconds; null = kept until dismissed. Missing on a non-factory.
+  // How long the record is kept after its run ended, in seconds (the
+  // engine's TTL; a factory's is its launches'); null = no TTL (kept until
+  // dismissed or deleted). Every record has it, null when none; optional
+  // here for a client reading an older optio-api.
   ttlSeconds: z.number().nullable().optional(),
 
   // Resume feature — default false when absent in stored doc (UI treats
