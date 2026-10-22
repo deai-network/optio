@@ -163,9 +163,12 @@ class TaskFactory:
     A factory has no schedule, resume, resurrect or auto-resume.
     Exactly one of `execute` and `task_for` is set (sync refuses otherwise):
     `execute` is every launch's task, reading its values from ctx.params;
-    `task_for` builds a launch's whole TaskInstance from its values.
+    `task_for` builds a launch's whole TaskInstance from its values. A kept
+    launch whose task supports resume (a `task_for` instance's
+    supports_resume) is resumed as a task is, after an engine restart too:
+    init() rebuilds its task from the factory and its stored values.
     Spec: docs/2026-10-20-task-factory-design.md §1,
-    docs/2026-10-22-task-factory-launch-options-design.md §1.4.
+    docs/2026-10-22-task-factory-launch-options-design.md §1.4, §1.5.
     """
     process_id: str
     name: str

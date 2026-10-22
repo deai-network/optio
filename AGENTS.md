@@ -174,7 +174,8 @@ await optio_core.launch_and_await_result(process_id: str, resume: bool = False, 
 # ephemeral (None | True | False): whether the launch's record is deleted when its run ends; None follows the
 # factory (ttl_seconds is None), a bool overrides it. "ephemeral" is a reserved parameter id. No child is
 # defined while shutting down (all three entry points). A factory's record never runs itself, and a
-# factory's launch runs once: launching its record again is not-launchable (LaunchError in launch_and_wait).
+# factory's launch runs once: launching its record again is not-launchable (LaunchError in launch_and_wait);
+# only resume=True runs a kept one again (see "TaskFactory Fields": resuming a kept launch).
 await optio_core.resurrect(process_id: str, *, session_id: str | None) -> ResurrectOutcome  # fire-and-forget
 # Saves the work a failed run left on its host, then resumes. Refusals come back as
 # ResurrectOutcome(ok=False, reason=...), checked in this order: shutting-down, not-found,
@@ -280,7 +281,7 @@ class TaskInstance:
     ui_widget: str | None = None             # widget name registered via registerWidget() in optio-ui
     ttl_seconds: int | None = None           # record expires this long after reaching a terminal state (expireAt); children copy it
     auto_cancel_children: bool = True        # cancel(this) recursively cancels active direct descendants; set False for tasks that finalize children themselves
-    auto_resume: bool = False                # a top-level process interrupted by engine shutdown that saved its state is re-launched (resume=True) after the next start, after auto_resume_delay_seconds; requires supports_resume=True (ValueError at sync)
+    auto_resume: bool = False                # a top-level process (or a TaskFactory's kept launch) interrupted by engine shutdown that saved its state is re-launched (resume=True) after the next start, after auto_resume_delay_seconds; requires supports_resume=True (ValueError at sync)
     schedule_offset_seconds: int | None = None  # second (0-59) within each matching minute at which `schedule` fires; None = second 0
     session_crypto: SessionCrypto | None = None  # the task's at-rest cipher (encrypt/decrypt callables) for its own blob channels; set by engine-wrapper factories, read e.g. by deferred migrations
     read_conversation: Callable[[ReadOnlyProcessContext], Awaitable[list | dict | None]] | None = None  # last field; returns a suspended process's saved conversation record ([[seq, event], ...] or {events, capturedAt}; None = no record) for the engine's conversation archive listener; gets a read-only context (process_id, _db, _prefix, load_blob)
@@ -363,16 +364,29 @@ class TaskFactory:
   the factory's plus `taskFactory: <factory id>`, the factory's other fields, `ttlSeconds` copied
   from the record; launched with the launch's `session_id`. If that launch is refused (a launch
   block or a shutdown since), the child is deleted. Its TaskInstance lives only in memory (as any
-  ad-hoc process's). `metadata.taskFactory` is optio's reserved key: only the launch's definition
+  ad-hoc process's; a sync keeps it registered while the factory is synced), its record carries
+  the task's `supportsResume`. `metadata.taskFactory` is optio's reserved key: only the launch's definition
   writes it, and `adhoc_define` drops a caller's (so a process a launch's task defines with its
   `ctx.metadata` is no launch of a factory).
 - **A launch runs once.** `launch`, `launch_and_wait` and `launch_and_await_result` refuse a record
   whose metadata carries `taskFactory` (a launch, kept by `ttl_seconds`, and the records under it,
   which inherit its metadata) with `not-launchable`, before any lookup of its task, whatever the
-  task registry holds (its TaskInstance, or nothing after a full resync, which replaces the
-  registry); `task_factory.is_factory_launch`. `dismiss` of an ended one deletes it with its
+  task registry holds (its TaskInstance, or nothing once its factory is gone);
+  `task_factory.is_factory_launch`. `dismiss` of an ended one deletes it with its
   descendants (reset, it would be an idle record that never runs nor expires); a running one is `not-dismissable`. optio-ui shows it no
   play button (`isTaskFactoryLaunch`).
+- **Resuming a kept launch** (spec `docs/2026-10-22-task-factory-launch-options-design.md` 1.5): a
+  launch whose task supports resume (a `task_for` instance's `supports_resume`; an `execute`
+  factory's never does) is resumed as a task is: `launch(<launch>, resume=True)` (also
+  `launch_and_wait`, `launch_and_await_result`), `no-resume-support` without resume support,
+  `not-launchable` without saved state or a registered task; the auto-resume sweep (a launch counts
+  as top-level for the stamp). At `init()`, after the sync, the task of every kept launch that can
+  resume (`supportsResume` and `hasSavedState`, not running) is rebuilt from its factory and stored
+  values as at its launch (`task_factory.check_factory_values`, then `child_task(factory, params,
+  <its process id>)`) and registered; one that cannot be (its factory gone or no longer a factory,
+  its values refused, `task_for` raising) is settled `failed` with the error `Cannot resume after
+  the engine restart: <why>` and `supportsResume` false. optio-ui shows a resumable kept launch the
+  Resume control (never a play button) beside its Remove.
 
 ---
 
@@ -1372,7 +1386,9 @@ interface LaunchControlsProps {
 Smart launch button. Renders nothing when not launchable or `onLaunch` is absent: `isLaunchable(process)`
 is a launchable state and not a task factory's launch (`isTaskFactoryLaunch(process)`: `metadata.taskFactory`
 names the factory; it is never launched again, e.g. one a TTL keeps; both exported from `optio-ui`).
-While `isResurrecting(process)` (`resurrecting` true) it renders a single disabled "Resurrecting" indicator
+An ended one renders a Remove button (dismissing deletes it) and, when `isResumable(process)`, before
+it the Resume button of a task's split button (`onLaunch(id, { resume: true })`; no play button, no
+Restart; a non-empty `denyReason` disables it). While `isResurrecting(process)` (`resurrecting` true) it renders a single disabled "Resurrecting" indicator
 (spinning icon, tooltip "Resurrecting: saving the unsaved work…") and nothing clickable.
 For a task factory's record (`isTaskFactory(process)`: `taskFactory: true`; exported from `optio-ui`) it
 renders a single play button that opens the factory's `TaskFactoryLaunchModal` (below) instead of calling

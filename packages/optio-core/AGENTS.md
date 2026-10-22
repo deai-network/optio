@@ -269,7 +269,7 @@ await ctx.clear_widget_data() -> None
 | `uiWidget` | `string \| null` | Widget name; `ProcessDetailView` dispatches on this field |
 | `widgetUpstream` | `{ url: string, innerAuth: object \| null } \| null` | Server-side only — never sent to clients |
 | `widgetData` | `<any JSON> \| null` | Live data delivered to the widget component via tree stream |
-| `supportsResume` | `bool` | Whether the task opted into resume support; refreshed via `$set` on every sync |
+| `supportsResume` | `bool` | Whether the task opted into resume support; refreshed via `$set` on every sync; an ad-hoc child's (e.g. a TaskFactory's launch's) is its task's, written at its definition |
 | `hasSavedState` | `bool` | Whether the task has a valid checkpoint; `$setOnInsert: false`; mutated only by `mark/clear_has_saved_state` |
 | `supportsResurrect` | `bool` | Whether the task has a `resurrect` hook; refreshed via `$set` on every sync |
 | `hasUnsavedWork` | `bool` | The host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts and when a resurrect saves the work or finds nothing |
@@ -303,7 +303,7 @@ launches fresh (`resume=False`) when it has no saved state (`hasSavedState` fals
 an unattended launch).
 
 While a resurrect of the process is in progress, `launch` returns `not-launchable`; so it does for
-a TaskFactory's launch, which runs once (see "TaskFactory").
+a TaskFactory's launch, which runs once, unless `resume=True` resumes a kept one (see "TaskFactory").
 
 `LaunchOutcome` (`ok`, `reason`, `proc`, `message`): `reason` is one of `not-found`,
 `not-launchable`, `launch-blocked`, `no-resume-support`, `shutting-down`, `parameters-required`,
@@ -314,7 +314,7 @@ ended at once, or on the cancel's flag) is answered as read before the action. T
 answers an ok outcome without a record (none comes) `not-found`.
 `LaunchError` (`process_id`, `reason`, `message`) is what `launch_and_await_result` raises on a
 refusal, and `launch_and_wait` on a TaskFactory's refused launch and on a launch of a
-TaskFactory's launch (`not-launchable`: it runs once).
+TaskFactory's launch (`not-launchable`: it runs once; a refused resume of one: its reason).
 
 ---
 
@@ -393,6 +393,8 @@ running launches, the active records under a stale root (see "Optio.resync").
   `integer`; `text` a string within `maxLength`. Nothing is coerced. Then the factory's
   `validate(values)`, whose message also refuses. A refusal is
   `LaunchOutcome(ok=False, reason="invalid-parameters", message=...)`.
+  `check_factory_values(factory, values) -> str | None` is both, the fields' checks then
+  `validate` (with the no-values left out): a launch's check, and a kept launch's at its rebuild.
 - `without_no_values(parameters, values)`: the values without the ones that are no value, as the
   required check counts it (null; the empty string of a `text`; the empty list of a `manyOf`).
   `validate`, `name_for` and the task's `ctx.params` get these, so a left-out value, a null one and
@@ -428,12 +430,36 @@ starts.
 records under it, which inherit its metadata) is never launched again: `launch` answers
 `not-launchable` (`launch_and_wait` and `launch_and_await_result` raise
 `LaunchError("not-launchable")`) before it looks for an execute function, whatever the task
-registry holds (the launch's TaskInstance, or nothing once a full resync has replaced the
-registry). Nor is it reset by a dismiss, which would leave an idle record that never runs and
+registry holds (the launch's TaskInstance, which a sync keeps while the factory is synced, or
+nothing once the factory is gone). Nor is it reset by a dismiss, which would leave an idle record that never runs and
 never expires (it removes `expireAt`): `dismiss` of an ended one (done, failed, cancelled)
 deletes it with its descendants and its task (`adhoc_delete`, the deletion an ephemeral launch's
 end takes) and answers `ok=True` with `proc=None`; a running one is `not-dismissable`.
 optio-ui shows it no play button (`isTaskFactoryLaunch`).
+
+**Resuming a kept launch** (launch options spec §1.5). A launch's task supports resume when it
+is a `task_for` instance with `supports_resume=True` (an `execute` factory's never does); its
+record carries `supportsResume` (an ad-hoc child's is its task's), so `ctx.mark_has_saved_state`
+works in it. `launch(<launch>, resume=True)` (and `launch_and_wait`, `launch_and_await_result`)
+resumes a kept one as a task's resume does (`ctx.resume=True`, its stored `params`); refused
+(`Optio._relaunch_refusal`) with `no-resume-support` when its record has `supportsResume` false,
+and `not-launchable` without saved state (that resume would be a fresh run) or without a
+registered task. A sync keeps the tasks of a factory's launches registered while the factory is
+synced (a full sync no longer drops them), and drops them with it. A launch counts as top-level
+for auto-resume (depth 1, its parent the factory's record, which never runs): its task's
+`auto_resume` stamps it at shutdown, and the post-restart sweep resumes it. At `init()`, after
+the sync and before the deferred migrations, `Optio._rebuild_kept_launches` rebuilds the task of
+every kept launch that can resume (`metadata.taskFactory`, `supportsResume` and `hasSavedState`
+true, in a launchable state: a crashed run is `failed` by then, a stopped one `cancelled`) from its
+factory and stored values as at its launch (`check_factory_values`, then `child_task(factory,
+params, <its process id>)`: `task_for` gets the stored values and the same process id) and
+registers it in the executor's task registry, where resume, auto-resume, the conversation archive
+and the deferred migrations find it. One that cannot be rebuilt is settled `failed`, its error and
+a log line `Cannot resume after the engine restart: <why>` (`'<factory id>' is no longer a task
+factory`, `its values are refused: <id>: <what>`, `its task could not be rebuilt: <exception>`),
+`supportsResume` and `autoResumeScheduled` set false (it no longer resumes, nor is judged again),
+`expireAt` set by its TTL. An engine without `get_task_definitions` rebuilds and settles nothing.
+Ephemeral launches are still deleted at `init()`, before.
 
 **The reserved key.** `metadata.taskFactory` is optio's: only a launch's definition writes it
 (`_factory_child`, through the internal `Optio._adhoc_define`, which keeps it). The public
@@ -537,6 +563,8 @@ removed TaskFactory's launches but also a stale task's children, those under a p
 state (or disappear) within the same `cancel_grace_seconds`; a record that no task of this engine
 runs never does, so it makes the resync wait the whole grace, after which the stale roots are
 deleted anyway (logged as a warning). Returns `{processId: oid_hex}` of the definitions synced.
+The executor's task registry then holds the synced tasks, plus the tasks of the launches of
+every factory still synced (see "Resuming a kept launch").
 
 ---
 

@@ -356,3 +356,45 @@ describe('LaunchControls: the remove button', () => {
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
   });
 });
+
+// A kept launch whose task saved its state resumes (spec 2026-10-22-task-factory-launch-options §1.5).
+describe('LaunchControls: resuming a kept launch', () => {
+  const launch = {
+    _id: 'c1', name: 'Agent run', metadata: { module: 'm', taskFactory: 'fac' },
+    supportsResume: true, hasSavedState: true,
+  };
+
+  it.each(['done', 'failed', 'cancelled'])(
+    'a resumable kept launch shows the resume control and no play button once %s',
+    (state) => {
+      const { onLaunch } = renderWith({ ...launch, status: { state } });
+      // The resume control a task shows, and Remove: no fresh launch, no Restart.
+      expect(screen.getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual(['Resume', 'Remove']);
+      fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+      expect(onLaunch).toHaveBeenCalledTimes(1);
+      expect(onLaunch).toHaveBeenCalledWith('c1', { resume: true });
+    },
+  );
+
+  it('a running one shows none', () => {
+    const { container } = renderWith({ ...launch, status: { state: 'running' } });
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('a denyReason disables its resume, as a task\'s', () => {
+    const onLaunch = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <LaunchControls
+          process={{ ...launch, status: { state: 'cancelled' } }} onLaunch={onLaunch} size="small"
+          denyReason="not ready"
+        />
+      </I18nextProvider>,
+    );
+    const [denied, remove] = screen.getAllByRole('button');
+    expect((denied as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(denied);
+    expect(onLaunch).not.toHaveBeenCalled();
+    expect(remove.getAttribute('aria-label')).toBe('Remove');
+  });
+});

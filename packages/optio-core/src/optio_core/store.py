@@ -426,10 +426,12 @@ async def create_child_process(
     special: bool = False,
     warning: str | None = None,
     ui_widget: str | None = None,
+    supports_resume: bool | None = None,
 ) -> dict:
     """Create a child process record. `ttl_seconds` is the parent's, so a
-    child expires with its parent instead of outliving it. `uiWidget` is
-    written only when `ui_widget` is given (an ad-hoc child's own task's)."""
+    child expires with its parent instead of outliving it. `uiWidget` and
+    `supportsResume` are written only when `ui_widget` and `supports_resume`
+    are given (an ad-hoc child's own task's)."""
     coll = _collection(db, prefix)
     now = datetime.now(timezone.utc)
     doc = {
@@ -455,6 +457,8 @@ async def create_child_process(
     }
     if ui_widget is not None:
         doc["uiWidget"] = ui_widget
+    if supports_resume is not None:
+        doc["supportsResume"] = supports_resume
     result = await coll.insert_one(doc)
     doc["_id"] = result.inserted_id
     return doc

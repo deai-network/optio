@@ -33,7 +33,7 @@ from optio_core.models import (
     LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome,
 )
 from optio_core.task_factory import (
-    check_parameters, check_values, child_task, is_factory_launch, without_no_values,
+    check_factory_values, check_parameters, child_task, is_factory_launch,
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
@@ -288,6 +288,11 @@ class Optio:
         # test_group_cancel failures.
         await self._sync_definitions()
 
+        # A kept TaskFactory launch's task lived in the previous engine's
+        # memory: the ones that can resume get it back, from their factories
+        # just synced. Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.5
+        await self._rebuild_kept_launches()
+
         # Deferred migrations: need task definitions (e.g. a task's
         # session_crypto), so they run right after the initial sync, before
         # the scheduler starts and before any launch/resume is possible.
@@ -417,8 +422,8 @@ class Optio:
         Creates the process in DB and registers the execute function.
         The process starts in 'idle' state — use the standard 'launch'
         command to start it. A child's record carries the task's own
-        cancellable, description, special, warning and ui_widget (as a
-        root's does), and the parent's ttlSeconds.
+        cancellable, description, special, warning, ui_widget and
+        supports_resume (as a root's does), and the parent's ttlSeconds.
 
         `metadata.taskFactory` is optio's reserved key (it marks a
         TaskFactory's launch, which runs once): a `taskFactory` in
@@ -477,6 +482,7 @@ class Optio:
                 special=task.special,
                 warning=task.warning,
                 ui_widget=task.ui_widget,
+                supports_resume=task.supports_resume,
             )
 
         self._executor._task_registry[task.process_id] = task
@@ -514,8 +520,11 @@ class Optio:
         ends if `ephemeral` is True (the default for a factory without
         ttl_seconds; False keeps it, until its TTL or a dismiss). A factory's launch (its child, and the records under
         it) ran once, with its values: launching it again is not-launchable,
-        whatever the task registry holds.
-        Spec: docs/2026-10-20-task-factory-design.md §1.2"""
+        whatever the task registry holds; only `resume` runs a kept one again
+        (_relaunch_refusal), its task registered by its launch or rebuilt at
+        init() (_rebuild_kept_launches).
+        Spec: docs/2026-10-20-task-factory-design.md §1.2,
+        docs/2026-10-22-task-factory-launch-options-design.md §1.5"""
         # Stop sign: once shutdown has begun, refuse new launches so nothing
         # half-boots into a shutting-down engine. Covers scheduler, RPC, and
         # programmatic launch paths.
@@ -534,16 +543,39 @@ class Optio:
                 return child
             return await self._launch_child(child, session_id)
         if is_factory_launch(proc):
-            # Its only launch was the factory's (_launch_child).
-            return LaunchOutcome(ok=False, reason="not-launchable")
+            # Its only launch was the factory's (_launch_child); a resume of
+            # a kept one may follow.
+            refusal = self._relaunch_refusal(proc, resume)
+            if refusal is not None:
+                return LaunchOutcome(ok=False, reason=refusal)
         return await self._launch_record(proc, resume, session_id)
+
+    def _relaunch_refusal(self, proc: dict, resume: bool) -> str | None:
+        """Why the factory's launch `proc` (or a record under it) is not
+        launched again, or None. It ran once, with its values: a launch is
+        not-launchable. A resume runs a kept one again when its task supports
+        resume (no-resume-support otherwise), has saved its state (else the
+        resume would be a fresh run: not-launchable) and is registered (by
+        its launch, or rebuilt at init(); not-launchable otherwise).
+        Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.5"""
+        if not resume:
+            return "not-launchable"
+        if not proc.get("supportsResume", False):
+            return "no-resume-support"
+        if (
+            not proc.get("hasSavedState", False)
+            or proc["processId"] not in self._executor._task_registry
+        ):
+            return "not-launchable"
+        return None
 
     async def _launch_record(
         self, proc: dict, resume: bool, session_id: str | None,
     ) -> LaunchOutcome:
         """launch() of the resolved record `proc`, which is no factory's:
         its remaining refusals, then the run in the background and the
-        re-read. Also a factory launch's first and only launch."""
+        re-read. Also a factory launch's first and only launch, and the
+        resume of a kept one."""
         if proc["_id"] in self._resurrecting:
             # The resurrect in progress ends in its own resume.
             return LaunchOutcome(ok=False, reason="not-launchable")
@@ -611,9 +643,7 @@ class Optio:
         factory = self._factories.get(proc["processId"])
         if factory is None:
             return LaunchOutcome(ok=False, reason="not-launchable")
-        message = check_values(factory.parameters, params)
-        if message is None and factory.validate is not None:
-            message = factory.validate(without_no_values(factory.parameters, params))
+        message = check_factory_values(factory, params)
         if message is not None:
             return LaunchOutcome(ok=False, reason="invalid-parameters", message=message)
         # child_task drops the no-values too. The internal define keeps the
@@ -649,7 +679,8 @@ class Optio:
         A TaskFactory's record is launched with `params`, as by launch(): the
         launch's child is defined and run to completion; a refusal raises
         LaunchError(reason, message); `ephemeral` as there. A factory's
-        launch is never launched again: LaunchError(not-launchable).
+        launch is never launched again (LaunchError(not-launchable)), only
+        resumed, as by launch() (LaunchError(<its refusal>) otherwise).
 
         Raises LaunchBlocked if a registered launch block matches the task's metadata.
         """
@@ -663,7 +694,9 @@ class Optio:
             await self._executor.launch_process(child["processId"], session_id=session_id)
             return
         if proc is not None and is_factory_launch(proc):
-            raise LaunchError(process_id, "not-launchable")
+            refusal = self._relaunch_refusal(proc, resume)
+            if refusal is not None:
+                raise LaunchError(process_id, refusal)
         task = self._executor._task_registry.get(process_id)
         if task is not None:
             self._check_launch_blocks(task.metadata)
@@ -1501,7 +1534,9 @@ class Optio:
 
     async def _stamp_auto_resume_if_eligible(self, oid: ObjectId) -> None:
         """Stamp `autoResumeScheduled=True` on a process iff it is a top-level
-        (depth 0) process whose task opted into auto_resume.
+        (depth 0) process whose task opted into auto_resume. A TaskFactory's
+        launch (depth 1) counts as top-level: its parent, the factory's
+        record, never runs.
 
         Called during shutdown for every process being cancelled. The depth
         check enforces the top-level-only restriction at the point where the
@@ -1509,8 +1544,11 @@ class Optio:
         depth of its future instances).
         """
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
-        doc = await coll.find_one({"_id": oid}, {"processId": 1, "depth": 1})
-        if doc is None or doc.get("depth", 0) != 0:
+        doc = await coll.find_one({"_id": oid}, {"processId": 1, "depth": 1, "metadata": 1})
+        if doc is None:
+            return
+        depth = doc.get("depth", 0)
+        if depth != 0 and not (depth == 1 and is_factory_launch(doc)):
             return
         task = self._executor._task_registry.get(doc["processId"])
         if task is None or not getattr(task, "auto_resume", False):
@@ -1712,6 +1750,74 @@ class Optio:
                 f"descendants) left by a previous session"
             )
 
+    async def _rebuild_kept_launches(self) -> None:
+        """At init(), after the sync: the task of each kept TaskFactory launch
+        that can resume (its record's supportsResume and hasSavedState; not
+        running, as the reconcile has settled every active record) is
+        rebuilt from its factory and its stored values as at its launch
+        (child_task, its own process id) and registered where a synced
+        task's is, so that it resumes as a task does (launch(id,
+        resume=True), the auto-resume sweep). One that cannot be rebuilt
+        (its factory no longer synced, its values refused by the factory's
+        checks or validate, task_for raising) is settled failed, the error
+        naming why, and its supportsResume cleared: it no longer resumes.
+        An engine without task definitions judges none.
+        Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.5"""
+        if self._config.get_task_definitions is None:
+            return
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        docs = await coll.find({
+            "metadata.taskFactory": {"$type": "string", "$ne": ""},
+            "supportsResume": True,
+            "hasSavedState": True,
+            "status.state": {"$in": list(LAUNCHABLE_STATES)},
+        }).to_list(None)
+        rebuilt = 0
+        for proc in docs:
+            task = self._rebuilt_launch_task(proc)
+            if isinstance(task, TaskInstance):
+                self._executor._task_registry[task.process_id] = task
+                rebuilt += 1
+            else:
+                await self._settle_unrebuilt_launch(proc, task)
+        if rebuilt:
+            logger.info(f"Rebuilt the tasks of {rebuilt} kept launch(es) of task factories")
+
+    def _rebuilt_launch_task(self, proc: dict) -> TaskInstance | str:
+        """The task of the kept launch `proc`, rebuilt from its factory and
+        its stored values as at its launch, or why it cannot be."""
+        factory_id = proc["metadata"]["taskFactory"]
+        factory = self._factories.get(factory_id)
+        if factory is None:
+            return f"'{factory_id}' is no longer a task factory"
+        params = proc.get("params") or {}
+        try:
+            message = check_factory_values(factory, params)
+            if message is not None:
+                return f"its values are refused: {message}"
+            return child_task(factory, params, proc["processId"])
+        except Exception as e:
+            logger.warning(
+                "rebuilding the task of %s failed", proc["processId"], exc_info=True,
+            )
+            return f"its task could not be rebuilt: {e}"
+
+    async def _settle_unrebuilt_launch(self, proc: dict, why: str) -> None:
+        """Settle the kept launch `proc` whose task cannot be rebuilt
+        (_rebuild_kept_launches): failed, its error and log line naming
+        why, as an orphan is settled; it no longer resumes."""
+        db, prefix = self._config.mongo_db, self._config.prefix
+        now = datetime.now(timezone.utc)
+        error = f"Cannot resume after the engine restart: {why}"
+        await update_status(
+            db, prefix, proc["_id"],
+            ProcessStatus(state="failed", error=error, failed_at=now),
+            expire_at=compute_expire_at(proc.get("ttlSeconds"), now=now),
+            log=("event", error),
+            set_fields={"supportsResume": False, "autoResumeScheduled": False},
+        )
+        logger.warning("Settled kept launch %s as failed: %s", proc["processId"], why)
+
     async def _supervisor_loop(self) -> None:
         """Scan for past-deadline cancellations every 500 ms; force-cancel them.
         Also retries final states that could not be written (Rule 3 of
@@ -1889,7 +1995,8 @@ class Optio:
 
         TaskFactory definitions are synced as records too (see
         store.upsert_process), but kept out of the executor's task registry
-        and the scheduler: a factory's record never runs.
+        and the scheduler: a factory's record never runs. The tasks of its
+        launches stay registered while it is synced, and go with it.
         """
         if self._config.get_task_definitions is None:
             return {}
@@ -1969,8 +2076,18 @@ class Optio:
         if removed:
             logger.info(f"Removed {removed} stale process records")
 
+        # A factory's launches are no definitions: their tasks (a running
+        # launch's, a kept one's rebuilt at init) stay registered while their
+        # factory is synced, so that a kept launch can still be resumed.
+        launch_tasks = {
+            pid: t for pid, t in self._executor._task_registry.items()
+            if t.metadata.get("taskFactory")
+        }
         self._executor.register_tasks(tasks, metadata_filter)
         self._register_factories(factories, metadata_filter)
+        for pid, t in launch_tasks.items():
+            if t.metadata["taskFactory"] in self._factories:
+                self._executor._task_registry.setdefault(pid, t)
         await self._scheduler.sync_schedules(tasks, metadata_filter)
 
         scope = "(all)" if not metadata_filter else f"(filter={metadata_filter})"

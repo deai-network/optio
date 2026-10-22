@@ -655,11 +655,13 @@ async def test_a_kept_launch_is_never_launched_again(mongo_db):
     # A launch ran once, with its values (spec 1.2: it cannot be launched
     # again). Its record, kept by the factory's TTL, refuses a launch
     # (not-launchable) whatever the task registry holds: its TaskInstance
-    # still registered, or gone after a full resync (which once made the
-    # relaunch fail with "No execute function found").
+    # still registered (a sync keeps it while its factory is synced), or gone
+    # once a resync removed the factory (a gone task once made the relaunch
+    # fail with "No execute function found").
     prefix = "tf_again"
     execute, seen, _ = _recorder()
-    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
+    defs = [_factory(execute, ttl_seconds=3600)]
+    fw = await _init(mongo_db, prefix, defs)
     try:
         outcome = await fw.launch("fac", session_id=None, params=GOOD)
         pid, oid = outcome.proc["processId"], str(outcome.proc["_id"])
@@ -676,6 +678,11 @@ async def test_a_kept_launch_is_never_launched_again(mongo_db):
             await fw.launch_and_await_result(pid, session_id=None, timeout=60)
         assert exc.value.reason == "not-launchable"
 
+        await fw.resync()
+        assert pid in fw._executor._task_registry
+        assert await fw.launch(pid, session_id=None) == refused
+
+        defs.clear()
         await fw.resync()
         assert pid not in fw._executor._task_registry
         assert await fw.launch(pid, session_id=None) == refused
@@ -1327,5 +1334,207 @@ async def test_the_factory_record_never_runs_by_itself(mongo_db):
         assert runs == []
         assert await _children(mongo_db, prefix, fac["_id"]) == []
         assert swept["log"] == []
+    finally:
+        await fw.shutdown()
+
+
+# ---------------------------------------------------------------- resuming a kept launch (launch options spec 1.5)
+
+
+def _resumable_task_for(runs, calls=None, **instance_kw):
+    """A task_for whose instance supports resume. Its execute records
+    (process id, ctx.resume, ctx.params) in `runs` and saves its state; a
+    fresh run then waits until it is stopped (a run a restart interrupts), a
+    resumed one ends. `calls` records task_for's arguments."""
+    def task_for(values, process_id):
+        if calls is not None:
+            calls.append((dict(values), process_id))
+
+        async def execute(ctx):
+            runs.append((ctx.process_id, ctx.resume, ctx.params))
+            await ctx.mark_has_saved_state()
+            if not ctx.resume:
+                await ctx.cancellation_flag.wait()
+
+        return TaskInstance(
+            execute=execute, process_id="ignored", name="Agent",
+            supports_resume=True, **instance_kw,
+        )
+
+    return task_for
+
+
+async def _saved_and_running(mongo_db, prefix, process_id):
+    proc = await _state_is(mongo_db, prefix, process_id, "running")
+    return proc if proc is not None and proc.get("hasSavedState") else None
+
+
+async def _running_with_saved_state(fw, mongo_db, prefix, values, *, ephemeral=False):
+    """A launch of 'tfor' with `values`, once its run has saved its state."""
+    outcome = await fw.launch("tfor", session_id=None, params=values, ephemeral=ephemeral)
+    assert outcome.ok, outcome
+    pid = outcome.proc["processId"]
+    return await _wait_until(lambda: _saved_and_running(mongo_db, prefix, pid))
+
+
+async def _crash(fw, procs):
+    """The engine dies: its runs of `procs` are killed without a final
+    write (their records stay running), and nothing else happens."""
+    tasks = [fw._executor._running_tasks[p["_id"]] for p in procs]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await fw.shutdown()
+
+
+async def test_a_kept_launch_a_crash_interrupted_is_rebuilt_at_init_and_resumes(mongo_db):
+    prefix = "tf_resume"
+    runs: list = []
+    values = {"kind": "agent", "note": "hi"}
+    fw = await _init(mongo_db, prefix, [_task_for_factory(_resumable_task_for(runs))])
+    kept = await _running_with_saved_state(fw, mongo_db, prefix, values)
+    eph = await _running_with_saved_state(fw, mongo_db, prefix, values, ephemeral=True)
+    pid = kept["processId"]
+    assert kept["supportsResume"] is True
+    await _crash(fw, [kept, eph])
+
+    calls: list = []
+    fw = await _init(mongo_db, prefix, [_task_for_factory(_resumable_task_for(runs, calls))])
+    try:
+        # Its task is rebuilt from its stored values, with its process id.
+        assert calls == [(values, pid)]
+        assert pid in fw._executor._task_registry
+        rec = await get_process_by_process_id(mongo_db, prefix, pid)
+        assert rec["status"]["state"] == "failed"  # the reconcile's, as a task's
+        # An ephemeral launch is still deleted.
+        assert await get_process_by_process_id(mongo_db, prefix, eph["processId"]) is None
+        # A sync keeps the rebuilt task (its factory is still synced).
+        await fw.resync()
+
+        # Without resume, a launch still runs once.
+        refused = LaunchOutcome(ok=False, reason="not-launchable")
+        assert await fw.launch(pid, session_id=None) == refused
+        with pytest.raises(LaunchError) as exc:
+            await fw.launch_and_wait(pid, session_id=None)
+        assert exc.value.reason == "not-launchable"
+
+        # A resume runs its task as a task's resume does.
+        assert (await fw.launch(pid, resume=True, session_id=None)).ok
+        await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+        assert runs[-1] == (pid, True, values)
+        await fw.launch_and_wait(pid, resume=True, session_id=None)
+        assert runs[-1] == (pid, True, values)
+        assert calls == [(values, pid)]
+    finally:
+        await fw.shutdown()
+
+
+async def test_a_kept_launch_a_graceful_restart_stopped_is_auto_resumed(mongo_db):
+    prefix = "tf_resume_auto"
+    runs: list = []
+    values = {"kind": "agent"}
+    defs = [_task_for_factory(_resumable_task_for(runs, auto_resume=True))]
+    fw = await _init(mongo_db, prefix, defs)
+    pid = (await _running_with_saved_state(fw, mongo_db, prefix, values))["processId"]
+    await fw.shutdown(grace_seconds=60.0)
+    stopped = await get_process_by_process_id(mongo_db, prefix, pid)
+    # A launch is the top of its run (its factory's record never runs): it
+    # is stamped as a top-level process is.
+    assert stopped["status"]["state"] == "cancelled"
+    assert stopped["autoResumeScheduled"] is True
+
+    fw = await _init(mongo_db, prefix, defs, auto_resume_delay_seconds=0.05)
+    # run() syncs again before its auto-resume sweep.
+    run_task = asyncio.create_task(fw.run())
+    try:
+        done = await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+        assert runs[-1] == (pid, True, values)
+        assert done["autoResumeScheduled"] is False
+    finally:
+        await fw.shutdown()
+        await asyncio.wait_for(run_task, timeout=60.0)
+
+
+def _refusing_validate(values):  # noqa: ARG001
+    return "kind: no more agent runs"
+
+
+def _raising_task_for(values, process_id):  # noqa: ARG001
+    raise RuntimeError("no task for you")
+
+
+@pytest.mark.parametrize("case,why", [
+    ("gone", "'tfor' is no longer a task factory"),
+    ("now-a-task", "'tfor' is no longer a task factory"),
+    ("values-refused", "its values are refused: kind: must be one of its choices"),
+    ("validate-refuses", "its values are refused: kind: no more agent runs"),
+    ("task-for-raises", "its task could not be rebuilt: no task for you"),
+])
+async def test_a_kept_launch_whose_task_cannot_be_rebuilt_is_settled_failed(
+    mongo_db, case, why,
+):
+    prefix = f"tf_resume_not_{case}"
+    runs: list = []
+    resumable = _resumable_task_for(runs)
+    fw = await _init(mongo_db, prefix, [_task_for_factory(resumable)])
+    pid = (await _running_with_saved_state(fw, mongo_db, prefix, {"kind": "agent"}))["processId"]
+    await fw.shutdown(grace_seconds=60.0)
+
+    now = {
+        "gone": [],
+        "now-a-task": [TaskInstance(execute=_noop, process_id="tfor", name="Now a task")],
+        "values-refused": [TaskFactory(
+            task_for=resumable, process_id="tfor", name="Proposals",
+            parameters=[{"kind": "oneOf", "id": "kind", "choices": [{"value": "plain"}]}],
+        )],
+        "validate-refuses": [_task_for_factory(resumable, validate=_refusing_validate)],
+        "task-for-raises": [_task_for_factory(_raising_task_for)],
+    }[case]
+    fw = await _init(mongo_db, prefix, now)
+    try:
+        rec = await get_process_by_process_id(mongo_db, prefix, pid)
+        assert rec["status"]["state"] == "failed"
+        assert rec["status"]["error"] == f"Cannot resume after the engine restart: {why}"
+        assert rec["log"][-1]["message"] == rec["status"]["error"]
+        assert rec["autoResumeScheduled"] is False
+        # It cannot resume any more, at this start or the next.
+        assert rec["supportsResume"] is False
+        assert await fw.launch(pid, resume=True, session_id=None) == LaunchOutcome(
+            ok=False, reason="no-resume-support",
+        )
+        assert pid not in fw._executor._task_registry
+        assert runs == [(pid, False, {"kind": "agent"})]
+    finally:
+        await fw.shutdown()
+
+
+async def test_a_kept_launch_of_an_execute_factory_does_not_resume(mongo_db):
+    # An execute factory's launch has the factory's fields, and no
+    # supports_resume among them: its record says so, and a restart leaves it
+    # as it was.
+    prefix = "tf_resume_execute"
+    started = asyncio.Event()
+
+    async def until_cancelled(ctx):
+        started.set()
+        await ctx.cancellation_flag.wait()
+
+    defs = [_factory(until_cancelled, ttl_seconds=3600)]
+    fw = await _init(mongo_db, prefix, defs)
+    pid = (await fw.launch("fac", session_id=None, params=GOOD)).proc["processId"]
+    await asyncio.wait_for(started.wait(), timeout=60.0)
+    await fw.shutdown(grace_seconds=60.0)
+
+    fw = await _init(mongo_db, prefix, defs)
+    try:
+        rec = await get_process_by_process_id(mongo_db, prefix, pid)
+        assert rec["status"]["state"] == "cancelled"
+        assert rec["supportsResume"] is False
+        assert await fw.launch(pid, resume=True, session_id=None) == LaunchOutcome(
+            ok=False, reason="no-resume-support",
+        )
+        assert await fw.launch(pid, session_id=None) == LaunchOutcome(
+            ok=False, reason="not-launchable",
+        )
     finally:
         await fw.shutdown()

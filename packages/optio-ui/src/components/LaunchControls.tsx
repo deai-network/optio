@@ -46,6 +46,10 @@ export interface LaunchControlsProps {
  * Renders launch affordances for a process:
  *   * Nothing when the process is not launchable (`isLaunchable`: a
  *     non-launchable state, or a task factory's launch, never launched again).
+ *   * For a task factory's ended launch, a Remove button; before it, when the
+ *     launch is resumable, the Resume button a task's split button has (no
+ *     play button and no Restart: a launch is never launched afresh), or the
+ *     disabled play button of a non-empty `denyReason`.
  *   * A single disabled "Resurrecting" indicator while a resurrect of the
  *     process saves its unsaved work (`resurrecting`); nothing is clickable.
  *   * Split button (primary = Resurrect, menu = Resume from last snapshot /
@@ -72,34 +76,29 @@ export function LaunchControls({
   if (!onLaunch) return null;
   const iconStyle = iconFontSize ? { fontSize: iconFontSize } : undefined;
 
-  // A launch that ended and was kept is never launched again; it can be removed.
+  // A launch that ended and was kept is never launched again; it can be
+  // removed, and resumed (the resume control a task has) when its task saved its state.
   if (isTaskFactoryLaunch(process) && isTerminal(process)) {
-    return <RemoveLaunchButton process={process} size={size} iconStyle={iconStyle} />;
+    const remove = <RemoveLaunchButton process={process} size={size} iconStyle={iconStyle} />;
+    if (!isResumable(process)) return remove;
+    return (
+      <>
+        {denyReason
+          ? <DeniedLaunchButton reason={denyReason} size={size} iconStyle={iconStyle} />
+          : <ResumeButton process={process} onLaunch={onLaunch} size={size} iconStyle={iconStyle} />}
+        {remove}
+      </>
+    );
   }
   if (!isLaunchable(process)) return null;
 
   // Caller-injected gate: launchable per state machine but domain-denied.
-  // Render a single disabled play button with the reason as tooltip.
-  // antd's Tooltip suppresses pointer events on disabled buttons; wrap in
-  // a span so hover still surfaces the reason.
   if (denyReason) {
-    return (
-      <Tooltip title={denyReason}>
-        <span style={{ display: 'inline-block', cursor: 'not-allowed' }}>
-          <Button
-            type="text"
-            size={size}
-            icon={<PlayCircleOutlined style={iconStyle} />}
-            disabled
-            style={{ pointerEvents: 'none' }}
-          />
-        </span>
-      </Tooltip>
-    );
+    return <DeniedLaunchButton reason={denyReason} size={size} iconStyle={iconStyle} />;
   }
 
   // A resurrect is saving the unsaved work: launching is locked until it
-  // ends. Disabled button, so the tooltip needs the span wrapper as above.
+  // ends. Disabled button, so the tooltip needs the span wrapper (as DeniedLaunchButton's).
   if (isResurrecting(process)) {
     return (
       <Tooltip title={t('processes.resurrecting', {
@@ -179,18 +178,7 @@ export function LaunchControls({
 
   return (
     <Space.Compact>
-      <Tooltip title={t('processes.resume', { defaultValue: 'Resume' })}>
-        <Button
-          type="text"
-          size={size}
-          icon={<PlayCircleOutlined style={iconStyle} />}
-          style={{ color: '#52c41a' }}
-          onClick={(e) => {
-            e.preventDefault();
-            onLaunch(process._id, { resume: true });
-          }}
-        />
-      </Tooltip>
+      <ResumeButton process={process} onLaunch={onLaunch} size={size} iconStyle={iconStyle} />
       <Dropdown menu={menu} trigger={['click']}>
         <Tooltip title={t('processes.moreOptions', { defaultValue: 'More options' })}>
           <Button
@@ -201,6 +189,55 @@ export function LaunchControls({
         </Tooltip>
       </Dropdown>
     </Space.Compact>
+  );
+}
+
+// The play button rendered disabled, its reason the hover tooltip. antd's Tooltip suppresses
+// pointer events on disabled buttons: the span wrapper keeps the hover.
+function DeniedLaunchButton({ reason, size, iconStyle }: {
+  reason: string;
+  size: ButtonProps['size'];
+  iconStyle: { fontSize: number } | undefined;
+}) {
+  return (
+    <Tooltip title={reason}>
+      <span style={{ display: 'inline-block', cursor: 'not-allowed' }}>
+        <Button
+          type="text"
+          size={size}
+          icon={<PlayCircleOutlined style={iconStyle} />}
+          disabled
+          style={{ pointerEvents: 'none' }}
+        />
+      </span>
+    </Tooltip>
+  );
+}
+
+// Resumes the process from its saved state: the primary of a resumable task's split button, a
+// resumable kept launch's own control.
+function ResumeButton({ process, onLaunch, size, iconStyle }: {
+  process: any;
+  onLaunch: (processId: string, opts?: { resume?: boolean }) => void;
+  size: ButtonProps['size'];
+  iconStyle: { fontSize: number } | undefined;
+}) {
+  const { t } = useTranslation();
+  const label = t('processes.resume', { defaultValue: 'Resume' });
+  return (
+    <Tooltip title={label}>
+      <Button
+        type="text"
+        size={size}
+        aria-label={label}
+        icon={<PlayCircleOutlined style={iconStyle} />}
+        style={{ color: '#52c41a' }}
+        onClick={(e) => {
+          e.preventDefault();
+          onLaunch(process._id, { resume: true });
+        }}
+      />
+    </Tooltip>
   );
 }
 

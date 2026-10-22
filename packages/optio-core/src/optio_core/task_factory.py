@@ -4,8 +4,9 @@ A factory's `parameters` are vultus-core field definitions as plain JSON, the
 subset a definition can carry as data (spec 1.3): `check_parameters` checks
 them at task sync. `check_values` checks a launch's values before its child
 exists (spec 1.4). `child_task` is the TaskInstance of one launch (spec 1.2),
-and `is_factory_launch` tells its record. Nothing is coerced: a value of the
-wrong JSON type is refused.
+and `is_factory_launch` tells its record. `check_factory_values` is the whole
+check of a launch's values (the fields', then the factory's `validate`).
+Nothing is coerced: a value of the wrong JSON type is refused.
 
 Throughout, a value that is no value (`_is_no_value`: None; for a text the
 empty string, for a manyOf the empty list) counts as absent: a required
@@ -94,6 +95,18 @@ def check_values(parameters: list[dict], values: dict[str, Any]) -> str | None:
     return None
 
 
+def check_factory_values(factory: TaskFactory, values: dict[str, Any]) -> str | None:
+    """A factory's refusal of a launch's values, "<id>: <what>", or None: the
+    fields' checks (check_values), then the factory's `validate`, which gets
+    the values without the ones that are no value, as the task does. Applied
+    at a launch and at the rebuild of a kept one from its stored values; an
+    exception from `validate` propagates."""
+    message = check_values(factory.parameters, values)
+    if message is None and factory.validate is not None:
+        message = factory.validate(without_no_values(factory.parameters, values))
+    return message
+
+
 def without_no_values(parameters: list[dict], values: dict[str, Any]) -> dict[str, Any]:
     """`values` without the ones that are no value of their parameter (as
     the required check counts it: None; '' for a text, [] for a manyOf): a
@@ -159,7 +172,9 @@ def is_factory_launch(proc: dict) -> bool:
     """Whether the process record `proc` is a factory's launch (or a record
     under one, which inherits its metadata): its metadata names the factory,
     `taskFactory: <factory process id>` (child_task). Such a record ran once,
-    with its values, and is never launched again (spec 1.2)."""
+    with its values, and is never launched afresh again (spec 1.2); a kept
+    launch whose task supports resume may be resumed (launch options spec
+    1.5)."""
     factory = (proc.get("metadata") or {}).get("taskFactory")
     return isinstance(factory, str) and factory != ""
 
