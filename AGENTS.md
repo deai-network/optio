@@ -1564,7 +1564,7 @@ from inside `<WithFilteredProcesses>`; optio-api applies it to `metadata.*`. Det
 ```typescript
 interface ProcessDetailViewProps {
   processId: string | null | undefined;
-  readOnly?: boolean;  // default false; true hides the launch / resurrect / cancel affordances
+  readOnly?: boolean;  // default false; true hides the launch / resurrect / suspend / cancel affordances
   showLogs?: boolean;  // default true; false renders only the widget, at full height
   waitForWidget?: boolean;  // default false; true shows a big spinner instead of "Loading…" and the process view until the widget shows
   widgetPlaceholder?: ReactNode;  // shown instead of that spinner; implies waitForWidget
@@ -1581,7 +1581,10 @@ live widget is registered; falls back silently (no warning) when the process `is
 and no suspended variant is registered. In suspended mode, also renders a `LaunchControls`
 (Resume) row above the widget unless `readOnly`, wired to `launch` and `resurrect` like the
 default layout (a process left with `hasUnsavedWork` gets Resurrect, and Resume asks before it
-discards the unsaved work). The default layout wires `ProcessTreeView`'s
+discards the unsaved work). A running process (`isCancellable`) with a widget gets a stop row
+in the same place unless `readOnly`: Suspend when it `supportsResume`, else Cancel (as
+`ProcessItem`'s), a vultus action (`ActionButton`) calling `useProcessActions().cancel`; for a
+launch, the view's root, it stops the launch. The default layout wires `ProcessTreeView`'s
 `onLaunch`, `onResurrect` and `onCancel` to `useProcessActions()` itself (none when
 `readOnly`), so the host passes no action callbacks to it; `onLaunched` is passed on, for a task
 factory's record (the root of its launches), whose launch shows under it in the tree.

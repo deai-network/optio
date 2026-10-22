@@ -531,7 +531,7 @@ The three components and the hook are exported from `optio-ui`, as are the `Filt
 ```ts
 interface ProcessDetailViewProps {
   processId: string | null | undefined;
-  readOnly?: boolean;            // default false: no Launch / Cancel / Resume affordances
+  readOnly?: boolean;            // default false: no Launch / Cancel / Suspend / Resume affordances
   showLogs?: boolean;            // default true; false: the widget alone, full height
   waitForWidget?: boolean;       // default false; true: a big spinner until the widget shows
   widgetPlaceholder?: ReactNode; // shown instead of that spinner; implies waitForWidget
@@ -566,6 +566,15 @@ names with what is under it, or null), `logsOfSubtree(logs, subtree)` (the entri
   renders a `LaunchControls` (Resume) row above the widget unless `readOnly` is set, with
   `onLaunch` and `onResurrect` wired as in the default layout (a process left with
   `hasUnsavedWork` gets Resurrect, and Resume asks before it discards the unsaved work).
+  A running process (`isCancellable`: `scheduled | running` and `cancellable`) gets, in the
+  same place and unless `readOnly` is set, its own stop row (test id
+  `optio-widget-stop-actions`): **Suspend** when it `supportsResume` (pause icon, not
+  `danger`, `processes.suspend`), else **Cancel** (`danger`, `processes.cancel`), as
+  `ProcessItem` and `ProcessTreeView` label theirs: a vultus action (`useAction`, rendered
+  icon-only by vultus-antd's `ActionButton`) whose `fire` calls `useProcessActions().cancel(_id)`.
+  None while a stop is under way (`cancel_requested`, `cancelling`) or for a process that is
+  not `cancellable`. For a launch, the view's root, it stops the launch. Without it a widget
+  process had no stop control in the view: the tree's is not shown then.
 - **`tree.uiWidget` is set but unregistered for the live mode** — warns to `console.warn` and
   falls back to the default tree+log view.
 - **`tree.uiWidget` is set, the process `isSuspended`, but no suspended variant is
@@ -808,7 +817,8 @@ return widget ? <MyWidgetLayout>{widget}</MyWidgetLayout> : <MyFallback />;
 
 `ProcessDetailView` consumes `useProcessWidgetState` internally: both modes get the
 log-strip-on-top + widget-fill layout; suspended mode additionally shows a `LaunchControls`
-(Resume, or Resurrect when resurrectable) row above the widget, unless `readOnly`. Other consumers (e.g. an external app's
+(Resume, or Resurrect when resurrectable) row above the widget, and a running, cancellable
+process a Suspend / Cancel row there, unless `readOnly`. Other consumers (e.g. an external app's
 process detail page) are free to choose their own layout.
 
 ---
@@ -1151,7 +1161,7 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.factoryNotAFactory` | `useTaskFactory` | Why `launch` is disabled for a process that is no task factory (default: "Not a task factory") |
 | `processes.factoryLaunching` | `useTaskFactory` | Why `launch` is disabled while a launch is pending (default: "Launching…") |
 | `errors.processes.dismiss.<reason>` | `LaunchControls` (`optioErrorRoutes`) | A refused removal, one key per `DismissFailureReason`: `not-found`, `not-dismissable`. No default: without the app's text the key shows |
-| `processes.cancel` | `ProcessItem`, `ProcessTreeView` | Tooltip / `aria-label` of the stop button when the task cannot resume |
+| `processes.cancel` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` | Tooltip / `aria-label` of the stop button when the task cannot resume (the detail view's: its widget layout's stop row) |
 | `processes.search` | `ProcessFilters` | The search field's label (its accessible name) and placeholder |
 | `processes.filterAll` | `ProcessFilters` | A choice of the group field (select) |
 | `processes.filterActive` | `ProcessFilters` | A choice of the group field (select) |
@@ -1162,7 +1172,7 @@ no inline default (the app must translate them); the second carries an English d
 | `common.noData` | `ProcessLogPanel` | Empty state description |
 | `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
 | `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`) | A launch refusal in the form, one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
-| `processes.suspend` | `ProcessItem`, `ProcessTreeView` | Tooltip / `aria-label` of the stop button when the task can resume (default: "Suspend") |
+| `processes.suspend` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` | Tooltip / `aria-label` of the stop button when the task can resume (default: "Suspend") |
 | `processes.resume` | `LaunchControls` | Resume button tooltip and `aria-label` when `supportsResume` and `hasSavedState`, a task's or a kept launch's (default: "Resume") |
 | `processes.restart` | `LaunchControls` | Dropdown menu item label (default: "Restart (discard saved state)") |
 | `processes.moreOptions` | `LaunchControls` | Tooltip on the dropdown arrow of the Resume and Resurrect split buttons (default: "More options") |

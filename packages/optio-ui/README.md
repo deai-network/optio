@@ -201,7 +201,7 @@ following keys:
 | `processes.removeLaunchConfirm` | `LaunchControls` — the question the remove button asks first (default "Remove this launch? Its record and log are deleted.") |
 | `processes.factoryLoading`, `processes.factoryNotAFactory`, `processes.factoryLaunching` | `useTaskFactory` — why `launch` is disabled (defaults "Loading…", "Not a task factory", "Launching…") |
 | `errors.processes.dismiss.<reason>` | `LaunchControls` — a refused removal (`optioErrorRoutes`; `not-found`, `not-dismissable`) |
-| `processes.cancel` | `ProcessItem`, `ProcessTreeView` — tooltip on cancel button (a task that can resume shows `processes.suspend` instead) |
+| `processes.cancel` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` (the stop row of a running process that shows a widget) — tooltip on cancel button (a task that can resume shows `processes.suspend` instead) |
 | `processes.search` | `ProcessFilters` — the search field's label and placeholder |
 | `processes.filterAll` | `ProcessFilters` — a choice of the filter group |
 | `processes.filterActive` | `ProcessFilters` — a choice of the filter group |

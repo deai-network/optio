@@ -1,10 +1,12 @@
 import { useEffect, useMemo, type ReactNode } from 'react';
 import { Spin } from 'antd';
+import { CloseCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { Process } from 'optio-contracts';
-import { useSpinnerKey, useVultusComponents } from 'vultus-core';
+import { useAction, useSpinnerKey, useVultusComponents } from 'vultus-core';
+import { ActionButton } from 'vultus-antd';
 import { useProcessStream, type LogEntry, type ProcessTreeNode } from '../hooks/useProcessStream.js';
-import { isActive, isTaskFactoryLaunchItself } from '../process-state.js';
+import { isActive, isCancellable, isTaskFactoryLaunchItself } from '../process-state.js';
 import { logsOfSubtree, subtreeOf } from '../process-subtree.js';
 import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
@@ -17,7 +19,9 @@ export interface ProcessDetailViewProps {
   processId: string | null | undefined;
   /**
    * When true, suppress all per-process action affordances (Launch and
-   * Cancel controls rendered by `ProcessTreeView`). The view continues
+   * Cancel controls rendered by `ProcessTreeView`; with a widget, the
+   * Resume row of a suspended process and the Suspend / Cancel row of a
+   * running one). The view continues
    * to stream and render tree / logs / widget identically. Defaults to
    * false.
    *
@@ -69,6 +73,26 @@ function viewOf(
   const node = tree && processId ? subtreeOf(tree, processId) : null;
   if (!node || node === tree || !isTaskFactoryLaunchItself(node)) return { tree, logs };
   return { tree: node, logs: logsOfSubtree(logs, node) };
+}
+
+/**
+ * Stops a running process that shows a widget (the tree's stop button is not shown then):
+ * Suspend when its task can resume (its state is saved), else Cancel, as `ProcessItem` and
+ * `ProcessTreeView` label theirs. Both cancel the process.
+ */
+function StopButton({ process }: { process: ProcessTreeNode }) {
+  const { t } = useTranslation();
+  const { cancel } = useProcessActions();
+  const suspends = Boolean(process.supportsResume);
+  const stop = useAction({
+    id: suspends ? 'optio.process.suspend' : 'optio.process.cancel',
+    label: suspends ? t('processes.suspend', 'Suspend') : t('processes.cancel'),
+    icon: suspends ? <PauseCircleOutlined /> : <CloseCircleOutlined />,
+    // Suspending keeps the state: no danger colour.
+    variant: suspends ? 'default' : 'danger',
+    fire: () => cancel(process._id),
+  });
+  return <ActionButton action={stop} size="small" iconOnly buttonVariant="text" />;
 }
 
 export function ProcessDetailView({
@@ -196,6 +220,14 @@ export function ProcessDetailView({
               onLaunched={onLaunched}
               onResurrect={(id) => resurrect(id)}
             />
+          </div>
+        )}
+        {!readOnly && isCancellable(tree) && (
+          <div
+            data-testid="optio-widget-stop-actions"
+            style={{ flex: '0 0 auto', display: 'flex', justifyContent: 'flex-end', padding: '4px 8px' }}
+          >
+            <StopButton process={tree} />
           </div>
         )}
         <div key={tree._id} style={{ flex: '1 1 auto', minHeight: 0 }}>

@@ -265,10 +265,12 @@ describe('ProcessDetailView', () => {
     const { container } = render(<ProcessDetailView processId="abc" showLogs={false} />);
     // Widget still renders...
     expect(screen.getByTestId('my-widget')).toBeTruthy();
-    // ...but the log strip is gone: the layout has only the widget wrapper, and
-    // the log entry is not in the DOM.
+    // ...but the log strip is gone: the layout has only the stop row (a running,
+    // cancellable process) and the widget wrapper, and the log entry is not in the DOM.
     const layout = container.querySelector('[data-testid="optio-widget-layout"]');
-    expect(layout!.children.length).toBe(1);
+    expect(layout!.children.length).toBe(2);
+    expect(layout!.children[0]).toBe(screen.getByTestId('optio-widget-stop-actions'));
+    expect(layout!.children[1].contains(screen.getByTestId('my-widget'))).toBe(true);
     expect(screen.queryByText('State changed to running')).toBeNull();
   });
 
@@ -511,6 +513,99 @@ describe('ProcessDetailView', () => {
     });
   });
 
+  // A running process that shows a widget can be stopped from its view, as from a list's row or a
+  // tree's node (owner, 2026-10-22: "we will be able to suspend or cancel at any time").
+  describe('stopping a running process that shows a widget', () => {
+    const runningTree = (fields: Record<string, unknown> = {}) => ({
+      _id: 'abc', name: 'P', status: { state: 'running' },
+      progress: { percent: null }, cancellable: true,
+      depth: 0, order: 0, parentId: null,
+      uiWidget: 'my-widget', widgetData: {}, children: [],
+      ...fields,
+    });
+    const labels = (element: HTMLElement) =>
+      within(element).queryAllByRole('button').map((b) => b.getAttribute('aria-label'));
+
+    beforeEach(() => {
+      registerWidget(
+        'my-widget',
+        () => <div data-testid="my-widget">live</div>,
+        { suspended: () => <div data-testid="suspended-widget">suspended</div> },
+      );
+    });
+
+    it('a task that can resume: Suspend, between the logs and the widget, which stops it', async () => {
+      mockProcessStream.mockReturnValue({
+        tree: runningTree({ supportsResume: true }), logs: [], connected: true,
+      });
+      const { container } = render(<ProcessDetailView processId="abc" />);
+      expect(screen.getByTestId('my-widget')).toBeTruthy();
+      const row = screen.getByTestId('optio-widget-stop-actions');
+      expect(labels(row)).toEqual(['Suspend']);
+      // Where the suspended one's Resume row goes: after the log strip, before the widget.
+      const layout = Array.from(container.querySelector('[data-testid="optio-widget-layout"]')!.children);
+      expect(layout.indexOf(row)).toBe(1);
+      expect(layout[2].contains(screen.getByTestId('my-widget'))).toBe(true);
+      fireEvent.click(within(row).getByRole('button', { name: 'Suspend' }));
+      await waitFor(() => expect(mockCancel).toHaveBeenCalledWith('abc'), { timeout: 60_000 });
+      expect(mockCancel).toHaveBeenCalledTimes(1);
+      expect(mockLaunch).not.toHaveBeenCalled();
+    });
+
+    it('one that cannot: Cancel, which cancels it', async () => {
+      mockProcessStream.mockReturnValue({ tree: runningTree(), logs: [], connected: true });
+      render(<ProcessDetailView processId="abc" />);
+      const row = screen.getByTestId('optio-widget-stop-actions');
+      expect(labels(row)).toEqual(['processes.cancel']);
+      fireEvent.click(within(row).getByRole('button', { name: 'processes.cancel' }));
+      await waitFor(() => expect(mockCancel).toHaveBeenCalledWith('abc'), { timeout: 60_000 });
+      expect(mockCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('read-only: no stop control, the widget still shown', () => {
+      mockProcessStream.mockReturnValue({
+        tree: runningTree({ supportsResume: true }), logs: [], connected: true,
+      });
+      render(<ProcessDetailView processId="abc" readOnly />);
+      expect(screen.getByTestId('my-widget')).toBeTruthy();
+      expect(screen.queryByTestId('optio-widget-stop-actions')).toBeNull();
+      expect(screen.queryAllByRole('button')).toEqual([]);
+    });
+
+    it('one that is not cancellable, or whose stop is already under way: none', () => {
+      for (const fields of [
+        { cancellable: false },
+        { status: { state: 'cancel_requested' } },
+        { status: { state: 'cancelling' } },
+      ]) {
+        mockProcessStream.mockReturnValue({
+          tree: runningTree({ supportsResume: true, ...fields }), logs: [], connected: true,
+        });
+        render(<ProcessDetailView processId="abc" />);
+        expect(screen.getByTestId('my-widget')).toBeTruthy();
+        expect(screen.queryByTestId('optio-widget-stop-actions')).toBeNull();
+        expect(screen.queryAllByRole('button')).toEqual([]);
+        cleanup();
+      }
+    });
+
+    it('a suspended one still shows Resume only', () => {
+      mockProcessStream.mockReturnValue({
+        tree: runningTree({
+          status: { state: 'cancelled' }, cancellable: false, supportsResume: true, hasSavedState: true,
+        }),
+        logs: [],
+        connected: true,
+      });
+      render(<ProcessDetailView processId="abc" />);
+      expect(screen.getByTestId('suspended-widget')).toBeTruthy();
+      expect(screen.queryByTestId('optio-widget-stop-actions')).toBeNull();
+      expect(labels(screen.getByTestId('optio-widget-suspended-actions'))).toContain('Resume');
+      expect(screen.queryByRole('button', { name: 'Suspend' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'processes.cancel' })).toBeNull();
+    });
+  });
+
   // waitForWidget / widgetPlaceholder (owner request 2026-10-12): an embed
   // that only wants the process's widget hides the phase before it is
   // available, the process view, behind a big spinner or its own placeholder.
@@ -656,6 +751,19 @@ describe('ProcessDetailView', () => {
       for (const other of ['words of the second', 'words of the factory', 'Second launch', 'The factory']) {
         expect(screen.queryByText(other)).toBeNull();
       }
+    });
+
+    it('running, with a widget: the launch has its own stop control, which stops the launch', async () => {
+      const running = { ...first, cancellable: true, supportsResume: true };
+      mockProcessStream.mockReturnValue({
+        tree: { ...factoryTree, children: [running, second] }, logs, connected: true,
+      });
+      render(<ProcessDetailView processId="fac_0a1b2c3d" />);
+      expect(screen.getByTestId('my-widget').textContent).toBe('widget:c1');
+      const row = screen.getByTestId('optio-widget-stop-actions');
+      fireEvent.click(within(row).getByRole('button', { name: 'Suspend' }));
+      await waitFor(() => expect(mockCancel).toHaveBeenCalledWith('c1'), { timeout: 60_000 });
+      expect(mockCancel).toHaveBeenCalledTimes(1);
     });
 
     it("switching between two launches of one factory remounts the widget: the second keeps nothing of the first's", () => {
