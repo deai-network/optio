@@ -491,6 +491,7 @@ class Optio:
     async def launch(
         self, process_id: str, resume: bool = False, *, session_id: str | None,
         params: dict[str, Any] | None = None,
+        ephemeral: bool | None = None,
     ) -> LaunchOutcome:
         """Fire-and-forget launch. Returns LaunchOutcome with a typed reason on
         precondition failure (not-found, not-launchable -- also while a
@@ -508,8 +509,10 @@ class Optio:
         shutting-down and not-found, in this order: no-resume-support
         (`resume`), parameters-required (no `params`), not-launchable (no
         factory definition synced for the record), invalid-parameters (with
-        `message`), launch-blocked; `params` on any other record is
-        not-a-factory. A factory's launch (its child, and the records under
+        `message`), launch-blocked; `params` or `ephemeral` on any other
+        record is not-a-factory. The launch's record is deleted when its run
+        ends if `ephemeral` is True (the default for a factory without
+        ttl_seconds; False keeps it, until its TTL or a dismiss). A factory's launch (its child, and the records under
         it) ran once, with its values: launching it again is not-launchable,
         whatever the task registry holds.
         Spec: docs/2026-10-20-task-factory-design.md §1.2"""
@@ -521,10 +524,10 @@ class Optio:
         proc = await self._resolve(process_id)
         if proc is None:
             return LaunchOutcome(ok=False, reason="not-found")
-        if proc.get("taskFactory") or params is not None:
+        if proc.get("taskFactory") or params is not None or ephemeral is not None:
             # A factory's record never runs: its launch is a child's.
             try:
-                child = await self._factory_child(proc, resume, params)
+                child = await self._factory_child(proc, resume, params, ephemeral)
             except LaunchBlocked:
                 return LaunchOutcome(ok=False, reason="launch-blocked")
             if isinstance(child, LaunchOutcome):
@@ -584,6 +587,7 @@ class Optio:
 
     async def _factory_child(
         self, proc: dict, resume: bool, params: dict[str, Any] | None,
+        ephemeral: bool | None = None,
     ) -> dict | LaunchOutcome:
         """The ad-hoc child (idle) of a factory's record `proc` for one launch
         with `params`, or the launch's refusal, in this order: shutting-down,
@@ -592,11 +596,13 @@ class Optio:
         for the record), invalid-parameters (the fields' checks, then the
         factory's `validate`, which gets the values without the ones that
         are no value, as the task does). A launch block on the child's
-        metadata raises LaunchBlocked (adhoc_define's check).
+        metadata raises LaunchBlocked (adhoc_define's check). The child is
+        ephemeral as `ephemeral` says, by default when the factory has no TTL.
         Spec: docs/2026-10-20-task-factory-design.md §1.2, §1.4"""
         if self._shutting_down:
             return LaunchOutcome(ok=False, reason="shutting-down")
         if not proc.get("taskFactory"):
+            # params or ephemeral on any other record.
             return LaunchOutcome(ok=False, reason="not-a-factory")
         if resume:
             return LaunchOutcome(ok=False, reason="no-resume-support")
@@ -614,7 +620,7 @@ class Optio:
         # reserved metadata.taskFactory key child_task writes.
         return await self._adhoc_define(
             child_task(factory, params), parent_id=proc["_id"],
-            ephemeral=factory.ttl_seconds is None,
+            ephemeral=factory.ttl_seconds is None if ephemeral is None else ephemeral,
         )
 
     async def _launch_child(self, child: dict, session_id: str | None) -> LaunchOutcome:
@@ -633,7 +639,7 @@ class Optio:
 
     async def launch_and_wait(
         self, process_id: str, resume: bool = False, *, session_id: str | None,
-        params: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None, ephemeral: bool | None = None,
     ) -> None:
         """Launch and wait for the process to complete. Full progress tracking.
 
@@ -642,14 +648,16 @@ class Optio:
 
         A TaskFactory's record is launched with `params`, as by launch(): the
         launch's child is defined and run to completion; a refusal raises
-        LaunchError(reason, message). A factory's launch is never launched
-        again: LaunchError(not-launchable).
+        LaunchError(reason, message); `ephemeral` as there. A factory's
+        launch is never launched again: LaunchError(not-launchable).
 
         Raises LaunchBlocked if a registered launch block matches the task's metadata.
         """
         proc = await self._resolve(process_id)
-        if proc is not None and (proc.get("taskFactory") or params is not None):
-            child = await self._factory_child(proc, resume, params)
+        if proc is not None and (
+            proc.get("taskFactory") or params is not None or ephemeral is not None
+        ):
+            child = await self._factory_child(proc, resume, params, ephemeral)
             if isinstance(child, LaunchOutcome):
                 raise LaunchError(process_id, child.reason, child.message)
             await self._executor.launch_process(child["processId"], session_id=session_id)
@@ -664,12 +672,12 @@ class Optio:
     async def launch_and_await_result(
         self, process_id: str, resume: bool = False, *,
         session_id: str | None, timeout: float | None = None,
-        params: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None, ephemeral: bool | None = None,
     ) -> Any:
         """Launch like ``launch()`` and wait for the task to call
         ``ctx.publish_result(obj)``; return that object while the task keeps
         running. A TaskFactory's record is launched with `params`, as by
-        launch(), and the result is its launch's.
+        launch() (`ephemeral` too), and the result is its launch's.
 
         Raises LaunchError(reason) when the launch is refused,
         ResultNotPublished when the task ends without publishing, and
@@ -679,11 +687,13 @@ class Optio:
         # processId, but callers may pass OID hex (dual-form, like launch()).
         proc = await self._resolve(process_id)
         child: dict | None = None
-        if proc is not None and (proc.get("taskFactory") or params is not None):
+        if proc is not None and (
+            proc.get("taskFactory") or params is not None or ephemeral is not None
+        ):
             # The result comes from the launch's child: define it first, so
             # that its future exists before it can publish.
             try:
-                made = await self._factory_child(proc, resume, params)
+                made = await self._factory_child(proc, resume, params, ephemeral)
             except LaunchBlocked:
                 raise LaunchError(process_id, "launch-blocked") from None
             if isinstance(made, LaunchOutcome):
@@ -1289,14 +1299,20 @@ class Optio:
         """Dismiss a completed process (reset to idle). Returns DismissOutcome
         with `proc` populated from a post-dismiss re-read on success.
 
-        A TaskFactory's launch is not-dismissable: reset, it would be an idle
-        record that cannot run (a launch runs once) and never expires (the
-        reset removes expireAt). Its TTL removes it."""
+        A TaskFactory's ended launch is deleted instead, with its descendants
+        (`proc` is None): reset, it would be an idle record that cannot run
+        (a launch runs once) and never expires (the reset removes expireAt).
+        A running one is not-dismissable, like any process."""
         proc = await self._resolve(process_id)
         if proc is None:
             return DismissOutcome(ok=False, reason="not-found")
-        if is_factory_launch(proc) or proc["status"]["state"] not in DISMISSABLE_STATES:
+        if proc["status"]["state"] not in DISMISSABLE_STATES:
             return DismissOutcome(ok=False, reason="not-dismissable")
+        if is_factory_launch(proc):
+            # The deletion an ephemeral launch's end takes (record, its
+            # descendants, its task), here for a kept one.
+            await self.adhoc_delete(proc["processId"])
+            return DismissOutcome(ok=True, proc=None)
 
         await delete_descendants(
             self._config.mongo_db, self._config.prefix, proc["_id"],

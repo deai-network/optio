@@ -158,9 +158,9 @@ await optio_core.shutdown(grace_seconds: float | None = None)  # graceful shutdo
 
 # Commands. session_id is keyword-only and required (None is valid): the session that started
 # the run (optio-ui sends its browser session's id), stored as originatingSessionId, read as ctx.session_id.
-await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down, parameters-required, not-a-factory, invalid-parameters)
-await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError, but LaunchBlocked for a launch block)
-await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None) -> Any
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down, parameters-required, not-a-factory, invalid-parameters)
+await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError, but LaunchBlocked for a launch block)
+await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None, ephemeral: bool | None = None) -> Any
 # Launches like launch() and returns the object the task passes to ctx.publish_result(obj) while it keeps
 # running. Raises LaunchError(reason, message) on a refused launch, ResultNotPublished when the task ends without
 # publishing, asyncio.TimeoutError on timeout. optio_core.get_published_result(process_id) -> Any | None
@@ -170,7 +170,9 @@ await optio_core.launch_and_await_result(process_id: str, resume: bool = False, 
 # session_id; the outcome's proc is the child's record. Refusals, in this order: shutting-down, not-found,
 # no-resume-support (resume=True), parameters-required (no params), not-launchable (no synced definition),
 # invalid-parameters (LaunchOutcome.message "<id>: <what>": the fields' checks, then the factory's
-# validate), launch-blocked (the child's metadata). params on any other record: not-a-factory. No child is
+# validate), launch-blocked (the child's metadata). params or ephemeral on any other record: not-a-factory.
+# ephemeral (None | True | False): whether the launch's record is deleted when its run ends; None follows the
+# factory (ttl_seconds is None), a bool overrides it. "ephemeral" is a reserved parameter id. No child is
 # defined while shutting down (all three entry points). A factory's record never runs itself, and a
 # factory's launch runs once: launching its record again is not-launchable (LaunchError in launch_and_wait).
 await optio_core.resurrect(process_id: str, *, session_id: str | None) -> ResurrectOutcome  # fire-and-forget
@@ -204,7 +206,7 @@ await optio_core.group_cancel(metadata_filter: dict, block_new_launches: bool = 
 await optio_core.group_cancel_and_wait(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None, purge_records: bool = False) -> int    # blocks until every matching process is terminal (persist=True requires block_new_launches=True)
 async with optio_core.block_launches(launch_filter: dict, *, persist: bool = False, reason: str | None = None): ...   # async CM; rejects matching launches with LaunchBlocked. persist=True writes a Mongo record and the block survives the CM
 await optio_core.unblock_launches(launch_filter: dict) -> int                                              # remove every persistent record + in-memory block whose filter equals launch_filter exactly; returns count of in-memory entries removed
-await optio_core.dismiss(process_id: str) -> DismissOutcome          # reset done/failed/cancelled → idle (a TaskFactory's launch: not-dismissable)
+await optio_core.dismiss(process_id: str) -> DismissOutcome          # reset done/failed/cancelled → idle (a TaskFactory's ended launch: deleted with its descendants, proc=None)
 await optio_core.resync(clean: bool = False, metadata_filter: dict | None = None) -> dict[str, str]  # re-sync task definitions (scoped to metadata_filter if given); clean=True deletes the (in-scope) records first; returns {processId: oid_hex}
 # Before it deletes the root records of definitions no longer generated (stale roots), it sets the cancel
 # flag of each one still active and of the active records under every stale root (a removed factory's
@@ -347,7 +349,7 @@ class TaskFactory:
   (`task_factory.without_no_values`): the task's `ctx.params`, `validate` and `name_for` see a
   left-out value, a null one and an empty one alike, from a form or a program; `False` and `0` stay.
 - **The launch's child:** an ad-hoc child of the factory's record (defined as by
-  `adhoc_define(child, parent_id=<record _id>, ephemeral=ttl_seconds is None)`), process id
+  `adhoc_define(child, parent_id=<record _id>, ephemeral=<the launch's ephemeral, default ttl_seconds is None>)`), process id
   `<factory id>_<8 hex digits>` (a path segment when the factory's id is one, as optio-host wants
   an agent task's), name `name_for(values)` or `name`, `params` the values, metadata
   the factory's plus `taskFactory: <factory id>`, the factory's other fields, `ttlSeconds` copied
@@ -360,8 +362,8 @@ class TaskFactory:
   whose metadata carries `taskFactory` (a launch, kept by `ttl_seconds`, and the records under it,
   which inherit its metadata) with `not-launchable`, before any lookup of its task, whatever the
   task registry holds (its TaskInstance, or nothing after a full resync, which replaces the
-  registry); `task_factory.is_factory_launch`. `dismiss` answers it `not-dismissable` (reset, it
-  would be an idle record that never runs nor expires; its TTL removes it). optio-ui shows it no
+  registry); `task_factory.is_factory_launch`. `dismiss` of an ended one deletes it with its
+  descendants (reset, it would be an idle record that never runs nor expires); a running one is `not-dismissable`. optio-ui shows it no
   play button (`isTaskFactoryLaunch`).
 
 ---

@@ -54,6 +54,10 @@ def check_parameters(parameters: list[dict]) -> None:
                 f"parameters[{i}]: id must be an identifier "
                 f"(letters, digits and _, not starting with a digit)"
             )
+        if pid == "ephemeral":
+            raise ValueError(
+                f"parameters[{i}]: id 'ephemeral' is reserved for the launch's own flag"
+            )
         if pid in seen:
             raise ValueError(f"{pid}: id is not unique")
         seen.add(pid)

@@ -578,10 +578,10 @@ async def test_a_kept_launch_is_never_launched_again(mongo_db):
         await fw.shutdown()
 
 
-async def test_a_kept_launch_is_never_dismissed(mongo_db):
-    # A dismiss would reset a kept launch to an idle record that cannot run
-    # (a launch runs once) and never expires (a dismiss removes expireAt):
-    # refused, the record left to its TTL.
+async def test_dismiss_of_an_ended_kept_launch_deletes_it(mongo_db):
+    # A reset would leave an idle record that cannot run (a launch runs once)
+    # and never expires: a dismiss deletes the ended launch instead, with its
+    # descendants and its task.
     prefix = "tf_dismiss"
     execute, _seen, _ = _recorder()
     fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
@@ -589,12 +589,113 @@ async def test_a_kept_launch_is_never_dismissed(mongo_db):
         outcome = await fw.launch("fac", session_id=None, params=GOOD)
         pid = outcome.proc["processId"]
         done = await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
-        assert await fw.dismiss(pid) == DismissOutcome(ok=False, reason="not-dismissable")
-        rec = await get_process_by_process_id(mongo_db, prefix, pid)
-        assert rec["status"] == done["status"]
-        assert rec["expireAt"] == done["expireAt"]
+        grandchild = await fw.adhoc_define(
+            TaskInstance(execute=_noop, process_id=f"{pid}/inner", name="Inner"),
+            parent_id=done["_id"],
+        )
+        assert (await fw.dismiss(pid)).ok is True
+        assert await get_process_by_process_id(mongo_db, prefix, pid) is None
+        assert await get_process_by_process_id(mongo_db, prefix, grandchild["processId"]) is None
+        assert pid not in fw._executor._task_registry
+        assert await fw.dismiss(pid) == DismissOutcome(ok=False, reason="not-found")
     finally:
         await fw.shutdown()
+
+
+async def test_dismiss_of_a_running_launch_is_refused(mongo_db):
+    prefix = "tf_dismiss_run"
+    release = asyncio.Event()
+
+    async def execute(ctx):  # noqa: ARG001
+        await release.wait()
+
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
+    try:
+        outcome = await fw.launch("fac", session_id=None, params=GOOD)
+        pid = outcome.proc["processId"]
+        await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "running"))
+        assert await fw.dismiss(pid) == DismissOutcome(ok=False, reason="not-dismissable")
+        assert await get_process_by_process_id(mongo_db, prefix, pid) is not None
+        release.set()
+        await _wait_until(lambda: _state_is(mongo_db, prefix, pid, "done"))
+    finally:
+        release.set()
+        await fw.shutdown()
+
+
+async def test_dismiss_of_a_task_still_resets_it(mongo_db):
+    prefix = "tf_dismiss_task"
+    task = TaskInstance(execute=_noop, process_id="plain", name="Plain")
+    fw = await _init(mongo_db, prefix, [task])
+    try:
+        await fw.launch_and_wait("plain", session_id=None)
+        assert (await fw.dismiss("plain")).ok is True
+        rec = await get_process_by_process_id(mongo_db, prefix, "plain")
+        assert rec["status"]["state"] == "idle"
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("ttl,default", [(None, True), (60, False)])
+async def test_launch_ephemeral_default_follows_ttl(mongo_db, ttl, default):
+    prefix = f"tf_edef_{default}"
+    during: list[dict] = []
+
+    async def execute(ctx):
+        during.append(await get_process_by_process_id(mongo_db, prefix, ctx.process_id))
+
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=ttl)])
+    try:
+        await fw.launch_and_wait("fac", session_id=None, params=GOOD)
+        assert [r["ephemeral"] for r in during] == [default]
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("ttl,ephemeral", [(None, False), (60, True)])
+async def test_launch_ephemeral_true_and_false_override_the_default(
+    mongo_db, ttl, ephemeral,
+):
+    prefix = f"tf_eover_{ephemeral}"
+    during: list[dict] = []
+
+    async def execute(ctx):
+        during.append(await get_process_by_process_id(mongo_db, prefix, ctx.process_id))
+
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=ttl)])
+    try:
+        await fw.launch_and_wait("fac", session_id=None, params=GOOD, ephemeral=ephemeral)
+        assert [r["ephemeral"] for r in during] == [ephemeral]
+        pid = during[0]["processId"]
+        kept = await get_process_by_process_id(mongo_db, prefix, pid)
+        assert (kept is None) is ephemeral
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("entry", ["launch", "launch_and_wait", "launch_and_await_result"])
+async def test_ephemeral_on_a_task_is_not_a_factory(mongo_db, entry):
+    prefix = f"tf_enf_{entry}"
+    task = TaskInstance(execute=_noop, process_id="plain", name="Plain")
+    fw = await _init(mongo_db, prefix, [task])
+    try:
+        if entry == "launch":
+            outcome = await fw.launch("plain", session_id=None, ephemeral=True)
+            assert outcome == LaunchOutcome(ok=False, reason="not-a-factory")
+        else:
+            with pytest.raises(LaunchError) as exc:
+                await getattr(fw, entry)("plain", session_id=None, ephemeral=True)
+            assert exc.value.reason == "not-a-factory"
+        rec = await get_process_by_process_id(mongo_db, prefix, "plain")
+        assert rec["status"]["state"] == "idle"
+    finally:
+        await fw.shutdown()
+
+
+def test_parameter_id_ephemeral_is_reserved():
+    with pytest.raises(ValueError) as exc:
+        check_parameters([{"kind": "boolean", "id": "ephemeral"}])
+    assert "parameters[0]: id 'ephemeral' is reserved for the launch's own flag" in str(exc.value)
 
 
 @pytest.mark.parametrize("parent", ["root", "under-the-launch"])

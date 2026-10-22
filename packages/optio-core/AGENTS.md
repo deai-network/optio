@@ -385,7 +385,7 @@ running launches, the active records under a stale root (see "Optio.resync").
   an empty one are one shape, whether a form (optio-ui sends `''` and `[]`) or a program launched
   it. `False` and `0` are values and stay.
 
-**A launch** (`launch(factory_id, session_id=..., params=values)`), refusals in this order:
+**A launch** (`launch(factory_id, session_id=..., params=values, ephemeral=None)`), refusals in this order:
 `shutting-down`, `not-found`, `no-resume-support`, `parameters-required`, `not-launchable` (no
 definition synced for the record), `invalid-parameters`, `launch-blocked` (a block matching the
 child's metadata). No child is defined while shutting down, whichever entry point. Then
@@ -394,11 +394,16 @@ and fields, `params` = the values without the no-values (`without_no_values`), m
 factory's plus `taskFactory: <factory id>`, process id
 `f"{factory.process_id}:{secrets.token_hex(4)}"`, name `name_for(values)` or `name`.
 It is defined with `adhoc_define(child, parent_id=<factory record _id>,
-ephemeral=factory.ttl_seconds is None)` (its record copies the factory record's `ttlSeconds`) and
+ephemeral=<see below>)` (its record copies the factory record's `ttlSeconds`) and
 launched with the same `session_id` (`Optio._launch_child`, its only launch);
 `LaunchOutcome(ok=True, proc=<the child's record>)`. A child whose launch is then refused (a block
-or a shutdown since its definition) is deleted. `params` on a record that is no factory's:
-`not-a-factory`. `launch_and_wait` and `launch_and_await_result` take `params` the same way;
+or a shutdown since its definition) is deleted. `params` or `ephemeral` on a record that is no
+factory's: `not-a-factory`. `ephemeral` (None, True, False) says whether the launch's record is
+deleted when its run ends: None (the default) follows the factory (`factory.ttl_seconds is None`),
+True or False overrides it (a TTL'd factory's launch may be ephemeral, a TTL-less one's kept; a
+kept one without a TTL stays until a dismiss). `ephemeral` is a reserved parameter id:
+`check_parameters` refuses it (`parameters[i]: id 'ephemeral' is reserved for the launch's own
+flag`). `launch_and_wait` and `launch_and_await_result` take `params` and `ephemeral` the same way;
 their refusals raise `LaunchError` (a launch block in `launch_and_wait`: `LaunchBlocked`), and
 `launch_and_await_result`'s result future is keyed by the child's process id before the child
 starts.
@@ -409,8 +414,10 @@ records under it, which inherit its metadata) is never launched again: `launch` 
 `not-launchable` (`launch_and_wait` and `launch_and_await_result` raise
 `LaunchError("not-launchable")`) before it looks for an execute function, whatever the task
 registry holds (the launch's TaskInstance, or nothing once a full resync has replaced the
-registry). Nor is it dismissed: `dismiss` answers `not-dismissable`, since the reset would leave
-an idle record that never runs and never expires (it removes `expireAt`); its TTL removes it.
+registry). Nor is it reset by a dismiss, which would leave an idle record that never runs and
+never expires (it removes `expireAt`): `dismiss` of an ended one (done, failed, cancelled)
+deletes it with its descendants and its task (`adhoc_delete`, the deletion an ephemeral launch's
+end takes) and answers `ok=True` with `proc=None`; a running one is `not-dismissable`.
 optio-ui shows it no play button (`isTaskFactoryLaunch`).
 
 **The reserved key.** `metadata.taskFactory` is optio's: only a launch's definition writes it
