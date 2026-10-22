@@ -3,7 +3,7 @@ import { renderHook, act, render, screen, fireEvent, waitFor } from '@testing-li
 import React from 'react';
 import { I18nextProvider } from 'react-i18next';
 import i18next from 'i18next';
-import { NO_FIELD_CONTEXT, type FieldDefinition } from 'vultus-core';
+import { NO_FIELD_CONTEXT, memoryStore, type FieldDefinition } from 'vultus-core';
 import { toPredicate } from 'vultus-filtrum';
 import { ProcessMetadataFilterSchema } from 'optio-contracts';
 
@@ -415,5 +415,79 @@ describe("WithFilteredProcesses — an app's own filters over the metadata", () 
     // The app renders again, with equal but new definitions and fields.
     rerender(<FiltersOverList customFiltersEnd={props.customFiltersEnd.map((d) => ({ ...d }))} filterFields={{}} />);
     expect(filter.metadataFilter).toBe(first);
+  });
+});
+
+describe('WithFilteredProcesses — the filters keep their state in a store', () => {
+  function renderStored(store: ReturnType<typeof memoryStore>, props: AppFilterProps = {}) {
+    return render(
+      <I18nextProvider i18n={i18n}>
+        <WithFilteredProcesses store={store} {...props}>
+          <ProcessFilters />
+          <FilteredProcessList processes={LIST} loading={false} />
+          <Probe />
+        </WithFilteredProcesses>
+      </I18nextProvider>,
+    );
+  }
+
+  it('choosing a group writes it under filterGroup; going back to All removes the key', async () => {
+    const store = memoryStore();
+    renderStored(store);
+    await choose(screen.getByRole('combobox'), 'Errors');
+    await waitFor(() => expect(store.snapshot()).toEqual({ filterGroup: 'errors' }), { timeout: 60_000 });
+    await choose(screen.getByRole('combobox'), 'All');
+    await waitFor(() => expect(store.snapshot()).toEqual({}), { timeout: 60_000 });
+  });
+
+  it('typing in the search writes it under search', () => {
+    const store = memoryStore();
+    renderStored(store);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search' }), { target: { value: 'gam' } });
+    expect(store.snapshot()).toEqual({ search: 'gam' });
+    expect(shown()).toEqual(['gamma-failed']);
+  });
+
+  it('the setters of useProcessFilter write the store', () => {
+    const store = memoryStore();
+    renderStored(store);
+    act(() => filter.setShowDetails(true));
+    expect(store.snapshot()).toEqual({ showDetails: '1' });
+    act(() => filter.setFilterGroup('active'));
+    expect(store.snapshot()).toEqual({ showDetails: '1', filterGroup: 'active' });
+  });
+
+  it('a store holding an app filter and showDetails renders them chosen; metadataFilter and filterFn follow', () => {
+    const store = memoryStore({ module: 'algebra,logic', showDetails: '1' });
+    renderStored(store, { customFiltersEnd: [MODULE_FILTER] });
+    expect((screen.getByRole('checkbox', { name: 'Show details' }) as HTMLInputElement).checked).toBe(true);
+    expect(filter.filterValues.module).toEqual(['algebra', 'logic']);
+    expect(filter.metadataFilter).toEqual({ module: { in: ['algebra', 'logic'] } });
+    expect(filter.showDetails).toBe(true);
+    expect(shown()).toEqual(['alpha-idle', 'beta-done', 'gamma-failed', 'child-idle']);
+  });
+
+  it('a value written to the store from outside shows in the filters', async () => {
+    const store = memoryStore();
+    renderStored(store);
+    expect(shown()).toEqual(['alpha-idle', 'beta-done', 'gamma-failed']);
+    act(() => store.write([{ key: 'filterGroup', raw: 'errors' }], 'replace'));
+    expect(shown()).toEqual(['gamma-failed']);
+    expect(filter.filterGroup).toBe('errors');
+    expect(screen.getByText('Errors')).toBeTruthy();
+    act(() => store.write([{ key: 'search', raw: 'alp' }], 'replace'));
+    expect((screen.getByRole('textbox', { name: 'Search' }) as HTMLInputElement).value).toBe('alp');
+    act(() => store.write([{ key: 'filterGroup', raw: undefined }], 'replace'));
+    expect(shown()).toEqual(['alpha-idle']);
+    expect(store.snapshot()).toEqual({ search: 'alp' });
+  });
+
+  it('a default never appears in the store', () => {
+    const store = memoryStore();
+    renderStored(store, { customFiltersEnd: [MODULE_FILTER] });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Show details' }));
+    expect(store.snapshot()).toEqual({ showDetails: '1' });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Show details' }));
+    expect(store.snapshot()).toEqual({});
   });
 });

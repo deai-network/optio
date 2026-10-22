@@ -135,6 +135,13 @@ made by [vultus-filtrum](https://www.npmjs.com/package/vultus-filtrum) (`toPredi
 has a value, and keeps its identity while it says the same. Hand it to the list stream, from a
 component inside `WithFilteredProcesses`: optio-api applies it to the processes' metadata.
 
+Every filter's value lives in a store, under the filter's id (`search`, `filterGroup`,
+`showDetails`, `showSpecial`, and the app filters' ids; a value at its default is absent).
+`WithFilteredProcesses`'s optional `store` is vultus-core's `ArgStore`: an app gives one over its
+URL, and a filtered list can be linked; a change to the filters replaces the stored value (Back
+does not step through them), and a change made to the store from outside shows at once. Without
+a `store`, the filters keep a memory store of their own, gone on unmount.
+
 ```tsx
 import type { FieldDefinition } from 'vultus-core';
 import {

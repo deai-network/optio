@@ -407,6 +407,7 @@ interface WithFilteredProcessesProps {
   children: ReactNode;
   filters?: readonly FieldDefinition[];            // the app's own filters over the metadata (vultus-core definitions)
   filterFields?: Readonly<Record<string, string>>; // filter id → metadata key, where they differ
+  store?: ArgStore;                                // vultus-core's; where the filters' values live (below)
 }
 
 function WithFilteredProcesses(props: WithFilteredProcessesProps): JSX.Element
@@ -424,13 +425,26 @@ function useProcessFilter(): {
 }
 ```
 
-`ProcessFilters` renders every filter as a vultus-antd `Field` in local mode (the value and
-`onChange` given at the render site, as `TaskFactoryLaunchModal`'s fields), in an Ant Design
+**The state lives in a store.** `WithFilteredProcesses` keeps every filter's value in an
+`ArgStore` (vultus-core's: `read`, `write`, `subscribe`) under the filter's field id: `search`,
+`filterGroup`, `showDetails`, `showSpecial` and the app filters' ids; a value at its default is
+absent. `store` is the app's (e.g. one over the URL, so a filtered list can be linked); without
+it, a `memoryStore()` made once per mount (local, gone on unmount). `WithFilteredProcesses`
+provides it to its children (`ArgStoreProvider`); the values are read with
+`useStoredFields(all definitions).values` (parsed, sanitized, the default where absent), the
+setters of `useProcessFilter()` write it, and a change made to the store from outside (the URL)
+shows in the fields and the list at once. A filter change *replaces* the stored value (no history
+step: Back does not step through filters). quaesitor-textus' `WithSearch` is controlled: its
+`query` is the stored `search`, its `onSetQuery` writes it. `useProcessFilter()`'s shape is the
+same with or without a store.
+
+`ProcessFilters` renders every filter as a vultus-antd `Field` in `stored` mode (the value in the
+enclosing store, nothing given at the render site), in an Ant Design
 `Space` (`size={[16, 8]}`, wrapping, a 16px bottom margin; `className` and `style` reach it):
 
 | Field id | Kind | Widget | Value | Label |
 |----------|------|--------|-------|-------|
-| `search` | `text` | `search`, width 200 | quaesitor-textus' query (`useSearchContext()`: `query` / `setQuery`); searches `name` and `description` | `processes.search`, also its placeholder |
+| `search` | `text` | `search`, width 200 | quaesitor-textus' query (`useSearchContext()`: `query` / `setQuery`), kept in the store; searches `name` and `description` | `processes.search`, also its placeholder |
 | `filterGroup` | `oneOf` | `select`, width 180 | `filterGroup` (default `'all'`) | none; the choices `processes.filterAll`, `processes.filterActive`, `processes.filterHideCompleted`, `processes.filterErrors` |
 | `showDetails` | `boolean` | `checkbox` | `showDetails` (default `false`) | `processes.showDetails` |
 | `showSpecial` | `boolean` | `checkbox` | `showSpecial` (default `false`) | `processes.showSpecial` |
@@ -448,7 +462,7 @@ metadata, of the kinds vultus-filtrum gives a predicate for: `oneOf` and `oneOfT
 optio-api's metadata filter does not accept; any other kind throws its
 `UnsupportedFieldKindError` when WithFilteredProcesses renders.) Each matches the metadata key
 of its id, or the one `filterFields` names (`{ modules: 'module' }`). `WithFilteredProcesses`
-keeps their values in its own state: what was chosen, else the filter's default, its
+keeps their values in the store: what it holds, else the filter's default, its
 `initialValue`, else its kind's own (vultus-core's `initialValueOf`: a `oneOf`'s first enabled
 choice, a `manyOf`'s empty list, ...), as vultus-filtrum's README asks of its caller. Their
 definitions' functions get the field context (`useFieldContext()`) at WithFilteredProcesses;
