@@ -157,13 +157,17 @@ function resolveItem(definition: FieldDefinition, ctx: FieldCtx): FormItem {
  * (a parameter's, the launch's `params`; `ephemeral`, the launch's own), and
  * checks what vultus-core has no option for — a parameter's required value, a
  * text's `maxLength` — as optio-core will at the launch. A field that is not
- * visible is a hidden item: out of sight, its value still in the form.
+ * visible is a hidden item: out of sight, its value still in the form, and not
+ * checked here (the user could not fix it): optio-core's refusal of its value
+ * shows in the form, as "<label>: <what>".
  */
 function FieldItem({ item, parameter }: { item: FormItem; parameter: TaskFactoryParameter | undefined }) {
   const { t } = useTranslation();
-  const rules: FormRule[] = parameter ? [{
+  // The parameter the form checks: a visible field's.
+  const checked = item.visible ? parameter : undefined;
+  const rules: FormRule[] = checked ? [{
     validator: async (_rule, value) => {
-      const problem = valueProblem(parameter, value, t);
+      const problem = valueProblem(checked, value, t);
       if (problem) throw new Error(problem);
     },
   }] : [];
@@ -175,8 +179,8 @@ function FieldItem({ item, parameter }: { item: FormItem; parameter: TaskFactory
       initialValue={item.initialValue}
       hidden={!item.visible}
       // The mark only where a value can be missing (the other kinds always have one).
-      required={parameter !== undefined && parameter.required !== false
-        && (parameter.kind === 'text' || parameter.kind === 'manyOf')}
+      required={checked !== undefined && checked.required !== false
+        && (checked.kind === 'text' || checked.kind === 'manyOf')}
       rules={rules}
     >
       <FieldControl definition={item.definition} />

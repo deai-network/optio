@@ -16,6 +16,7 @@ import {
   isSuspended,
   isTaskFactory,
   isTaskFactoryLaunch,
+  isTaskFactoryLaunchItself,
 } from '../process-state.js';
 
 describe('isWidgetLiveState', () => {
@@ -315,4 +316,19 @@ describe('isTaskFactoryLaunch', () => {
       expect(isResurrectable({ ...launch, supportsResurrect: true, hasUnsavedWork: true })).toBe(false);
     },
   );
+});
+
+describe('isTaskFactoryLaunchItself', () => {
+  it('true for the launch itself: depth 1, right under its factory', () => {
+    expect(isTaskFactoryLaunchItself({ depth: 1, metadata: { taskFactory: 'fac' } })).toBe(true);
+  });
+
+  it('false for a record under a launch (it inherits its metadata), and for anything else', () => {
+    expect(isTaskFactoryLaunch({ depth: 2, metadata: { taskFactory: 'fac' } })).toBe(true);
+    expect(isTaskFactoryLaunchItself({ depth: 2, metadata: { taskFactory: 'fac' } })).toBe(false);
+    expect(isTaskFactoryLaunchItself({ metadata: { taskFactory: 'fac' } })).toBe(false);
+    expect(isTaskFactoryLaunchItself({ depth: 1, metadata: {} })).toBe(false);
+    expect(isTaskFactoryLaunchItself({ depth: 0, taskFactory: true })).toBe(false);
+    expect(isTaskFactoryLaunchItself(null)).toBe(false);
+  });
 });

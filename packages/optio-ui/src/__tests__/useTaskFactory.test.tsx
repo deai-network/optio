@@ -108,6 +108,18 @@ describe('useTaskFactory', () => {
     expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { dry_run: false }, ephemeral: true });
   });
 
+  it("label replaces the action's Launch label (an app's own word for it)", () => {
+    mockUseProcess.mockReturnValue({ process: factory, isLoading: false });
+    function Labelled({ label }: { label?: string }) {
+      const { launch } = useTaskFactory('app.drop', { label });
+      return <span data-testid="label">{launch.label}</span>;
+    }
+    const { rerender } = render(<I18nextProvider i18n={i18n}><Labelled label="Generate proposals" /></I18nextProvider>);
+    expect(screen.getByTestId('label').textContent).toBe('Generate proposals');
+    rerender(<I18nextProvider i18n={i18n}><Labelled /></I18nextProvider>);
+    expect(screen.getByTestId('label').textContent).toBe('Launch');
+  });
+
   it('is not pending after a refused launch', async () => {
     mockUseProcess.mockReturnValue({ process: factory, isLoading: false });
     mockLaunchAsync.mockRejectedValue({ status: 409, body: { reason: 'launch-blocked' } });

@@ -75,7 +75,11 @@ Do:
   a non-empty string, the factory's id: a factory's launch, from its form or a
   program, which ran once with its values and is never launched again, so
   `isLaunchable` is false for it in any state; optio-core refuses its launch,
-  `not-launchable`).
+  `not-launchable`; also a record under a launch, a sub-task its run started,
+  which inherits its metadata), `isTaskFactoryLaunchItself(process)`
+  (`isTaskFactoryLaunch` and `depth === 1`, right under its factory's record: the
+  launch itself, the only record optio-core deletes on a dismiss; one under it is
+  `not-dismissable`).
 - If you genuinely need a new state-derived concept (e.g. "show widget UI" —
   which is *almost* `isActive` but excludes `scheduled`), add a named
   predicate to `process-state.ts` rather than spelling out the set at the
@@ -177,7 +181,7 @@ Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`).
 
 Rendering rules:
 - Renders **nothing** when `onLaunch` is not provided (a read-only view), or when the process is not launchable (`isLaunchable`: not in a launchable state, `idle | done | failed | cancelled`, or a task factory's launch, `isTaskFactoryLaunch`, which is never launched again) and is not removable (next rule).
-- An **ended launch** (`isTaskFactoryLaunch` and `isTerminal`: one a TTL keeps, or a non-ephemeral one, which stays until dismissed) gets a **Remove** icon button instead (trash icon, tooltip and `aria-label` `processes.removeLaunch`, default "Remove"): a vultus action (`useAction`) whose `fire` calls `useProcessActions().dismissAsync(id)` (dismissing an ended launch deletes it); a refusal goes through `optioErrorRoutes`, route `processes.dismiss`. A running launch, a factory and an ordinary task have none; an ephemeral launch is deleted when it ends, so it never shows one. A **resumable** ended launch (`isResumable`: its task saved its state; optio-core rebuilds its task after an engine restart) also gets, before Remove, the **Resume** button of the split button below (calls `onLaunch(id, { resume: true })`), alone: no play button and no Restart (a launch is never launched afresh). A non-empty `denyReason` renders the disabled play button in its place.
+- An **ended launch** (`isTaskFactoryLaunchItself` and `isTerminal`: one a TTL keeps, or a non-ephemeral one, which stays until dismissed) gets a **Remove** icon button instead (trash icon, tooltip and `aria-label` `processes.removeLaunch`, default "Remove"): a vultus action (`useAction`) that asks first (`confirmation` of kind `popconfirm`, its question `processes.removeLaunchConfirm`, default "Remove this launch? Its record and log are deleted.": the deletion cannot be undone) and whose `fire` calls `useProcessActions().dismissAsync(id)` (dismissing an ended launch deletes it); a refusal goes through `optioErrorRoutes`, route `processes.dismiss`. A running launch, a factory, an ordinary task and a record under a launch (a sub-task, `isTaskFactoryLaunch` but not the launch itself: optio-core refuses its dismiss) have none; an ephemeral launch is deleted when it ends, so it never shows one. A **resumable** ended launch (`isResumable`: its task saved its state; optio-core rebuilds its task after an engine restart) also gets, before Remove, the **Resume** button of the split button below (calls `onLaunch(id, { resume: true })`), alone: no play button and no Restart (a launch is never launched afresh). A non-empty `denyReason` renders the disabled play button in its place.
 - Renders a single disabled **Resurrecting** indicator while `isResurrecting(process)` (spinning loading icon, or the app's lent Spinner — see "Spinner slot"; `aria-label` "Resurrecting", tooltip "Resurrecting: saving the unsaved work…"); clicking it does nothing. It takes precedence over all the cases below (a non-empty `denyReason` still wins).
 - For a task factory's record (`isTaskFactory(process)`), a single play button (an icon `ActionButton` of `useTaskFactoryOf`, the record-in-hand form of `useTaskFactory`; tooltip `processes.launch`) that opens the factory's `TaskFactoryLaunchModal` (with `launchOverrides[process.processId]` as its `overrides`) instead of calling `onLaunch` (which only allows it, as for any process); no `Popconfirm`, the form shows the `warning`. The form's launch hands the child to `onLaunched`. It takes precedence over the cases below (`denyReason` and Resurrecting still win).
 - Renders a **Resurrect** split button when `onResurrect` is provided and `isResurrectable(process)` (`supportsResurrect=true` and `hasUnsavedWork=true`); it takes precedence over the two cases below (a non-empty `denyReason` still wins):
@@ -405,7 +409,8 @@ export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 
 interface WithFilteredProcessesProps {
   children: ReactNode;
-  filters?: readonly FieldDefinition[];            // the app's own filters over the metadata (vultus-core definitions)
+  customFiltersBegin?: readonly FieldDefinition[]; // the app's own filters over the metadata (vultus-core definitions), before the built-in ones
+  customFiltersEnd?: readonly FieldDefinition[];   // the same, after the built-in ones
   filterFields?: Readonly<Record<string, string>>; // filter id → metadata key, where they differ
   store?: ArgStore;                                // vultus-core's; where the filters' values live (below)
 }
@@ -417,7 +422,8 @@ function useProcessFilter(): {
   filterGroup: FilterGroup; setFilterGroup: (g: FilterGroup) => void;
   showDetails: boolean; setShowDetails: (v: boolean) => void;
   showSpecial: boolean; setShowSpecial: (v: boolean) => void;
-  filters: readonly FieldDefinition[];               // the app's filters, [] without
+  customFiltersBegin: readonly FieldDefinition[];    // the app's filters before the built-in ones, [] without
+  customFiltersEnd: readonly FieldDefinition[];      // the app's filters after them, [] without
   filterValues: Readonly<Record<string, unknown>>;   // their values, by filter id
   setFilterValue: (id: string, value: unknown) => void;
   metadataFilter: ProcessMetadataFilter | undefined; // their predicate, for the list stream
@@ -449,26 +455,32 @@ enclosing store, nothing given at the render site), in an Ant Design
 | `showDetails` | `boolean` | `checkbox` | `showDetails` (default `false`) | `processes.showDetails` |
 | `showSpecial` | `boolean` | `checkbox` | `showSpecial` (default `false`) | `processes.showSpecial` |
 
-then the app's `filters`, in their order, each with its definition's widget hint, else its
-kind's default (a `manyOf`'s is `checkboxes`; `widget: 'select'` keeps the row compact). It
+with the app's `customFiltersBegin` before them and its `customFiltersEnd` after them, in their
+order, each 240px wide, with its definition's widget hint, else its kind's default (a `manyOf`'s
+is `checkboxes`; `widget: 'select'` keeps the row compact). It
 holds no state of its own: it reads and sets the state of the enclosing
 `WithFilteredProcesses` (via `useProcessFilter()`). `FilteredProcessList` applies the
 built-in filters to its `processes` (`filterFn`, in the browser); the app's filters are not
 in `filterFn`.
 
-**An app's own filters.** `filters` are vultus-core field definitions over the process
+**An app's own filters.** `customFiltersBegin` and `customFiltersEnd` (together, the app's
+filters) are vultus-core field definitions over the process
 metadata, of the kinds vultus-filtrum gives a predicate for: `oneOf` and `oneOfTree` (`eq`),
 `manyOf` and `manyOfTree` (`in`). (vultus-filtrum gives a `text` filter a `search` leaf, which
 optio-api's metadata filter does not accept; any other kind throws its
 `UnsupportedFieldKindError` when WithFilteredProcesses renders.) Each matches the metadata key
-of its id, or the one `filterFields` names (`{ modules: 'module' }`). `WithFilteredProcesses`
+of its id, or the one `filterFields` names (`{ modules: 'module' }`). An app filter's id is
+its key in the store, so it is unique across both slots and no built-in filter's (`search`,
+`filterGroup`, `showDetails`, `showSpecial`): `WithFilteredProcesses` throws when it renders
+otherwise (`Filter '<id>': the id of a built-in filter (...)`, `Filter '<id>': two app filters
+have this id`, each followed by `; an app filter's id is its key in the store`). `WithFilteredProcesses`
 keeps their values in the store: what it holds, else the filter's default, its
 `initialValue`, else its kind's own (vultus-core's `initialValueOf`: a `oneOf`'s first enabled
 choice, a `manyOf`'s empty list, ...), as vultus-filtrum's README asks of its caller. Their
 definitions' functions get the field context (`useFieldContext()`) at WithFilteredProcesses;
 the fields get theirs at ProcessFilters, the same unless a `FieldContextProvider` sits between.
 
-`metadataFilter` is `toPredicate(filters, filterValues, { ctx, fields: filterFields })`
+`metadataFilter` is `toPredicate([...customFiltersBegin, ...customFiltersEnd], filterValues, { ctx, fields: filterFields })`
 (vultus-filtrum), or `undefined` when there are no app filters or the predicate is `{}` (no
 filter has a value). It keeps its identity while it says the same (it is memoised on its JSON),
 even when the app passes its definitions anew on each render. The app hands it to its list:
@@ -487,7 +499,7 @@ const PROCESS_FILTERS: FieldDefinition[] = [{
 
 function ProcessesPage() {
   return (
-    <WithFilteredProcesses filters={PROCESS_FILTERS}>
+    <WithFilteredProcesses customFiltersBegin={PROCESS_FILTERS}>
       <Processes />
     </WithFilteredProcesses>
   );
@@ -527,7 +539,7 @@ function ProcessDetailView(props: ProcessDetailViewProps): JSX.Element
 Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branches:
 
 - **No processId** — renders a centred "Select a process" placeholder.
-- **`processNotFound`** from the stream (the record is gone, also when deleted while open) — if the view has shown the process before: its last tree (`ProcessTreeView` without actions, no widget) and last log (`ProcessLogPanel`, unless `showLogs` is false) under the notice `processes.deleted` ("Process deleted."). The view remembers the last snapshot (`tree`, `logs`) of the last 5 processes it showed, in a module-level in-memory cache (`lastSeenProcesses.ts`: `rememberProcess`, `lastSeenProcess`, `forgetAllProcesses` for tests; the least recently shown is dropped; a reload empties it; nothing is stored in the browser). A process it never showed: `processes.notFound` ("Process not found.").
+- **`processNotFound`** from the stream (the record is gone, also when deleted while open: an update that no longer holds it) — if the view has shown the process before: its last tree (`ProcessTreeView` without actions, no widget) and last log (`ProcessLogPanel`, unless `showLogs` is false) under the notice `processes.deleted` ("Process deleted."). The view remembers the last snapshot (`tree`, `logs`) of the last 5 processes it showed, a snapshot whose tree holds the process asked for (by `_id` or `processId`) as its root or as a node below it (the stream carries the record's root tree: a launch's is its factory's, the launch at depth 1), in a module-level in-memory cache (`lastSeenProcesses.ts`: `rememberProcess`, `lastSeenProcess`, `forgetAllProcesses` for tests; the least recently shown is dropped; a reload empties it; nothing is stored in the browser). A process it never showed: `processes.notFound` ("Process not found.").
 - **`error`** from the stream — "Error while accessing process: …".
 - **Waiting** (`waitForWidget` or `widgetPlaceholder`) — renders the placeholder, or a large spinner (the app's lent Spinner, key `optio:process:${processId}:detail`, else antd's `Spin`), in place of the "Loading…" line below, and in place of the default tree+log view while a scheduled or running process has no widget to show yet.
 - **No tree yet** (stream not yet received) — renders a "Loading…" placeholder (preceded by the app's lent Spinner, if any — see "Spinner slot").
@@ -595,8 +607,11 @@ them.
   `''` for a text; `[]` for a manyOf) shows `processes.factoryRequired`, a text over its
   `maxLength` (in code points, as optio-core counts) `processes.factoryMaxLength`, and nothing
   is launched. The other kinds always hold a value; only a required text or manyOf is marked
-  required. Initial values: `initialValue`, else the kind's own default (vultus-core's
-  `initialValueOf`).
+  required. Only a visible field is checked so (the user could not fix a hidden one): a hidden
+  field's value is sent as it is, and optio-core's refusal of it shows in the form as
+  `"<label>: <what>"` (below). A disabled field (an override's `disabled`, with its reason as the
+  control's tooltip) keeps its value in the form, which is sent. Initial values: `initialValue`,
+  else the kind's own default (vultus-core's `initialValueOf`).
 - **The built-in `ephemeral` field** (`launchFormDefinitions(record, language, t)` in
   `src/task-factory.ts`, `EPHEMERAL_FIELD_ID`): after the parameters, a boolean rendered as a checkbox (`widget: 'checkbox'`, which an override may change; the form item then leaves the label to the widget, so it shows once) with the label
   `processes.launchEphemeral` ("Remove when finished"), initially `ttlSeconds == null` (checked
@@ -647,7 +662,11 @@ Exported from `optio-ui`, with `mergeOverrides`, `useTaskFactory`, `TaskFactoryL
 ```ts
 function useTaskFactory(
   factoryId: string,   // the factory's process id as the app declared it, or its record's _id
-  opts?: { overrides?: TaskFactoryOverrides; onLaunched?: (child: Process) => void },
+  opts?: {
+    overrides?: TaskFactoryOverrides;
+    onLaunched?: (child: Process) => void;
+    label?: string;    // the launch action's label instead of "Launch" (e.g. "Drop", "Generate proposals")
+  },
 ): { launch: ActionStatus; isPending: boolean; dialog: ReactNode };
 
 function TaskFactoryLaunchButton(props: {
@@ -657,7 +676,8 @@ function TaskFactoryLaunchButton(props: {
 
 Launching a task factory from anywhere (`src/hooks/useTaskFactory.tsx`,
 `src/components/TaskFactoryLaunchButton.tsx`). The hook reads the record with `useProcess(factoryId)`.
-`launch` is a vultus action (label `processes.launch`, default "Launch") that opens the launch form;
+`launch` is a vultus action (label `label` when given, else `processes.launch`, default "Launch";
+the form's own submit button keeps its label) that opens the launch form;
 it is disabled, with its reason, while the record loads (`processes.factoryLoading`), when the
 process is no factory (`processes.factoryNotAFactory`) and while `isPending`
 (`processes.factoryLaunching`). `isPending` is the launch request in flight (the form's submit to the
@@ -998,13 +1018,17 @@ function useProcessStream(
   tree: ProcessTreeNode | null;
   rootProcess: ProcessUpdate | null;
   logs: LogEntry[];
-  processNotFound: boolean;  // the probe got a 404: terminal, no retry
+  processNotFound: boolean;  // the probe got a 404, or an update no longer holds the process: terminal, no retry
   error: Error | null;       // probe or network failure; retrying continues
 }
 ```
 
 SSE endpoint: `{baseUrl}/api/processes/{processId}/tree/stream?prefix={prefix}&maxDepth={maxDepth}[&database={database}]`,
-opened after a probe `GET {baseUrl}/api/processes/{processId}?prefix=…[&database=…]`.
+opened after a probe `GET {baseUrl}/api/processes/{processId}?prefix=…[&database=…]`. The stream
+carries the record's root tree (a launch's: its factory's, with the other launches). An `update`
+whose processes no longer hold the process asked for (no `_id` or `processId` equal to
+`processId`: deleted while the stream is open, e.g. a launch dismissed) sets `processNotFound`
+and closes the stream, as the probe's 404 does: no reconnect.
 
 Reconnects (probe first) 3 seconds after an error. Each component instance manages its
 own `EventSource`, unless a `MultiProcessStreamProvider` ancestor streams the process
@@ -1102,6 +1126,7 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.deleted` | `ProcessDetailView` | The notice over the last view of a process deleted while open (default: "Process deleted.") |
 | `processes.notFound` | `ProcessDetailView` | A process the stream reports gone that the view never showed (default: "Process not found.") |
 | `processes.removeLaunch` | `LaunchControls` | Tooltip / `aria-label` of the remove button of an ended launch (default: "Remove") |
+| `processes.removeLaunchConfirm` | `LaunchControls` | The question the remove button asks first (default: "Remove this launch? Its record and log are deleted.") |
 | `processes.factoryLoading` | `useTaskFactory` | Why `launch` is disabled while the record loads (default: "Loading…") |
 | `processes.factoryNotAFactory` | `useTaskFactory` | Why `launch` is disabled for a process that is no task factory (default: "Not a task factory") |
 | `processes.factoryLaunching` | `useTaskFactory` | Why `launch` is disabled while a launch is pending (default: "Launching…") |

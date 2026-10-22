@@ -1,7 +1,16 @@
 import { describe, it, expect, afterEach, afterAll, beforeAll, vi, beforeEach } from 'vitest';
-import { render, cleanup, screen, fireEvent, within, waitFor } from '@testing-library/react';
-import React from 'react';
+import { render as rtlRender, cleanup, screen, fireEvent, within, waitFor } from '@testing-library/react';
+import React, { type ReactElement, type ReactNode } from 'react';
+import { I18nextProvider } from 'react-i18next';
+import i18next from 'i18next';
 import { registerWidget, _clearWidgetRegistry } from '../widgets/registry.js';
+
+// The view's texts come from an i18n instance (react-i18next warns without one).
+const i18n = i18next.createInstance();
+i18n.init({ lng: 'en', resources: { en: { translation: {} } } });
+const WithI18n = ({ children }: { children: ReactNode }) => <I18nextProvider i18n={i18n}>{children}</I18nextProvider>;
+// Every render (and its rerenders) under the instance.
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: WithI18n });
 
 // Mock the hooks ProcessDetailView uses, BEFORE importing ProcessDetailView.
 const mockProcessStream = vi.fn();
@@ -662,6 +671,52 @@ describe('ProcessDetailView', () => {
       expect(container.querySelector('.anticon-close-circle')).toBeNull();
       expect(container.querySelector('.anticon-play-circle')).toBeNull();
       expect(container.querySelector('.anticon-delete')).toBeNull();
+    });
+
+    it("a launch, shown in its factory's tree (the stream's), deleted: its last state under the notice", () => {
+      // The tree stream carries the record's root tree: for a launch (depth 1), its factory's.
+      const launch = {
+        _id: 'c1', processId: 'fac_0a1b2c3d', name: 'Drop proposals (kept)', status: { state: 'done' },
+        progress: { percent: null }, cancellable: false,
+        depth: 1, order: 0, parentId: 'f1', children: [], metadata: { taskFactory: 'fac' },
+      };
+      const factoryTree = {
+        _id: 'f1', processId: 'fac', name: 'Drop proposals', status: { state: 'idle' },
+        progress: { percent: null }, cancellable: false,
+        depth: 0, order: 0, parentId: null, children: [launch], taskFactory: true, parameters: [],
+      };
+      for (const id of ['c1', 'fac_0a1b2c3d']) {
+        forgetAllProcesses();
+        mockProcessStream.mockReturnValue({
+          tree: factoryTree,
+          logs: [{ timestamp: '2026-04-22T10:00:00Z', level: 'info', message: 'last words of the launch', processId: 'c1' }],
+          connected: true,
+        });
+        const view = render(<ProcessDetailView processId={id} />);
+        // Dismissed while open: the stream reports it gone (its factory's tree goes on without it).
+        mockProcessStream.mockReturnValue({
+          tree: { ...factoryTree, children: [] }, logs: [], connected: false, processNotFound: true,
+        });
+        view.rerender(<ProcessDetailView processId={id} />);
+        expect(screen.getByText('Process deleted.')).toBeTruthy();
+        expect(screen.queryByTestId('optio-detail-not-found')).toBeNull();
+        expect(screen.getByText('Drop proposals (kept)')).toBeTruthy();
+        expect(screen.getByText('last words of the launch')).toBeTruthy();
+        expect(view.container.querySelector('.anticon-delete')).toBeNull();
+        cleanup();
+      }
+    });
+
+    it("does not remember a tree the process asked for is not in", () => {
+      mockProcessStream.mockReturnValue({
+        tree: runningTree('other'),
+        logs: [{ timestamp: '2026-04-22T10:00:00Z', level: 'info', message: 'last words of other' }],
+        connected: true,
+      });
+      const view = render(<ProcessDetailView processId="c9" />);
+      mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: false, processNotFound: true });
+      view.rerender(<ProcessDetailView processId="c9" />);
+      expect(screen.getByTestId('optio-detail-not-found').textContent).toBe('Process not found.');
     });
 
     it("does not cache the previous process's state under the one switched to", () => {

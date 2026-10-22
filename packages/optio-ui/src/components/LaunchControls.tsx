@@ -11,7 +11,7 @@ import { optioErrorRoutes, type OptioErrorRouteId } from '../error-routes.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
 import { useTaskFactoryOf } from '../hooks/useTaskFactory.js';
 import {
-  isLaunchable, isResumable, isResurrectable, isResurrecting, isTaskFactory, isTaskFactoryLaunch, isTerminal,
+  isLaunchable, isResumable, isResurrectable, isResurrecting, isTaskFactory, isTaskFactoryLaunchItself, isTerminal,
 } from '../process-state.js';
 import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 
@@ -78,7 +78,9 @@ export function LaunchControls({
 
   // A launch that ended and was kept is never launched again; it can be
   // removed, and resumed (the resume control a task has) when its task saved its state.
-  if (isTaskFactoryLaunch(process) && isTerminal(process)) {
+  // Only the launch itself: a record under it (its metadata inherited) has neither, as
+  // optio-core dismisses and resumes the launch only.
+  if (isTaskFactoryLaunchItself(process) && isTerminal(process)) {
     const remove = <RemoveLaunchButton process={process} size={size} iconStyle={iconStyle} />;
     if (!isResumable(process)) return remove;
     return (
@@ -265,7 +267,8 @@ function FactoryPlayButton({ process, overrides, onLaunched, size, iconStyle }: 
   );
 }
 
-// Removes an ended launch that was kept (dismissing it deletes it).
+// Removes an ended launch that was kept (dismissing it deletes it, with its log, for good:
+// it asks first).
 function RemoveLaunchButton({ process, size, iconStyle }: {
   process: any;
   size: ButtonProps['size'];
@@ -278,6 +281,10 @@ function RemoveLaunchButton({ process, size, iconStyle }: {
       id: 'optio.taskFactory.removeLaunch',
       label: t('processes.removeLaunch', 'Remove'),
       icon: <DeleteOutlined style={iconStyle} />,
+      confirmation: {
+        kind: 'popconfirm',
+        question: t('processes.removeLaunchConfirm', 'Remove this launch? Its record and log are deleted.'),
+      },
       errorRoute: 'processes.dismiss',
       fire: () => dismissAsync(process._id),
     },

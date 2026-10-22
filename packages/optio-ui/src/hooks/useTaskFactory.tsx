@@ -14,6 +14,9 @@ export interface UseTaskFactoryOptions {
   overrides?: TaskFactoryOverrides;
   /** Called with the child once the launch is accepted. */
   onLaunched?: (child: Process) => void;
+  /** The `launch` action's label, instead of "Launch" (`processes.launch`): the app's own word
+   *  for what the factory does, e.g. "Drop" or "Generate proposals" in a menu. */
+  label?: string;
 }
 
 export interface UseTaskFactoryResult {
@@ -44,7 +47,7 @@ export function useTaskFactory(factoryId: string, options: UseTaskFactoryOptions
 export function useTaskFactoryOf(
   record: (TaskFactoryRecord & { taskFactory?: boolean }) | null | undefined,
   isLoading: boolean,
-  { overrides, onLaunched }: UseTaskFactoryOptions = {},
+  { overrides, onLaunched, label }: UseTaskFactoryOptions = {},
 ): UseTaskFactoryResult {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -52,7 +55,7 @@ export function useTaskFactoryOf(
   const factory = record && isTaskFactory(record) ? record : null;
   const launch = useAction({
     id: 'optio.taskFactory.open',
-    label: t('processes.launch', 'Launch'),
+    label: label ?? t('processes.launch', 'Launch'),
     icon: <PlayCircleOutlined />,
     enabled: () => {
       if (isLoading) return { verdict: false, reason: t('processes.factoryLoading', 'Loading…') };

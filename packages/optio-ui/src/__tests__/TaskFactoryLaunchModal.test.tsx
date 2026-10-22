@@ -308,6 +308,43 @@ describe('TaskFactoryLaunchModal', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("a required field hidden with no value does not hold the launch back: the engine's refusal shows with its label", async () => {
+    answer = { status: 400, body: { reason: 'invalid-parameters', message: 'title: required' } };
+    const factory = {
+      ...FACTORY,
+      warning: undefined,
+      parameters: [{ kind: 'text', id: 'title', label: 'Title' }, { kind: 'text', id: 'note', label: 'Note', required: false }],
+    };
+    const { dialog, onClose } = renderModal(factory, {}, { title: { visible: false } });
+    fireEvent.click(launchButton());
+    // Sent, as the form holds it: the form's own rules are a visible field's.
+    expect((await launchedWith()).title).toBe('');
+    expect(await within(dialog).findByText('Title: required', {}, { timeout: 60_000 })).toBeTruthy();
+    expect(within(dialog).queryByText('Required')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('a disabled preset shows its reason and is sent', async () => {
+    const reason = 'Fixed for this page';
+    const { dialog } = renderModal(FACTORY, {}, { limit: { initialValue: 7, disabled: { verdict: true, reason } } });
+    const limit = within(dialog).getByRole('spinbutton', { name: 'Limit' }) as HTMLInputElement;
+    expect(limit.disabled).toBe(true);
+    expect(limit.value).toBe('7');
+    fireEvent.click(launchButton());
+    expect((await launchedWith()).limit).toBe(7);
+    // The reason is the disabled control's tooltip.
+    fireEvent.mouseEnter(limit.closest('.vultus-tooltip-anchor')!);
+    const tip = await screen.findByRole('tooltip', {}, { timeout: 60_000 });
+    expect(tip.querySelector('[data-tooltip-part="reason"]')!.textContent).toBe(reason);
+  });
+
+  it('a hidden preset is sent', async () => {
+    const { dialog } = renderModal(FACTORY, {}, { limit: { initialValue: 7, visible: false } });
+    expect(within(dialog).queryByRole('spinbutton', { name: 'Limit' })).toBeNull();
+    fireEvent.click(launchButton());
+    expect((await launchedWith()).limit).toBe(7);
+  });
+
   it('fails loudly, at render, on an override of a field the form lacks', () => {
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(() => renderModal(FACTORY, {}, { nope: { visible: false } }))

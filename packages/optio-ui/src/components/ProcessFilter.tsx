@@ -51,8 +51,10 @@ export interface WithFilteredProcessesProps {
   /**
    * The app's own filters over the process metadata that ProcessFilters renders before its own:
    * vultus field definitions of the kinds vultus-filtrum gives a predicate for (`oneOf`,
-   * `manyOf`, `oneOfTree`, `manyOfTree`), their ids unique across both slots. The predicate of
-   * the two slots' filters together is `metadataFilter`.
+   * `manyOf`, `oneOfTree`, `manyOfTree`), their ids unique across both slots and none a built-in
+   * filter's (`search`, `filterGroup`, `showDetails`, `showSpecial`): an id is the filter's key in
+   * the store, and WithFilteredProcesses throws, naming it, for one that is taken. The predicate
+   * of the two slots' filters together is `metadataFilter`.
    */
   customFiltersBegin?: readonly FieldDefinition[];
   /** The app's own filters that ProcessFilters renders after its own (as `customFiltersBegin`). */
@@ -121,11 +123,29 @@ function useMetadataFilter(
   return useMemo(() => predicate, [key]);
 }
 
+/**
+ * Throws, naming the id, for an app filter whose id is a built-in filter's or another app
+ * filter's (in either slot): a filter's id is its key in the store (e.g. the URL), so two
+ * filters with one id would share one value.
+ */
+function checkAppFilterIds(filters: readonly FieldDefinition[], builtIn: BuiltInDefinitions): void {
+  const builtInIds = Object.values(builtIn).map((d) => d.id);
+  const seen = new Set<string>();
+  for (const { id } of filters) {
+    if (builtInIds.includes(id)) {
+      throw new Error(`Filter '${id}': the id of a built-in filter (${builtInIds.join(', ')}); an app filter's id is its key in the store`);
+    }
+    if (seen.has(id)) throw new Error(`Filter '${id}': two app filters have this id; an app filter's id is its key in the store`);
+    seen.add(id);
+  }
+}
+
 function ProcessFilterInner({
   children, customFiltersBegin = NO_FILTERS, customFiltersEnd = NO_FILTERS, filterFields, builtIn,
 }: WithFilteredProcessesProps & { builtIn: BuiltInDefinitions }) {
   const ctx = useFieldContext();
   const filters = useMemo(() => [...customFiltersBegin, ...customFiltersEnd], [customFiltersBegin, customFiltersEnd]);
+  checkAppFilterIds(filters, builtIn);
   const definitions = useMemo(() => [...Object.values(builtIn), ...filters], [builtIn, filters]);
   // Every filter's value as its stored field shows it: the default where the store has no key.
   const { values } = useStoredFields(definitions);

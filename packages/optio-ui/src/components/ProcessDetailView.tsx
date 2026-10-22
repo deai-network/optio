@@ -3,7 +3,7 @@ import { Spin } from 'antd';
 import { useTranslation } from 'react-i18next';
 import type { Process } from 'optio-contracts';
 import { useSpinnerKey, useVultusComponents } from 'vultus-core';
-import { useProcessStream } from '../hooks/useProcessStream.js';
+import { useProcessStream, type ProcessTreeNode } from '../hooks/useProcessStream.js';
 import { isActive } from '../process-state.js';
 import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
@@ -62,6 +62,11 @@ export interface ProcessDetailViewProps {
   launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
 }
 
+/** Whether the process `id` (its `_id` or its `processId`) is a node of `tree`. */
+function treeHolds(tree: ProcessTreeNode, id: string): boolean {
+  return tree._id === id || tree.processId === id || tree.children.some((child) => treeHolds(child, id));
+}
+
 export function ProcessDetailView({
   processId,
   readOnly = false,
@@ -76,9 +81,10 @@ export function ProcessDetailView({
   const { t } = useTranslation();
   // The last state of the process shown, for when it is deleted while open.
   useEffect(() => {
-    // Only the process asked for (by its _id or its processId): right after a switch the stream
-    // may still carry the previous process's state.
-    if (processId && tree && (tree._id === processId || tree.processId === processId)) {
+    // Only a tree that holds the process asked for (by its _id or its processId), as its root or
+    // below it (the stream carries the root's tree: a launch's is its factory's): right after a
+    // switch the stream may still carry the previous process's state.
+    if (processId && tree && treeHolds(tree, processId)) {
       rememberProcess(processId, { tree, logs });
     }
   }, [processId, tree, logs]);

@@ -410,6 +410,29 @@ describe("WithFilteredProcesses — an app's own filters over the metadata", () 
     expect(filter.metadataFilter).toEqual({ module: { in: ['logic'] } });
   });
 
+  // A filter's id is its key in the store (the URL): two filters with one id would share a value.
+  it.each(['search', 'filterGroup', 'showDetails', 'showSpecial'])(
+    'throws for an app filter with the id of a built-in one (%s), naming it',
+    (id) => {
+      const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(() => renderFilters({ customFiltersEnd: [{ ...MODULE_FILTER, id } as FieldDefinition] }))
+        .toThrow(`Filter '${id}': the id of a built-in filter`);
+      expect(() => renderFilters({ customFiltersBegin: [{ ...MODULE_FILTER, id } as FieldDefinition] }))
+        .toThrow(`Filter '${id}': the id of a built-in filter`);
+      quiet.mockRestore();
+    },
+  );
+
+  it("throws for two app filters with one id, in a slot or across them, naming it", () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const level = { kind: 'oneOf', id: 'module', choices: [{ value: 'basic' }] } as FieldDefinition;
+    expect(() => renderFilters({ customFiltersEnd: [MODULE_FILTER, level] }))
+      .toThrow("Filter 'module': two app filters have this id");
+    expect(() => renderFilters({ customFiltersBegin: [MODULE_FILTER], customFiltersEnd: [level] }))
+      .toThrow("Filter 'module': two app filters have this id");
+    quiet.mockRestore();
+  });
+
   it('metadataFilter keeps its identity while it says the same, even when the app passes its filters anew', () => {
     const props = { customFiltersEnd: [{ ...MODULE_FILTER, initialValue: ['logic'] } as FieldDefinition] };
     const { rerender } = render(<FiltersOverList {...props} />);

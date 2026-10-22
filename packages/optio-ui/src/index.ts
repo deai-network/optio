@@ -90,5 +90,6 @@ export {
   isSuspended,
   isTaskFactory,
   isTaskFactoryLaunch,
+  isTaskFactoryLaunchItself,
 } from './process-state.js';
 export type { ProcessStateLike } from './process-state.js';

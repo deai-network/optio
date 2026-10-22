@@ -320,7 +320,19 @@ describe('LaunchControls of a task factory', () => {
 
 // An ended launch that is kept (spec 2026-10-22-task-factory-launch-options §3.4) can be removed.
 describe('LaunchControls: the remove button', () => {
-  const launch = { _id: 'c1', name: 'Drop proposals', metadata: { module: 'm', taskFactory: 'fac' } };
+  // antd's popconfirm measures the scrollbar via getComputedStyle(el, '::-webkit-scrollbar').
+  beforeAll(() => {
+    const real = globalThis.getComputedStyle.bind(globalThis);
+    vi.spyOn(globalThis, 'getComputedStyle').mockImplementation((elt) => real(elt));
+  });
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  // The launch itself: right under its factory's record.
+  const launch = {
+    _id: 'c1', name: 'Drop proposals', depth: 1, parentId: 'f1', metadata: { module: 'm', taskFactory: 'fac' },
+  };
 
   it('the remove button only on an ended launch', () => {
     mockDismissAsync.mockReset();
@@ -339,12 +351,37 @@ describe('LaunchControls: the remove button', () => {
     expect(remove()).toBeNull();
   });
 
-  it('Remove dismisses the launch', async () => {
+  it('an ended sub-task under a kept launch (its metadata inherited) shows no Remove; the launch does', () => {
+    const remove = () => screen.queryByRole('button', { name: 'Remove' });
+    const step = renderWith({
+      ...launch, _id: 's1', name: 'Step', depth: 2, parentId: 'c1', status: { state: 'done' },
+      supportsResume: true, hasSavedState: true,
+    });
+    expect(remove()).toBeNull();
+    expect(step.container.firstChild).toBeNull();
+    step.unmount();
+    renderWith({ ...launch, status: { state: 'done' } });
+    expect(remove()).not.toBeNull();
+  });
+
+  it('Remove asks first: Cancel keeps the launch, OK dismisses it', async () => {
     mockDismissAsync.mockReset();
     mockDismissAsync.mockResolvedValue(null);
     renderWith({ ...launch, status: { state: 'failed' } });
+    const question = 'Remove this launch? Its record and log are deleted.';
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(await screen.findByText(question, {}, { timeout: 60_000 })).toBeTruthy();
+    expect(mockDismissAsync).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByText(question)?.closest('.ant-popover-hidden') ?? null)
+      .not.toBeNull(), { timeout: 60_000 });
+    expect(mockDismissAsync).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(screen.getByText(question).closest('.ant-popover-hidden')).toBeNull(), { timeout: 60_000 });
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }));
     await waitFor(() => expect(mockDismissAsync).toHaveBeenCalledWith('c1'), { timeout: 60_000 });
+    expect(mockDismissAsync).toHaveBeenCalledTimes(1);
   });
 
   it('is not offered where launching is not (no onLaunch: a read-only view)', () => {
@@ -360,7 +397,7 @@ describe('LaunchControls: the remove button', () => {
 // A kept launch whose task saved its state resumes (spec 2026-10-22-task-factory-launch-options §1.5).
 describe('LaunchControls: resuming a kept launch', () => {
   const launch = {
-    _id: 'c1', name: 'Agent run', metadata: { module: 'm', taskFactory: 'fac' },
+    _id: 'c1', name: 'Agent run', depth: 1, parentId: 'f1', metadata: { module: 'm', taskFactory: 'fac' },
     supportsResume: true, hasSavedState: true,
   };
 

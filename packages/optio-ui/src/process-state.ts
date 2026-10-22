@@ -57,6 +57,7 @@ export interface ProcessStateLike {
   autoResumeScheduled?: boolean;
   taskFactory?: boolean;
   metadata?: Record<string, unknown> | null;
+  depth?: number;
 }
 
 export function isLaunchableState(state: string | null | undefined): boolean {
@@ -135,11 +136,19 @@ export function isTaskFactory(process: ProcessStateLike | null | undefined): boo
   return process?.taskFactory === true;
 }
 
-/** A task factory's launch, the child its launch form made: its metadata
+/** A task factory's launch, the child its launch form made, or a record under
+ *  it (a sub-task its run started, which inherits its metadata): its metadata
  *  names the factory (`taskFactory: <factory id>`). It ran once, with its
  *  values, and is never launched again (`isLaunchable` is false), whatever
  *  its state; a TTL keeps it for reading only. */
 export function isTaskFactoryLaunch(process: ProcessStateLike | null | undefined): boolean {
   const factory = process?.metadata?.taskFactory;
   return typeof factory === 'string' && factory !== '';
+}
+
+/** The launch itself (`isTaskFactoryLaunch` at depth 1, right under its factory's
+ *  record), not a record under it: the one a kept launch's Remove (a dismiss)
+ *  deletes; optio-core refuses to dismiss a record under it (`not-dismissable`). */
+export function isTaskFactoryLaunchItself(process: ProcessStateLike | null | undefined): boolean {
+  return isTaskFactoryLaunch(process) && process?.depth === 1;
 }

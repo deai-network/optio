@@ -57,7 +57,9 @@ interface ProcessStreamResult {
   tree: ProcessTreeNode | null;
   rootProcess: ProcessUpdate | null;
   logs: LogEntry[];
-  /** True when the process exists check returned 404. Terminal: no retry. */
+  /** True when the process exists check returned 404, or when an update of the open stream no
+   *  longer holds the process (deleted while shown; matched by `_id` or `processId`). Terminal:
+   *  the stream is closed, no retry. */
   processNotFound: boolean;
   /** Generic error reaching the API (network, 5xx, …). Distinct from
    *  ``processNotFound``; the SSE retry loop is still active when this is
@@ -151,8 +153,17 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'update') {
-            for (const p of data.processes) handleBrowserOpenRequests(p.browserOpenRequests);
-            setState((s) => ({ ...s, processes: data.processes }));
+            const processes: ProcessUpdate[] = data.processes;
+            for (const p of processes) handleBrowserOpenRequests(p.browserOpenRequests);
+            // The stream is the record's root tree: the process deleted while it is open (a
+            // launch dismissed, its factory's tree going on) is no longer in it. Gone for good,
+            // as a probe's 404 says: stop, so no reconnect probes it again and again.
+            if (!processes.some((p) => p._id === processId || p.processId === processId)) {
+              es.close();
+              setState((s) => ({ ...s, processes, processNotFound: true, error: null, connected: false }));
+              return;
+            }
+            setState((s) => ({ ...s, processes }));
           }
           else if (data.type === 'log-clear') setState((s) => ({ ...s, logs: [] }));
           else if (data.type === 'log') setState((s) => ({ ...s, logs: [...s.logs, ...data.entries] }));
