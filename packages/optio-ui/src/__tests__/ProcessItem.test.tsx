@@ -89,7 +89,7 @@ describe('ProcessItem of a task factory', () => {
     fireEvent.click(within(dialog).getByRole('switch', { name: 'Dry run' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Launch' }));
     await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(child), { timeout: 60_000 });
-    expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { dry_run: true } });
+    expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { dry_run: true }, ephemeral: true });
     expect(onLaunch).not.toHaveBeenCalled();
   });
 });

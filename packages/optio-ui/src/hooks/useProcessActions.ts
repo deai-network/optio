@@ -11,14 +11,17 @@ export interface LaunchOptions {
   resume?: boolean;
   /** A task factory's values, by parameter id: the launch makes the factory's child with them. */
   params?: Record<string, unknown>;
+  /** A task factory's launch: removed when it ends (true), or kept until dismissed (false); else the factory's default. */
+  ephemeral?: boolean;
 }
 
-/** The launch route's body: this tab's session, `resume: true` when asked, a task factory's values. */
+/** The launch route's body: this tab's session, `resume: true` when asked, a task factory's values and `ephemeral`. */
 function launchBody(opts: LaunchOptions | undefined) {
   return {
     sessionId: getSessionId(),
     ...(opts?.resume === true ? { resume: true } : {}),
     ...(opts?.params !== undefined ? { params: opts.params } : {}),
+    ...(opts?.ephemeral !== undefined ? { ephemeral: opts.ephemeral } : {}),
   };
 }
 

@@ -52,6 +52,15 @@ describe('useProcessActions().launch', () => {
     await waitFor(() => expect(bodies).toHaveLength(1), { timeout: 60_000 });
     expect(bodies[0]).toEqual({ sessionId: expect.any(String), params: { limit: 3 } });
   });
+
+  it("sends a launch's ephemeral, true or false, and nothing when not given", async () => {
+    const { result } = renderHook(() => useProcessActions(), { wrapper: wrap });
+    result.current.launch('f1', { params: {}, ephemeral: false });
+    result.current.launch('f1', { params: {}, ephemeral: true });
+    result.current.launch('f1', { params: {} });
+    await waitFor(() => expect(bodies).toHaveLength(3), { timeout: 60_000 });
+    expect(bodies.map((b: any) => b.ephemeral)).toEqual([false, true, undefined]);
+  });
 });
 
 describe('useProcessActions().dismiss', () => {

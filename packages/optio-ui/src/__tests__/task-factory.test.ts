@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import i18next from 'i18next';
+import type { FieldDefinition } from 'vultus-core';
+import { mergeOverrides } from '../task-factory-overrides.js';
 import {
+  EPHEMERAL_FIELD_ID, launchFormDefinitions,
   fieldDefinitionOf, initialValueOfParameter, isNoValue, refusedParameter, resolveLabel,
   type TaskFactoryParameter,
 } from '../task-factory.js';
@@ -111,5 +115,87 @@ describe('refusedParameter (an invalid-parameters message, "<id>: <what>")', () 
   it('names none without a prefix', () => {
     expect(refusedParameter('Pick fewer sources for this many units', ['note'])).toBeNull();
     expect(refusedParameter(undefined, ['note'])).toBeNull();
+  });
+});
+
+describe('launchFormDefinitions (spec 3.1: the parameters, then the built-in ephemeral field)', () => {
+  const i18n = i18next.createInstance();
+  i18n.init({ lng: 'en', resources: {} });
+  const parameters = [{ kind: 'boolean', id: 'dry_run', label: 'Dry run' }];
+  const lastOf = (record: Parameters<typeof launchFormDefinitions>[0]) => {
+    const all = launchFormDefinitions(record, 'en', i18n.t) as unknown as Record<string, unknown>[];
+    expect(all.map((d) => d.id)).toEqual(['dry_run', EPHEMERAL_FIELD_ID]);
+    return all[all.length - 1];
+  };
+
+  it('the ephemeral checkbox last, checked without a TTL, with the no-TTL help', () => {
+    expect(lastOf({ parameters })).toMatchObject({
+      kind: 'boolean',
+      id: 'ephemeral',
+      label: 'Remove when finished',
+      initialValue: true,
+      description: 'Checked: the launch disappears from the list when it ends. '
+        + 'Unchecked: it stays, with its log, until it is removed.',
+    });
+  });
+
+  it('unchecked with a TTL, whose help says how long, in the largest unit that divides it', () => {
+    const help = (ttlSeconds: number) => lastOf({ parameters, ttlSeconds }).description;
+    expect(lastOf({ parameters, ttlSeconds: 3600 }).initialValue).toBe(false);
+    expect(help(3600)).toBe(
+      'Checked: the launch disappears from the list when it ends. '
+      + 'Unchecked: it stays, with its log, until it is removed, at most 1 hour after it ends.',
+    );
+    expect(help(90)).toContain('at most 90 seconds after');
+    expect(help(120)).toContain('at most 2 minutes after');
+    expect(help(86400 * 3)).toContain('at most 3 days after');
+    expect(help(1)).toContain('at most 1 second after');
+  });
+
+  it('a factory without parameters has the checkbox alone', () => {
+    expect(launchFormDefinitions({}, 'en', i18n.t).map((d) => d.id)).toEqual(['ephemeral']);
+  });
+});
+
+describe('mergeOverrides (spec 3.2)', () => {
+  const definitions = [
+    { kind: 'oneOf', id: 'mode', label: 'Mode', choices: [{ value: 'a' }, { value: 'b' }], nested: { x: 1, y: { z: 2 } } },
+    { kind: 'boolean', id: 'dry_run', label: 'Dry run' },
+  ] as unknown as FieldDefinition[];
+  const merge = (overrides: Record<string, object> | undefined) =>
+    mergeOverrides(definitions, overrides as never) as unknown as Record<string, unknown>[];
+
+  it('returns the definitions as they are without overrides', () => {
+    expect(mergeOverrides(definitions, undefined)).toEqual(definitions);
+  });
+
+  it('merges objects key by key, recursively, and replaces an array', () => {
+    const [mode] = merge({ mode: { choices: [{ value: 'c' }], nested: { y: { w: 3 } } } });
+    expect(mode.choices).toEqual([{ value: 'c' }]);
+    expect(mode.nested).toEqual({ x: 1, y: { z: 2, w: 3 } });
+    expect(mode.label).toBe('Mode');
+  });
+
+  it('merges plain options into the definition and leaves the others alone', () => {
+    const all = merge({ dry_run: { visible: false, initialValue: true } });
+    expect(all[1]).toEqual({ kind: 'boolean', id: 'dry_run', label: 'Dry run', visible: false, initialValue: true });
+    expect(all[0]).toEqual(definitions[0]);
+    expect(definitions[1]).toEqual({ kind: 'boolean', id: 'dry_run', label: 'Dry run' });
+  });
+
+  it('a function value replaces', () => {
+    const label = () => 'Computed';
+    expect(merge({ mode: { label } })[0].label).toBe(label);
+  });
+
+  it('throws for an override of a field the form lacks', () => {
+    expect(() => merge({ nope: { visible: false } }))
+      .toThrow("Task factory overrides: no field 'nope' in the form");
+  });
+
+  it('throws for an override of kind or id', () => {
+    const message = "Task factory overrides: field 'mode' cannot change its kind or id";
+    expect(() => merge({ mode: { kind: 'text' } })).toThrow(message);
+    expect(() => merge({ mode: { id: 'other' } })).toThrow(message);
   });
 });

@@ -598,7 +598,7 @@ describe('ProcessDetailView', () => {
       expect(mockLaunch).not.toHaveBeenCalled();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Launch' }));
       await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(child), { timeout: 60_000 });
-      expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { limit: 3 } });
+      expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { limit: 3 }, ephemeral: true });
       expect(mockLaunch).not.toHaveBeenCalled();
     });
 

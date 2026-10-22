@@ -100,7 +100,7 @@ wires a complete app (providers, i18n, proxy) this way.
 | `ProcessTreeView` | Ant Design `Tree` rendering a nested process hierarchy from SSE data |
 | `ProcessLogPanel` | Scrolling monospace log viewer with level-colored tags; auto-scrolls to bottom |
 | `ProcessFilters` | The filters of a process list, each a vultus field: the app's own filters over the metadata that come first, search, filter group (all/active/hide_completed/errors), "show details" and "show special", then the app's own that come last; reads its state from an enclosing `WithFilteredProcesses`, whose `FilteredProcessList` applies it (see [Process filters](#process-filters)) |
-| `TaskFactoryLaunchModal` | A task factory's launch form: a field per parameter (vultus-antd), the factory's warning, Launch; a refusal shows on the field it names. The launch button of a factory's record (in `ProcessItem`, `ProcessTreeView`, `ProcessDetailView`) opens it; `onLaunched(child)` gets the launch |
+| `TaskFactoryLaunchModal` | A task factory's launch form: a field per parameter (vultus-antd), a built-in "Remove when finished" field (the launch's `ephemeral`), the factory's warning, Launch; a refusal shows on the field it names. `overrides` (field id to a partial vultus definition, `mergeOverrides`) changes any field, e.g. hides one and launches with its value. The launch button of a factory's record (in `ProcessItem`, `ProcessTreeView`, `ProcessDetailView`) opens it; `onLaunched(child)` gets the launch |
 
 ## Hooks
 

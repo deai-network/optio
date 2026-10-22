@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { Process } from 'optio-contracts';
 import { parseApiError, useAction, useActionErrorCtx, type ActionStatus, type FormLike } from 'vultus-core';
 import { optioErrorRoutes, type OptioErrorRouteId } from '../error-routes.js';
-import { parametersOf, refusedParameter } from '../task-factory.js';
+import { EPHEMERAL_FIELD_ID, parametersOf, refusedParameter } from '../task-factory.js';
 import { useProcessActions } from './useProcessActions.js';
 
 /** What a task factory's launch needs of its record (a list's, a tree's, or the API's). */
@@ -12,6 +12,8 @@ export interface TaskFactoryRecord {
   name: string;
   warning?: string | null;
   parameters?: unknown[] | null;
+  /** How long the factory keeps an ended launch (null: until dismissed); it sets the `ephemeral` field's start. */
+  ttlSeconds?: number | null;
 }
 
 /**
@@ -26,7 +28,11 @@ export interface TaskFactoryRecord {
  */
 export function useTaskFactoryLaunchAction(
   factory: TaskFactoryRecord,
-  { onLaunched }: { onLaunched?: (child: Process) => void } = {},
+  { onLaunched, hiddenLabels }: {
+    onLaunched?: (child: Process) => void;
+    /** The label of each form field that is not shown, by id: a refusal naming one shows in the form under it. */
+    hiddenLabels?: Readonly<Record<string, string>>;
+  } = {},
 ): ActionStatus<Record<string, unknown>> {
   const { t } = useTranslation();
   const { launchAsync } = useProcessActions();
@@ -39,10 +45,15 @@ export function useTaskFactoryLaunchAction(
       variant: 'primary',
       errorRoute: 'processes.launch',
       fire: async (values) => {
+        // The form's `ephemeral` field is the launch's, the others' values its params.
+        const { [EPHEMERAL_FIELD_ID]: ephemeral, ...params } = values;
         try {
-          return await launchAsync(factory._id, { params: values });
+          return await launchAsync(factory._id, {
+            params,
+            ...(typeof ephemeral === 'boolean' ? { ephemeral } : {}),
+          });
         } catch (err) {
-          throw placeRefusal(err, ids, form);
+          throw placeRefusal(err, ids, form, hiddenLabels ?? {});
         }
       },
       onSuccess: (child) => onLaunched?.(child),
@@ -54,14 +65,23 @@ export function useTaskFactoryLaunchAction(
 /**
  * Where a launch refusal shows, as the error the action fails with. An
  * `invalid-parameters` one naming a field of the form: on that field (what is
- * wrong), and its reason's text in the form. One naming none: its own message,
+ * wrong), and its reason's text in the form. One naming none, or a field that
+ * is not shown (`hiddenLabels`, then as "<label>: <what>"): its own message,
  * in the form (the reason's text would not say what is wrong), so it goes on
  * without its reason. Any other: by its reason (the error routes).
  */
-function placeRefusal(err: unknown, ids: string[], form: FormLike | undefined): unknown {
+function placeRefusal(
+  err: unknown,
+  ids: string[],
+  form: FormLike | undefined,
+  hiddenLabels: Readonly<Record<string, string>>,
+): unknown {
   const { status, reason, message } = parseApiError(err);
   if (reason !== 'invalid-parameters') return err;
   const refused = refusedParameter(message, ids);
+  if (refused && Object.hasOwn(hiddenLabels, refused.id)) {
+    return { status, body: { message: `${hiddenLabels[refused.id]}: ${refused.problem}` } };
+  }
   if (refused && form) {
     form.setFields([{ name: refused.id, errors: [refused.problem] }]);
     return err;

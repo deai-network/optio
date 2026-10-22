@@ -284,7 +284,7 @@ describe('LaunchControls of a task factory', () => {
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Note' }), { target: { value: 'hi' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Launch' }));
     await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(child), { timeout: 60_000 });
-    expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { note: 'hi' } });
+    expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { note: 'hi' }, ephemeral: true });
   });
 
   it('renders nothing without onLaunch, as for any process', () => {

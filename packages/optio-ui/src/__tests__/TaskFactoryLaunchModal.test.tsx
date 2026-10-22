@@ -5,6 +5,7 @@ import { I18nextProvider } from 'react-i18next';
 import i18next from 'i18next';
 import { OptioProvider } from '../context/OptioProvider.js';
 import { TaskFactoryLaunchModal } from '../components/TaskFactoryLaunchModal.js';
+import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 
 // No instance discovery requests: the provider is given its instance.
 vi.mock('../hooks/useInstanceDiscovery.js', () => ({
@@ -57,7 +58,11 @@ function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function renderModal(process: any = FACTORY, host: { onKeyDown?: () => void; onClick?: () => void } = {}) {
+function renderModal(
+  process: any = FACTORY,
+  host: { onKeyDown?: () => void; onClick?: () => void } = {},
+  overrides?: TaskFactoryOverrides,
+) {
   const onClose = vi.fn();
   const onLaunched = vi.fn();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -67,7 +72,7 @@ function renderModal(process: any = FACTORY, host: { onKeyDown?: () => void; onC
         <OptioProvider prefix="test" database="test-db">
           {/* The host around the launch control (a process tree, a clickable row). */}
           <div onKeyDown={host.onKeyDown} onClick={host.onClick}>
-            <TaskFactoryLaunchModal process={process} open onClose={onClose} onLaunched={onLaunched} />
+            <TaskFactoryLaunchModal process={process} open onClose={onClose} onLaunched={onLaunched} overrides={overrides} />
           </div>
         </OptioProvider>
       </QueryClientProvider>
@@ -237,6 +242,73 @@ describe('TaskFactoryLaunchModal', () => {
       expect(within(itemOf(note)).getByText('At most 5 characters')).toBeTruthy();
     }, { timeout: 60_000 });
     expect(requests).toHaveLength(0);
+  });
+
+  it('has the ephemeral checkbox last, checked, and sends it apart from the params', async () => {
+    const { dialog } = renderModal();
+    const ephemeral = within(dialog).getByRole('switch', { name: 'Remove when finished' });
+    expect(ephemeral.getAttribute('aria-checked')).toBe('true');
+    expect(ephemeral.getAttribute('aria-description')).toMatch(/^Checked: the launch disappears/);
+    const note = within(dialog).getByRole('textbox', { name: 'Note' });
+    expect(note.compareDocumentPosition(ephemeral) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(launchButton());
+    expect(await launchedWith()).not.toHaveProperty('ephemeral');
+    expect(requests[0].body.ephemeral).toBe(true);
+  });
+
+  it('sends ephemeral false when it is unchecked', async () => {
+    const { dialog } = renderModal();
+    fireEvent.click(within(dialog).getByRole('switch', { name: 'Remove when finished' }));
+    fireEvent.click(launchButton());
+    await launchedWith();
+    expect(requests[0].body.ephemeral).toBe(false);
+  });
+
+  it('starts the checkbox unchecked for a factory with a TTL, and says how long it keeps', () => {
+    const { dialog } = renderModal({ ...FACTORY, ttlSeconds: 3600 });
+    const ephemeral = within(dialog).getByRole('switch', { name: 'Remove when finished' });
+    expect(ephemeral.getAttribute('aria-checked')).toBe('false');
+    expect(ephemeral.getAttribute('aria-description')).toMatch(/at most 1 hour after it ends\.$/);
+  });
+
+  it('a hidden field is not shown and its value is sent', async () => {
+    const { dialog } = renderModal(FACTORY, {}, { dry_run: { visible: false, initialValue: false } });
+    expect(within(dialog).queryByRole('switch', { name: 'Próbafutás' })).toBeNull();
+    // The whole item, label included, is antd's hidden one (display: none), its value kept in the form.
+    const label = within(dialog).getByText('Próbafutás');
+    expect(itemOf(label).classList.contains('ant-form-item-hidden')).toBe(true);
+    expect(getComputedStyle(itemOf(label)).display).toBe('none');
+    expect(within(dialog).getByRole('combobox', { name: 'Mode' })).toBeTruthy();
+    fireEvent.click(launchButton());
+    expect((await launchedWith()).dry_run).toBe(false);
+  });
+
+  it('resolves an overridden label, initial value and a function of the field context', async () => {
+    const { dialog } = renderModal(FACTORY, {}, {
+      limit: { label: () => 'Cap', initialValue: 42 },
+      note: { hidden: () => true },
+    });
+    expect((within(dialog).getByRole('spinbutton', { name: 'Cap' }) as HTMLInputElement).value).toBe('42');
+    expect(within(dialog).queryByRole('textbox', { name: 'Note' })).toBeNull();
+    fireEvent.click(launchButton());
+    expect((await launchedWith()).limit).toBe(42);
+  });
+
+  it('shows a refusal naming a hidden field with its label in the form', async () => {
+    answer = { status: 400, body: { reason: 'invalid-parameters', message: 'dry_run: must be true or false' } };
+    const { dialog, onClose } = renderModal(FACTORY, {}, { dry_run: { visible: false, initialValue: false } });
+    fireEvent.click(launchButton());
+    await launchedWith();
+    expect(await within(dialog).findByText('Próbafutás: must be true or false', {}, { timeout: 60_000 }))
+      .toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('fails loudly, at render, on an override of a field the form lacks', () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => renderModal(FACTORY, {}, { nope: { visible: false } }))
+      .toThrow("Task factory overrides: no field 'nope' in the form");
+    quiet.mockRestore();
   });
 
   it("keeps its events from the host's handlers around it", () => {

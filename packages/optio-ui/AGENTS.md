@@ -540,6 +540,7 @@ interface TaskFactoryRecord {          // what it needs of the factory's record
   name: string;
   warning?: string | null;
   parameters?: unknown[] | null;       // TaskFactoryParameter[] (optio-core checked them at sync)
+  ttlSeconds?: number | null;          // how long it keeps an ended launch; null: until dismissed
 }
 
 interface TaskFactoryLaunchModalProps {
@@ -547,7 +548,11 @@ interface TaskFactoryLaunchModalProps {
   open: boolean;
   onClose: () => void;                 // Cancel, the close icon, Escape, and after a launch
   onLaunched?: (child: Process) => void;  // the launched child; the modal then closes
+  overrides?: TaskFactoryOverrides;    // field id -> partial vultus-core definition, merged in
 }
+
+type TaskFactoryOverrides = Readonly<Record<string, Partial<FieldDefinition>>>;
+function mergeOverrides(definitions: readonly FieldDefinition[], overrides: TaskFactoryOverrides | undefined): FieldDefinition[];
 ```
 
 The launch form of a task factory (`packages/optio-ui/src/components/TaskFactoryLaunchModal.tsx`;
@@ -571,23 +576,46 @@ them.
   is launched. The other kinds always hold a value; only a required text or manyOf is marked
   required. Initial values: `initialValue`, else the kind's own default (vultus-core's
   `initialValueOf`).
-- **Launch** is the vultus action `useTaskFactoryLaunchAction(record, { onLaunched })`
+- **The built-in `ephemeral` field** (`launchFormDefinitions(record, language, t)` in
+  `src/task-factory.ts`, `EPHEMERAL_FIELD_ID`): after the parameters, a boolean with the label
+  `processes.launchEphemeral` ("Remove when finished"), initially `ttlSeconds == null` (checked
+  unless the factory keeps ended launches for a TTL), and a description (the field's help):
+  `processes.launchEphemeralHelp` ("Checked: the launch disappears from the list when it ends.
+  Unchecked: it stays, with its log, until it is removed.") or, with a TTL,
+  `processes.launchEphemeralHelpTtl` (the same, "… until it is removed, at most {{duration}} after
+  it ends."), `duration` the largest of days, hours, minutes, seconds that divides the TTL
+  (`processes.durationDays|Hours|Minutes|Seconds`, i18next plurals).
+- **Overrides** (`overrides`, `mergeOverrides`, exported, pure): merged into each field's finished
+  definition, the `ephemeral` one included: plain objects key by key, recursively; anything else (a
+  value, an array such as `choices`, a function) replaces; functions of the field context are fine.
+  Throws at render `Task factory overrides: no field '<id>' in the form` for an id the form lacks and
+  `Task factory overrides: field '<id>' cannot change its kind or id` for a `kind` or `id` override.
+  The form resolves each merged definition's `label`, `visible`/`hidden` and initial value as vultus
+  does (`resolveIn`, `calculateVisible`, `initialValueOf`, with `useFieldContext()`): a field that is
+  not visible is a hidden `Form.Item` (label and all), its value still in the form and sent.
+- **Launch** is the vultus action `useTaskFactoryLaunchAction(record, { onLaunched, hiddenLabels })`
   (`src/hooks/useTaskFactoryLaunch.ts`, created inside the `FormPanel`): `fire(values)` calls
-  `useProcessActions().launchAsync(_id, { params: values })` (every parameter's value, as the form
-  holds it), `errorRoute: 'processes.launch'` with `optioErrorRoutes`. On success it calls
+  `useProcessActions().launchAsync(_id, { params, ephemeral })` (`ephemeral` the checkbox's value,
+  `params` every other field's value, as the form holds it), `errorRoute: 'processes.launch'` with
+  `optioErrorRoutes`. On success it calls
   `onLaunched(child)` and closes. A refusal leaves the modal open with the values entered:
   - `invalid-parameters` whose message `"<id>: <what>"` names a parameter of the form: `<what>` on
     that field (`form.setFields`), and the reason's text (`errors.processes.launch.invalid-parameters`)
     in the form's error (`FormPanel`'s inline `Alert`);
-  - `invalid-parameters` naming none: its message, as the engine wrote it, in the form's error;
+  - `invalid-parameters` naming none, or a field that is not visible (then `"<label>: <what>"`,
+    `hiddenLabels` giving the labels): its message, as the engine wrote it, in the form's error;
   - any other reason: its text (`errors.processes.launch.<reason>`) in the form's error; an error
     without a reason (network, 401/403), its message.
 - React events inside the modal (click, mouse down, key down) stop at it: they would otherwise
   bubble, along React's tree, to the handlers around the launch control (the process tree's
   keyboard navigation took arrow keys, Home and End typed in a field).
 
-Exported from `optio-ui`, with the `TaskFactoryLaunchModalProps`, `TaskFactoryRecord`,
-`TaskFactoryParameter`, `ParameterChoice` and `ParameterLabel` types.
+`useProcessActions().launch/launchAsync(id, { resume?, params?, ephemeral? })`: `ephemeral` goes in
+the launch body when given (a factory launch's removal when it ends).
+
+Exported from `optio-ui`, with `mergeOverrides` and the `TaskFactoryLaunchModalProps`,
+`TaskFactoryOverrides`, `TaskFactoryRecord`, `TaskFactoryParameter`, `ParameterChoice` and
+`ParameterLabel` types.
 
 ### Error routes (`optioErrorRoutes`)
 
@@ -1046,3 +1074,10 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.factoryCancel` | `TaskFactoryLaunchModal` | The cancel button (default: "Cancel") |
 | `processes.factoryRequired` | `TaskFactoryLaunchModal` | A required parameter without a value (default: "Required") |
 | `processes.factoryMaxLength` | `TaskFactoryLaunchModal` | A text over its `maxLength`, `{{count}}` (default: "At most {{count}} characters") |
+| `processes.launchEphemeral` | `TaskFactoryLaunchModal` | The `ephemeral` field's label (default: "Remove when finished") |
+| `processes.launchEphemeralHelp` | `TaskFactoryLaunchModal` | Its help without a TTL (default: "Checked: the launch disappears from the list when it ends. Unchecked: it stays, with its log, until it is removed.") |
+| `processes.launchEphemeralHelpTtl` | `TaskFactoryLaunchModal` | Its help with a TTL, `{{duration}}` in words (default: "Checked: … Unchecked: it stays, with its log, until it is removed, at most {{duration}} after it ends.") |
+| `processes.durationSeconds_one` / `_other` | `TaskFactoryLaunchModal` | `{{duration}}` of the TTL help, `{{count}}` (defaults: "{{count}} second" / "{{count}} seconds") |
+| `processes.durationMinutes_one` / `_other` | `TaskFactoryLaunchModal` | As above (defaults: "{{count}} minute" / "{{count}} minutes") |
+| `processes.durationHours_one` / `_other` | `TaskFactoryLaunchModal` | As above (defaults: "{{count}} hour" / "{{count}} hours") |
+| `processes.durationDays_one` / `_other` | `TaskFactoryLaunchModal` | As above (defaults: "{{count}} day" / "{{count}} days") |

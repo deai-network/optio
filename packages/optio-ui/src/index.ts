@@ -58,6 +58,8 @@ export type { ProcessDetailViewProps } from './components/ProcessDetailView.js';
 export { TaskFactoryLaunchModal } from './components/TaskFactoryLaunchModal.js';
 export type { TaskFactoryLaunchModalProps } from './components/TaskFactoryLaunchModal.js';
 export type { TaskFactoryRecord } from './hooks/useTaskFactoryLaunch.js';
+export { mergeOverrides } from './task-factory-overrides.js';
+export type { TaskFactoryOverrides } from './task-factory-overrides.js';
 export type { TaskFactoryParameter, ParameterChoice, ParameterLabel } from './task-factory.js';
 export { ProcessWidget, useProcessWidget, useProcessWidgetState } from './components/ProcessWidget.js';
 export type { ProcessWidgetProps, UseProcessWidgetStateResult, UseProcessWidgetOptions } from './components/ProcessWidget.js';

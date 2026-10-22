@@ -10,6 +10,7 @@
  * trusted here; the form (TaskFactoryLaunchModal) checks `required` and
  * `maxLength` itself, and optio-core checks every value again at launch.
  */
+import type { TFunction } from 'i18next';
 import { initialValueOf, NO_FIELD_CONTEXT, type FieldDefinition } from 'vultus-core';
 
 /** A label: a text, or a map of language code to text. */
@@ -81,6 +82,54 @@ export function fieldDefinitionOf(parameter: TaskFactoryParameter, language: str
 /** The form's starting value: the parameter's `initialValue`, else its kind's own default (vultus-core's). */
 export function initialValueOfParameter(parameter: TaskFactoryParameter): unknown {
   return initialValueOf(fieldDefinitionOf(parameter, undefined), NO_FIELD_CONTEXT);
+}
+
+/** The id of the built-in field that is not a parameter: whether the launch is removed when it ends. */
+export const EPHEMERAL_FIELD_ID = 'ephemeral';
+
+/** The largest of days, hours, minutes, seconds that divides `seconds`, in words. */
+function durationInWords(seconds: number, t: TFunction): string {
+  const units: [string, number, string, string][] = [
+    ['processes.durationDays', 86400, '{{count}} day', '{{count}} days'],
+    ['processes.durationHours', 3600, '{{count}} hour', '{{count}} hours'],
+    ['processes.durationMinutes', 60, '{{count}} minute', '{{count}} minutes'],
+    ['processes.durationSeconds', 1, '{{count}} second', '{{count}} seconds'],
+  ];
+  const [key, size, one, other] = units.find(([, size]) => seconds % size === 0) ?? units[3];
+  return t(key, { count: seconds / size, defaultValue_one: one, defaultValue_other: other });
+}
+
+/**
+ * The launch form's definitions (spec 2026-10-22-task-factory-launch-options
+ * §3.1): the record's parameters (fieldDefinitionOf), then the built-in
+ * boolean `ephemeral`, starting checked unless the factory keeps its launches
+ * for a TTL (`ttlSeconds`), whose help says for how long.
+ */
+export function launchFormDefinitions(
+  record: { parameters?: unknown[] | null; ttlSeconds?: number | null },
+  language: string | undefined,
+  t: TFunction,
+): FieldDefinition[] {
+  const ttl = record.ttlSeconds ?? null;
+  const help = ttl === null
+    ? t(
+      'processes.launchEphemeralHelp',
+      'Checked: the launch disappears from the list when it ends. Unchecked: it stays, with its log, until it is removed.',
+    )
+    : t('processes.launchEphemeralHelpTtl', {
+      defaultValue: 'Checked: the launch disappears from the list when it ends. '
+        + 'Unchecked: it stays, with its log, until it is removed, at most {{duration}} after it ends.',
+      duration: durationInWords(ttl, t),
+      interpolation: { escapeValue: false },
+    });
+  const ephemeral: FieldDefinition = {
+    kind: 'boolean',
+    id: EPHEMERAL_FIELD_ID,
+    label: t('processes.launchEphemeral', 'Remove when finished'),
+    description: help,
+    initialValue: ttl === null,
+  };
+  return [...parametersOf(record).map((p) => fieldDefinitionOf(p, language)), ephemeral];
 }
 
 /**

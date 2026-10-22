@@ -4,12 +4,13 @@ import type { FormRule } from 'antd';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import type { Process } from 'optio-contracts';
-import { useAction, type FieldDefinition } from 'vultus-core';
+import {
+  calculateVisible, initialValueOf, resolveIn, useAction, useFieldContext, type FieldCtx, type FieldDefinition,
+} from 'vultus-core';
 import { ActionButton, Field, FormPanel, FormSubmitButton, type FieldProps } from 'vultus-antd';
 import { useTaskFactoryLaunchAction, type TaskFactoryRecord } from '../hooks/useTaskFactoryLaunch.js';
-import {
-  fieldDefinitionOf, initialValueOfParameter, isNoValue, labelOf, parametersOf, type TaskFactoryParameter,
-} from '../task-factory.js';
+import { isNoValue, launchFormDefinitions, parametersOf, type TaskFactoryParameter } from '../task-factory.js';
+import { mergeOverrides, type TaskFactoryOverrides } from '../task-factory-overrides.js';
 
 export interface TaskFactoryLaunchModalProps {
   /** The factory's record: its `_id`, `name`, `warning` and `parameters`. */
@@ -19,6 +20,12 @@ export interface TaskFactoryLaunchModalProps {
   onClose: () => void;
   /** Called with the launched child once the launch is accepted (the modal then closes). */
   onLaunched?: (child: Process) => void;
+  /**
+   * Per field id (a parameter's, or `ephemeral`), a partial vultus-core definition merged into
+   * that field's (`mergeOverrides`): e.g. `{ visible: false, initialValue: false }` hides a
+   * field and launches with its value. An id the form lacks, or a `kind`/`id` override, throws.
+   */
+  overrides?: TaskFactoryOverrides;
 }
 
 // Events inside the modal bubble, along React's tree, to the handlers around
@@ -36,7 +43,9 @@ const stop = (e: SyntheticEvent) => e.stopPropagation();
  * a launch closes it and hands the child to `onLaunched`. Each opening starts
  * from the initial values again.
  */
-export function TaskFactoryLaunchModal({ process, open, onClose, onLaunched }: TaskFactoryLaunchModalProps) {
+export function TaskFactoryLaunchModal({
+  process, open, onClose, onLaunched, overrides,
+}: TaskFactoryLaunchModalProps) {
   const { t } = useTranslation();
   return (
     <span style={{ display: 'contents' }} onClick={stop} onMouseDown={stop} onKeyDown={stop}>
@@ -52,7 +61,7 @@ export function TaskFactoryLaunchModal({ process, open, onClose, onLaunched }: T
         destroyOnHidden
       >
         <FormPanel layout="vertical">
-          <LaunchForm process={process} onClose={onClose} onLaunched={onLaunched} />
+          <LaunchForm process={process} onClose={onClose} onLaunched={onLaunched} overrides={overrides} />
         </FormPanel>
       </Modal>
     </span>
@@ -60,13 +69,22 @@ export function TaskFactoryLaunchModal({ process, open, onClose, onLaunched }: T
 }
 
 // Inside the FormPanel, as its actions must be: that is where a refusal finds the form.
-function LaunchForm({ process, onClose, onLaunched }: Omit<TaskFactoryLaunchModalProps, 'open'>) {
+function LaunchForm({ process, onClose, onLaunched, overrides }: Omit<TaskFactoryLaunchModalProps, 'open'>) {
   const { t, i18n } = useTranslation();
+  const ctx = useFieldContext();
+  // Throws, as it renders, for an override of a field the form lacks or of a kind or id.
+  const definitions = useMemo(
+    () => mergeOverrides(launchFormDefinitions(process, i18n.language, t), overrides),
+    [process, i18n.language, t, overrides],
+  );
+  const items = definitions.map((definition) => resolveItem(definition, ctx));
+  const hiddenLabels = Object.fromEntries(items.filter((i) => !i.visible).map((i) => [i.definition.id, i.label]));
   const launch = useTaskFactoryLaunchAction(process, {
     onLaunched: (child) => {
       onLaunched?.(child);
       onClose();
     },
+    hiddenLabels,
   });
   const cancel = useAction({
     id: 'optio.taskFactory.cancel',
@@ -76,8 +94,12 @@ function LaunchForm({ process, onClose, onLaunched }: Omit<TaskFactoryLaunchModa
   return (
     <>
       {process.warning && <Alert type="warning" showIcon title={process.warning} style={{ marginBottom: 16 }} />}
-      {parametersOf(process).map((parameter) => (
-        <ParameterItem key={parameter.id} parameter={parameter} language={i18n.language} />
+      {items.map((item) => (
+        <FieldItem
+          key={item.definition.id}
+          item={item}
+          parameter={parametersOf(process).find((p) => p.id === item.definition.id)}
+        />
       ))}
       <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <ActionButton action={cancel} />
@@ -87,31 +109,55 @@ function LaunchForm({ process, onClose, onLaunched }: Omit<TaskFactoryLaunchModa
   );
 }
 
+/** A merged definition with its label, visibility and initial value as vultus resolves them. */
+interface FormItem {
+  definition: FieldDefinition;
+  label: string;
+  visible: boolean;
+  initialValue: unknown;
+}
+
+function resolveItem(definition: FieldDefinition, ctx: FieldCtx): FormItem {
+  const where = (name: string) => `Field '${definition.id}': option '${name}'`;
+  return {
+    definition,
+    label: resolveIn(definition.label, '', ctx, where('label')),
+    visible: calculateVisible(
+      definition.id,
+      resolveIn<boolean | undefined>(definition.visible, undefined, ctx, where('visible')),
+      resolveIn<boolean | undefined>(definition.hidden, undefined, ctx, where('hidden')),
+    ),
+    initialValue: initialValueOf(definition, ctx),
+  };
+}
+
 /**
- * One parameter as a form item: the form keeps its value under the
- * parameter's id (the launch's `params`), and checks what vultus-core has no
- * option for — a required parameter's value, a text's `maxLength` — as
- * optio-core will at the launch.
+ * One field as a form item: the form keeps its value under the field's id
+ * (a parameter's, the launch's `params`; `ephemeral`, the launch's own), and
+ * checks what vultus-core has no option for — a parameter's required value, a
+ * text's `maxLength` — as optio-core will at the launch. A field that is not
+ * visible is a hidden item: out of sight, its value still in the form.
  */
-function ParameterItem({ parameter, language }: { parameter: TaskFactoryParameter; language: string | undefined }) {
+function FieldItem({ item, parameter }: { item: FormItem; parameter: TaskFactoryParameter | undefined }) {
   const { t } = useTranslation();
-  const definition = useMemo(() => fieldDefinitionOf(parameter, language), [parameter, language]);
-  const rules: FormRule[] = [{
+  const rules: FormRule[] = parameter ? [{
     validator: async (_rule, value) => {
       const problem = valueProblem(parameter, value, t);
       if (problem) throw new Error(problem);
     },
-  }];
+  }] : [];
   return (
     <Form.Item
-      name={parameter.id}
-      label={labelOf(parameter, language)}
-      initialValue={initialValueOfParameter(parameter)}
+      name={item.definition.id}
+      label={item.label}
+      initialValue={item.initialValue}
+      hidden={!item.visible}
       // The mark only where a value can be missing (the other kinds always have one).
-      required={parameter.required !== false && (parameter.kind === 'text' || parameter.kind === 'manyOf')}
+      required={parameter !== undefined && parameter.required !== false
+        && (parameter.kind === 'text' || parameter.kind === 'manyOf')}
       rules={rules}
     >
-      <FieldControl definition={definition} />
+      <FieldControl definition={item.definition} />
     </Form.Item>
   );
 }
