@@ -19,6 +19,11 @@ PY     := $(VENV)/bin/python
 PIP    := $(VENV)/bin/pip
 PYTEST := $(VENV)/bin/pytest
 
+# The clamator CLI `make codegen` runs. Override it where this checkout has no install of its own
+# at the root, e.g. a sibling checkout whose packages another workspace links:
+# `make codegen CLAMATOR=<that workspace>/node_modules/.bin/clamator-codegen`.
+CLAMATOR ?= pnpm exec clamator-codegen
+
 $(VENV)/bin/python:
 	$(PYTHON) -m venv $(VENV)
 	$(PIP) install --upgrade pip
@@ -72,8 +77,9 @@ build: $(VENV)/bin/python  ## Build all packages
 	  (cd packages/$$pkg && $(PY) -m build 2>/dev/null || true); \
 	done
 
-codegen:  ## Regenerate clamator RPC client/server stubs from optio-contracts source
-	pnpm exec clamator-codegen \
+codegen: $(VENV)/bin/python  ## Regenerate clamator RPC client/server stubs from optio-contracts source (CLAMATOR= another clamator-codegen)
+	@# clamator runs datamodel-codegen (optio-core's dev extra) for the Python side: the venv's first.
+	PATH="$(VENV)/bin:$$PATH" $(CLAMATOR) \
 	  --src packages/optio-contracts/src \
 	  --out-ts packages/optio-api/src/_generated \
 	  --out-py packages/optio-core/src/optio_core/_generated \

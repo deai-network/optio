@@ -39,6 +39,8 @@ redis = ["redis>=5.0.0"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    # `make codegen` (clamator) writes the engine's Pydantic models with it.
+    "datamodel-code-generator>=0.26",
 ]
 
 [project.urls]
