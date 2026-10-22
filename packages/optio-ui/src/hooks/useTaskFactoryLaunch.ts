@@ -28,10 +28,11 @@ export interface TaskFactoryRecord {
  */
 export function useTaskFactoryLaunchAction(
   factory: TaskFactoryRecord,
-  { onLaunched, hiddenLabels }: {
+  { onLaunched, fixedLabels }: {
     onLaunched?: (child: Process) => void;
-    /** The label of each form field that is not shown, by id: a refusal naming one shows in the form under it. */
-    hiddenLabels?: Readonly<Record<string, string>>;
+    /** The label of each form field the user cannot change (not shown, or disabled), by id: a
+     *  refusal naming one shows in the form under it. */
+    fixedLabels?: Readonly<Record<string, string>>;
   } = {},
 ): ActionStatus<Record<string, unknown>> {
   const { t } = useTranslation();
@@ -53,7 +54,7 @@ export function useTaskFactoryLaunchAction(
             ...(typeof ephemeral === 'boolean' ? { ephemeral } : {}),
           });
         } catch (err) {
-          throw placeRefusal(err, ids, form, hiddenLabels ?? {});
+          throw placeRefusal(err, ids, form, fixedLabels ?? {});
         }
       },
       onSuccess: (child) => onLaunched?.(child),
@@ -65,22 +66,23 @@ export function useTaskFactoryLaunchAction(
 /**
  * Where a launch refusal shows, as the error the action fails with. An
  * `invalid-parameters` one naming a field of the form: on that field (what is
- * wrong), and its reason's text in the form. One naming none, or a field that
- * is not shown (`hiddenLabels`, then as "<label>: <what>"): its own message,
- * in the form (the reason's text would not say what is wrong), so it goes on
- * without its reason. Any other: by its reason (the error routes).
+ * wrong), and its reason's text in the form. One naming none, or a field the
+ * user cannot change (`fixedLabels`: not shown, or disabled; then as
+ * "<label>: <what>"): its own message, in the form (the reason's text would
+ * not say what is wrong), so it goes on without its reason. Any other: by its
+ * reason (the error routes).
  */
 function placeRefusal(
   err: unknown,
   ids: string[],
   form: FormLike | undefined,
-  hiddenLabels: Readonly<Record<string, string>>,
+  fixedLabels: Readonly<Record<string, string>>,
 ): unknown {
   const { status, reason, message } = parseApiError(err);
   if (reason !== 'invalid-parameters') return err;
   const refused = refusedParameter(message, ids);
-  if (refused && Object.hasOwn(hiddenLabels, refused.id)) {
-    return { status, body: { message: `${hiddenLabels[refused.id]}: ${refused.problem}` } };
+  if (refused && Object.hasOwn(fixedLabels, refused.id)) {
+    return { status, body: { message: `${fixedLabels[refused.id]}: ${refused.problem}` } };
   }
   if (refused && form) {
     form.setFields([{ name: refused.id, errors: [refused.problem] }]);

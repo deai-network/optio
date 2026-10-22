@@ -1,10 +1,11 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useMemo, type ReactNode } from 'react';
 import { Spin } from 'antd';
 import { useTranslation } from 'react-i18next';
 import type { Process } from 'optio-contracts';
 import { useSpinnerKey, useVultusComponents } from 'vultus-core';
-import { useProcessStream, type ProcessTreeNode } from '../hooks/useProcessStream.js';
-import { isActive } from '../process-state.js';
+import { useProcessStream, type LogEntry, type ProcessTreeNode } from '../hooks/useProcessStream.js';
+import { isActive, isTaskFactoryLaunchItself } from '../process-state.js';
+import { logsOfSubtree, subtreeOf } from '../process-subtree.js';
 import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
 import { useProcessWidgetState } from './ProcessWidget.js';
@@ -62,9 +63,18 @@ export interface ProcessDetailViewProps {
   launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
 }
 
-/** Whether the process `id` (its `_id` or its `processId`) is a node of `tree`. */
-function treeHolds(tree: ProcessTreeNode, id: string): boolean {
-  return tree._id === id || tree.processId === id || tree.children.some((child) => treeHolds(child, id));
+/**
+ * What the view shows of the stream's tree (the record's root tree) and logs: for a factory's
+ * launch (`isTaskFactoryLaunchItself`), whose stream carries its factory's tree, the launch's
+ * own node and its logs, so its own widget (an agent launch's conversation) shows; for any other
+ * process, the root's tree and every log, as before.
+ */
+function viewOf(
+  tree: ProcessTreeNode | null, logs: LogEntry[], processId: string | null | undefined,
+): { tree: ProcessTreeNode | null; logs: LogEntry[] } {
+  const node = tree && processId ? subtreeOf(tree, processId) : null;
+  if (!node || node === tree || !isTaskFactoryLaunchItself(node)) return { tree, logs };
+  return { tree: node, logs: logsOfSubtree(logs, node) };
 }
 
 export function ProcessDetailView({
@@ -76,18 +86,23 @@ export function ProcessDetailView({
   onLaunched,
   launchOverrides,
 }: ProcessDetailViewProps) {
-  const { tree, logs, connected, processNotFound, error } =
-    useProcessStream(processId ?? undefined);
+  const stream = useProcessStream(processId ?? undefined);
+  const { connected, processNotFound, error } = stream;
+  const { tree, logs } = useMemo(
+    () => viewOf(stream.tree, stream.logs, processId),
+    [stream.tree, stream.logs, processId],
+  );
   const { t } = useTranslation();
-  // The last state of the process shown, for when it is deleted while open.
+  // The last state of the process shown, for when it is deleted while open: its own node (the
+  // stream carries its root's tree) and that node's logs.
   useEffect(() => {
-    // Only a tree that holds the process asked for (by its _id or its processId), as its root or
-    // below it (the stream carries the root's tree: a launch's is its factory's): right after a
+    // Only a tree that holds the process asked for (by its _id or its processId): right after a
     // switch the stream may still carry the previous process's state.
-    if (processId && tree && treeHolds(tree, processId)) {
-      rememberProcess(processId, { tree, logs });
+    const node = processId && stream.tree ? subtreeOf(stream.tree, processId) : null;
+    if (processId && node) {
+      rememberProcess(processId, { tree: node, logs: logsOfSubtree(stream.logs, node) });
     }
-  }, [processId, tree, logs]);
+  }, [processId, stream.tree, stream.logs]);
   const { launch, cancel, resurrect } = useProcessActions();
   // readOnly reaches the widget too: a suspended conversation's composer
   // would otherwise resume the process.

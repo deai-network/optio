@@ -5,7 +5,8 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import type { Process } from 'optio-contracts';
 import {
-  calculateVisible, initialValueOf, resolveIn, useAction, useFieldContext, type FieldCtx, type FieldDefinition,
+  calculateEnabled, calculateVisible, getVerdict, initialValueOf, resolveIn, useAction, useFieldContext,
+  type Decision, type FieldCtx, type FieldDefinition,
 } from 'vultus-core';
 import { ActionButton, Field, FormPanel, FormSubmitButton, type FieldProps } from 'vultus-antd';
 import { useTaskFactoryLaunchAction, type TaskFactoryRecord } from '../hooks/useTaskFactoryLaunch.js';
@@ -85,13 +86,14 @@ function LaunchForm({
     [process, i18n.language, t, overrides],
   );
   const items = definitions.map((definition) => resolveItem(definition, ctx));
-  const hiddenLabels = Object.fromEntries(items.filter((i) => !i.visible).map((i) => [i.definition.id, i.label]));
+  // The fields the user cannot change: a refusal naming one shows in the form, with its label.
+  const fixedLabels = Object.fromEntries(items.filter((i) => !i.changeable).map((i) => [i.definition.id, i.label]));
   const launch = useTaskFactoryLaunchAction(process, {
     onLaunched: (child) => {
       onLaunched?.(child);
       onClose();
     },
-    hiddenLabels,
+    fixedLabels,
   });
   // The form unmounts when a launch closes it, possibly before the action reports it is done.
   const pending = launch.pending;
@@ -124,11 +126,13 @@ function LaunchForm({
   );
 }
 
-/** A merged definition with its label, visibility and initial value as vultus resolves them. */
+/** A merged definition with its label, visibility, enabled state and initial value as vultus resolves them. */
 interface FormItem {
   definition: FieldDefinition;
   label: string;
   visible: boolean;
+  /** Visible and enabled: the user can change its value. */
+  changeable: boolean;
   initialValue: unknown;
 }
 
@@ -140,14 +144,21 @@ function widgetNameOf(definition: FieldDefinition): string | undefined {
 
 function resolveItem(definition: FieldDefinition, ctx: FieldCtx): FormItem {
   const where = (name: string) => `Field '${definition.id}': option '${name}'`;
+  const visible = calculateVisible(
+    definition.id,
+    resolveIn<boolean | undefined>(definition.visible, undefined, ctx, where('visible')),
+    resolveIn<boolean | undefined>(definition.hidden, undefined, ctx, where('hidden')),
+  );
+  const enabled = getVerdict(calculateEnabled(
+    definition.id,
+    resolveIn<Decision | undefined>(definition.enabled, undefined, ctx, where('enabled')),
+    resolveIn<Decision | undefined>(definition.disabled, undefined, ctx, where('disabled')),
+  ), true);
   return {
     definition,
     label: resolveIn(definition.label, '', ctx, where('label')),
-    visible: calculateVisible(
-      definition.id,
-      resolveIn<boolean | undefined>(definition.visible, undefined, ctx, where('visible')),
-      resolveIn<boolean | undefined>(definition.hidden, undefined, ctx, where('hidden')),
-    ),
+    visible,
+    changeable: visible && enabled,
     initialValue: initialValueOf(definition, ctx),
   };
 }
@@ -157,14 +168,14 @@ function resolveItem(definition: FieldDefinition, ctx: FieldCtx): FormItem {
  * (a parameter's, the launch's `params`; `ephemeral`, the launch's own), and
  * checks what vultus-core has no option for — a parameter's required value, a
  * text's `maxLength` — as optio-core will at the launch. A field that is not
- * visible is a hidden item: out of sight, its value still in the form, and not
- * checked here (the user could not fix it): optio-core's refusal of its value
- * shows in the form, as "<label>: <what>".
+ * visible is a hidden item: out of sight, its value still in the form. Neither
+ * it nor a disabled one is checked here (the user could not fix it):
+ * optio-core's refusal of its value shows in the form, as "<label>: <what>".
  */
 function FieldItem({ item, parameter }: { item: FormItem; parameter: TaskFactoryParameter | undefined }) {
   const { t } = useTranslation();
-  // The parameter the form checks: a visible field's.
-  const checked = item.visible ? parameter : undefined;
+  // The parameter the form checks: a field the user can change.
+  const checked = item.changeable ? parameter : undefined;
   const rules: FormRule[] = checked ? [{
     validator: async (_rule, value) => {
       const problem = valueProblem(checked, value, t);

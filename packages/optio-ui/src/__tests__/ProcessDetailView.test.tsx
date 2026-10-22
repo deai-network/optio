@@ -631,6 +631,74 @@ describe('ProcessDetailView', () => {
     });
   });
 
+  // A launch's stream carries its factory's tree; the view is the launch's own (owner, 2026-10-22:
+  // "so that we can see the real conversation for the launches").
+  describe('a factory launch', () => {
+    const line = (processId: string, message: string) => ({
+      timestamp: '2026-04-22T10:00:00Z', level: 'info', message, processId,
+    });
+    const launch = (fields: Record<string, unknown>) => ({
+      status: { state: 'done' }, progress: { percent: null }, cancellable: false,
+      depth: 1, order: 0, parentId: 'f1', children: [], metadata: { taskFactory: 'fac' }, ...fields,
+    });
+    const first = launch({
+      _id: 'c1', processId: 'fac_0a1b2c3d', name: 'First launch', status: { state: 'running' },
+      uiWidget: 'my-widget', widgetData: {},
+    });
+    const second = launch({ _id: 'c2', processId: 'fac_99887766', name: 'Second launch', order: 1 });
+    const factoryTree = {
+      _id: 'f1', processId: 'fac', name: 'The factory', status: { state: 'idle' },
+      progress: { percent: null }, cancellable: false,
+      depth: 0, order: 0, parentId: null, children: [first, second], taskFactory: true, parameters: [],
+    };
+    const logs = [
+      line('f1', 'words of the factory'), line('c1', 'words of the first'), line('c2', 'words of the second'),
+    ];
+
+    beforeEach(() => {
+      registerWidget('my-widget', (props) => <div data-testid="my-widget">widget:{props.process._id}</div>);
+      mockProcessStream.mockReturnValue({ tree: factoryTree, logs, connected: true });
+    });
+
+    it('with a widget: its widget, its own logs, nothing of its factory or the other launch', () => {
+      render(<ProcessDetailView processId="c1" />);
+      expect(screen.getByTestId('my-widget').textContent).toBe('widget:c1');
+      expect(screen.getByText('words of the first')).toBeTruthy();
+      for (const other of ['words of the second', 'words of the factory', 'Second launch', 'The factory']) {
+        expect(screen.queryByText(other)).toBeNull();
+      }
+    });
+
+    it('without one (asked by its processId): its own node and logs', () => {
+      render(<ProcessDetailView processId="fac_99887766" />);
+      expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
+      expect(screen.getAllByText('Second launch').length).toBeGreaterThan(0);
+      expect(screen.getByText('words of the second')).toBeTruthy();
+      for (const other of ['words of the first', 'words of the factory', 'First launch', 'The factory']) {
+        expect(screen.queryByText(other)).toBeNull();
+      }
+      expect(screen.queryByTestId('my-widget')).toBeNull();
+    });
+
+    it("a plain child task, no launch, still shows its root's view", () => {
+      const child = {
+        _id: 'k1', processId: 'step', name: 'A step', status: { state: 'running' },
+        progress: { percent: null }, cancellable: true, depth: 1, order: 0, parentId: 'r1', children: [],
+        uiWidget: 'my-widget', widgetData: {},
+      };
+      const root = {
+        _id: 'r1', processId: 'job', name: 'The job', status: { state: 'running' },
+        progress: { percent: null }, cancellable: true, depth: 0, order: 0, parentId: null, children: [child],
+      };
+      mockProcessStream.mockReturnValue({ tree: root, logs: [line('r1', 'words of the job')], connected: true });
+      render(<ProcessDetailView processId="k1" />);
+      expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
+      expect(screen.getAllByText('The job').length).toBeGreaterThan(0);
+      expect(screen.getByText('words of the job')).toBeTruthy();
+      expect(screen.queryByTestId('my-widget')).toBeNull();
+    });
+  });
+
   // A process deleted while open keeps its last state on screen (spec 2026-10-22 §3.5).
   describe('a deleted process', () => {
     const runningTree = (id: string) => ({
@@ -641,7 +709,7 @@ describe('ProcessDetailView', () => {
     const showThenDelete = (id: string) => {
       mockProcessStream.mockReturnValue({
         tree: runningTree(id),
-        logs: [{ timestamp: '2026-04-22T10:00:00Z', level: 'info', message: `last words of ${id}` }],
+        logs: [{ timestamp: '2026-04-22T10:00:00Z', level: 'info', message: `last words of ${id}`, processId: id }],
         connected: true,
       });
       const view = render(<ProcessDetailView processId={id} />);
@@ -666,7 +734,8 @@ describe('ProcessDetailView', () => {
       const { container } = showThenDelete('p1');
       expect(screen.getByText('Process deleted.')).toBeTruthy();
       expect(screen.queryByTestId('optio-detail-not-found')).toBeNull();
-      expect(screen.getByText('Process p1')).toBeTruthy();
+      // Its node in the tree (and the label of its log lines).
+      expect(screen.getAllByText('Process p1').length).toBeGreaterThan(0);
       expect(screen.getByText('last words of p1')).toBeTruthy();
       expect(container.querySelector('.anticon-close-circle')).toBeNull();
       expect(container.querySelector('.anticon-play-circle')).toBeNull();
@@ -700,10 +769,46 @@ describe('ProcessDetailView', () => {
         view.rerender(<ProcessDetailView processId={id} />);
         expect(screen.getByText('Process deleted.')).toBeTruthy();
         expect(screen.queryByTestId('optio-detail-not-found')).toBeNull();
-        expect(screen.getByText('Drop proposals (kept)')).toBeTruthy();
+        expect(screen.getAllByText('Drop proposals (kept)').length).toBeGreaterThan(0);
         expect(screen.getByText('last words of the launch')).toBeTruthy();
         expect(view.container.querySelector('.anticon-delete')).toBeNull();
+        // The launch, not its factory around it.
+        expect(screen.queryByText('Drop proposals')).toBeNull();
         cleanup();
+      }
+    });
+
+    it("a launch deleted shows only its own node and log, nothing of its factory's other launches", () => {
+      const launch = (id: string, processId: string, name: string, state: string) => ({
+        _id: id, processId, name, status: { state }, progress: { percent: null }, cancellable: false,
+        depth: 1, order: 0, parentId: 'f1', children: [], metadata: { taskFactory: 'fac' },
+      });
+      const first = launch('c1', 'fac_0a1b2c3d', 'First launch', 'done');
+      const second = launch('c2', 'fac_99887766', 'Second launch', 'running');
+      const factoryTree = {
+        _id: 'f1', processId: 'fac', name: 'The factory', status: { state: 'idle' },
+        progress: { percent: null }, cancellable: false,
+        depth: 0, order: 0, parentId: null, children: [first, second], taskFactory: true, parameters: [],
+      };
+      const line = (processId: string, message: string) => ({
+        timestamp: '2026-04-22T10:00:00Z', level: 'info', message, processId,
+      });
+      mockProcessStream.mockReturnValue({
+        tree: factoryTree,
+        logs: [line('f1', 'words of the factory'), line('c1', 'words of the first'), line('c2', 'words of the second')],
+        connected: true,
+      });
+      const view = render(<ProcessDetailView processId="c1" />);
+      mockProcessStream.mockReturnValue({
+        tree: { ...factoryTree, children: [second] }, logs: [], connected: false, processNotFound: true,
+      });
+      view.rerender(<ProcessDetailView processId="c1" />);
+      expect(screen.getByText('Process deleted.')).toBeTruthy();
+      // Its node (and the label of its log lines).
+      expect(screen.getAllByText('First launch').length).toBeGreaterThan(0);
+      expect(screen.getByText('words of the first')).toBeTruthy();
+      for (const other of ['Second launch', 'words of the second', 'The factory', 'words of the factory']) {
+        expect(screen.queryByText(other)).toBeNull();
       }
     });
 
@@ -722,7 +827,7 @@ describe('ProcessDetailView', () => {
     it("does not cache the previous process's state under the one switched to", () => {
       mockProcessStream.mockReturnValue({
         tree: runningTree('A'),
-        logs: [{ timestamp: '2026-04-22T10:00:00Z', level: 'info', message: 'last words of A' }],
+        logs: [{ timestamp: '2026-04-22T10:00:00Z', level: 'info', message: 'last words of A', processId: 'A' }],
         connected: true,
       });
       const view = render(<ProcessDetailView processId="A" />);

@@ -536,10 +536,20 @@ interface ProcessDetailViewProps {
 function ProcessDetailView(props: ProcessDetailViewProps): JSX.Element
 ```
 
-Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branches:
+Self-fetching detail panel. Uses `useProcessStream` internally, whose stream carries the
+record's root tree. **A factory's launch is shown as itself** (owner, 2026-10-22): when the
+process asked for is a launch (`isTaskFactoryLaunchItself`: `metadata.taskFactory`, depth 1),
+whose stream carries its factory's tree with every launch under it, the view's `tree` is the
+launch's node (`subtreeOf`) and its logs those of that node's records (`logsOfSubtree`), so the
+branches below (its widget, e.g. an agent launch's conversation, its actions) are the launch's.
+Any other process is shown with its root's tree and every log of it, as before. The selection
+helpers are in `src/process-subtree.ts` (pure): `namesProcess(record, id)` (`processId`, or
+`_id`, a 24-hex one in any case, as optio-api resolves it), `subtreeOf(tree, id)` (the node `id`
+names with what is under it, or null), `logsOfSubtree(logs, subtree)` (the entries whose
+`processId`, a record's `_id`, is a node of it). Rendering branches:
 
 - **No processId** — renders a centred "Select a process" placeholder.
-- **`processNotFound`** from the stream (the record is gone, also when deleted while open: an update that no longer holds it) — if the view has shown the process before: its last tree (`ProcessTreeView` without actions, no widget) and last log (`ProcessLogPanel`, unless `showLogs` is false) under the notice `processes.deleted` ("Process deleted."). The view remembers the last snapshot (`tree`, `logs`) of the last 5 processes it showed, a snapshot whose tree holds the process asked for (by `_id` or `processId`) as its root or as a node below it (the stream carries the record's root tree: a launch's is its factory's, the launch at depth 1), in a module-level in-memory cache (`lastSeenProcesses.ts`: `rememberProcess`, `lastSeenProcess`, `forgetAllProcesses` for tests; the least recently shown is dropped; a reload empties it; nothing is stored in the browser). A process it never showed: `processes.notFound` ("Process not found.").
+- **`processNotFound`** from the stream (the record is gone, also when deleted while open: an update that no longer holds it) — if the view has shown the process before: its last tree (`ProcessTreeView` without actions, no widget) and last log (`ProcessLogPanel`, unless `showLogs` is false) under the notice `processes.deleted` ("Process deleted."). The view remembers the last snapshot of the last 5 processes it showed: the node the process asked for is in the stream's tree (`subtreeOf`, by `_id` or `processId`; a tree that does not hold it is not remembered), with what is under it, and the log entries of that subtree (`logsOfSubtree`) — for a launch, the same as its live view, nothing of its factory or the other launches. They are kept in a module-level in-memory cache (`lastSeenProcesses.ts`: `rememberProcess`, `lastSeenProcess`, `forgetAllProcesses` for tests; the least recently shown is dropped; a reload empties it; nothing is stored in the browser). A process it never showed: `processes.notFound` ("Process not found.").
 - **`error`** from the stream — "Error while accessing process: …".
 - **Waiting** (`waitForWidget` or `widgetPlaceholder`) — renders the placeholder, or a large spinner (the app's lent Spinner, key `optio:process:${processId}:detail`, else antd's `Spin`), in place of the "Loading…" line below, and in place of the default tree+log view while a scheduled or running process has no widget to show yet.
 - **No tree yet** (stream not yet received) — renders a "Loading…" placeholder (preceded by the app's lent Spinner, if any — see "Spinner slot").
@@ -607,11 +617,11 @@ them.
   `''` for a text; `[]` for a manyOf) shows `processes.factoryRequired`, a text over its
   `maxLength` (in code points, as optio-core counts) `processes.factoryMaxLength`, and nothing
   is launched. The other kinds always hold a value; only a required text or manyOf is marked
-  required. Only a visible field is checked so (the user could not fix a hidden one): a hidden
-  field's value is sent as it is, and optio-core's refusal of it shows in the form as
-  `"<label>: <what>"` (below). A disabled field (an override's `disabled`, with its reason as the
-  control's tooltip) keeps its value in the form, which is sent. Initial values: `initialValue`,
-  else the kind's own default (vultus-core's `initialValueOf`).
+  required. Only a field the user can change (visible and enabled) is checked so: a hidden or a
+  disabled one (an override's `visible: false`/`hidden`, or `disabled` with its reason as the
+  control's tooltip) has no rules and no required mark, its value, kept in the form, is sent as
+  it is, and optio-core's refusal of it shows in the form as `"<label>: <what>"` (below).
+  Initial values: `initialValue`, else the kind's own default (vultus-core's `initialValueOf`).
 - **The built-in `ephemeral` field** (`launchFormDefinitions(record, language, t)` in
   `src/task-factory.ts`, `EPHEMERAL_FIELD_ID`): after the parameters, a boolean rendered as a checkbox (`widget: 'checkbox'`, which an override may change; the form item then leaves the label to the widget, so it shows once) with the label
   `processes.launchEphemeral` ("Remove when finished"), initially `ttlSeconds == null` (checked
@@ -626,10 +636,11 @@ them.
   value, an array such as `choices`, a function) replaces; functions of the field context are fine.
   Throws at render `Task factory overrides: no field '<id>' in the form` for an id the form lacks and
   `Task factory overrides: field '<id>' cannot change its kind or id` for a `kind` or `id` override.
-  The form resolves each merged definition's `label`, `visible`/`hidden` and initial value as vultus
-  does (`resolveIn`, `calculateVisible`, `initialValueOf`, with `useFieldContext()`): a field that is
-  not visible is a hidden `Form.Item` (label and all), its value still in the form and sent.
-- **Launch** is the vultus action `useTaskFactoryLaunchAction(record, { onLaunched, hiddenLabels })`
+  The form resolves each merged definition's `label`, `visible`/`hidden`, `enabled`/`disabled` and
+  initial value as vultus does (`resolveIn`, `calculateVisible`, `calculateEnabled`,
+  `initialValueOf`, with `useFieldContext()`): a field that is not visible is a hidden `Form.Item`
+  (label and all), its value still in the form and sent.
+- **Launch** is the vultus action `useTaskFactoryLaunchAction(record, { onLaunched, fixedLabels })`
   (`src/hooks/useTaskFactoryLaunch.ts`, created inside the `FormPanel`): `fire(values)` calls
   `useProcessActions().launchAsync(_id, { params, ephemeral })` (`ephemeral` the checkbox's value,
   `params` every other field's value, as the form holds it), `errorRoute: 'processes.launch'` with
@@ -638,8 +649,9 @@ them.
   - `invalid-parameters` whose message `"<id>: <what>"` names a parameter of the form: `<what>` on
     that field (`form.setFields`), and the reason's text (`errors.processes.launch.invalid-parameters`)
     in the form's error (`FormPanel`'s inline `Alert`);
-  - `invalid-parameters` naming none, or a field that is not visible (then `"<label>: <what>"`,
-    `hiddenLabels` giving the labels): its message, as the engine wrote it, in the form's error;
+  - `invalid-parameters` naming none, or a field the user cannot change, hidden or disabled (then
+    `"<label>: <what>"`, `fixedLabels` giving the labels): its message, as the engine wrote it, in
+    the form's error;
   - any other reason: its text (`errors.processes.launch.<reason>`) in the form's error; an error
     without a reason (network, 401/403), its message.
 - React events inside the modal (click, mouse down, key down) stop at it: they would otherwise
@@ -1026,9 +1038,10 @@ function useProcessStream(
 SSE endpoint: `{baseUrl}/api/processes/{processId}/tree/stream?prefix={prefix}&maxDepth={maxDepth}[&database={database}]`,
 opened after a probe `GET {baseUrl}/api/processes/{processId}?prefix=…[&database=…]`. The stream
 carries the record's root tree (a launch's: its factory's, with the other launches). An `update`
-whose processes no longer hold the process asked for (no `_id` or `processId` equal to
-`processId`: deleted while the stream is open, e.g. a launch dismissed) sets `processNotFound`
-and closes the stream, as the probe's 404 does: no reconnect.
+whose processes no longer hold the process asked for (none that `processId` names,
+`namesProcess`: its `processId`, or its `_id`, a 24-hex one in any case; deleted while the
+stream is open, e.g. a launch dismissed) sets `processNotFound` and closes the stream, as the
+probe's 404 does: no reconnect.
 
 Reconnects (probe first) 3 seconds after an error. Each component instance manages its
 own `EventSource`, unless a `MultiProcessStreamProvider` ancestor streams the process

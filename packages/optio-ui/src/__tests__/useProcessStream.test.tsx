@@ -96,6 +96,19 @@ describe('useProcessStream: the process gone from its tree', () => {
     expect(MockEventSource.live()).toHaveLength(0);
   });
 
+  it('a hex _id asked for in upper case names its record (optio-api resolves it in any case)', async () => {
+    const root = node({ _id: '64b0c0ffee00000000000000', processId: 'task', parentId: null, depth: 0 });
+    const { result } = renderHook(() => useProcessStream('64B0C0FFEE00000000000000'));
+    await settle();
+    const [es] = MockEventSource.live();
+    act(() => es.emit({ type: 'update', processes: [root] }));
+    expect(result.current.processNotFound).toBe(false);
+    expect(es.closed).toBe(false);
+    expect(result.current.tree?._id).toBe('64b0c0ffee00000000000000');
+    act(() => es.emit({ type: 'update', processes: [] }));
+    expect(result.current.processNotFound).toBe(true);
+  });
+
   it('a whole tree gone (an empty update) reports the process not found', async () => {
     const { result } = renderHook(() => useProcessStream('fac-oid'));
     await settle();

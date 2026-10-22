@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'r
 import { useOptioPrefix, useOptioBaseUrl, useOptioDatabase } from '../context/useOptioContext.js';
 import { MultiProcessStreamContext } from '../context/MultiProcessStreamContext.js';
 import { handleBrowserOpenRequests } from '../handlers/browserOpen.js';
+import { namesProcess } from '../process-subtree.js';
 
 interface ProcessUpdate {
   /** The process's stable id (e.g. `<dataspace>__analyze_<sourceId>_<agent>`);
@@ -58,8 +59,8 @@ interface ProcessStreamResult {
   rootProcess: ProcessUpdate | null;
   logs: LogEntry[];
   /** True when the process exists check returned 404, or when an update of the open stream no
-   *  longer holds the process (deleted while shown; matched by `_id` or `processId`). Terminal:
-   *  the stream is closed, no retry. */
+   *  longer holds the process (deleted while shown; matched by `processId` or `_id`, a hex one
+   *  in any case: `namesProcess`). Terminal: the stream is closed, no retry. */
   processNotFound: boolean;
   /** Generic error reaching the API (network, 5xx, …). Distinct from
    *  ``processNotFound``; the SSE retry loop is still active when this is
@@ -158,7 +159,7 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
             // The stream is the record's root tree: the process deleted while it is open (a
             // launch dismissed, its factory's tree going on) is no longer in it. Gone for good,
             // as a probe's 404 says: stop, so no reconnect probes it again and again.
-            if (!processes.some((p) => p._id === processId || p.processId === processId)) {
+            if (!processes.some((p) => namesProcess(p, processId))) {
               es.close();
               setState((s) => ({ ...s, processes, processNotFound: true, error: null, connected: false }));
               return;

@@ -324,6 +324,23 @@ describe('TaskFactoryLaunchModal', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("a required field disabled with no value does not hold the launch back: the engine's refusal shows with its label", async () => {
+    answer = { status: 400, body: { reason: 'invalid-parameters', message: 'title: required' } };
+    const factory = {
+      ...FACTORY,
+      warning: undefined,
+      parameters: [{ kind: 'text', id: 'title', label: 'Title' }, { kind: 'text', id: 'note', label: 'Note', required: false }],
+    };
+    const { dialog, onClose } = renderModal(factory, {}, { title: { disabled: { verdict: true, reason: 'Set by the page' } } });
+    expect((within(dialog).getByRole('textbox', { name: 'Title' }) as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(launchButton());
+    // The user cannot change it: the form does not check it, the engine does.
+    expect((await launchedWith()).title).toBe('');
+    expect(await within(dialog).findByText('Title: required', {}, { timeout: 60_000 })).toBeTruthy();
+    expect(within(dialog).queryByText('Required')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('a disabled preset shows its reason and is sent', async () => {
     const reason = 'Fixed for this page';
     const { dialog } = renderModal(FACTORY, {}, { limit: { initialValue: 7, disabled: { verdict: true, reason } } });
