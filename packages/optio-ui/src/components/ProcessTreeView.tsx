@@ -4,7 +4,6 @@ import { CloseCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import type { Process } from 'optio-contracts';
-import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
 import { isActive as isProcessActive, isResurrecting } from '../process-state.js';
@@ -40,9 +39,9 @@ interface NodeActions {
   onCancel?: (processId: string) => void;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   onLaunched?: (child: Process) => void;
-  /** Overrides of a task factory's launch form, by the factory's `processId`. */
-  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
   onResurrect?: (processId: string) => void;
+  /** A node's name is a link button calling this with the node's `_id`; without it, plain text. */
+  onProcessClick?: (id: string) => void;
 }
 
 interface ProcessTreeViewProps extends NodeActions {
@@ -68,7 +67,7 @@ function collectKeys(node: ProcessNode): string[] {
 }
 
 function treeNodeToDataNode(node: ProcessNode, actions: NodeActions, t: TFunction): DataNode {
-  const { onCancel, onLaunch, onLaunched, launchOverrides, onResurrect } = actions;
+  const { onCancel, onLaunch, onLaunched, onResurrect, onProcessClick } = actions;
   const isActive = isProcessActive(node);
   // A resurrect runs while the state stays failed; show its progress message.
   const showsProgressMessage = isActive || isResurrecting(node);
@@ -77,17 +76,26 @@ function treeNodeToDataNode(node: ProcessNode, actions: NodeActions, t: TFunctio
   const stopLabel = suspends ? t('processes.suspend', 'Suspend') : t('processes.cancel');
   const hasPercent = node.progress.percent != null;
 
+  // As ProcessItem's name: a link button when the caller handles clicks, plain text otherwise.
+  const nameContent = onProcessClick ? (
+    <Button
+      type="link"
+      style={{ padding: 0, height: 'auto', whiteSpace: 'nowrap' }}
+      onClick={() => onProcessClick(node._id)}
+    >
+      {node.name}
+    </Button>
+  ) : (
+    <Text style={{ whiteSpace: 'nowrap' }}>{node.name}</Text>
+  );
+
   return {
     key: node._id,
     title: (
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0 8px', width: '100%' }}>
         {node.description ? (
-          <Tooltip title={node.description}>
-            <Text style={{ whiteSpace: 'nowrap' }}>{node.name}</Text>
-          </Tooltip>
-        ) : (
-          <Text style={{ whiteSpace: 'nowrap' }}>{node.name}</Text>
-        )}
+          <Tooltip title={node.description}>{nameContent}</Tooltip>
+        ) : nameContent}
         <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', minWidth: 120, justifyContent: 'flex-end' }}>
           <ProcessStatusBadge
             state={node.status.state} error={node.status.error} runningSince={node.status.runningSince}
@@ -139,7 +147,7 @@ function treeNodeToDataNode(node: ProcessNode, actions: NodeActions, t: TFunctio
           )}
           {onLaunch && (
             <LaunchControls
-              process={node as any} onLaunch={onLaunch} onLaunched={onLaunched} launchOverrides={launchOverrides}
+              process={node as any} onLaunch={onLaunch} onLaunched={onLaunched}
               onResurrect={onResurrect} size="small"
             />
           )}
@@ -154,7 +162,7 @@ function treeNodeToDataNode(node: ProcessNode, actions: NodeActions, t: TFunctio
 }
 
 export function ProcessTreeView({
-  treeData, sseState, onCancel, onLaunch, onLaunched, launchOverrides, onResurrect,
+  treeData, sseState, onCancel, onLaunch, onLaunched, onResurrect, onProcessClick,
 }: ProcessTreeViewProps) {
   const { t } = useTranslation();
   const [hideFinishedLeaves, setHideFinishedLeaves] = useState(true);
@@ -164,7 +172,7 @@ export function ProcessTreeView({
 
   if (!treeData || !filtered) return null;
 
-  const treeNodes = [treeNodeToDataNode(filtered, { onCancel, onLaunch, onLaunched, launchOverrides, onResurrect }, t)];
+  const treeNodes = [treeNodeToDataNode(filtered, { onCancel, onLaunch, onLaunched, onResurrect, onProcessClick }, t)];
 
   return (
     <div>

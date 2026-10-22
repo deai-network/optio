@@ -9,7 +9,6 @@ import {
 import { Field } from 'vultus-antd';
 import { toPredicate } from 'vultus-filtrum';
 import type { Process, ProcessMetadataFilter } from 'optio-contracts';
-import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 import { ProcessList } from './ProcessList.js';
 
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
@@ -283,8 +282,6 @@ interface FilteredProcessListProps {
   loading: boolean;
   onLaunch?: (processId: string) => void;
   onLaunched?: (child: Process) => void;
-  /** Overrides of a task factory's launch form, by the factory's `processId`. */
-  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;

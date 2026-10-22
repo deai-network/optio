@@ -613,17 +613,6 @@ describe('ProcessDetailView', () => {
       expect(mockLaunch).not.toHaveBeenCalled();
     });
 
-    it("launchOverrides reach the tree's play button, by the factory's processId", async () => {
-      mockProcessStream.mockReturnValue({ tree: { ...factoryTree, processId: 'app.drop' }, logs: [], connected: true });
-      const { container } = render(
-        <ProcessDetailView processId="f1" launchOverrides={{ 'app.drop': { limit: { visible: false } } }} />,
-      );
-      fireEvent.click(container.querySelector('.anticon-play-circle')!.closest('button')!);
-      const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
-      // antd keeps a hidden item (its value is still sent), out of sight.
-      expect(within(dialog).getByText('Limit').closest('.ant-form-item')!.classList.contains('ant-form-item-hidden')).toBe(true);
-    });
-
     it('read-only, it offers no launch', () => {
       mockProcessStream.mockReturnValue({ tree: factoryTree, logs: [], connected: true });
       const { container } = render(<ProcessDetailView processId="f1" readOnly />);
@@ -667,6 +656,22 @@ describe('ProcessDetailView', () => {
       for (const other of ['words of the second', 'words of the factory', 'Second launch', 'The factory']) {
         expect(screen.queryByText(other)).toBeNull();
       }
+    });
+
+    it("switching between two launches of one factory remounts the widget: the second keeps nothing of the first's", () => {
+      let mounts = 0;
+      registerWidget('my-widget', () => {
+        const [mount] = React.useState(() => ++mounts);
+        return <div data-testid="my-widget">mount:{mount}</div>;
+      });
+      const secondWithWidget = { ...second, status: { state: 'running' }, uiWidget: 'my-widget', widgetData: {} };
+      mockProcessStream.mockReturnValue({
+        tree: { ...factoryTree, children: [first, secondWithWidget] }, logs, connected: true,
+      });
+      const { rerender } = render(<ProcessDetailView processId="c1" />);
+      expect(screen.getByTestId('my-widget').textContent).toBe('mount:1');
+      rerender(<ProcessDetailView processId="c2" />);
+      expect(screen.getByTestId('my-widget').textContent).toBe('mount:2');
     });
 
     it('without one (asked by its processId): its own node and logs', () => {

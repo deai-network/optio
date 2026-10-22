@@ -147,9 +147,11 @@ type TaskFactoryOverrides = Readonly<Record<string, Partial<FieldDefinition>>>;
   - `dialog`: the form's modal, for the app to render once (a hook renders nothing itself).
 - **`TaskFactoryLaunchButton({ factoryId, overrides?, onLaunched?, size? })`:** the hook's action as
   an `ActionButton`, and its dialog.
-- **`launchOverrides`** on `ProcessItem`, `ProcessList`, `FilteredProcessList`, `ProcessTreeView` and
-  `ProcessDetailView`: `Readonly<Record<string /* a factory's processId */, TaskFactoryOverrides>>`,
-  passed down as `onLaunched` is; a factory's play button takes its factory's entry.
+- **Delivery of overrides:** they reach the form through `useTaskFactory`, `TaskFactoryLaunchButton`
+  and `ProcessItem`'s `launchOverrides`: `Readonly<Record<string /* a factory's processId */,
+  TaskFactoryOverrides>>`, which `ProcessItem` gives its `LaunchControls`; a factory's play button
+  takes its factory's entry. `ProcessList`, `FilteredProcessList`, `ProcessTreeView` and
+  `ProcessDetailView` have none: their factory forms are plain.
 - The play buttons (`LaunchControls`) use the same hook; without overrides, the full form.
 
 ### 3.4 Removing a kept launch

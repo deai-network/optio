@@ -12,7 +12,6 @@ import { useProcessWidgetState } from './ProcessWidget.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
 import { LaunchControls } from './LaunchControls.js';
 import { lastSeenProcess, rememberProcess } from './lastSeenProcesses.js';
-import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 
 export interface ProcessDetailViewProps {
   processId: string | null | undefined;
@@ -56,11 +55,6 @@ export interface ProcessDetailViewProps {
    * launched it: the child it made, which shows under the factory.
    */
   onLaunched?: (child: Process) => void;
-  /**
-   * Overrides of a task factory's launch form, by the factory's `processId`
-   * (`Record<string, TaskFactoryOverrides>`): its play button in the tree takes its entry.
-   */
-  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
 }
 
 /**
@@ -84,8 +78,7 @@ export function ProcessDetailView({
   waitForWidget = false,
   widgetPlaceholder,
   onLaunched,
-  launchOverrides,
-}: ProcessDetailViewProps) {
+}:ProcessDetailViewProps) {
   const stream = useProcessStream(processId ?? undefined);
   const { connected, processNotFound, error } = stream;
   const { tree, logs } = useMemo(
@@ -201,12 +194,11 @@ export function ProcessDetailView({
               process={tree}
               onLaunch={(id, opts) => launch(id, opts)}
               onLaunched={onLaunched}
-              launchOverrides={launchOverrides}
               onResurrect={(id) => resurrect(id)}
             />
           </div>
         )}
-        <div style={{ flex: '1 1 auto', minHeight: 0 }}>
+        <div key={tree._id} style={{ flex: '1 1 auto', minHeight: 0 }}>
           {widget}
         </div>
       </div>
@@ -223,7 +215,6 @@ export function ProcessDetailView({
         sseState={{ connected }}
         onLaunch={readOnly ? undefined : (id, opts) => launch(id, opts)}
         onLaunched={onLaunched}
-        launchOverrides={launchOverrides}
         onResurrect={readOnly ? undefined : (id) => resurrect(id)}
         onCancel={readOnly ? undefined : (id) => cancel(id)}
       />

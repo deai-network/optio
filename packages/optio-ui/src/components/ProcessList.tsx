@@ -3,7 +3,6 @@ import { List } from 'antd';
 import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import type { Process } from 'optio-contracts';
 import { ProcessItem } from './ProcessItem.js';
-import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 
 interface ProcessListProps {
   processes: any[];
@@ -11,8 +10,6 @@ interface ProcessListProps {
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   /** A task factory's launch form launched it (forwarded to each ProcessItem): the child it made. */
   onLaunched?: (child: Process) => void;
-  /** Overrides of a task factory's launch form, by the factory's `processId` (forwarded to each ProcessItem). */
-  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
@@ -41,7 +38,7 @@ function SpinnerSlotIndicator({ className, style, children }: {
 }
 
 export function ProcessList({
-  processes, loading, onLaunch, onLaunched, launchOverrides, onResurrect, onCancel, onProcessClick,
+  processes, loading, onLaunch, onLaunched, onResurrect, onCancel, onProcessClick,
 }: ProcessListProps) {
   const { Spinner } = useVultusComponents();
   const spinnerKey = useSpinnerKey('optio:process-list');
@@ -58,7 +55,7 @@ export function ProcessList({
       renderItem={(item: any) => (
         <List.Item>
           <ProcessItem
-            process={item} onLaunch={onLaunch} onLaunched={onLaunched} launchOverrides={launchOverrides}
+            process={item} onLaunch={onLaunch} onLaunched={onLaunched}
             onResurrect={onResurrect} onCancel={onCancel} onProcessClick={onProcessClick} size="small"
           />
         </List.Item>

@@ -207,7 +207,6 @@ interface ProcessListProps {
   loading: boolean;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   onLaunched?: (child: Process) => void;  // forwarded to each ProcessItem
-  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // by a factory's processId; forwarded as onLaunched is
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
@@ -339,8 +338,8 @@ interface ProcessTreeViewProps {
   onCancel?: (processId: string) => void;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   onLaunched?: (child: Process) => void;  // forwarded to each node's LaunchControls
-  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // forwarded to each node's LaunchControls
   onResurrect?: (processId: string) => void;
+  onProcessClick?: (id: string) => void;  // a node's name becomes a link button calling this with the node's _id
 }
 ```
 
@@ -348,6 +347,13 @@ Renders an Ant Design `Tree` (non-selectable, with lines) from a nested `Process
 hierarchy. All nodes are expanded by default.
 
 Process names show a tooltip with the `description` text when hovering, if `description` is set.
+
+With `onProcessClick`, a node's name is a `Button[type=link]` (styled as `ProcessItem`'s: no padding,
+auto height) that calls it with the node's `_id`, so an app can open that process's
+`ProcessDetailView` (say, in a modal); without it the name is plain `Text`, as before. A task
+factory's play button in the tree opens its plain form (no overrides): an app that tightens a
+form launches its factory with `ProcessItem`'s `launchOverrides`, `useTaskFactory` or
+`TaskFactoryLaunchButton`.
 
 Internal checkbox "Hide finished sub-tasks" (default: checked) filters out child nodes
 with `status.state === 'done'` recursively before rendering.
@@ -530,7 +536,6 @@ interface ProcessDetailViewProps {
   waitForWidget?: boolean;       // default false; true: a big spinner until the widget shows
   widgetPlaceholder?: ReactNode; // shown instead of that spinner; implies waitForWidget
   onLaunched?: (child: Process) => void;  // a task factory's launch form (from the tree) launched it
-  launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // by a factory's processId; to the tree and the suspended widget's controls
 }
 
 function ProcessDetailView(props: ProcessDetailViewProps): JSX.Element
@@ -696,10 +701,12 @@ process is no factory (`processes.factoryNotAFactory`) and while `isPending`
 engine's answer); `launch.pending` is not that. `dialog` is the form's modal, rendered once by the
 app. `TaskFactoryLaunchButton` is `<ActionButton action={launch} />` plus the dialog.
 
+Overrides reach a form through `useTaskFactory`, `TaskFactoryLaunchButton` and `ProcessItem`'s
 `launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>` (a factory's `processId` to its
-overrides) is a prop of `ProcessItem`, `ProcessList`, `FilteredProcessList`, `ProcessTreeView`,
-`ProcessDetailView` and `LaunchControls`, passed down as `onLaunched` is; a factory's play button
-takes its factory's entry.
+overrides; `ProcessItem` passes it to `LaunchControls`, which gives a factory's play button its
+entry). `ProcessList`, `FilteredProcessList`, `ProcessTreeView` and `ProcessDetailView` have no
+`launchOverrides`: their factory forms are plain. `ProcessDetailView` keys its widget by the shown
+process's `_id`, so switching between two launches never reuses the first one's widget instance.
 
 `useProcessActions().dismissAsync(id)`: as `dismiss`, resolves when done and rejects with the
 refusal (for a vultus action).
