@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { Spin } from 'antd';
+import { useTranslation } from 'react-i18next';
 import type { Process } from 'optio-contracts';
 import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import { useProcessStream } from '../hooks/useProcessStream.js';
@@ -9,6 +10,7 @@ import { ProcessLogPanel } from './ProcessLogPanel.js';
 import { useProcessWidgetState } from './ProcessWidget.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
 import { LaunchControls } from './LaunchControls.js';
+import { lastSeenProcess, rememberProcess } from './lastSeenProcesses.js';
 import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 
 export interface ProcessDetailViewProps {
@@ -71,6 +73,11 @@ export function ProcessDetailView({
 }: ProcessDetailViewProps) {
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
+  const { t } = useTranslation();
+  // The last state of the process shown, for when it is deleted while open.
+  useEffect(() => {
+    if (processId && tree) rememberProcess(processId, { tree, logs });
+  }, [processId, tree, logs]);
   const { launch, cancel, resurrect } = useProcessActions();
   // readOnly reaches the widget too: a suspended conversation's composer
   // would otherwise resume the process.
@@ -102,12 +109,25 @@ export function ProcessDetailView({
   }
 
   if (processNotFound) {
+    const lastSeen = lastSeenProcess(processId);
+    if (lastSeen) {
+      // Deleted while open: its last state, read-only (no actions, no widget).
+      return (
+        <div data-testid="optio-detail-deleted">
+          <div style={{ color: '#999', textAlign: 'center', margin: '16px 0' }}>
+            {t('processes.deleted', 'Process deleted.')}
+          </div>
+          <ProcessTreeView treeData={lastSeen.tree} sseState={{ connected: false }} />
+          {showLogs && <ProcessLogPanel logs={lastSeen.logs} tree={lastSeen.tree} />}
+        </div>
+      );
+    }
     return (
       <div
         data-testid="optio-detail-not-found"
         style={{ color: '#999', textAlign: 'center', marginTop: 100 }}
       >
-        Process not found.
+        {t('processes.notFound', 'Process not found.')}
       </div>
     );
   }

@@ -187,6 +187,7 @@ following keys:
 | Key | Used by |
 |-----|---------|
 | `processes.launch` | `LaunchControls` (in `ProcessItem`, `ProcessTreeView`), `useTaskFactory` — tooltip on launch button; label of a factory's launch action |
+| `processes.deleted`, `processes.notFound` | `ProcessDetailView` — the notice over the last view of a process deleted while open; a process it never showed (defaults "Process deleted.", "Process not found.") |
 | `processes.removeLaunch` | `LaunchControls` — tooltip of the remove button of an ended launch (default "Remove") |
 | `processes.factoryLoading`, `processes.factoryNotAFactory`, `processes.factoryLaunching` | `useTaskFactory` — why `launch` is disabled (defaults "Loading…", "Not a task factory", "Launching…") |
 | `errors.processes.dismiss.<reason>` | `LaunchControls` — a refused removal (`optioErrorRoutes`; `not-found`, `not-dismissable`) |

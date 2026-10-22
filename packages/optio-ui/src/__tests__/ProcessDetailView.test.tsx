@@ -35,10 +35,12 @@ vi.mock('../context/useOptioContext.js', () => ({
 
 // Import after mocks.
 const { ProcessDetailView } = await import('../components/ProcessDetailView.js');
+const { forgetAllProcesses } = await import('../components/lastSeenProcesses.js');
 
 describe('ProcessDetailView', () => {
   beforeEach(() => {
     _clearWidgetRegistry();
+    forgetAllProcesses();
     mockProcessStream.mockReset();
     mockLaunch.mockReset();
     mockCancel.mockReset();
@@ -617,6 +619,70 @@ describe('ProcessDetailView', () => {
       mockProcessStream.mockReturnValue({ tree: factoryTree, logs: [], connected: true });
       const { container } = render(<ProcessDetailView processId="f1" readOnly />);
       expect(container.querySelector('.anticon-play-circle')).toBeNull();
+    });
+  });
+
+  // A process deleted while open keeps its last state on screen (spec 2026-10-22 §3.5).
+  describe('a deleted process', () => {
+    const runningTree = (id: string) => ({
+      _id: id, name: `Process ${id}`, status: { state: 'running' },
+      progress: { percent: null }, cancellable: true,
+      depth: 0, order: 0, parentId: null, children: [],
+    });
+    const showThenDelete = (id: string) => {
+      mockProcessStream.mockReturnValue({
+        tree: runningTree(id),
+        logs: [{ timestamp: '2026-04-22T10:00:00Z', level: 'info', message: `last words of ${id}` }],
+        connected: true,
+      });
+      const view = render(<ProcessDetailView processId={id} />);
+      mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: false, processNotFound: true });
+      view.rerender(<ProcessDetailView processId={id} />);
+      return view;
+    };
+    const show = (id: string) => {
+      mockProcessStream.mockReturnValue({ tree: runningTree(id), logs: [], connected: true });
+      render(<ProcessDetailView processId={id} />);
+      cleanup();
+    };
+    const lookUp = (id: string) => {
+      mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: false, processNotFound: true });
+      render(<ProcessDetailView processId={id} />);
+      const found = screen.queryByTestId('optio-detail-not-found') === null;
+      cleanup();
+      return found;
+    };
+
+    it('shows its last tree read-only and its last log under the deleted notice', () => {
+      const { container } = showThenDelete('p1');
+      expect(screen.getByText('Process deleted.')).toBeTruthy();
+      expect(screen.queryByTestId('optio-detail-not-found')).toBeNull();
+      expect(screen.getByText('Process p1')).toBeTruthy();
+      expect(screen.getByText('last words of p1')).toBeTruthy();
+      expect(container.querySelector('.anticon-close-circle')).toBeNull();
+      expect(container.querySelector('.anticon-play-circle')).toBeNull();
+      expect(container.querySelector('.anticon-delete')).toBeNull();
+    });
+
+    it('says not found for a process it never showed', () => {
+      mockProcessStream.mockReturnValue({ tree: null, logs: [], connected: false, processNotFound: true });
+      render(<ProcessDetailView processId="never" />);
+      expect(screen.getByTestId('optio-detail-not-found').textContent).toBe('Process not found.');
+      expect(screen.queryByText('Process deleted.')).toBeNull();
+    });
+
+    it('remembers the last five processes shown, the least recently shown dropped', () => {
+      for (const id of ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']) show(id);
+      expect(lookUp('p1')).toBe(false);
+      for (const id of ['p2', 'p3', 'p4', 'p5', 'p6']) expect(lookUp(id)).toBe(true);
+    });
+
+    it('moves a process shown again to the front', () => {
+      for (const id of ['p1', 'p2', 'p3', 'p4', 'p5']) show(id);
+      show('p1');
+      show('p6');
+      expect(lookUp('p2')).toBe(false);
+      expect(lookUp('p1')).toBe(true);
     });
   });
 

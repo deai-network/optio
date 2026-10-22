@@ -513,7 +513,8 @@ function ProcessDetailView(props: ProcessDetailViewProps): JSX.Element
 Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branches:
 
 - **No processId** — renders a centred "Select a process" placeholder.
-- **`processNotFound`** / **`error`** from the stream — "Process not found." / "Error while accessing process: …".
+- **`processNotFound`** from the stream (the record is gone, also when deleted while open) — if the view has shown the process before: its last tree (`ProcessTreeView` without actions, no widget) and last log (`ProcessLogPanel`, unless `showLogs` is false) under the notice `processes.deleted` ("Process deleted."). The view remembers the last snapshot (`tree`, `logs`) of the last 5 processes it showed, in a module-level in-memory cache (`lastSeenProcesses.ts`: `rememberProcess`, `lastSeenProcess`, `forgetAllProcesses` for tests; the least recently shown is dropped; a reload empties it; nothing is stored in the browser). A process it never showed: `processes.notFound` ("Process not found.").
+- **`error`** from the stream — "Error while accessing process: …".
 - **Waiting** (`waitForWidget` or `widgetPlaceholder`) — renders the placeholder, or a large spinner (the app's lent Spinner, key `optio:process:${processId}:detail`, else antd's `Spin`), in place of the "Loading…" line below, and in place of the default tree+log view while a scheduled or running process has no widget to show yet.
 - **No tree yet** (stream not yet received) — renders a "Loading…" placeholder (preceded by the app's lent Spinner, if any — see "Spinner slot").
 - **`tree.uiWidget` is set and registered for the process's mode** — renders the named widget
@@ -1084,6 +1085,8 @@ no inline default (the app must translate them); the second carries an English d
 | Key | Component | Usage |
 |-----|-----------|-------|
 | `processes.launch` | `LaunchControls`, `useTaskFactory` | Tooltip on the single launch button; the label of a task factory's launch action (default: "Launch") |
+| `processes.deleted` | `ProcessDetailView` | The notice over the last view of a process deleted while open (default: "Process deleted.") |
+| `processes.notFound` | `ProcessDetailView` | A process the stream reports gone that the view never showed (default: "Process not found.") |
 | `processes.removeLaunch` | `LaunchControls` | Tooltip / `aria-label` of the remove button of an ended launch (default: "Remove") |
 | `processes.factoryLoading` | `useTaskFactory` | Why `launch` is disabled while the record loads (default: "Loading…") |
 | `processes.factoryNotAFactory` | `useTaskFactory` | Why `launch` is disabled for a process that is no task factory (default: "Not a task factory") |
