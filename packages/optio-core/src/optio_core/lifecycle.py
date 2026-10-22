@@ -90,6 +90,16 @@ def _is_objectid(s: str) -> bool:
     return bool(_OBJECTID_RE.match(s))
 
 
+def _stopped_by_shutdown(proc: dict) -> bool:
+    """Whether the record `proc` was stopped by a graceful shutdown that
+    stamped it for auto-resume: cancelled with autoResumeScheduled, the
+    records the post-restart sweep resumes. Its run was interrupted, as an
+    orphan's was (launch options spec §1.5: "the states optio resumes or
+    auto-resumes a task from"); a cancelled one without the stamp (a user's
+    cancel) has ended."""
+    return proc["status"]["state"] == "cancelled" and bool(proc.get("autoResumeScheduled"))
+
+
 from dataclasses import dataclass
 
 
@@ -1766,11 +1776,12 @@ class Optio:
         cannot be rebuilt (its factory no longer synced, its values refused
         by the factory's checks or validate, task_for raising) no longer
         resumes: if its run was interrupted (`interrupted`, the records the
-        reconcile settled) it is settled failed, the error naming why; one
-        that ended (done, failed, cancelled: also one a graceful shutdown
-        stopped) keeps its state, error, timestamps and expiry, and only
-        loses its resume (_retire_ended_launch). An engine without task
-        definitions judges none.
+        reconcile settled, or one a graceful shutdown stopped and stamped:
+        _stopped_by_shutdown) it is settled failed, the error naming why;
+        one that ended (done, failed, cancelled by a user) keeps its state,
+        error, timestamps and expiry, and only loses its resume
+        (_retire_ended_launch). An engine without task definitions judges
+        none.
         Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.5"""
         if self._config.get_task_definitions is None:
             return
@@ -1798,7 +1809,7 @@ class Optio:
                 }
                 if refresh:
                     await coll.update_one({"_id": proc["_id"]}, {"$set": refresh})
-            elif proc["_id"] in interrupted:
+            elif proc["_id"] in interrupted or _stopped_by_shutdown(proc):
                 await self._settle_unrebuilt_launch(proc, task)
             else:
                 await self._retire_ended_launch(proc, task)
@@ -1825,10 +1836,10 @@ class Optio:
             return f"its task could not be rebuilt: {e}"
 
     async def _settle_unrebuilt_launch(self, proc: dict, why: str) -> None:
-        """Settle the kept launch `proc`, whose run was interrupted and whose
-        task cannot be rebuilt (_rebuild_kept_launches): failed, its error
-        and log line naming why, as an orphan is settled; it no longer
-        resumes."""
+        """Settle the kept launch `proc`, whose run was interrupted (an
+        orphan, or stopped by a graceful shutdown) and whose task cannot be
+        rebuilt (_rebuild_kept_launches): failed, its error and log line
+        naming why, as an orphan is settled; it no longer resumes."""
         db, prefix = self._config.mongo_db, self._config.prefix
         now = datetime.now(timezone.utc)
         error = f"Cannot resume after the engine restart: {why}"
@@ -1842,8 +1853,9 @@ class Optio:
         logger.warning("Settled kept launch %s as failed: %s", proc["processId"], why)
 
     async def _retire_ended_launch(self, proc: dict, why: str) -> None:
-        """The kept launch `proc`, whose run ended and whose task cannot be
-        rebuilt (_rebuild_kept_launches), no longer resumes: only its
+        """The kept launch `proc`, whose run ended (done, failed, cancelled
+        without an auto-resume stamp) and whose task cannot be rebuilt
+        (_rebuild_kept_launches), no longer resumes: only its
         supportsResume and autoResumeScheduled are cleared (so the UI offers
         no Resume and the next start does not judge it again); its state,
         error, timestamps, log and expireAt stay as its run left them. The

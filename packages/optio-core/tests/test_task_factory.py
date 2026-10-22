@@ -1618,25 +1618,34 @@ def _raising_task_for(values, process_id):  # noqa: ARG001
     raise RuntimeError("no task for you")
 
 
-@pytest.mark.parametrize("case,why", [
-    ("gone", "'tfor' is no longer a task factory"),
-    ("now-a-task", "'tfor' is no longer a task factory"),
-    ("values-refused", "its values are refused: kind: must be one of its choices"),
-    ("validate-refuses", "its values are refused: kind: no more agent runs"),
-    ("task-for-raises", "its task could not be rebuilt: no task for you"),
+@pytest.mark.parametrize("how,case,why", [
+    ("crash", "gone", "'tfor' is no longer a task factory"),
+    ("crash", "now-a-task", "'tfor' is no longer a task factory"),
+    ("crash", "values-refused", "its values are refused: kind: must be one of its choices"),
+    ("crash", "validate-refuses", "its values are refused: kind: no more agent runs"),
+    ("crash", "task-for-raises", "its task could not be rebuilt: no task for you"),
+    ("graceful", "gone", "'tfor' is no longer a task factory"),
 ])
 async def test_an_interrupted_kept_launch_whose_task_cannot_be_rebuilt_is_settled_failed(
-    mongo_db, case, why,
+    mongo_db, how, case, why,
 ):
-    # Interrupted: the engine died while it ran (its record left running,
-    # which the next start settles as an orphan).
-    prefix = f"tf_resume_not_{case}"
+    # Interrupted (spec 1.5: the states optio resumes or auto-resumes a task
+    # from): the engine died while it ran (its record left running, which the
+    # next start settles as an orphan), or a graceful shutdown stopped it and
+    # stamped it for auto-resume (cancelled, autoResumeScheduled).
+    prefix = f"tf_resume_not_{how}_{case}"
     runs: list = []
-    resumable = _resumable_task_for(runs)
+    resumable = _resumable_task_for(runs, auto_resume=how == "graceful")
     fw = await _init(mongo_db, prefix, [_task_for_factory(resumable)])
     running = await _running_with_saved_state(fw, mongo_db, prefix, {"kind": "agent"})
     pid = running["processId"]
-    await _crash(fw, [running])
+    if how == "crash":
+        await _crash(fw, [running])
+    else:
+        await fw.shutdown(grace_seconds=60.0)
+        stopped = await get_process_by_process_id(mongo_db, prefix, pid)
+        assert stopped["status"]["state"] == "cancelled"
+        assert stopped["autoResumeScheduled"] is True
 
     now = {
         "gone": [],
@@ -1669,7 +1678,7 @@ async def test_an_interrupted_kept_launch_whose_task_cannot_be_rebuilt_is_settle
 def _ending_task_for(values, process_id):  # noqa: ARG001
     """A task_for whose instance supports resume and auto-resume. Its run
     saves its state, then by its `note`: 'done' ends, 'fail' raises, 'wait'
-    waits until it is stopped."""
+    waits until it is cancelled."""
     async def execute(ctx):
         await ctx.mark_has_saved_state()
         if ctx.params.get("note") == "fail":
@@ -1686,12 +1695,12 @@ def _ending_task_for(values, process_id):  # noqa: ARG001
 @pytest.mark.parametrize("note,state", [
     ("done", "done"),
     ("fail", "failed"),
-    ("wait", "cancelled"),  # stopped by a graceful shutdown, stamped for auto-resume
+    ("wait", "cancelled"),  # a user's cancel: no auto-resume stamp
 ])
 async def test_an_ended_kept_launch_whose_task_cannot_be_rebuilt_keeps_its_history(
     mongo_db, caplog, note, state,
 ):
-    # A run that ended (on its own, or stopped by a graceful shutdown) was not
+    # A run that ended (on its own, or by a user's cancel) was not
     # interrupted: when its factory is gone at the next start, its record
     # keeps what it says, and only stops offering a resume.
     prefix = f"tf_resume_ended_{state}"
@@ -1701,22 +1710,23 @@ async def test_an_ended_kept_launch_whose_task_cannot_be_rebuilt_keeps_its_histo
     pid = outcome.proc["processId"]
     if note == "wait":
         await _wait_until(lambda: _saved_and_running(mongo_db, prefix, pid))
-        await fw.shutdown(grace_seconds=60.0)
-    else:
-        # Its run over (torn down too: a shutdown stamps what still runs).
-        async def ended():
-            proc = await _state_is(mongo_db, prefix, pid, state)
-            if proc is None or proc["_id"] in fw._executor._cancellation_flags:
-                return None
-            return proc
+        assert (await fw.cancel(pid)).ok
 
-        await _wait_until(ended)
-        await fw.shutdown()
+    # Its run over, torn down too (a shutdown stamps what still runs), before
+    # the engine stops.
+    async def ended():
+        proc = await _state_is(mongo_db, prefix, pid, state)
+        if proc is None or proc["_id"] in fw._executor._cancellation_flags:
+            return None
+        return proc
+
+    await _wait_until(ended)
+    await fw.shutdown()
     before = await get_process_by_process_id(mongo_db, prefix, pid)
     assert before["status"]["state"] == state
     assert before["hasSavedState"] is True and before["supportsResume"] is True
     assert before["expireAt"] is not None
-    assert before.get("autoResumeScheduled", False) is (note == "wait")
+    assert before.get("autoResumeScheduled", False) is False
     if note == "fail":
         assert before["status"]["error"] == "it failed on its own"
 

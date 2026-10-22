@@ -390,9 +390,10 @@ class TaskFactory:
   <its process id>)`) and registered, its record's `supportsResume` and `uiWidget` then the rebuilt
   task's; one that cannot be (its factory gone or no longer a factory, its values refused,
   `task_for` raising) gets `supportsResume` and `autoResumeScheduled` false and, if its run was
-  interrupted (the reconcile settled it), is settled `failed` with the error `Cannot resume after
-  the engine restart: <why>`; one whose run ended keeps its state, error, timestamps and
-  `expireAt` (the reason logged as a warning). A sync that removes the factory clears
+  interrupted (the reconcile settled it, or a graceful shutdown stopped it: `cancelled` with
+  `autoResumeScheduled`), is settled `failed` with the error `Cannot resume after the engine
+  restart: <why>`; one whose run ended (`done`, `failed`, a user's cancel) keeps its state, error,
+  timestamps and `expireAt` (the reason logged as a warning). A sync that removes the factory clears
   `supportsResume` and `autoResumeScheduled` on its launches' records that are not running. A
   factory changed by a re-sync keeps its launches' existing tasks until the next restart, which
   rebuilds them from the new definition. optio-ui shows a resumable kept launch the

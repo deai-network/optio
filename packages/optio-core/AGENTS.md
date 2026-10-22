@@ -470,12 +470,14 @@ conversation archive and the deferred migrations find it; its record's `supports
 no longer supports resume is neither offered a Resume nor resumed). One that cannot be rebuilt
 (`'<factory id>' is no longer a task factory`, `its values are refused: <id>: <what>`, `its task
 could not be rebuilt: <exception>`) no longer resumes, nor is judged again: `supportsResume` and
-`autoResumeScheduled` set false. If its run was interrupted (a record the reconcile settled at
-this start) it is settled `failed`, as an orphan is: its error and a log line `Cannot resume
-after the engine restart: <why>`, `expireAt` set by its TTL. One whose run ended (`done`,
-`failed`, `cancelled`, a graceful shutdown's stop included) keeps its state, error, timestamps,
-log and `expireAt` as they were, and the reason goes to the engine's log as a warning (`Kept
-launch <id> (<state>) can no longer resume: <why>`). An engine without `get_task_definitions`
+`autoResumeScheduled` set false. If its run was interrupted (spec §1.5: the states optio resumes
+or auto-resumes a task from: a record the reconcile settled at this start, or one a graceful
+shutdown stopped and stamped, `cancelled` with `autoResumeScheduled`) it is settled `failed`, as
+an orphan is: its error and a log line `Cannot resume after the engine restart: <why>`,
+`expireAt` set by its TTL. One whose run ended (`done`, `failed`, `cancelled` without the stamp,
+e.g. a user's cancel) keeps its state, error, timestamps, log and `expireAt` as they were, and
+the reason goes to the engine's log as a warning (`Kept launch <id> (<state>) can no longer
+resume: <why>`). An engine without `get_task_definitions`
 rebuilds and settles nothing. Ephemeral launches are still deleted at `init()`, before.
 
 **The reserved key.** `metadata.taskFactory` is optio's: only a launch's definition writes it
