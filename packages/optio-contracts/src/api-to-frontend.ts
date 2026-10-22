@@ -164,6 +164,8 @@ export const processesContract = c.router({
       sessionId: z.string().nullable().optional(),
       // A task factory's parameter values; the answer is the child's record.
       params: z.record(z.unknown()).optional(),
+      // Overrides the factory's default retention of the launch's record.
+      ephemeral: z.boolean().optional(),
     }).optional(),
     responses: {
       200: ProcessSchema,
@@ -193,7 +195,8 @@ export const processesContract = c.router({
     query: InstanceQuerySchema,
     body: c.noBody(),
     responses: {
-      200: ProcessSchema,
+      // null when dismissing deleted the record (an ended factory launch).
+      200: ProcessSchema.nullable(),
       404: DismissErrorBody,
       409: DismissErrorBody,
     },

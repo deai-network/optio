@@ -522,6 +522,7 @@ async function launchProcess(
   sessionId?: string | null,  // default: null; the initiating session
   access?: Access,
   params?: Record<string, unknown>,  // a task factory's values, passed to the engine unchanged
+  ephemeral?: boolean,  // overrides the factory's retention of the launch's record
 ): Promise<LaunchCommandResult>
 
 async function cancelProcess(
@@ -534,7 +535,7 @@ async function dismissProcess(
   ctx: OptioContext,
   query: { database?: string; prefix?: string },
   id: string,
-): Promise<DismissCommandResult>
+): Promise<DismissCommandResult>  // 200 body: the record, or null when dismissing deleted it
 
 // POST /api/processes/:id/resurrect: saves the work a failed run left on its
 // host, then resumes (engine RPC `resurrect`). `sessionId` is the initiating
@@ -814,7 +815,9 @@ The list, tree and multi-tree pollers' `update` processes carry a task factory's
 `parameters`, so the list re-reads when a shown process's change touches them; `warning`,
 `taskFactory` and `parameters` are in every poller's snapshot fingerprint, so a resync that changes
 only a factory's definition sends the update again. The tree and multi-tree pollers share one
-snapshot and one payload builder (`treeSnapshotOf`, `treeUpdateOf` in `stream-poller.ts`).
+snapshot and one payload builder (`treeSnapshotOf`, `treeUpdateOf` in `stream-poller.ts`). All
+three also carry `ttlSeconds` (a factory's default retention of a launch's record; absent on other
+records), read by `LIST_PROJECTION` and part of every snapshot fingerprint.
 
 `createTreePoller` sends all existing log entries on the first poll, then only deltas. It detects log truncation (e.g. after resync) and emits `log-clear` before new entries.
 

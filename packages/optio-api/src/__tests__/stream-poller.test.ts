@@ -751,6 +751,7 @@ describe('task factory fields propagation', () => {
       depth: 0, order: 0, status: { state: 'idle' }, progress: { percent: null },
       cancellable: true, log: [],
       taskFactory: true, parameters: PARAMETERS, warning: 'It deletes things.',
+      ttlSeconds: 60,
     });
     return rootId;
   }
@@ -782,7 +783,30 @@ describe('task factory fields propagation', () => {
       expect(p.taskFactory).toBe(true);
       expect(p.parameters).toEqual(PARAMETERS);
       expect(p.warning).toBe('It deletes things.');
+      expect(p.ttlSeconds).toBe(60);
     },
+  );
+
+  it.each(['list', 'tree', 'multiTree'] as const)(
+    '%s poller emits a new update when only ttlSeconds changes',
+    async (kind) => {
+      const rootId = await insertFactory();
+      const updates: any[] = [];
+      const poller = await pollerOf(kind, rootId, updates);
+      const ttl = () => updates.at(-1)?.processes
+        .find((x: any) => x._id === rootId.toString())?.ttlSeconds;
+      poller.start();
+      try {
+        await waitUntil(() => ttl() === 60);
+        await db.collection(`${PREFIX}_processes`).updateOne(
+          { _id: rootId }, { $set: { ttlSeconds: null } },
+        );
+        await waitUntil(() => ttl() === null);
+      } finally {
+        poller.stop();
+      }
+    },
+    120_000,
   );
 
   it.each(['list', 'tree', 'multiTree'] as const)(
@@ -838,7 +862,7 @@ describe('createListPoller reads only what it sends', () => {
     warning: 1, metadata: 1, depth: 1, supportsResume: 1, hasSavedState: 1,
     supportsResurrect: 1, hasUnsavedWork: 1, resurrecting: 1,
     autoResumeScheduled: 1, browserOpenRequests: 1,
-    taskFactory: 1, parameters: 1,
+    taskFactory: 1, parameters: 1, ttlSeconds: 1,
   };
 
   /** `db` whose process collection records the options of every find(). */

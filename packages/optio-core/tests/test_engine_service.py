@@ -112,7 +112,9 @@ async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
     result = await svc.launch(LaunchParams.model_validate({"processId": hex_id, "sessionId": None}))
 
     assert result.root.ok is True
-    fake_optio.launch.assert_awaited_once_with(hex_id, resume=False, session_id=None, params=None)
+    fake_optio.launch.assert_awaited_once_with(
+        hex_id, resume=False, session_id=None, params=None, ephemeral=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -130,7 +132,9 @@ async def test_launch_success(fake_optio, sample_idle_proc):
     assert isinstance(result, LaunchResult)
     assert result.root.ok is True
     assert result.root.process.process_id == "p1"
-    fake_optio.launch.assert_awaited_once_with("p1", resume=False, session_id=None, params=None)
+    fake_optio.launch.assert_awaited_once_with(
+        "p1", resume=False, session_id=None, params=None, ephemeral=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -142,7 +146,7 @@ async def test_launch_passes_params_through(fake_optio, sample_idle_proc):
     ))
     assert result.root.ok is True
     fake_optio.launch.assert_awaited_once_with(
-        "f", resume=False, session_id=None, params={"n": 3},
+        "f", resume=False, session_id=None, params={"n": 3}, ephemeral=None,
     )
 
 
@@ -283,6 +287,41 @@ async def test_dismiss_success(fake_optio, sample_idle_proc):
 
 
 @pytest.mark.asyncio
+async def test_dismissing_an_ended_launch_answers_ok_without_a_process(fake_optio):
+    """Dismissing an ended factory launch deletes its record: ok, no process."""
+    from optio_core._engine_service import OptioEngineService
+    fake_optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=True, proc=None))
+    svc = OptioEngineService(fake_optio)
+    result = await svc.dismiss(DismissParams.model_validate({"processId": "p1"}))
+    assert result.root.ok is True
+    assert result.root.process is None
+
+
+@pytest.mark.asyncio
+async def test_launch_passes_ephemeral_through(fake_optio):
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
+    result = await svc.launch(LaunchParams.model_validate(
+        {"processId": "f", "sessionId": None, "params": {"n": 3}, "ephemeral": True}
+    ))
+    assert result.root.ok is True
+    fake_optio.launch.assert_awaited_once_with(
+        "f", resume=False, session_id=None, params={"n": 3}, ephemeral=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_record_answers_its_ttl_seconds(fake_optio, sample_idle_proc):
+    from optio_core._engine_service import OptioEngineService
+    factory = dict(sample_idle_proc)
+    factory["ttlSeconds"] = 60
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=factory))
+    svc = OptioEngineService(fake_optio)
+    result = await svc.launch(LaunchParams.model_validate({"processId": "p1", "sessionId": None}))
+    assert result.root.process.ttl_seconds == 60
+
+
+@pytest.mark.asyncio
 async def test_dismiss_not_found(fake_optio):
     from optio_core._engine_service import OptioEngineService
     fake_optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=False, reason="not-found"))
@@ -296,7 +335,6 @@ async def test_dismiss_not_found(fake_optio):
 @pytest.mark.parametrize("verb,outcome,params", [
     ("launch", LaunchOutcome, {"processId": "p1", "sessionId": None}),
     ("cancel", CancelOutcome, {"processId": "p1"}),
-    ("dismiss", DismissOutcome, {"processId": "p1"}),
     ("resurrect", ResurrectOutcome, {"processId": "p1", "sessionId": None}),
 ])
 async def test_an_ok_outcome_without_a_record_is_not_found(fake_optio, verb, outcome, params):
@@ -306,7 +344,7 @@ async def test_an_ok_outcome_without_a_record_is_not_found(fake_optio, verb, out
     from optio_core._engine_service import OptioEngineService
     param_types = {
         "launch": LaunchParams, "cancel": CancelParams,
-        "dismiss": DismissParams, "resurrect": ResurrectParams,
+        "resurrect": ResurrectParams,
     }
     setattr(fake_optio, verb, AsyncMock(return_value=outcome(ok=True, proc=None)))
     svc = OptioEngineService(fake_optio)

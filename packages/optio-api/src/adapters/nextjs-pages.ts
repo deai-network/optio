@@ -121,7 +121,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
     },
     launch: async ({ params, query, body }) => {
       const result = await handlers.launchProcess(
-        ctx, query, params.id, body?.resume === true, null, await currentAccess(), body?.params,
+        ctx, query, params.id, body?.resume === true, null, await currentAccess(), body?.params, body?.ephemeral,
       );
       return result as any;
     },

@@ -129,6 +129,7 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
         warning: p.warning,
         taskFactory: p.taskFactory ?? false,
         parameters: p.parameters,
+        ttlSeconds: p.ttlSeconds,
       })),
     );
 
@@ -156,6 +157,7 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
           browserOpenRequests: p.browserOpenRequests ?? [],
           taskFactory: p.taskFactory ?? false,
           parameters: p.parameters,
+          ttlSeconds: p.ttlSeconds,
         })),
       });
     }
@@ -182,6 +184,7 @@ function treeSnapshotOf(p: any) {
     warning: p.warning,
     taskFactory: p.taskFactory ?? false,
     parameters: p.parameters,
+    ttlSeconds: p.ttlSeconds,
   };
 }
 
@@ -213,6 +216,7 @@ function treeUpdateOf(p: any) {
     warning: p.warning,
     taskFactory: p.taskFactory ?? false,
     parameters: p.parameters,
+    ttlSeconds: p.ttlSeconds,
   };
 }
 

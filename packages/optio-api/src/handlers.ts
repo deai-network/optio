@@ -361,13 +361,14 @@ export async function launchProcess(
   sessionId: string | null = null,
   access: Access = UNRESTRICTED,
   params?: Record<string, unknown>,
+  ephemeral?: boolean,
 ): Promise<LaunchCommandResult> {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const reads = processReads(db, prefix, access.visibility);
   const gate = await gateProcess(reads, id, access, 'launch');
   if (!gate.ok) return gate.status === 404 ? launchFail('not-found') : FORBIDDEN;
   const engine = resolveOptioEngine(ctx, query);
-  const result = await engine.launch({ processId: id, resume, sessionId, params });
+  const result = await engine.launch({ processId: id, resume, sessionId, params, ephemeral });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return launchFail(result.reason, result.message);
 }
@@ -400,7 +401,8 @@ export async function dismissProcess(
   if (!gate.ok) return gate.status === 404 ? dismissFail('not-found') : FORBIDDEN;
   const engine = resolveOptioEngine(ctx, query);
   const result = await engine.dismiss({ processId: id });
-  if (result.ok) return { status: 200, body: toResponse(result.process) };
+  // No process: dismissing deleted the record (an ended factory launch).
+  if (result.ok) return { status: 200, body: result.process ? toResponse(result.process) : null };
   return dismissFail(result.reason);
 }
 

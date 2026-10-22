@@ -201,6 +201,17 @@ describe('launchProcess — engine RPC', () => {
     expect(engine.launch).toHaveBeenCalledWith({ processId: 'f', resume: false, sessionId: null, params: { n: 3 } });
   });
 
+  it('forwards ephemeral to engine.launch', async () => {
+    const engine = makeMockEngine();
+    const result = await launchProcess(
+      makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'f', false, null, undefined, { n: 3 }, true,
+    );
+    expect(result.status).toBe(200);
+    expect(engine.launch).toHaveBeenCalledWith({
+      processId: 'f', resume: false, sessionId: null, params: { n: 3 }, ephemeral: true,
+    });
+  });
+
   it('400 parameters-required from engine', async () => {
     const engine = makeMockEngine(() => ({ ok: false, reason: 'parameters-required' }));
     const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'f');
@@ -355,6 +366,13 @@ describe('dismissProcess — engine RPC', () => {
     expect(engine.dismiss).toHaveBeenCalledTimes(1);
     expect(engine.dismiss).toHaveBeenCalledWith({ processId: 'p' });
     expect((result as any).body._id).toBeDefined();
+  });
+
+  it('200 null when the engine answers ok without a process (the record was deleted)', async () => {
+    const engine = makeMockEngine(() => ({ ok: true }));
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
+    expect(result.status).toBe(200);
+    expect((result as any).body).toBeNull();
   });
 
   it('409 not-dismissable from engine: returns ok=false reason=not-dismissable', async () => {

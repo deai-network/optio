@@ -24,7 +24,8 @@ const cancelResult = z.discriminatedUnion('ok', [
 ]);
 
 const dismissResult = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), process: ProcessSchema }),
+  // `process` is absent when dismissing deleted the record (an ended factory launch).
+  z.object({ ok: z.literal(true), process: ProcessSchema.optional() }),
   z.object({ ok: z.literal(false), reason: DismissFailureReason }),
 ]);
 
@@ -69,6 +70,9 @@ export const optioEngineContract = defineContract('optio-engine', {
       // A task factory's parameter values (required for a factory, refused
       // for any other process).
       params: z.record(z.unknown()).optional(),
+      // Overrides the factory's default retention of the launch's record:
+      // true = deleted when it ends, false = kept until dismissed.
+      ephemeral: z.boolean().optional(),
     }),
     result: launchResult,
   }),

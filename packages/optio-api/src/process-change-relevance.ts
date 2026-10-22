@@ -17,7 +17,7 @@ export const LIST_PROJECTION = {
   supportsResurrect: 1, hasUnsavedWork: 1, resurrecting: 1,
   autoResumeScheduled: 1, browserOpenRequests: 1,
   // A task factory's record: optio-ui opens its launch form from them.
-  taskFactory: 1, parameters: 1,
+  taskFactory: 1, parameters: 1, ttlSeconds: 1,
 } as const;
 
 const LIST_FIELDS: ReadonlySet<string> = new Set(Object.keys(LIST_PROJECTION));

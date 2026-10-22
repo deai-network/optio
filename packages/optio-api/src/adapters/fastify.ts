@@ -532,7 +532,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     },
     launch: async ({ params, query, body, request }) => {
       const result = await handlers.launchProcess(
-        ctx, query, params.id, body?.resume === true, body?.sessionId ?? null, await access(request), body?.params,
+        ctx, query, params.id, body?.resume === true, body?.sessionId ?? null, await access(request), body?.params, body?.ephemeral,
       );
       return result as any;
     },

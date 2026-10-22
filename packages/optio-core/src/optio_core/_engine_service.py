@@ -33,7 +33,7 @@ _PROCESS_WIRE_KEYS = frozenset({
     "depth", "order", "cancellable", "special", "warning", "description",
     "status", "progress", "log", "uiWidget", "widgetData", "supportsResume",
     "hasSavedState", "supportsResurrect", "hasUnsavedWork", "resurrecting",
-    "taskFactory", "parameters", "autoResumeScheduled", "createdAt",
+    "taskFactory", "parameters", "ttlSeconds", "autoResumeScheduled", "createdAt",
     "browserOpenRequests", "sessionEvents",
 })
 
@@ -58,7 +58,7 @@ def _to_process_dict(doc: dict) -> dict:
     DismissResult1.process etc. can validate. Generated Process model uses
     by-alias field names (e.g. _id, processId, supportsResume).
 
-    Strips fields unknown to the contract (e.g. adhoc, ephemeral, ttlSeconds
+    Strips fields unknown to the contract (e.g. adhoc, ephemeral
     stored by the scheduler), stringifies ObjectIds, and makes naive datetimes
     UTC-aware so Pydantic AwareDatetime validation passes.
     """
@@ -93,6 +93,7 @@ class OptioEngineService(OptioEngineServiceBase):
         outcome = await self._optio.launch(
             params.process_id, resume=bool(params.resume),
             session_id=params.session_id, params=params.params,
+            ephemeral=params.ephemeral,
         )
         if not outcome.ok:
             refusal: dict = {"ok": False, "reason": outcome.reason}
@@ -118,6 +119,9 @@ class OptioEngineService(OptioEngineServiceBase):
             return DismissResult.model_validate(
                 {"ok": False, "reason": outcome.reason}
             )
+        if outcome.proc is None:
+            # The dismissal deleted the record (an ended factory launch).
+            return DismissResult.model_validate({"ok": True})
         return DismissResult.model_validate(_ok_payload(outcome.proc))
 
     # --------------------------------------------------------------- resurrect

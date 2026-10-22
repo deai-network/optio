@@ -37,10 +37,33 @@ describe('ProcessSchema task-factory fields', () => {
   });
 });
 
+describe('ProcessSchema ttlSeconds', () => {
+  it('carries ttlSeconds as a number or null', () => {
+    expect(ProcessSchema.parse({ ...baseProcess(), ttlSeconds: 60 }).ttlSeconds).toBe(60);
+    expect(ProcessSchema.parse({ ...baseProcess(), ttlSeconds: null }).ttlSeconds).toBeNull();
+    expect(ProcessSchema.parse(baseProcess()).ttlSeconds).toBeUndefined();
+  });
+});
+
 describe('launch route body', () => {
   it('carries params through', () => {
     const body = processesContract.launch.body as any;
     expect(body.parse({ params: { n: 3 } })).toEqual({ params: { n: 3 } });
+  });
+
+  it('carries ephemeral through', () => {
+    const body = processesContract.launch.body as any;
+    expect(body.parse({ ephemeral: true })).toEqual({ ephemeral: true });
+    expect(body.parse({ ephemeral: false })).toEqual({ ephemeral: false });
+    expect(body.safeParse({ ephemeral: 'yes' }).success).toBe(false);
+  });
+});
+
+describe('dismiss route 200 body', () => {
+  it('is a process, or null when the record was deleted', () => {
+    const ok = processesContract.dismiss.responses[200] as any;
+    expect(ok.parse(null)).toBeNull();
+    expect(ok.parse({ ...baseProcess() }).processId).toBe('p1');
   });
 });
 

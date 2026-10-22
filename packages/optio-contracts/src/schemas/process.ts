@@ -75,6 +75,9 @@ export const ProcessSchema = z.object({
   // vultus-core). Missing taskFactory = false.
   taskFactory: z.boolean().optional(),
   parameters: z.array(z.unknown()).optional(),
+  // A factory's default retention of a launch's record after it ended, in
+  // seconds; null = kept until dismissed. Missing on a non-factory.
+  ttlSeconds: z.number().nullable().optional(),
 
   // Resume feature — default false when absent in stored doc (UI treats
   // missing fields as false defensively)

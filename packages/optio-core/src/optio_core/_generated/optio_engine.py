@@ -181,6 +181,7 @@ class Process(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     task_factory: bool | None = Field(None, alias="taskFactory")
     parameters: list[Any] | None = None
+    ttl_seconds: float | None = Field(None, alias="ttlSeconds")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
@@ -257,6 +258,7 @@ class Process1(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     task_factory: bool | None = Field(None, alias="taskFactory")
     parameters: list[Any] | None = None
+    ttl_seconds: float | None = Field(None, alias="ttlSeconds")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
@@ -278,7 +280,7 @@ class DismissResult1(BaseModel):
         extra="forbid",
     )
     ok: Literal[True]
-    process: Process1
+    process: Process1 | None = None
 
 
 class DismissResult2(BaseModel):
@@ -401,6 +403,7 @@ class LaunchParams(BaseModel):
     resume: bool | None = None
     session_id: str | None = Field(..., alias="sessionId")
     params: dict[str, Any] | None = None
+    ephemeral: bool | None = None
 
 
 class Progress2(Progress):
@@ -439,6 +442,7 @@ class Process2(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     task_factory: bool | None = Field(None, alias="taskFactory")
     parameters: list[Any] | None = None
+    ttl_seconds: float | None = Field(None, alias="ttlSeconds")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
@@ -560,6 +564,7 @@ class Process3(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     task_factory: bool | None = Field(None, alias="taskFactory")
     parameters: list[Any] | None = None
+    ttl_seconds: float | None = Field(None, alias="ttlSeconds")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")

@@ -55,6 +55,35 @@ describe('optioEngineContract', () => {
     expect(launch.result.parse({ ok: false, reason: 'shutting-down' }).ok).toBe(false);
   });
 
+  it('launch takes an optional ephemeral', () => {
+    const launch = optioEngineContract.methods.launch;
+    expect(launch.params.parse({ processId: 'f', sessionId: null, ephemeral: true }).ephemeral).toBe(true);
+    expect(launch.params.parse({ processId: 'f', sessionId: null }).ephemeral).toBeUndefined();
+    expect(launch.params.safeParse({ processId: 'f', sessionId: null, ephemeral: 1 }).success).toBe(false);
+  });
+
+  it('dismiss result carries a process, or none when the record was deleted', () => {
+    const dismiss = optioEngineContract.methods.dismiss;
+    const proc = {
+      _id: '507f1f77bcf86cd799439011',
+      processId: 'p1',
+      name: 'P1',
+      rootId: '507f1f77bcf86cd799439011',
+      depth: 0,
+      order: 0,
+      cancellable: true,
+      status: { state: 'idle' },
+      progress: { percent: null },
+      log: [],
+      createdAt: new Date().toISOString(),
+    };
+    const withProc = dismiss.result.parse({ ok: true, process: proc });
+    expect(withProc.ok && withProc.process?.processId).toBe('p1');
+    const without = dismiss.result.parse({ ok: true });
+    expect(without.ok && without.process).toBeUndefined();
+    expect(dismiss.result.parse({ ok: false, reason: 'not-found' }).ok).toBe(false);
+  });
+
   it('exposes resync as a notification (no result schema)', () => {
     const resync = optioEngineContract.methods.resync;
     expect(resync).toBeDefined();

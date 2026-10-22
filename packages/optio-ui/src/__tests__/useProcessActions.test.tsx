@@ -54,6 +54,25 @@ describe('useProcessActions().launch', () => {
   });
 });
 
+describe('useProcessActions().dismiss', () => {
+  it('accepts the null body answered when the dismissal deleted the record', async () => {
+    answer = { status: 200, body: null };
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const { result } = renderHook(() => useProcessActions(), { wrapper: wrap });
+      result.current.dismiss('p1');
+      await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(1), { timeout: 60_000 });
+      const url = String((vi.mocked(globalThis.fetch).mock.calls[0] as any[])[0]);
+      expect(url).toContain('/processes/p1/dismiss');
+      await new Promise((r) => setTimeout(r, 50));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+});
+
 describe('useProcessActions().launchAsync', () => {
   it('resolves with the launched record (a factory launch: its child)', async () => {
     const { result } = renderHook(() => useProcessActions(), { wrapper: wrap });
