@@ -334,6 +334,7 @@ class TaskFactory:
     special: bool = False
     warning: str | None = None               # shown before the launch form
     cancellable: bool = True
+    supports_resume: bool = False            # with execute: a launch's task supports resume; with task_for the instance's rules (True refused at sync)
     ui_widget: str | None = None             # a launch's widget
     ttl_seconds: int | None = None           # None: a launch is ephemeral; set: kept that long after it ends
     auto_cancel_children: bool = True
@@ -355,6 +356,10 @@ needs for its directory). optio overrides on the returned instance: `process_id`
 values, `metadata` (the instance's, the factory's over it, then `taskFactory`), `name` =
 `name_for(values)` if the factory has one, else the instance's, and `ttl_seconds` = the factory's;
 the rest is the instance's. An exception from `task_for` is not caught: `launch` raises it.
+The factory's `supports_resume` is an `execute` factory's launches' (their task's
+`supports_resume`); with `task_for` the instance's rules, so sync refuses a factory with both
+(`ValueError("Task factory '<id>': supports_resume is the task_for instance's; it cannot be set
+on a factory with task_for")`).
 `child_task(factory, values, process_id=None)` is the single builder (a given `process_id` is
 reused, for rebuilding a kept launch). Spec: `docs/2026-10-22-task-factory-launch-options-design.md` 1.4.
 
@@ -430,36 +435,48 @@ starts.
 records under it, which inherit its metadata) is never launched again: `launch` answers
 `not-launchable` (`launch_and_wait` and `launch_and_await_result` raise
 `LaunchError("not-launchable")`) before it looks for an execute function, whatever the task
-registry holds (the launch's TaskInstance, which a sync keeps while the factory is synced, or
-nothing once the factory is gone). Nor is it reset by a dismiss, which would leave an idle record that never runs and
+registry holds (the launch's TaskInstance, which a sync keeps while the factory is synced and
+the launch can still run, or nothing once the factory is gone). Nor is it reset by a dismiss, which would leave an idle record that never runs and
 never expires (it removes `expireAt`): `dismiss` of an ended one (done, failed, cancelled)
 deletes it with its descendants and its task (`adhoc_delete`, the deletion an ephemeral launch's
 end takes) and answers `ok=True` with `proc=None`; a running one is `not-dismissable`.
 optio-ui shows it no play button (`isTaskFactoryLaunch`).
 
 **Resuming a kept launch** (launch options spec §1.5). A launch's task supports resume when it
-is a `task_for` instance with `supports_resume=True` (an `execute` factory's never does); its
-record carries `supportsResume` (an ad-hoc child's is its task's), so `ctx.mark_has_saved_state`
-works in it. `launch(<launch>, resume=True)` (and `launch_and_wait`, `launch_and_await_result`)
-resumes a kept one as a task's resume does (`ctx.resume=True`, its stored `params`); refused
-(`Optio._relaunch_refusal`) with `no-resume-support` when its record has `supportsResume` false,
-and `not-launchable` without saved state (that resume would be a fresh run) or without a
-registered task. A sync keeps the tasks of a factory's launches registered while the factory is
-synced (a full sync no longer drops them), and drops them with it. A launch counts as top-level
+is an `execute` factory's whose `supports_resume` is set, or a `task_for` instance with
+`supports_resume=True`; its record carries `supportsResume` (an ad-hoc child's is its task's), so
+`ctx.mark_has_saved_state` works in it. `launch(<launch>, resume=True)` (and `launch_and_wait`,
+`launch_and_await_result`) resumes a kept one as a task's resume does (`ctx.resume=True`, its
+stored `params`); refused (`Optio._relaunch_refusal`) with `no-resume-support` when its record
+has `supportsResume` false, and `not-launchable` without saved state (that resume would be a
+fresh run) or without a registered task. A sync keeps the tasks of a factory's launches
+registered while the factory is synced and they can still run (`_launch_tasks_that_cannot_run`:
+their record exists, and either their run has not ended, one defined and about to run included,
+or they support resume); the task of an ended launch that cannot resume goes. A sync that removes the
+factory drops its launches' tasks, and clears `supportsResume` and `autoResumeScheduled` on its
+launches' records that are not running (`_end_resume_of_launches`: no Resume the engine would
+refuse). A factory changed by a re-sync keeps its launches' existing tasks until the next
+restart, which rebuilds them from the new definition. A launch counts as top-level
 for auto-resume (depth 1, its parent the factory's record, which never runs): its task's
 `auto_resume` stamps it at shutdown, and the post-restart sweep resumes it. At `init()`, after
 the sync and before the deferred migrations, `Optio._rebuild_kept_launches` rebuilds the task of
 every kept launch that can resume (`metadata.taskFactory`, `supportsResume` and `hasSavedState`
-true, in a launchable state: a crashed run is `failed` by then, a stopped one `cancelled`) from its
-factory and stored values as at its launch (`check_factory_values`, then `child_task(factory,
-params, <its process id>)`: `task_for` gets the stored values and the same process id) and
-registers it in the executor's task registry, where resume, auto-resume, the conversation archive
-and the deferred migrations find it. One that cannot be rebuilt is settled `failed`, its error and
-a log line `Cannot resume after the engine restart: <why>` (`'<factory id>' is no longer a task
-factory`, `its values are refused: <id>: <what>`, `its task could not be rebuilt: <exception>`),
-`supportsResume` and `autoResumeScheduled` set false (it no longer resumes, nor is judged again),
-`expireAt` set by its TTL. An engine without `get_task_definitions` rebuilds and settles nothing.
-Ephemeral launches are still deleted at `init()`, before.
+true, in a launchable state: a crashed run is `failed` by then, a stopped one `cancelled`, a
+`done` one too) from its factory and stored values as at its launch (`check_factory_values`, then
+`child_task(factory, params, <its process id>)`: `task_for` gets the stored values and the same
+process id) and registers it in the executor's task registry, where resume, auto-resume, the
+conversation archive and the deferred migrations find it; its record's `supportsResume` and
+`uiWidget` are then the rebuilt task's (written when they differ: a factory whose new definition
+no longer supports resume is neither offered a Resume nor resumed). One that cannot be rebuilt
+(`'<factory id>' is no longer a task factory`, `its values are refused: <id>: <what>`, `its task
+could not be rebuilt: <exception>`) no longer resumes, nor is judged again: `supportsResume` and
+`autoResumeScheduled` set false. If its run was interrupted (a record the reconcile settled at
+this start) it is settled `failed`, as an orphan is: its error and a log line `Cannot resume
+after the engine restart: <why>`, `expireAt` set by its TTL. One whose run ended (`done`,
+`failed`, `cancelled`, a graceful shutdown's stop included) keeps its state, error, timestamps,
+log and `expireAt` as they were, and the reason goes to the engine's log as a warning (`Kept
+launch <id> (<state>) can no longer resume: <why>`). An engine without `get_task_definitions`
+rebuilds and settles nothing. Ephemeral launches are still deleted at `init()`, before.
 
 **The reserved key.** `metadata.taskFactory` is optio's: only a launch's definition writes it
 (`_factory_child`, through the internal `Optio._adhoc_define`, which keeps it). The public
@@ -564,7 +581,7 @@ state (or disappear) within the same `cancel_grace_seconds`; a record that no ta
 runs never does, so it makes the resync wait the whole grace, after which the stale roots are
 deleted anyway (logged as a warning). Returns `{processId: oid_hex}` of the definitions synced.
 The executor's task registry then holds the synced tasks, plus the tasks of the launches of
-every factory still synced (see "Resuming a kept launch").
+every factory still synced that can still run (see "Resuming a kept launch").
 
 ---
 

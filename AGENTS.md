@@ -315,6 +315,7 @@ class TaskFactory:
     special: bool = False
     warning: str | None = None               # shown before the launch form, as a task's
     cancellable: bool = True                 # a launch's
+    supports_resume: bool = False            # with execute: a launch's task supports resume; with task_for the instance's rules (True refused at sync)
     ui_widget: str | None = None             # a launch's widget (the factory's record has none)
     ttl_seconds: int | None = None           # None: a launch is ephemeral (deleted when it ends); set: kept that long after it ends
     auto_cancel_children: bool = True
@@ -328,7 +329,9 @@ class TaskFactory:
   (`<factory id>_<8 hex>`); its `TaskInstance` is the launch's task, optio setting its `process_id`,
   `params` (the values), `metadata` (the instance's, the factory's over it, plus `taskFactory`), `name`
   (`name_for(values)` if any) and `ttl_seconds` (the factory's). An exception from it propagates out of
-  `launch`. `child_task(factory, values, process_id=None)` builds either kind. Spec:
+  `launch`. With `task_for` the instance's `supports_resume` rules: sync refuses the factory's
+  `supports_resume=True` with it (`ValueError`, naming the field). `child_task(factory, values,
+  process_id=None)` builds either kind. Spec:
   `docs/2026-10-22-task-factory-launch-options-design.md` 1.4.
 - **The record:** synced like a task's, plus `taskFactory: true` and `parameters` (both `$set` on
   every sync); `params` `{}`, `uiWidget` null, `supportsResume` false. It never runs: it has no
@@ -364,7 +367,8 @@ class TaskFactory:
   the factory's plus `taskFactory: <factory id>`, the factory's other fields, `ttlSeconds` copied
   from the record; launched with the launch's `session_id`. If that launch is refused (a launch
   block or a shutdown since), the child is deleted. Its TaskInstance lives only in memory (as any
-  ad-hoc process's; a sync keeps it registered while the factory is synced), its record carries
+  ad-hoc process's; a sync keeps it registered while the factory is synced and the launch can
+  still run: not ended, or resumable), its record carries
   the task's `supportsResume`. `metadata.taskFactory` is optio's reserved key: only the launch's definition
   writes it, and `adhoc_define` drops a caller's (so a process a launch's task defines with its
   `ctx.metadata` is no launch of a factory).
@@ -376,16 +380,22 @@ class TaskFactory:
   descendants (reset, it would be an idle record that never runs nor expires); a running one is `not-dismissable`. optio-ui shows it no
   play button (`isTaskFactoryLaunch`).
 - **Resuming a kept launch** (spec `docs/2026-10-22-task-factory-launch-options-design.md` 1.5): a
-  launch whose task supports resume (a `task_for` instance's `supports_resume`; an `execute`
-  factory's never does) is resumed as a task is: `launch(<launch>, resume=True)` (also
+  launch whose task supports resume (an `execute` factory's `supports_resume`, a `task_for`
+  instance's) is resumed as a task is: `launch(<launch>, resume=True)` (also
   `launch_and_wait`, `launch_and_await_result`), `no-resume-support` without resume support,
   `not-launchable` without saved state or a registered task; the auto-resume sweep (a launch counts
   as top-level for the stamp). At `init()`, after the sync, the task of every kept launch that can
   resume (`supportsResume` and `hasSavedState`, not running) is rebuilt from its factory and stored
   values as at its launch (`task_factory.check_factory_values`, then `child_task(factory, params,
-  <its process id>)`) and registered; one that cannot be (its factory gone or no longer a factory,
-  its values refused, `task_for` raising) is settled `failed` with the error `Cannot resume after
-  the engine restart: <why>` and `supportsResume` false. optio-ui shows a resumable kept launch the
+  <its process id>)`) and registered, its record's `supportsResume` and `uiWidget` then the rebuilt
+  task's; one that cannot be (its factory gone or no longer a factory, its values refused,
+  `task_for` raising) gets `supportsResume` and `autoResumeScheduled` false and, if its run was
+  interrupted (the reconcile settled it), is settled `failed` with the error `Cannot resume after
+  the engine restart: <why>`; one whose run ended keeps its state, error, timestamps and
+  `expireAt` (the reason logged as a warning). A sync that removes the factory clears
+  `supportsResume` and `autoResumeScheduled` on its launches' records that are not running. A
+  factory changed by a re-sync keeps its launches' existing tasks until the next restart, which
+  rebuilds them from the new definition. optio-ui shows a resumable kept launch the
   Resume control (never a play button) beside its Remove.
 
 ---

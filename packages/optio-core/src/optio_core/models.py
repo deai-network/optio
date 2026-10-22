@@ -160,13 +160,17 @@ class TaskFactory:
     runs itself: a launch with values defines an ad-hoc child of that record
     whose TaskInstance has `execute`, `params` = the values and the fields
     below, and launches it. A launch is ephemeral unless `ttl_seconds` is set.
-    A factory has no schedule, resume, resurrect or auto-resume.
+    A factory has no schedule, resurrect or auto-resume, and its own record
+    never resumes; its launches may (below).
     Exactly one of `execute` and `task_for` is set (sync refuses otherwise):
     `execute` is every launch's task, reading its values from ctx.params;
     `task_for` builds a launch's whole TaskInstance from its values. A kept
-    launch whose task supports resume (a `task_for` instance's
-    supports_resume) is resumed as a task is, after an engine restart too:
-    init() rebuilds its task from the factory and its stored values.
+    launch whose task supports resume (an `execute` factory's
+    `supports_resume`, a `task_for` instance's) is resumed as a task is,
+    after an engine restart too: init() rebuilds its task from the factory
+    and its stored values. A factory changed by a re-sync keeps its
+    launches' existing tasks until the next restart, which rebuilds them
+    from the new definition.
     Spec: docs/2026-10-20-task-factory-design.md §1,
     docs/2026-10-22-task-factory-launch-options-design.md §1.4, §1.5.
     """
@@ -181,6 +185,10 @@ class TaskFactory:
     # Shown before the launch form, as a task's warning before its launch.
     warning: str | None = None
     cancellable: bool = True
+    # With `execute`: a launch's task supports resume (TaskInstance's
+    # supports_resume). With `task_for` the instance's rules, and sync
+    # refuses True here.
+    supports_resume: bool = False
     # A launch's widget (the factory's own record shows none).
     ui_widget: str | None = None
     # None: a launch is ephemeral (deleted when it ends); set: a launch is

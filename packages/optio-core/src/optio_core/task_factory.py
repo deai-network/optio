@@ -153,6 +153,7 @@ def child_task(
             special=factory.special,
             warning=factory.warning,
             cancellable=factory.cancellable,
+            supports_resume=factory.supports_resume,
             ui_widget=factory.ui_widget,
             auto_cancel_children=factory.auto_cancel_children,
         )

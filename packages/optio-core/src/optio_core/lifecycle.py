@@ -276,7 +276,7 @@ class Optio:
 
         # Reconcile any processes left in active states by a previous session.
         # Spec: docs/2026-04-22-process-reconciliation-design.md
-        await self._reconcile_interrupted_processes()
+        interrupted = await self._reconcile_interrupted_processes()
 
         # Run initial sync. NOTE: at this point _scheduler.start() has not
         # been called yet, so sync_schedules early-returns and no cron
@@ -291,7 +291,7 @@ class Optio:
         # A kept TaskFactory launch's task lived in the previous engine's
         # memory: the ones that can resume get it back, from their factories
         # just synced. Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.5
-        await self._rebuild_kept_launches()
+        await self._rebuild_kept_launches(interrupted)
 
         # Deferred migrations: need task definitions (e.g. a task's
         # session_crypto), so they run right after the initial sync, before
@@ -1682,8 +1682,10 @@ class Optio:
         except Exception:
             logger.exception("stopping the conversation archive listener failed")
 
-    async def _reconcile_interrupted_processes(self) -> None:
-        """Mark processes left in active states by a previous session as failed.
+    async def _reconcile_interrupted_processes(self) -> set[ObjectId]:
+        """Mark processes left in active states by a previous session as
+        failed; returns their ids (_rebuild_kept_launches tells by them a
+        kept launch whose run was interrupted).
 
         Spec: docs/2026-04-22-process-reconciliation-design.md (Rule 1).
 
@@ -1709,7 +1711,7 @@ class Optio:
         )
         stale = [(doc["_id"], doc["status"]["state"]) async for doc in cursor]
         if not stale:
-            return
+            return set()
 
         now = datetime.now(timezone.utc)
         error_msg = "Process was interrupted by server restart"
@@ -1731,6 +1733,7 @@ class Optio:
                 "event", f"State reconciled: {prev_state} -> failed (server restart)",
             )
         logger.info(f"Reconciled {len(stale)} interrupted process(es) to 'failed'")
+        return {oid for oid, _prev_state in stale}
 
     async def _delete_ephemeral_leftovers(self) -> None:
         """At init(), delete every ephemeral record of this engine's
@@ -1750,18 +1753,24 @@ class Optio:
                 f"descendants) left by a previous session"
             )
 
-    async def _rebuild_kept_launches(self) -> None:
+    async def _rebuild_kept_launches(self, interrupted: set[ObjectId]) -> None:
         """At init(), after the sync: the task of each kept TaskFactory launch
         that can resume (its record's supportsResume and hasSavedState; not
         running, as the reconcile has settled every active record) is
         rebuilt from its factory and its stored values as at its launch
         (child_task, its own process id) and registered where a synced
         task's is, so that it resumes as a task does (launch(id,
-        resume=True), the auto-resume sweep). One that cannot be rebuilt
-        (its factory no longer synced, its values refused by the factory's
-        checks or validate, task_for raising) is settled failed, the error
-        naming why, and its supportsResume cleared: it no longer resumes.
-        An engine without task definitions judges none.
+        resume=True), the auto-resume sweep); its record's supportsResume
+        and uiWidget are then the rebuilt task's (a factory whose new
+        definition no longer supports resume is not resumed). One that
+        cannot be rebuilt (its factory no longer synced, its values refused
+        by the factory's checks or validate, task_for raising) no longer
+        resumes: if its run was interrupted (`interrupted`, the records the
+        reconcile settled) it is settled failed, the error naming why; one
+        that ended (done, failed, cancelled: also one a graceful shutdown
+        stopped) keeps its state, error, timestamps and expiry, and only
+        loses its resume (_retire_ended_launch). An engine without task
+        definitions judges none.
         Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.5"""
         if self._config.get_task_definitions is None:
             return
@@ -1778,8 +1787,21 @@ class Optio:
             if isinstance(task, TaskInstance):
                 self._executor._task_registry[task.process_id] = task
                 rebuilt += 1
-            else:
+                # The record says what the rebuilt task is: a factory whose
+                # new definition no longer supports resume is not offered a
+                # Resume, nor resumed (_relaunch_refusal reads the record).
+                refresh = {
+                    key: value for key, value in (
+                        ("supportsResume", task.supports_resume),
+                        ("uiWidget", task.ui_widget),
+                    ) if proc.get(key) != value
+                }
+                if refresh:
+                    await coll.update_one({"_id": proc["_id"]}, {"$set": refresh})
+            elif proc["_id"] in interrupted:
                 await self._settle_unrebuilt_launch(proc, task)
+            else:
+                await self._retire_ended_launch(proc, task)
         if rebuilt:
             logger.info(f"Rebuilt the tasks of {rebuilt} kept launch(es) of task factories")
 
@@ -1803,9 +1825,10 @@ class Optio:
             return f"its task could not be rebuilt: {e}"
 
     async def _settle_unrebuilt_launch(self, proc: dict, why: str) -> None:
-        """Settle the kept launch `proc` whose task cannot be rebuilt
-        (_rebuild_kept_launches): failed, its error and log line naming
-        why, as an orphan is settled; it no longer resumes."""
+        """Settle the kept launch `proc`, whose run was interrupted and whose
+        task cannot be rebuilt (_rebuild_kept_launches): failed, its error
+        and log line naming why, as an orphan is settled; it no longer
+        resumes."""
         db, prefix = self._config.mongo_db, self._config.prefix
         now = datetime.now(timezone.utc)
         error = f"Cannot resume after the engine restart: {why}"
@@ -1817,6 +1840,23 @@ class Optio:
             set_fields={"supportsResume": False, "autoResumeScheduled": False},
         )
         logger.warning("Settled kept launch %s as failed: %s", proc["processId"], why)
+
+    async def _retire_ended_launch(self, proc: dict, why: str) -> None:
+        """The kept launch `proc`, whose run ended and whose task cannot be
+        rebuilt (_rebuild_kept_launches), no longer resumes: only its
+        supportsResume and autoResumeScheduled are cleared (so the UI offers
+        no Resume and the next start does not judge it again); its state,
+        error, timestamps, log and expireAt stay as its run left them. The
+        reason goes to the engine's log."""
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        await coll.update_one(
+            {"_id": proc["_id"]},
+            {"$set": {"supportsResume": False, "autoResumeScheduled": False}},
+        )
+        logger.warning(
+            "Kept launch %s (%s) can no longer resume: %s",
+            proc["processId"], proc["status"]["state"], why,
+        )
 
     async def _supervisor_loop(self) -> None:
         """Scan for past-deadline cancellations every 500 ms; force-cancel them.
@@ -1996,7 +2036,12 @@ class Optio:
         TaskFactory definitions are synced as records too (see
         store.upsert_process), but kept out of the executor's task registry
         and the scheduler: a factory's record never runs. The tasks of its
-        launches stay registered while it is synced, and go with it.
+        launches stay registered while it is synced and they can still run
+        (_launch_tasks_that_cannot_run), and go with it (its launches'
+        records then lose their resume: _end_resume_of_launches). A factory
+        changed by a sync keeps its launches' existing tasks until the next
+        restart, which rebuilds them from the new definition
+        (_rebuild_kept_launches).
         """
         if self._config.get_task_definitions is None:
             return {}
@@ -2021,6 +2066,12 @@ class Optio:
                 raise ValueError(
                     f"Task factory '{factory.process_id}': exactly one of "
                     f"execute and task_for must be set"
+                )
+            if factory.task_for is not None and factory.supports_resume:
+                # Spec: docs/2026-10-22-task-factory-launch-options-design.md §1.4
+                raise ValueError(
+                    f"Task factory '{factory.process_id}': supports_resume is the "
+                    f"task_for instance's; it cannot be set on a factory with task_for"
                 )
             try:
                 check_parameters(factory.parameters)
@@ -2076,23 +2127,81 @@ class Optio:
         if removed:
             logger.info(f"Removed {removed} stale process records")
 
-        # A factory's launches are no definitions: their tasks (a running
-        # launch's, a kept one's rebuilt at init) stay registered while their
-        # factory is synced, so that a kept launch can still be resumed.
+        # A factory's launches are no definitions: their tasks (a launch's
+        # about to run or running, a kept one's rebuilt at init) stay
+        # registered while their factory is synced and they can still run,
+        # so that a kept launch can still be resumed; the others go. Read
+        # before the registry is replaced, so that no await comes between
+        # its replacement and the launches' tasks put back.
+        cannot_run = await self._launch_tasks_that_cannot_run()
         launch_tasks = {
             pid: t for pid, t in self._executor._task_registry.items()
             if t.metadata.get("taskFactory")
         }
+        removed_factories = set(self._factories)
         self._executor.register_tasks(tasks, metadata_filter)
         self._register_factories(factories, metadata_filter)
+        removed_factories -= set(self._factories)
         for pid, t in launch_tasks.items():
-            if t.metadata["taskFactory"] in self._factories:
+            if t.metadata["taskFactory"] in self._factories and pid not in cannot_run:
                 self._executor._task_registry.setdefault(pid, t)
         await self._scheduler.sync_schedules(tasks, metadata_filter)
+        if removed_factories:
+            await self._end_resume_of_launches(removed_factories)
 
         scope = "(all)" if not metadata_filter else f"(filter={metadata_filter})"
         logger.info(f"Synced {len(definitions)} task definitions {scope}")
         return pid_to_oid
+
+    async def _end_resume_of_launches(self, factory_ids: set[str]) -> None:
+        """The factories `factory_ids` were removed by a sync, and their
+        launches' tasks with them: the launches' records that are not running
+        get supportsResume and autoResumeScheduled cleared, so that the UI
+        offers no Resume the engine would refuse, nor does the auto-resume
+        sweep wait for them. A running launch is left alone (a removed
+        factory's are asked to stop first; one that outlived the grace keeps
+        what its run writes)."""
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        result = await coll.update_many(
+            {
+                "metadata.taskFactory": {"$in": sorted(factory_ids)},
+                "status.state": {"$nin": list(ACTIVE_STATES)},
+                "$or": [{"supportsResume": True}, {"autoResumeScheduled": True}],
+            },
+            {"$set": {"supportsResume": False, "autoResumeScheduled": False}},
+        )
+        if result.modified_count:
+            logger.info(
+                f"Cleared the resume of {result.modified_count} launch record(s) of "
+                f"removed task factories {sorted(factory_ids)!r}"
+            )
+
+    async def _launch_tasks_that_cannot_run(self) -> set[str]:
+        """The process ids of the TaskFactory launches registered now whose
+        task can no longer run: their record is gone, or their run ended and
+        they do not support resume (a launch runs once). One defined and
+        about to run, one running, and a kept one that supports resume can
+        still run (_sync_definitions keeps their tasks)."""
+        pids = [
+            pid for pid, t in self._executor._task_registry.items()
+            if t.metadata.get("taskFactory")
+        ]
+        if not pids:
+            return set()
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        can_run = {
+            doc["processId"] async for doc in coll.find(
+                {
+                    "processId": {"$in": pids},
+                    "$or": [
+                        {"status.state": {"$nin": list(END_STATES)}},
+                        {"supportsResume": True},
+                    ],
+                },
+                {"processId": 1},
+            )
+        }
+        return set(pids) - can_run
 
     def _register_factories(
         self,
