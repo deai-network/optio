@@ -32,15 +32,16 @@ async with ctx.store_result(filename="Feladat.pdf", content_type="application/pd
 ```
 
 - It writes one GridFS file (the default bucket, as `store_blob`), tagged
-  `metadata = {processId, prefix, name: filename, kind: "result"}`.
+  `metadata = {processId, prefix, name: filename, kind: "result"}`, where `processId` is the
+  record's `_id` as hex, as `store_blob` tags it.
 - On a clean exit of the block, the process record gets
   `result: {filename, contentType, size}` (size in bytes). The GridFS id is kept on the record
   for optio's own use (`result.fileId`) and is not part of the API's response.
 - One result per run: a second `store_result` in the same run raises `RuntimeError`, as a
   second `publish_result` does. An exception inside the block leaves no result (the partial
   file is deleted).
-- A relaunch of a kept process (its reset) deletes the previous run's result file and removes
-  `result`.
+- The record's reset (`store.relaunch_reset`, run by a relaunch and by a dismiss) deletes the
+  previous run's result file and removes `result`.
 
 **Serving it (optio-api).** `GET /processes/:id/result`:
 
@@ -57,12 +58,14 @@ async with ctx.store_result(filename="Feladat.pdf", content_type="application/pd
 
 **Cleanup.** A result file lives exactly as long as its process record:
 
-- Every path where optio deletes a record deletes its result file too: an ephemeral run's
-  deletion at its end, `adhoc_delete`, the deletion of ephemeral records at `init()`.
-- A record removed by MongoDB's TTL monitor (`expireAt`) is deleted without optio's code
-  running. The engine therefore sweeps result files whose process record is gone (GridFS files
-  with `metadata.kind = "result"` and this prefix, whose `metadata.processId` has no record):
-  at `init()` and then every 10 minutes.
+- The paths where optio deletes one record (and its descendants) delete their result files
+  too: `store.delete_process` (an ephemeral run's deletion at its end, `adhoc_delete`, the
+  dismiss of an ended factory launch) and `store.delete_ephemeral_processes` at `init()`.
+- Records removed in bulk (`purge_processes`, `remove_stale_processes`, `resync(clean=True)`)
+  and by MongoDB's TTL monitor (`expireAt`, which runs no optio code) leave their files to the
+  sweep: the engine deletes result files whose process record is gone (GridFS files with
+  `metadata.kind = "result"` and this prefix, whose `metadata.processId` is no record's `_id`)
+  at `init()`, and then every 10 minutes from `run()`'s loops, beside the supervisor.
 
 ## 2. A launch stamp
 
@@ -81,8 +84,9 @@ launchMetadata?: (req, input: { process: ProcessRef; params?: Record<string, unk
 - For a launch that is not a factory's (a plain process re-run), the hook is not called: such
   a launch makes no new record to stamp.
 
-**optio-core.** `Optio.launch(…, metadata=…)` (and the engine RPC's launch) takes the stamp,
-and `_factory_child` merges it into the new child's metadata. A stamp key that collides with
+**optio-core.** `Optio.launch(…, metadata=…)`, `launch_and_wait` and `launch_and_await_result`
+(and the engine RPC's launch) take the stamp, and `_factory_child` merges it into the new
+child's metadata (after `child_task` composed the factory's). A stamp key that collides with
 the factory's own metadata or with the reserved `taskFactory` key refuses the launch:
 `invalid-metadata`, with the colliding keys in the message. The task reads the stamp in
 `ctx.metadata`, which holds its record's metadata already.
@@ -100,7 +104,12 @@ launched it.
   factory run at once in this engine. A launch beyond the limit is written `scheduled` (with a
   log line saying it waits for a free slot and how many run) and starts when a running launch
   of the same factory reaches a terminal state, oldest first.
-- A waiting launch can be cancelled: it ends `cancelled` without running, and frees nothing.
+- It holds for every way a launch of the factory starts (`launch`, `launch_and_wait`,
+  `launch_and_await_result`, the resume of a kept launch), so it lives in the executor, where
+  they all start a run.
+- A waiting launch can be cancelled: it ends `cancelled` without running, and frees nothing; an
+  ephemeral one is then deleted, as at the end of a run. Its start is conditional: a launch
+  that is no longer `scheduled` when its slot comes (cancelled meanwhile) does not run.
 - An engine restart needs nothing new: reconciliation already sets a `scheduled` record to
   `failed` ("interrupted by server restart") and deletes ephemeral ones.
 - The limit is per engine process (in memory), as `parallel_group`'s; it is not shared between
