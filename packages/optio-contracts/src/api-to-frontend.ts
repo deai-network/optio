@@ -91,6 +91,19 @@ export const processesContract = c.router({
     },
     summary: 'Get single process',
   },
+  getResult: {
+    method: 'GET',
+    path: '/processes/:id/result',
+    pathParams: z.object({ id: ProcessIdParamSchema }),
+    query: InstanceQuerySchema,
+    responses: {
+      // The file's bytes, its own Content-Type (the record's result.contentType).
+      200: c.otherResponse({ contentType: 'application/octet-stream', body: z.unknown() }),
+      // not-found also answers a process the request may not see (visibility).
+      404: z.object({ reason: z.enum(['not-found', 'no-result']), message: z.string() }),
+    },
+    summary: 'Download a process\'s result file',
+  },
   getTree: {
     method: 'GET',
     path: '/processes/:id/tree',

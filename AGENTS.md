@@ -890,6 +890,7 @@ Package: `optio-contracts`
 - `status`: `{ state, error?, runningSince?, doneAt?, duration?, failedAt?, stoppedAt? }`
 - `progress`: `{ percent: number | null (0–100), message?: string }`
 - `log`: `LogEntry[]`
+- `result`: `{ filename, contentType, size }` (optional) — the run's result file (`ctx.store_result`; `size` in bytes, int ≥ 0), served by `getResult`; its GridFS id (`result.fileId`) is server-side only and never appears here
 - `uiWidget`: string (nullable, optional) — widget name for `ProcessDetailView` dispatch
 - `widgetData`: unknown (optional) — live data delivered to the widget component
 - `taskFactory`: boolean (optional) — the record is a `TaskFactory` (missing = false)
@@ -937,11 +938,12 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 |------|--------|------|-------------|-------|------|-----------|
 | `list` | GET | `/processes` | — | `database?, prefix?, cursor?, limit, rootId?, state?, metadataFilter?` (URL-encoded JSON; legacy `?metadata.<key>=<value>` form returns 400) | — | `200: PaginatedResponse<Process>` |
 | `get` | GET | `/processes/:id` | `id` | `database?, prefix?` | — | `200: Process`, `404: Error` |
+| `getResult` | GET | `/processes/:id/result` | `id` | `database?, prefix?` | — | `200`: the result file's bytes (`Content-Type` its `contentType`, `Content-Disposition: inline` with its name; declared `c.otherResponse`, `application/octet-stream`), `404: { reason: 'not-found' \| 'no-result', message }` (`not-found` also for a process the request may not see) |
 | `getTree` | GET | `/processes/:id/tree` | `id` | `database?, prefix?, maxDepth?: number` | — | `200: ProcessTreeNode`, `404: Error` |
 | `getLog` | GET | `/processes/:id/log` | `id` | `database?, prefix?, cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |
 | `getTreeLog` | GET | `/processes/:id/tree/log` | `id` | `database?, prefix?, cursor?, limit, maxDepth?` | — | `200: PaginatedResponse<LogEntry & {processId, processLabel}>`, `404: Error` |
 | `getConversation` | GET | `/processes/:id/conversation` | `id` | `database?, prefix?` | — | `200: { events: unknown[], capturedAt: string \| null }` (a suspended process's saved conversation record, proxied from the engine's conversation archive; `Cache-Control: no-store`), `401: { message }`, `403`/`404`/`409`/`500`/`503`: `{ reason: ConversationFailureReason, message }` |
-| `launch` | POST | `/processes/:id/launch` | `id` | `database?, prefix?` | `{ resume?: boolean; sessionId?: string \| null; params?: Record<string, unknown> }` (optional; body may be omitted entirely; `params` are a task factory's values) | `200: Process` (a factory's launch: the child's record), `400`/`404`/`409`: `{ reason: LaunchFailureReason, message }` (`parameters-required` and `invalid-parameters` are 400, `not-found` 404, the others 409; an `invalid-parameters` message is optio-core's `"<id>: <what>"`, unchanged) |
+| `launch` | POST | `/processes/:id/launch` | `id` | `database?, prefix?` | `{ resume?: boolean; sessionId?: string \| null; params?: Record<string, unknown> }` (optional; body may be omitted entirely; `params` are a task factory's values) | `200: Process` (a factory's launch: the child's record), `400`/`404`/`409`: `{ reason: LaunchFailureReason, message }` (`parameters-required`, `invalid-parameters` and `invalid-metadata` are 400, `not-found` 404, the others 409; an `invalid-parameters` message is optio-core's `"<id>: <what>"`, an `invalid-metadata` one names the colliding stamp keys, both unchanged) |
 | `cancel` | POST | `/processes/:id/cancel` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: CancelFailureReason, message }` |
 | `dismiss` | POST | `/processes/:id/dismiss` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: DismissFailureReason, message }` |
 | `resurrect` | POST | `/processes/:id/resurrect` | `id` | `database?, prefix?` | `{ sessionId?: string \| null }` (optional; body may be omitted entirely) | `200: Process`, `404`/`409`: `{ reason: ResurrectFailureReason, message }` |
@@ -957,14 +959,16 @@ Note: The adapters mount the contract under `/api` (`pathPrefix: '/api'`), so ef
 `resurrect`, `groupCancel`, `groupCancelAndWait`, `blockLaunches`, `unblockLaunches`,
 `materializeUpload`; notification `resync`. `resurrect({ processId, sessionId: string | null })`
 returns `{ ok: true, process } | { ok: false, reason: ResurrectFailureReason }`.
-`launch({ processId, resume?, sessionId: string | null, params? })` returns
+`launch({ processId, resume?, sessionId: string | null, params?, ephemeral?, metadata? })` returns
 `{ ok: true, process } | { ok: false, reason: LaunchFailureReason, message? }` (`message` is the
-`"<id>: <what>"` text of an `invalid-parameters` refusal); the engine answers every reason
-optio-core's `launch` can return.
+`"<id>: <what>"` text of an `invalid-parameters` refusal, or names the colliding keys of an
+`invalid-metadata` one); the engine answers every reason optio-core's `launch` can return.
+`metadata` (`Record<string, string | number | boolean | null>`) is a task factory launch's stamp
+from optio-api's `launchMetadata` hook, merged into the new launch's metadata.
 
 Failure-reason enums (zod enum + type of the same name, browser-safe, exported from the package
 root): `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`,
-`shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`), `CancelFailureReason`, `DismissFailureReason`,
+`shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`), `CancelFailureReason`, `DismissFailureReason`,
 `ResurrectFailureReason` (`not-found`, `not-resurrectable`, `no-resurrect-support`,
 `resurrect-in-progress`, `launch-blocked`, `shutting-down`), `GroupCancelFailureReason`,
 `BlockLaunchesFailureReason`.

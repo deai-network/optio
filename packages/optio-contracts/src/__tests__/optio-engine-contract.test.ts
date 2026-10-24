@@ -40,6 +40,7 @@ describe('optioEngineContract', () => {
     expect(LaunchFailureReason.options).toEqual([
       'not-found', 'not-launchable', 'no-resume-support', 'launch-blocked',
       'shutting-down', 'parameters-required', 'not-a-factory', 'invalid-parameters',
+      'invalid-metadata',
     ]);
   });
 
@@ -60,6 +61,18 @@ describe('optioEngineContract', () => {
     expect(launch.params.parse({ processId: 'f', sessionId: null, ephemeral: true }).ephemeral).toBe(true);
     expect(launch.params.parse({ processId: 'f', sessionId: null }).ephemeral).toBeUndefined();
     expect(launch.params.safeParse({ processId: 'f', sessionId: null, ephemeral: 1 }).success).toBe(false);
+  });
+
+  it('launch params may carry metadata', () => {
+    const launch = optioEngineContract.methods.launch;
+    const metadata = { user: 'u1', n: 3, admin: false, team: null };
+    expect(launch.params.parse({ processId: 'f', sessionId: null, metadata }).metadata).toEqual(metadata);
+    expect(launch.params.parse({ processId: 'f', sessionId: null }).metadata).toBeUndefined();
+    expect(launch.params.safeParse({ processId: 'f', sessionId: null, metadata: { user: { id: 1 } } }).success).toBe(false);
+    expect(launch.params.safeParse({ processId: 'f', sessionId: null, metadata: { tags: ['a'] } }).success).toBe(false);
+    const fail = launch.result.parse({ ok: false, reason: 'invalid-metadata', message: 'kind' });
+    expect(fail.ok).toBe(false);
+    if (!fail.ok) expect(fail.message).toBe('kind');
   });
 
   it('dismiss result carries a process, or none when the record was deleted', () => {

@@ -34,12 +34,13 @@ The package hosts two contract files. Contract files follow `<server>-to-<client
 
 ### `processesContract` (HTTP, ts-rest)
 
-ts-rest router with 11 endpoints, used by `optio-ui` to call `optio-api`. Every endpoint takes the optional query parameters `?database=&prefix=` that select the optio instance; `:id` is either the process `_id` or its `processId`:
+ts-rest router with 12 endpoints, used by `optio-ui` to call `optio-api`. Every endpoint takes the optional query parameters `?database=&prefix=` that select the optio instance; `:id` is either the process `_id` or its `processId`:
 
 | Name | Method | Path |
 |------|--------|------|
 | `list` | GET | `/processes` |
 | `get` | GET | `/processes/:id` |
+| `getResult` | GET | `/processes/:id/result` |
 | `getTree` | GET | `/processes/:id/tree` |
 | `getLog` | GET | `/processes/:id/log` |
 | `getTreeLog` | GET | `/processes/:id/tree/log` |

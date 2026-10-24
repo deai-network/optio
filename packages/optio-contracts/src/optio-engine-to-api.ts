@@ -14,7 +14,8 @@ const ProcessIdParam = z.string().min(1);
 
 const launchResult = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), process: ProcessSchema }),
-  // `message` is optio-core's text of an `invalid-parameters` refusal.
+  // `message` is optio-core's text of an `invalid-parameters` or
+  // `invalid-metadata` refusal.
   z.object({ ok: z.literal(false), reason: LaunchFailureReason, message: z.string().optional() }),
 ]);
 
@@ -73,6 +74,10 @@ export const optioEngineContract = defineContract('optio-engine', {
       // Overrides the factory's default retention of the launch's record:
       // true = deleted when it ends, false = kept until dismissed.
       ephemeral: z.boolean().optional(),
+      // A task factory launch's stamp, from optio-api's `launchMetadata` hook
+      // (server-side only: the frontend's launch body cannot carry it); merged
+      // into the new launch's metadata.
+      metadata: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
     }),
     result: launchResult,
   }),

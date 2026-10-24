@@ -65,6 +65,14 @@ export const ProcessSchema = z.object({
   status: ProcessStatusSchema,
   progress: ProgressSchema,
   log: z.array(LogEntrySchema),
+  // The run's result file (ctx.store_result; GET /processes/:id/result serves
+  // it), size in bytes. Its GridFS id (result.fileId) is server-side only and
+  // must never appear here. Missing = no result.
+  result: z.object({
+    filename: z.string(),
+    contentType: z.string(),
+    size: z.number().int().nonnegative(),
+  }).optional(),
 
   // Widget extensions (widgetUpstream is server-side only and must never appear here)
   uiWidget: z.string().nullable().optional(),

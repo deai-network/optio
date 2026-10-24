@@ -45,6 +45,32 @@ describe('ProcessSchema ttlSeconds', () => {
   });
 });
 
+describe('ProcessSchema result', () => {
+  it('a process may carry its result', () => {
+    const result = { filename: 'a.pdf', contentType: 'application/pdf', size: 3 };
+    expect(ProcessSchema.parse({ ...baseProcess(), result }).result).toEqual(result);
+    expect(ProcessSchema.parse(baseProcess()).result).toBeUndefined();
+    expect(ProcessSchema.safeParse({ ...baseProcess(), result: { ...result, size: -1 } }).success).toBe(false);
+    // The GridFS id (result.fileId) is optio's own, never part of the schema.
+    expect(ProcessSchema.parse({ ...baseProcess(), result: { ...result, fileId: 'x' } }).result).toEqual(result);
+  });
+});
+
+describe('getResult route', () => {
+  it('is GET /processes/:id/result: the file\'s bytes, or a 404 with its reason', () => {
+    const route = processesContract.getResult;
+    expect(route.method).toBe('GET');
+    expect(route.path).toBe('/processes/:id/result');
+    expect((route.query as any).parse({ database: 'd', prefix: 'p' })).toEqual({ database: 'd', prefix: 'p' });
+    expect(Object.keys(route.responses).map(Number).sort()).toEqual([200, 404]);
+    expect((route.responses[200] as any).contentType).toBe('application/octet-stream');
+    const notFound = route.responses[404] as any;
+    expect(notFound.parse({ reason: 'no-result', message: 'x' })).toEqual({ reason: 'no-result', message: 'x' });
+    expect(notFound.parse({ reason: 'not-found', message: 'x' }).reason).toBe('not-found');
+    expect(notFound.safeParse({ reason: 'forbidden', message: 'x' }).success).toBe(false);
+  });
+});
+
 describe('launch route body', () => {
   it('carries params through', () => {
     const body = processesContract.launch.body as any;

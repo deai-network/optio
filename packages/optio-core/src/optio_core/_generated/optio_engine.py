@@ -129,6 +129,15 @@ class LogItem(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class Result(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    filename: str
+    content_type: str = Field(..., alias="contentType")
+    size: int = Field(..., ge=0)
+
+
 class BrowserOpenRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -177,6 +186,7 @@ class Process(BaseModel):
     status: Status
     progress: Progress
     log: list[LogItem]
+    result: Result | None = None
     ui_widget: str | None = Field(None, alias="uiWidget")
     widget_data: Any | None = Field(None, alias="widgetData")
     task_factory: bool | None = Field(None, alias="taskFactory")
@@ -254,6 +264,7 @@ class Process1(BaseModel):
     status: Status
     progress: Progress1
     log: list[LogItem]
+    result: Result | None = None
     ui_widget: str | None = Field(None, alias="uiWidget")
     widget_data: Any | None = Field(None, alias="widgetData")
     task_factory: bool | None = Field(None, alias="taskFactory")
@@ -404,6 +415,7 @@ class LaunchParams(BaseModel):
     session_id: str | None = Field(..., alias="sessionId")
     params: dict[str, Any] | None = None
     ephemeral: bool | None = None
+    metadata: dict[str, str | float | bool | None] | None = None
 
 
 class Progress2(Progress):
@@ -438,6 +450,7 @@ class Process2(BaseModel):
     status: Status
     progress: Progress2
     log: list[LogItem]
+    result: Result | None = None
     ui_widget: str | None = Field(None, alias="uiWidget")
     widget_data: Any | None = Field(None, alias="widgetData")
     task_factory: bool | None = Field(None, alias="taskFactory")
@@ -481,6 +494,7 @@ class LaunchResult2(BaseModel):
         "parameters-required",
         "not-a-factory",
         "invalid-parameters",
+        "invalid-metadata",
     ]
     message: str | None = None
 
@@ -560,6 +574,7 @@ class Process3(BaseModel):
     status: Status
     progress: Progress3
     log: list[LogItem]
+    result: Result | None = None
     ui_widget: str | None = Field(None, alias="uiWidget")
     widget_data: Any | None = Field(None, alias="widgetData")
     task_factory: bool | None = Field(None, alias="taskFactory")
