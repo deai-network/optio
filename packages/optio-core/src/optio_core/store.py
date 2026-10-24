@@ -2,7 +2,7 @@
 
 import logging
 import re as _re
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -464,18 +464,57 @@ async def create_child_process(
     return doc
 
 
+async def delete_result_files(
+    db: AsyncIOMotorDatabase, prefix: str, process_oids: Sequence[ObjectId],
+) -> int:
+    """Delete the result files (ctx.store_result) of these process records:
+    the GridFS files tagged `kind: "result"`, this prefix and one of their
+    `_id`s. Returns the number of files deleted.
+
+    Run after the records' deletion or reset. It works on the default
+    bucket's collections (store_result writes there), so that one query and
+    two deletes serve any number of records; the chunks go first, so an
+    interrupted deletion leaves a file document that the next one still
+    finds. Spec: docs/2026-10-25-factory-results-design.md §1
+    """
+    if not process_oids:
+        return 0
+    files = db["fs.files"]
+    file_ids = [doc["_id"] async for doc in files.find({
+        "metadata.kind": "result",
+        "metadata.prefix": prefix,
+        "metadata.processId": {"$in": [str(oid) for oid in process_oids]},
+    }, {"_id": 1})]
+    if not file_ids:
+        return 0
+    await db["fs.chunks"].delete_many({"files_id": {"$in": file_ids}})
+    return (await files.delete_many({"_id": {"$in": file_ids}})).deleted_count
+
+
 async def delete_descendants(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
 ) -> int:
-    """Recursively delete all descendants of a process."""
+    """Recursively delete all descendants of a process, and their result files."""
+    oids: list[ObjectId] = []
+    deleted = await _delete_descendants(db, prefix, process_oid, oids)
+    await delete_result_files(db, prefix, oids)
+    return deleted
+
+
+async def _delete_descendants(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
+    oids: list[ObjectId],
+) -> int:
+    """delete_descendants' records: their `_id`s are added to `oids`."""
     coll = _collection(db, prefix)
     children = await coll.find(
         {"parentId": process_oid}, {"_id": 1},
     ).to_list(None)
     deleted = 0
     for child in children:
-        deleted += await delete_descendants(db, prefix, child["_id"])
+        deleted += await _delete_descendants(db, prefix, child["_id"], oids)
     if children:
+        oids.extend(child["_id"] for child in children)
         result = await coll.delete_many({"parentId": process_oid})
         deleted += result.deleted_count
     return deleted
@@ -484,26 +523,32 @@ async def delete_descendants(
 async def delete_process(
     db: AsyncIOMotorDatabase, prefix: str, process_id: str,
 ) -> None:
-    """Delete a process and its descendants by processId OR OID hex. No-op if not found."""
+    """Delete a process and its descendants by processId OR OID hex, with
+    their result files. No-op if not found."""
     proc = await get_process_by_process_id(db, prefix, process_id)
     if proc is None:
         return
-    await delete_descendants(db, prefix, proc["_id"])
+    oids = [proc["_id"]]
+    await _delete_descendants(db, prefix, proc["_id"], oids)
     await _collection(db, prefix).delete_one({"_id": proc["_id"]})
+    await delete_result_files(db, prefix, oids)
 
 
 async def delete_ephemeral_processes(db: AsyncIOMotorDatabase, prefix: str) -> int:
     """Delete every ephemeral process record, whatever its state, with its
-    descendants. Returns the number of records deleted. Used by Optio.init:
-    an ephemeral process's TaskInstance lived in the memory of the engine
-    that defined it, so after a restart its record can never run again."""
+    descendants and their result files. Returns the number of records
+    deleted. Used by Optio.init: an ephemeral process's TaskInstance lived in
+    the memory of the engine that defined it, so after a restart its record
+    can never run again."""
     coll = _collection(db, prefix)
     oids = [doc["_id"] async for doc in coll.find({"ephemeral": True}, {"_id": 1})]
+    removed = list(oids)
     deleted = 0
     for oid in oids:
         # One ephemeral record may be another's descendant, already gone.
-        deleted += await delete_descendants(db, prefix, oid)
+        deleted += await _delete_descendants(db, prefix, oid, removed)
         deleted += (await coll.delete_one({"_id": oid})).deleted_count
+    await delete_result_files(db, prefix, removed)
     return deleted
 
 
@@ -529,7 +574,9 @@ async def purge_processes(
 
 
 def _reset_fields() -> dict[str, Any]:
-    """The fields a re-launch resets: the previous run's results."""
+    """The fields a re-launch resets: the previous run's results. Its result
+    file is not set but removed: a reset unsets `result`, then deletes the
+    file (delete_result_files)."""
     return {
         "status.error": None,
         "status.runningSince": None,
@@ -547,15 +594,17 @@ def _reset_fields() -> dict[str, Any]:
 async def clear_result_fields(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
 ) -> None:
-    """Clear previous run's result fields (for re-launch).
+    """Clear previous run's result fields (for re-launch), its result file
+    included.
 
     Also deletes all descendant processes from previous runs.
     """
     await delete_descendants(db, prefix, process_oid)
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
-        {"$set": _reset_fields()},
+        {"$set": _reset_fields(), "$unset": {"result": ""}},
     )
+    await delete_result_files(db, prefix, [process_oid])
 
 
 async def relaunch_reset(
@@ -577,6 +626,10 @@ async def relaunch_reset(
     `launchMode`: whether the run restores saved state, as decided at the
     launch (a resume without saved state is fresh), so that a view can tell
     a resume from a restart. Spec: docs/2026-10-14-conversation-backlog-batch-design.md
+
+    The previous run's result file goes: `result` is removed in the same
+    update, and the file is deleted after it, so a reader never finds a
+    `result` whose file is gone. Spec: docs/2026-10-25-factory-results-design.md §1
     """
     # The whole `status` replaces the `status.*` resets: to_dict() writes every
     # field, and one $set may not hold both `status` and `status.<x>`.
@@ -587,8 +640,9 @@ async def relaunch_reset(
         fields["launchMode"] = launch_mode
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
-        {"$set": fields, "$unset": {"expireAt": ""}},
+        {"$set": fields, "$unset": {"expireAt": "", "result": ""}},
     )
+    await delete_result_files(db, prefix, [process_oid])
 
 
 async def get_children(

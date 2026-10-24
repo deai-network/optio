@@ -233,7 +233,22 @@ async with ctx.load_blob(file_id) as stream:
 
 # Delete a blob by file_id.  No-op if the file_id does not exist.
 await ctx.delete_blob(file_id) -> None
+
+# Store this run's result file, which optio-api serves at GET /processes/:id/result.
+# One GridFS file (the default bucket), tagged {processId, prefix, name: filename, kind: "result"}.
+# On the block's clean exit the record gets result = {fileId, filename, contentType, size}
+# (size in bytes; fileId is server-side only). An exception inside the block deletes the
+# partial file and leaves no result. One result per run (keyed on the run's token, as
+# publish_result): a second store_result raises RuntimeError; a failed block does not count.
+async with ctx.store_result(filename: str, content_type: str) as stream:
+    await stream.write(data: bytes)
 ```
+
+The result file lives as long as its record: `store.relaunch_reset` (relaunch, dismiss) removes
+`result` and then deletes the file; `store.delete_process`, `store.delete_descendants` and
+`store.delete_ephemeral_processes` delete the files of the records they delete, after deleting
+them (`store.delete_result_files(db, prefix, process_oids) -> int`). Spec:
+`docs/2026-10-25-factory-results-design.md` §1
 
 ---
 
@@ -276,12 +291,15 @@ await ctx.clear_widget_data() -> None
 | `resurrecting` | `bool` | Transient: true while a resurrect's background run is in progress; set and cleared by optio-core only (see `Optio.resurrect`); `init()` clears any marker a dead engine left behind |
 | `taskFactory` | `bool \| absent` | True on a `TaskFactory`'s record (see "TaskFactory"); `$set` on every sync, unset on a TaskInstance's; such a record never runs |
 | `parameters` | `array \| absent` | A `TaskFactory`'s field definitions as plain JSON; `$set` on every sync, unset on a TaskInstance's |
+| `result` | `{ fileId, filename, contentType, size } \| absent` | The run's result file, set by `ctx.store_result` on its block's clean exit; removed by the record's reset. `fileId` (the GridFS id) is server-side only |
 
 `hasSavedState` is backfilled to `false` on all existing documents by migration `m003_backfill_has_saved_state`
 (runs on startup; depends on m002). `supportsResurrect`, `hasUnsavedWork` and `resurrecting` have
 no backfill; an absent field reads as `false`. All three are wire keys: the engine RPC's process
 payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them, and `taskFactory` and
-`parameters` too (`_engine_service._PROCESS_WIRE_KEYS`; absent on a TaskInstance's record).
+`parameters` too (`_engine_service._PROCESS_WIRE_KEYS`; absent on a TaskInstance's record). So is
+`result`, without its `fileId`: `_engine_service._to_process_dict` strips it (the generated
+`Result` model is `extra="forbid"`).
 
 ---
 
@@ -722,7 +740,10 @@ Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`.
 - **Terminal states** (`done`, `failed`, `cancelled`): executor clears `widgetUpstream`
   automatically so the proxy returns 404 after the process ends.
 - **Dismiss / relaunch**: both `widgetData` and `widgetUpstream` are cleared when a
-  process is dismissed or re-launched.
+  process is dismissed or re-launched, and its result file goes (`result` unset, then the
+  GridFS file deleted).
+- **Record deletion**: `store.delete_process`, `store.delete_descendants` and
+  `store.delete_ephemeral_processes` delete the result files of the records they delete.
 - **Ephemeral processes** (`adhoc_define(..., ephemeral=True)`, `ctx.mark_ephemeral()`, a
   TaskFactory launch without `ttl_seconds`): the record and its descendants are deleted (and the
   ad-hoc task unregistered) whenever the run ends: at any terminal state the executor writes; after
@@ -796,7 +817,9 @@ other error fails `init`.
 
 `TaskInstance.ttl_seconds` is stored as `ttlSeconds`; a terminal state sets
 `expireAt` = now + `ttlSeconds`. `store.relaunch_reset` (relaunch and dismiss)
-removes `expireAt`, so a running or dismissed record is never evicted.
+removes `expireAt`, so a running or dismissed record is never evicted. In the same
+update it removes `result`, and then deletes the previous run's result file
+(`store.delete_result_files`).
 `store.create_child_process(..., ttl_seconds=)` stores a child's `ttlSeconds`; the
 executor and `adhoc_define` pass the parent's. Spec:
 `docs/2026-10-09-process-indexes-design.md`

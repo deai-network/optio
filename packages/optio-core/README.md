@@ -251,6 +251,17 @@ await ctx.mark_ephemeral() -> None
 
 Mark this process ephemeral: its record (with its descendants) is deleted when its run ends, as for an [ephemeral ad-hoc process](#adhoc_define).
 
+#### `store_result()`
+
+```python
+async with ctx.store_result(filename: str, content_type: str) as writer:
+    await writer.write(chunk)
+```
+
+Write this run's result file: a file the frontend fetches when the run is done, such as a generated PDF ([optio-api](../optio-api/README.md) serves it at `GET /processes/:id/result`). It is one GridFS file, written chunk by chunk. When the block exits cleanly, the process record gets `result: {filename, contentType, size}` (size in bytes). An exception inside the block leaves no result: the partial file is deleted.
+
+A run has at most one result: a second `store_result` in the same run raises `RuntimeError` (a block that failed does not count). The file lives as long as the record's result: a relaunch or a dismiss deletes it, and so does the deletion of the record (an ephemeral run's end included).
+
 #### `run_child()`
 
 ```python
@@ -760,6 +771,7 @@ Collection: `{prefix}_processes`
 | `log[].level` | string | `event` \| `info` \| `debug` \| `warning` \| `error` |
 | `log[].message` | string | Log message |
 | `log[].data` | object \| absent | Optional structured data |
+| `result` | object \| absent | The run's result file (see [`store_result()`](#store_result)): `filename`, `contentType`, `size`, and `fileId`, its GridFS id, which only optio uses; removed by a relaunch or a dismiss |
 | `createdAt` | datetime | Document creation timestamp |
 
 ## Configuration

@@ -568,6 +568,15 @@ async with ctx.load_blob(file_id) as stream:
 await ctx.delete_blob(file_id) -> None
 # No-op if file_id does not exist.
 
+async with ctx.store_result(filename: str, content_type: str) as stream:
+    await stream.write(data: bytes)
+# This run's result file, served by optio-api at GET /processes/:id/result. One GridFS file
+# tagged {processId, prefix, name: filename, kind: "result"}; on the block's clean exit the
+# record gets result = {fileId, filename, contentType, size} (fileId server-side only). An
+# exception inside deletes the partial file and leaves no result. One per run: a second call
+# raises RuntimeError (a failed block does not count). Relaunch, dismiss and the record's
+# deletion delete the file.
+
 # Widget proxy control
 await ctx.set_widget_upstream(url: str, inner_auth: InnerAuth | None = None) -> None
 # Registers upstream URL for /api/widget/:database/:prefix/:processId/* proxy. Cleared automatically on terminal state.
@@ -729,6 +738,7 @@ Collection: `{prefix}_processes`
 | `taskFactory` | bool \| absent | True on a `TaskFactory`'s record (`$set` on every sync; unset on a TaskInstance's); such a record never runs |
 | `parameters` | array \| absent | A `TaskFactory`'s field definitions, as plain JSON (`$set` on every sync; unset on a TaskInstance's) |
 | `expireAt` | datetime \| absent | Set at a terminal state to now + `ttlSeconds`; removed by relaunch and dismiss; the `expireAt_ttl` index evicts the record after it |
+| `result` | `{ fileId, filename, contentType, size }` \| absent | The run's result file (`ctx.store_result`), in GridFS; removed, and its file deleted, by relaunch and dismiss; `delete_process`, `delete_descendants` and `delete_ephemeral_processes` delete the files of the records they delete. `fileId` is server-side only: the engine RPC's process payloads carry `result` without it |
 | `createdAt` | datetime | Document creation timestamp |
 
 ---

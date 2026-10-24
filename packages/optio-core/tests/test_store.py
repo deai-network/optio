@@ -494,3 +494,77 @@ async def test_relaunch_reset_preserves_resume_fields(mongo_db):
     updated = await get_process_by_process_id(mongo_db, "test", "rr_keep")
     assert updated["supportsResume"] is True
     assert updated["hasSavedState"] is True
+
+
+# ---- result files (docs/2026-10-25-factory-results-design.md §1) ----
+
+async def _put_file(mongo_db, process_oid, *, kind="result", prefix="test"):
+    """A GridFS file tagged as ctx.store_result tags it (store_blob's: no kind)."""
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+    metadata = {"processId": str(process_oid), "prefix": prefix, "name": "f"}
+    if kind is not None:
+        metadata["kind"] = kind
+    async with AsyncIOMotorGridFSBucket(mongo_db).open_upload_stream("f", metadata=metadata) as stream:
+        await stream.write(b"data")
+    return stream._id
+
+
+async def _file_gone(mongo_db, file_id) -> bool:
+    """Neither the GridFS file document nor any of its chunks is left."""
+    return (
+        await mongo_db["fs.files"].find_one({"_id": file_id}) is None
+        and await mongo_db["fs.chunks"].count_documents({"files_id": file_id}) == 0
+    )
+
+
+async def test_delete_result_files_deletes_only_the_given_processes_result_files(mongo_db):
+    from bson import ObjectId
+    from optio_core.store import delete_result_files
+    a, b = ObjectId(), ObjectId()
+    a_result = await _put_file(mongo_db, a)
+    b_result = await _put_file(mongo_db, b)
+    a_blob = await _put_file(mongo_db, a, kind=None)
+    a_other_prefix = await _put_file(mongo_db, a, prefix="other")
+
+    assert await delete_result_files(mongo_db, "test", []) == 0
+    assert await delete_result_files(mongo_db, "test", [a]) == 1
+
+    assert await _file_gone(mongo_db, a_result)
+    for kept in (b_result, a_blob, a_other_prefix):
+        assert await mongo_db["fs.files"].find_one({"_id": kept}) is not None
+
+
+async def test_delete_descendants_deletes_their_result_files(mongo_db):
+    from optio_core.store import delete_descendants
+    task = TaskInstance(execute=dummy_execute, process_id="dd_res", name="P")
+    parent = await upsert_process(mongo_db, "test", task)
+    child = await create_child_process(
+        mongo_db, "test", parent["_id"], parent["_id"], "dd_res.c", "C", {}, 1, 0,
+    )
+    grandchild = await create_child_process(
+        mongo_db, "test", child["_id"], parent["_id"], "dd_res.c.g", "G", {}, 2, 0,
+    )
+    parent_file = await _put_file(mongo_db, parent["_id"])
+    child_file = await _put_file(mongo_db, child["_id"])
+    grandchild_file = await _put_file(mongo_db, grandchild["_id"])
+
+    assert await delete_descendants(mongo_db, "test", parent["_id"]) == 2
+
+    assert await _file_gone(mongo_db, child_file)
+    assert await _file_gone(mongo_db, grandchild_file)
+    # The record itself stays, and so does its result: its reset deals with it.
+    assert await mongo_db["fs.files"].find_one({"_id": parent_file}) is not None
+
+
+async def test_clear_result_fields_removes_the_result(mongo_db):
+    task = TaskInstance(execute=dummy_execute, process_id="crf_res", name="R")
+    proc = await upsert_process(mongo_db, "test", task)
+    file_id = await _put_file(mongo_db, proc["_id"])
+    await mongo_db["test_processes"].update_one({"_id": proc["_id"]}, {"$set": {"result": {
+        "fileId": file_id, "filename": "f", "contentType": "text/plain", "size": 4,
+    }}})
+
+    await clear_result_fields(mongo_db, "test", proc["_id"])
+
+    assert "result" not in await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
+    assert await _file_gone(mongo_db, file_id)

@@ -554,3 +554,39 @@ async def test_resurrecting_passes_the_generated_process_model(fake_optio, sampl
     svc = OptioEngineService(fake_optio)
     res = await svc.resurrect(ResurrectParams.model_validate({"processId": "p1", "sessionId": None}))
     assert res.root.process.resurrecting is True
+
+
+def test_wire_keys_carry_the_result():
+    from optio_core._engine_service import _PROCESS_WIRE_KEYS
+    assert "result" in _PROCESS_WIRE_KEYS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command,params,outcome", [
+    ("launch", LaunchParams.model_validate({"processId": "p1", "sessionId": None}), LaunchOutcome),
+    ("cancel", CancelParams.model_validate({"processId": "p1"}), CancelOutcome),
+    ("dismiss", DismissParams.model_validate({"processId": "p1"}), DismissOutcome),
+    ("resurrect", ResurrectParams.model_validate({"processId": "p1", "sessionId": None}), ResurrectOutcome),
+])
+async def test_a_reply_carries_the_result_without_its_file_id(
+    fake_optio, sample_idle_proc, command, params, outcome,
+):
+    """A record's result reaches the wire as {filename, contentType, size}:
+    its fileId (the GridFS id) stays in the engine, and the generated
+    (extra="forbid") Result model would refuse it.
+    Spec: docs/2026-10-25-factory-results-design.md §1"""
+    from optio_core._engine_service import OptioEngineService
+    file_id = ObjectId()
+    proc = {**sample_idle_proc, "status": {"state": "done"}, "result": {
+        "fileId": file_id, "filename": "a.pdf", "contentType": "application/pdf", "size": 4,
+    }}
+    setattr(fake_optio, command, AsyncMock(return_value=outcome(ok=True, proc=proc)))
+    svc = OptioEngineService(fake_optio)
+
+    res = await getattr(svc, command)(params)
+
+    assert res.root.ok is True
+    wire = res.model_dump(by_alias=True, mode="json")["process"]
+    assert wire["result"] == {"filename": "a.pdf", "contentType": "application/pdf", "size": 4}
+    # The record itself keeps its fileId.
+    assert proc["result"]["fileId"] == file_id

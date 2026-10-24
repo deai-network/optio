@@ -34,7 +34,7 @@ _PROCESS_WIRE_KEYS = frozenset({
     "status", "progress", "log", "uiWidget", "widgetData", "supportsResume",
     "hasSavedState", "supportsResurrect", "hasUnsavedWork", "resurrecting",
     "taskFactory", "parameters", "ttlSeconds", "autoResumeScheduled", "createdAt",
-    "browserOpenRequests", "sessionEvents",
+    "browserOpenRequests", "sessionEvents", "result",
 })
 
 
@@ -59,14 +59,19 @@ def _to_process_dict(doc: dict) -> dict:
     by-alias field names (e.g. _id, processId, supportsResume).
 
     Strips fields unknown to the contract (e.g. adhoc, ephemeral
-    stored by the scheduler), stringifies ObjectIds, and makes naive datetimes
-    UTC-aware so Pydantic AwareDatetime validation passes.
+    stored by the scheduler) and `result.fileId`, stringifies ObjectIds, and
+    makes naive datetimes UTC-aware so Pydantic AwareDatetime validation
+    passes.
     """
     out = {
         k: _fix_value(v)
         for k, v in doc.items()
         if k in _PROCESS_WIRE_KEYS
     }
+    if isinstance(out.get("result"), dict):
+        # fileId, the result file's GridFS id, is optio's own.
+        # Spec: docs/2026-10-25-factory-results-design.md §1
+        out["result"] = {k: v for k, v in out["result"].items() if k != "fileId"}
     return out
 
 

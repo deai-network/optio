@@ -34,6 +34,10 @@ if TYPE_CHECKING:
 
 _log = _logging.getLogger("optio_core.context")
 
+# ProcessContext._result_run while no run has stored its result: no run's
+# token is this object.
+_NO_RESULT_RUN = object()
+
 
 def _log_flush_failure(task: "asyncio.Task") -> None:
     """Done-callback for every flush task: log a failure when it happens
@@ -143,6 +147,9 @@ class ProcessContext:
         # future, and the token its published result carries.
         self._result_future: asyncio.Future | None = None
         self._run_token: object | None = None
+        # The run (its token) whose result file store_result writes or wrote:
+        # one per run, as publish_result's.
+        self._result_run: object = _NO_RESULT_RUN
 
     def report_progress(
         self,
@@ -502,6 +509,59 @@ class ProcessContext:
             stream_cm = bucket.open_upload_stream_with_id(file_id, name, metadata=metadata)
         async with stream_cm as stream:
             yield _GridInWrapper(stream)
+
+    @asynccontextmanager
+    async def store_result(self, filename: str, content_type: str):
+        """Write this run's result file, which optio-api serves at
+        ``GET /processes/:id/result``.
+
+        Usage:
+            async with ctx.store_result(filename="Feladat.pdf",
+                                        content_type="application/pdf") as writer:
+                await writer.write(chunk)
+
+        One GridFS file, tagged as store_blob's plus ``kind: "result"``. On
+        the block's clean exit the record gets ``result: {fileId, filename,
+        contentType, size}`` (``fileId`` is optio's own: no API response
+        carries it). An exception inside the block leaves no result: the
+        partial file is deleted. One result per run: a second store_result
+        raises RuntimeError, as a second publish_result does; a failed block
+        does not count. The record's reset (a relaunch, a dismiss) and its
+        deletion delete the file.
+        Spec: docs/2026-10-25-factory-results-design.md §1
+        """
+        if self._result_run is self._run_token:
+            raise RuntimeError(
+                f"store_result: '{self.process_id}' already stored a result "
+                "for this run"
+            )
+        self._result_run = self._run_token
+        metadata = {
+            "processId": str(self._process_oid),
+            "prefix": self._prefix,
+            "name": filename,
+            "kind": "result",
+        }
+        stream = self._gridfs().open_upload_stream(filename, metadata=metadata)
+        try:
+            async with stream:
+                yield _GridInWrapper(stream)
+            from optio_core.store import _collection
+            await _collection(self._db, self._prefix).update_one(
+                {"_id": self._process_oid},
+                {"$set": {"result": {
+                    "fileId": stream._id,
+                    "filename": filename,
+                    "contentType": content_type,
+                    "size": stream.length,
+                }}},
+            )
+        except BaseException:
+            # motor's GridIn leaves the chunks it already flushed (it only
+            # marks itself closed): delete them, and the file if it closed.
+            self._result_run = _NO_RESULT_RUN
+            await self.delete_blob(stream._id)
+            raise
 
     @asynccontextmanager
     async def load_blob(self, file_id: ObjectId):
