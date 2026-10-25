@@ -590,7 +590,8 @@ async function getProcessResult(
   deps?: ResultDownloadDeps,  // default GRIDFS_RESULT_DOWNLOAD (result-download.ts)
 ): Promise<ResultDownloadResult>
 // ResultDownloadResult =
-//   | { status: 200; headers: { 'Content-Type'; 'Content-Length'; 'Content-Disposition' }; body: Readable }
+//   | { status: 200; headers: { 'Content-Type'; 'Content-Length'; 'Content-Disposition';
+//       'X-Content-Type-Options': 'nosniff'; 'Content-Security-Policy'?: 'sandbox' }; body: Readable }
 //   | { status: 404; body: { reason: 'not-found' | 'no-result'; message } }
 //   | ForbiddenResult
 ```
@@ -680,7 +681,14 @@ file a task stored with optio-core's `store_result`: one GridFS file in the defa
   `Content-Length` the GridFS file's length, and `contentDisposition(filename)`:
   `inline; filename="<ascii>"; filename*=UTF-8''<percent-encoded>`, where the ASCII
   fallback has anything outside printable ASCII, and `"`, `\`, `;`, `%`, replaced by
-  `_`, so the header stays one valid line.
+  `_`, so the header stays one valid line. Every 200 also carries
+  `X-Content-Type-Options: nosniff`, and every 200 whose media type (lowercased,
+  parameters stripped) is not `application/pdf` carries `Content-Security-Policy: sandbox`
+  (`resultSafetyHeaders`): the file renders inline in the host app's origin, next to its
+  session cookie, and `store_result` takes any `content_type`, so script in an HTML, SVG,
+  XHTML or XML result would otherwise run as the app. PDF is left out because a sandboxed
+  document may refuse Chromium's built-in PDF viewer. Adapters send every header of
+  `headers`.
 - Every adapter serves it outside ts-rest (Fastify and Express as their own routes, the
   Next adapters as a raw match before ts-rest): ts-rest would send the contract's
   `application/octet-stream` in place of the file's own type, and `@ts-rest/express`

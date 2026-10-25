@@ -93,12 +93,43 @@ describe('getProcessResult', () => {
     await storeResult(id, PDF);
     const res: any = await getProcessResult(ctx(), { prefix: PREFIX }, id.toHexString());
     expect(res.status).toBe(200);
+    // Exactly these: a PDF gets nosniff and no Content-Security-Policy.
     expect(res.headers).toEqual({
       'Content-Type': 'application/pdf',
       'Content-Length': String(PDF.length),
       'Content-Disposition': `inline; filename="a.pdf"; filename*=UTF-8''a.pdf`,
+      'X-Content-Type-Options': 'nosniff',
     });
+    expect(res.headers).not.toHaveProperty('Content-Security-Policy');
     expect((await readAll(res.body)).equals(PDF)).toBe(true);
+  });
+
+  // The file renders inline in the host app's origin: an active type must not run as the app.
+  it('sandboxes an HTML result and forbids sniffing', async () => {
+    const id = await insertProcess();
+    const html = Buffer.from('<script>alert(document.cookie)</script>');
+    await storeResult(id, html, 'a.html', 'text/html; charset=utf-8');
+    const res: any = await getProcessResult(ctx(), { prefix: PREFIX }, id.toHexString());
+    expect(res.status).toBe(200);
+    expect(res.headers['Content-Type']).toBe('text/html; charset=utf-8');
+    expect(res.headers['X-Content-Type-Options']).toBe('nosniff');
+    expect(res.headers['Content-Security-Policy']).toBe('sandbox');
+    res.body.destroy();
+  });
+
+  it('judges PDF by the media type alone: case and parameters do not matter', async () => {
+    const pdf = await insertProcess();
+    await storeResult(pdf, PDF, 'a.pdf', 'Application/PDF; name=a.pdf');
+    const pdfRes: any = await getProcessResult(ctx(), { prefix: PREFIX }, pdf.toHexString());
+    expect(pdfRes.headers['X-Content-Type-Options']).toBe('nosniff');
+    expect(pdfRes.headers).not.toHaveProperty('Content-Security-Policy');
+    pdfRes.body.destroy();
+
+    const svg = await insertProcess();
+    await storeResult(svg, Buffer.from('<svg/>'), 'a.svg', 'image/svg+xml');
+    const svgRes: any = await getProcessResult(ctx(), { prefix: PREFIX }, svg.toHexString());
+    expect(svgRes.headers['Content-Security-Policy']).toBe('sandbox');
+    svgRes.body.destroy();
   });
 
   it('finds the process by its processId too', async () => {

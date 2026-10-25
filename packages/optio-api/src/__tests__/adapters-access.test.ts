@@ -100,14 +100,16 @@ async function insertHiddenChat(): Promise<ObjectId> {
 const PDF = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x00, 0xff, 0xfe, 0x0a, 0x80]);
 
 /** What optio-core's store_result leaves: the GridFS file, and the record's `result`. */
-async function storeResult(processOid: ObjectId, bytes: Buffer): Promise<void> {
-  const upload = new GridFSBucket(db).openUploadStream('a.pdf', {
-    metadata: { processId: processOid.toHexString(), prefix: PREFIX, name: 'a.pdf', kind: 'result' },
+async function storeResult(
+  processOid: ObjectId, bytes: Buffer, filename = 'a.pdf', contentType = 'application/pdf',
+): Promise<void> {
+  const upload = new GridFSBucket(db).openUploadStream(filename, {
+    metadata: { processId: processOid.toHexString(), prefix: PREFIX, name: filename, kind: 'result' },
   });
   await pipeline(Readable.from([bytes]), upload);
   await col().updateOne(
     { _id: processOid },
-    { $set: { result: { fileId: upload.id, filename: 'a.pdf', contentType: 'application/pdf', size: bytes.length } } },
+    { $set: { result: { fileId: upload.id, filename, contentType, size: bytes.length } } },
   );
 }
 
@@ -295,6 +297,16 @@ for (const [name, makeDriver] of drivers) {
       expect(ok.header('content-type')).toBe('application/pdf');
       expect(ok.header('content-length')).toBe(String(PDF.length));
       expect(ok.header('content-disposition')).toBe(`inline; filename="a.pdf"; filename*=UTF-8''a.pdf`);
+      expect(ok.header('x-content-type-options')).toBe('nosniff');
+      expect(ok.header('content-security-policy')).toBeUndefined();
+
+      // An active type renders sandboxed.
+      await storeResult(mineId, Buffer.from('<script>1</script>'), 'a.html', 'text/html; charset=utf-8');
+      const html = await call('GET', url(mineId));
+      expect(html.status).toBe(200);
+      expect(html.header('content-type')).toBe('text/html; charset=utf-8');
+      expect(html.header('x-content-type-options')).toBe('nosniff');
+      expect(html.header('content-security-policy')).toBe('sandbox');
 
       await storeResult(otherId, PDF);
       const other = await call('GET', url(otherId));

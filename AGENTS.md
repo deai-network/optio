@@ -1291,7 +1291,10 @@ async function getProcessResult(ctx: OptioContext, query: InstanceQuery, id: str
                                 deps?: ResultDownloadDeps): Promise<ResultDownloadResult>
 // GET /processes/:id/result: the file of optio-core's store_result, from GridFS (default bucket).
 // 200 { headers: Content-Type (the record's), Content-Length, Content-Disposition (inline; an
-// ASCII filename with ", \, ;, % and non-ASCII as _; RFC 5987 filename*), body: Readable };
+// ASCII filename with ", \, ;, % and non-ASCII as _; RFC 5987 filename*), X-Content-Type-Options:
+// nosniff, and Content-Security-Policy: sandbox unless the media type is application/pdf (the file
+// renders in the host app's origin: an HTML/SVG/XML result must not run script as the app; a
+// sandboxed PDF may lose Chromium's viewer), body: Readable };
 // 404 { reason: 'no-result' } (no result, or its file is gone) | { reason: 'not-found' } (no such
 // record, out of scope or hidden; the record is read first, so a removed one never serves a
 // leftover file); 403 when authorize refuses 'result'.

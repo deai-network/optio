@@ -68,6 +68,23 @@ export function contentDisposition(filename: string): string {
   return `inline; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
+/**
+ * The headers that keep a result file inert. It renders inline in the host
+ * app's origin, next to its session cookie, and `store_result` takes any
+ * `content_type`: script in an HTML, SVG or XML result would run as the app.
+ * So the browser may not sniff a type into an active one (`nosniff`), and
+ * every type but PDF is sandboxed (judged by the media type alone: lowercased,
+ * parameters stripped). PDF is left out because a sandboxed document may
+ * refuse Chromium's built-in PDF viewer.
+ */
+export function resultSafetyHeaders(
+  contentType: string,
+): { 'X-Content-Type-Options': 'nosniff'; 'Content-Security-Policy'?: 'sandbox' } {
+  const mediaType = contentType.split(';', 1)[0].trim().toLowerCase();
+  if (mediaType === 'application/pdf') return { 'X-Content-Type-Options': 'nosniff' };
+  return { 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' };
+}
+
 export type ResultQueryResult =
   | { ok: true; query: { database?: string; prefix?: string } }
   | { ok: false; status: 400; body: { message: string } };

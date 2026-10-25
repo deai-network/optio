@@ -12,7 +12,7 @@ import { pruneOrphans } from './visibility.js';
 import { processReads, type ProcessReads } from './process-reads.js';
 import { fetchConversation, type ConversationFetchResult } from './conversation-archive.js';
 import {
-  contentDisposition, GRIDFS_RESULT_DOWNLOAD, openResult, publicResult,
+  contentDisposition, GRIDFS_RESULT_DOWNLOAD, openResult, publicResult, resultSafetyHeaders,
   type ResultDownloadDeps, type StoredResult,
 } from './result-download.js';
 import type {
@@ -278,12 +278,19 @@ export async function getProcessConversation(
 
 /**
  * `GET /processes/:id/result`. A 200's `body` is the file's GridFS download
- * stream, for the adapter to pipe out with `headers`.
+ * stream, for the adapter to pipe out with `headers` (all of them: the last
+ * two keep an active type inert, see `resultSafetyHeaders`).
  */
 export type ResultDownloadResult =
   | {
       status: 200;
-      headers: { 'Content-Type': string; 'Content-Length': string; 'Content-Disposition': string };
+      headers: {
+        'Content-Type': string;
+        'Content-Length': string;
+        'Content-Disposition': string;
+        'X-Content-Type-Options': 'nosniff';
+        'Content-Security-Policy'?: 'sandbox';
+      };
       body: Readable;
     }
   | { status: 404; body: { reason: 'not-found' | 'no-result'; message: string } }
@@ -321,6 +328,7 @@ export async function getProcessResult(
       'Content-Type': stored.contentType,
       'Content-Length': String(file.length),
       'Content-Disposition': contentDisposition(stored.filename),
+      ...resultSafetyHeaders(stored.contentType),
     },
     body: file.stream,
   };
