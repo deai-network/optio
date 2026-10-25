@@ -40,6 +40,10 @@ async with ctx.store_result(filename="Feladat.pdf", content_type="application/pd
 - One result per run: a second `store_result` in the same run raises `RuntimeError`, as a
   second `publish_result` does. An exception inside the block leaves no result (the partial
   file is deleted).
+- `content_type` must be one media type (type/subtype, optional parameters, no comma) of
+  printable ASCII, and `filename` a non-empty string without control characters: the route
+  sends them as `Content-Type` and in `Content-Disposition`. Anything else raises
+  `ValueError`, naming the field, before anything is written.
 - The record's reset (`store.relaunch_reset`, run by a relaunch and by a dismiss) deletes the
   previous run's result file and removes `result`.
 
@@ -52,12 +56,14 @@ async with ctx.store_result(filename="Feladat.pdf", content_type="application/pd
   `contentType` is not exactly one `application/pdf` type (any case, parameters allowed, no
   comma: browsers split a Content-Type on commas and render the last type) carries
   `Content-Security-Policy: sandbox`. The file renders inline in the host app's origin, next
-  to its session cookie, and `store_result` takes any `content_type`: script in an HTML, SVG,
+  to its session cookie, and `store_result` takes any media type: script in an HTML, SVG,
   XHTML or XML result would otherwise run as the app. PDF is left out because a sandboxed
   document may refuse Chromium's built-in PDF viewer.
 - 404 `{reason: 'no-result'}` for a process that has no result; 404 `{reason: 'not-found'}`
   for one that does not exist or the request may not see (`visibility`), as
   `GET /processes/:id/conversation` answers (the plain read routes' 404 has no reason).
+- The 200 and both 404s send `Cache-Control: private, no-store`: the file is one user's, and
+  a process without a result may store one later.
 - Access: a read, so `viewer` suffices; it goes through `gateProcess` with a new action,
   `'result'` (added to `OptioAction`), so `scope`, `visibility` and `authorize` apply as for
   the conversation route.
@@ -108,7 +114,8 @@ launchMetadata?: (req, input: { process: ProcessRef; params?: Record<string, unk
 **optio-core.** `Optio.launch(…, metadata=…)`, `launch_and_wait` and `launch_and_await_result`
 (and the engine RPC's launch) take the stamp, and `_factory_child` merges it into the new
 child's metadata (after `child_task` composed the factory's). A stamp key that collides with
-the factory's own metadata or with the reserved `taskFactory` key refuses the launch:
+the factory's own metadata (with `task_for`, the instance's too) or with the reserved
+`taskFactory` key refuses the launch:
 `invalid-metadata`, with the colliding keys in the message. It is a new `LaunchFailureReason`
 (optio-contracts' enum, optio-api's status and message tables, whose message pass-through it
 shares with `invalid-parameters`, and the `errors.processes.launch.invalid-metadata` string of

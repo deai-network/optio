@@ -174,10 +174,10 @@ await optio_core.launch_and_await_result(process_id: str, resume: bool = False, 
 # other record: not-a-factory.
 # metadata: the launch's stamp (optio-api's launchMetadata hook; the engine RPC's launch forwards it),
 # merged into the child's metadata, which ctx.metadata reads and the records under the launch inherit. A
-# key the child's metadata has already (the factory's own, or the reserved taskFactory) refuses the
-# launch before anything is defined: invalid-metadata, LaunchOutcome.message "<key>, <key>: already set
-# by the factory (its metadata, or the reserved taskFactory)". Any other launch makes no new record to
-# stamp: there metadata is ignored.
+# key the child's metadata has already (the factory's own, with task_for the instance's too, or the
+# reserved taskFactory) refuses the launch before anything is defined: invalid-metadata,
+# LaunchOutcome.message "<key>, <key>: already set by the factory (its metadata, or the reserved
+# taskFactory)". Any other launch makes no new record to stamp: there metadata is ignored.
 # ephemeral (None | True | False): whether the launch's record is deleted when its run ends; None follows the
 # factory (ttl_seconds is None), a bool overrides it. "ephemeral" is a reserved parameter id. No child is
 # defined while shutting down (all three entry points). A factory's record never runs itself, and a
@@ -606,9 +606,12 @@ async with ctx.store_result(filename: str, content_type: str) as stream:
 # tagged {processId, prefix, name: filename, kind: "result"}; on the block's clean exit the
 # record gets result = {fileId, filename, contentType, size} (fileId server-side only). An
 # exception inside deletes the partial file and leaves no result. One per run: a second call
-# raises RuntimeError (a failed block does not count). Relaunch, dismiss and the record's
-# deletion delete the file; the files of records removed otherwise (bulk deletes, the TTL
-# monitor) are deleted by the sweep at init() and every 10 minutes from run().
+# raises RuntimeError (a failed block does not count). ValueError, naming the field, before
+# anything is written unless content_type is one media type (type/subtype, optional
+# parameters, no comma) of printable ASCII and filename a non-empty str without control
+# characters. Relaunch, dismiss and the record's deletion delete the file; the files of
+# records removed otherwise (bulk deletes, the TTL monitor) are deleted by the sweep at init()
+# and every 10 minutes from run().
 
 # Widget proxy control
 await ctx.set_widget_upstream(url: str, inner_auth: InnerAuth | None = None) -> None
@@ -1217,8 +1220,8 @@ interface ExplicitOptioApiOptions {
 // | null (LaunchMetadataCallback<TRequest>; packages/optio-api/AGENTS.md "Launch stamp"): the
 // server-side stamp of a task factory's launch, called for every launch of a factory
 // (process.taskFactory) after authorize allowed it; its map goes to the engine as the launch's
-// `metadata`, merged into the new child's metadata (a key the factory's metadata already has, or
-// taskFactory: 400 invalid-metadata). Never called for a plain process's launch (no metadata
+// `metadata`, merged into the new child's metadata (a key the factory's metadata already has, with
+// task_for the instance's too, or taskFactory: 400 invalid-metadata). Never called for a plain process's launch (no metadata
 // sent); the launch body cannot carry metadata (zod strips it), so the stamp is trusted. Not an
 // access hook: hasAccessHooks ignores it and, set alone, every request stays UNRESTRICTED (with no
 // access hooks, launchProcess reads the target itself to learn whether it is a factory).
@@ -1308,12 +1311,15 @@ async function getProcessResult(ctx: OptioContext, query: InstanceQuery, id: str
 // GET /processes/:id/result: the file of optio-core's store_result, from GridFS (default bucket).
 // 200 { headers: Content-Type (the record's), Content-Length, Content-Disposition (inline; an
 // ASCII filename with ", \, ;, % and non-ASCII as _; RFC 5987 filename*), X-Content-Type-Options:
-// nosniff, and Content-Security-Policy: sandbox unless the media type is application/pdf (the file
-// renders in the host app's origin: an HTML/SVG/XML result must not run script as the app; a
-// sandboxed PDF may lose Chromium's viewer), body: Readable };
+// nosniff, Content-Security-Policy: sandbox for every type except a value that is exactly one
+// application/pdf media type (any case, parameters allowed, no comma: browsers render the last of
+// a comma-separated list) (the file renders in the host app's origin: an HTML/SVG/XML result must
+// not run script as the app; a sandboxed PDF may lose Chromium's viewer), and Cache-Control:
+// private, no-store, body: Readable };
 // 404 { reason: 'no-result' } (no result, or its file is gone) | { reason: 'not-found' } (no such
 // record, out of scope or hidden; the record is read first, so a removed one never serves a
-// leftover file); 403 when authorize refuses 'result'.
+// leftover file), both with headers Cache-Control: private, no-store; 403 when authorize refuses
+// 'result'.
 async function launchProcess(ctx: OptioContext, query: InstanceQuery, id: string, resume = false,
                              sessionId: string | null = null, access?: Access,
                              params?: Record<string, unknown>, ephemeral?: boolean,
@@ -2005,7 +2011,7 @@ All components use `react-i18next`. Required keys:
 - **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"` (no ephemeral one is left by then: see "Ephemeral processes"), and every `resurrecting` marker is cleared (no resurrect survives an engine restart). On `shutdown(grace_seconds=None)` (None = `cancel_grace_seconds`, default 5.0), tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not unwind within cancellation grace period"` (an ephemeral one is then deleted). Spec: `docs/2026-04-22-process-reconciliation-design.md`
 - **Lost final-state writes**: if MongoDB is unreachable when a process ends, the executor keeps the final state in memory and the supervisor loop retries it (backing off from 1 s to 30 s, no attempt limit) until it lands; the row gets a `"State recorded late: <state> (database was unavailable)"` log entry. `cancel()`, `cancel_and_wait()` and `group_cancel_and_wait()` settle an active row that no task in this engine owns instead of waiting on it (to the queued final state, else `failed` with `error="Process had no running task in this engine; its final state was never recorded"`; an ephemeral row is then deleted). Spec: `docs/2026-10-03-lost-final-state-writes-design.md`
 - **Process writes**: each lifecycle step of a process is one update on its document -- relaunch (reset, `scheduled` and its log line), start (`running`, its log line and `originatingSessionId`; conditional on the record still being `scheduled`, else the run does not start), a progress message and its log line, the end (final status, `expireAt`, its log or error line and the `widgetUpstream` clear), dismiss. Log entries keep their own timestamps and order; nothing is buffered. `store.update_status(..., log=, set_fields=, expected_state=)` (returns whether the record matched), `store.update_progress(..., log=)` and `store.relaunch_reset` carry the combined writes. Spec: `docs/2026-10-09-fewer-process-writes-design.md`
-- **Process indexes**: every `init()` ensures six indexes on `{prefix}_processes` (`store.ensure_process_indexes`): `processId`+`_id` desc, `parentId`+`order`, `rootId`+`depth`+`order`, `status.state`, `originatingSessionId`, and the `expireAt` TTL index (`expireAt_ttl`, as migration m004 creates it). It also ensures `store.RESULT_FILE_INDEX` on the default GridFS bucket's `fs.files` (`metadata.kind`+`metadata.prefix`+`metadata.processId`, one per database; `store.ensure_result_file_index`), which the result files' deletions and sweep query. An index that conflicts with an existing one is logged and skipped. A record the TTL monitor evicts leaves its result file to `store.sweep_orphan_results`. A relaunch or dismiss removes `expireAt` (a terminal state sets it again), and a child copies its parent's `ttlSeconds`, so a tree expires with its root. Spec: `docs/2026-10-09-process-indexes-design.md`
+- **Process indexes**: every `init()` ensures six indexes on `{prefix}_processes` (`store.ensure_process_indexes`): `processId`+`_id` desc, `parentId`+`order`, `rootId`+`depth`+`order`, `status.state`, `originatingSessionId`, and the `expireAt` TTL index (`expireAt_ttl`, as migration m004 creates it). It also ensures `store.RESULT_FILE_INDEX` on the default GridFS bucket's `fs.files` (`metadata.kind`+`metadata.prefix`+`metadata.processId`, one per database; `store.ensure_result_file_index`), which the result files' deletions and sweep query. An index that conflicts with an existing one is logged and skipped; for the result files' index any MongoDB error (`OperationFailure`, e.g. no right to create indexes on `fs.files`) is a logged warning, never a failed `init`. A record the TTL monitor evicts leaves its result file to `store.sweep_orphan_results`. A relaunch or dismiss removes `expireAt` (a terminal state sets it again), and a child copies its parent's `ttlSeconds`, so a tree expires with its root. Spec: `docs/2026-10-09-process-indexes-design.md`
 - **Persistent launch blocks**: `block_launches(..., persist=True)` and `group_cancel*(..., block_new_launches=True, persist=True)` write a record to `{prefix}_launch_blocks` (Mongo); records are reloaded into the in-memory block list on every `init()` so the block survives restarts. Removed only by `unblock_launches(launch_filter)` (exact filter match). When set, `reason` is stored on the record and appended to the `LaunchBlocked` exception message (`...; reason={reason}`). Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`
 
 ### Control-plane convergence

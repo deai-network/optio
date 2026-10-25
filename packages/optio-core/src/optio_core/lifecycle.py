@@ -547,14 +547,15 @@ class Optio:
         `params` or `ephemeral` on any other record is not-a-factory.
         `metadata` is the launch's stamp (optio-api's launchMetadata hook):
         merged into the child's metadata; a key the child's metadata has
-        already (the factory's, or the reserved taskFactory) is
-        invalid-metadata, naming the keys. Any other launch makes no new
-        record to stamp: there `metadata` is ignored. The launch's record
-        is deleted when its run ends if `ephemeral` is True (the default
-        for a factory without ttl_seconds; False keeps it, until its TTL or
-        a dismiss). A factory's launch (its child, and the records under
-        it) ran once, with its values: launching it again is not-launchable,
-        whatever the task registry holds; only `resume` runs a kept one again
+        already (the factory's, with task_for the instance's too, or the
+        reserved taskFactory) is invalid-metadata, naming the keys. Any
+        other launch makes no new record to stamp: there `metadata` is
+        ignored. The launch's record is deleted when its run ends if
+        `ephemeral` is True (the default for a factory without
+        ttl_seconds; False keeps it, until its TTL or a dismiss). A
+        factory's launch (its child, and the records under it) ran once,
+        with its values: launching it again is not-launchable, whatever the
+        task registry holds; only `resume` runs a kept one again
         (_relaunch_refusal), its task registered by its launch or rebuilt at
         init() (_rebuild_kept_launches).
         Spec: docs/2026-10-20-task-factory-design.md §1.2,
@@ -665,10 +666,11 @@ class Optio:
         factory's `validate`, which gets the values without the ones that
         are no value, as the task does), invalid-metadata (keys of the stamp
         `metadata` that the metadata child_task composed has already: the
-        factory's, or the reserved taskFactory; nothing is defined). The
-        stamp joins the child's metadata. A launch block on the child's
-        metadata raises LaunchBlocked (adhoc_define's check). The child is
-        ephemeral as `ephemeral` says, by default when the factory has no TTL.
+        factory's, with task_for the instance's too, or the reserved
+        taskFactory; nothing is defined). The stamp joins the child's
+        metadata. A launch block on the child's metadata raises
+        LaunchBlocked (adhoc_define's check). The child is ephemeral as
+        `ephemeral` says, by default when the factory has no TTL.
         Spec: docs/2026-10-20-task-factory-design.md §1.2, §1.4,
         docs/2026-10-25-factory-results-design.md §2"""
         if self._shutting_down:

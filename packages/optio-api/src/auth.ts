@@ -120,10 +120,10 @@ export type LaunchMetadata = Record<string, string | number | boolean | null>;
  * it, with the factory's record and the launch's `params`; never for a plain
  * process's launch, which makes no new record to stamp. Its map goes to the
  * engine with the launch, which merges it into the new child's metadata (a key
- * the factory's metadata already has, or `taskFactory`, refuses the launch:
- * `invalid-metadata`); `null` stamps nothing. The launch body cannot carry
- * metadata, so the stamp is trusted. It is not an access hook: set alone, it
- * leaves access `UNRESTRICTED`.
+ * the factory's metadata already has, with `task_for` the instance's too, or
+ * `taskFactory`, refuses the launch: `invalid-metadata`); `null` stamps
+ * nothing. The launch body cannot carry metadata, so the stamp is trusted. It
+ * is not an access hook: set alone, it leaves access `UNRESTRICTED`.
  */
 export type LaunchMetadataCallback<TRequest> = (
   req: TRequest,

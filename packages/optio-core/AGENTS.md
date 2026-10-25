@@ -240,6 +240,10 @@ await ctx.delete_blob(file_id) -> None
 # (size in bytes; fileId is server-side only). An exception inside the block deletes the
 # partial file and leaves no result. One result per run (keyed on the run's token, as
 # publish_result): a second store_result raises RuntimeError; a failed block does not count.
+# Before anything is written (_check_result_file), ValueError naming the field unless
+# content_type is one media type (type/subtype, optional parameters, no comma) of printable
+# ASCII and filename a non-empty str without control characters (optio-api sends them as
+# Content-Type and Content-Disposition); such a refusal does not count either.
 async with ctx.store_result(filename: str, content_type: str) as stream:
     await stream.write(data: bytes)
 ```
@@ -481,11 +485,12 @@ starts.
 **The launch stamp** (`metadata=`; factory results spec §2). A map of scalars (str, int, float,
 bool, None) that server-side code stamps on one launch, e.g. `{"user": <id>}` from optio-api's
 `launchMetadata` hook; the engine RPC's `launch` forwards `LaunchParams.metadata` (the generated
-model parses a JSON number as a float: `_engine_service._launch_stamp` turns a whole one back
-into an int, `42.0 -> 42`, `1.5` stays). `_factory_child` merges it into the metadata
-`child_task` composed, before the child is defined: the child's metadata is the factory's, the
-stamp and `taskFactory`, which `ctx.metadata` reads and the records under the launch inherit (so
-an app's `visibility`/`authorize` can match it). A stamp key the composed metadata has already
+model parses a JSON number as a float: `_engine_service._launch_stamp` turns a whole one below
+`2**53` in magnitude back into an int, `42.0 -> 42`; `1.5` stays, and so does a whole one from
+`2**53` on, e.g. `1e19`, which as an int would not fit BSON's int64). `_factory_child` merges
+it into the metadata `child_task` composed, before the child is defined: the child's metadata is
+the factory's, the stamp and `taskFactory`, which `ctx.metadata` reads and the records under the
+launch inherit (so an app's `visibility`/`authorize` can match it). A stamp key the composed metadata has already
 (the factory's own, with `task_for` the instance's, or the reserved `taskFactory`) never
 overrides it: the launch is refused before anything is defined,
 `LaunchOutcome(ok=False, reason="invalid-metadata", message="kind, taskFactory: already set by
@@ -909,7 +914,9 @@ other error fails `init`. Beside it, `store.ensure_result_file_index(db)` create
 `store.RESULT_FILE_INDEX` on the default GridFS bucket's `fs.files` (one per
 database): `metadata.kind_1_metadata.prefix_1_metadata.processId_1`, which
 `store.delete_result_files` and `store.sweep_orphan_results` query, with the same
-conflict rule.
+conflict rule; but no error of its creation fails `init`: any other `OperationFailure`
+(e.g. a MongoDB user without the right to create indexes on `fs.files`, in an app that
+never stores a result) is logged as a warning too.
 
 `TaskInstance.ttl_seconds` is stored as `ttlSeconds`; a terminal state sets
 `expireAt` = now + `ttlSeconds`; a record the TTL monitor removes leaves its result

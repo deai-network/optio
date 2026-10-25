@@ -31,7 +31,8 @@ class LaunchError(Exception):
     a TaskFactory's launch is, or a launch of a factory's launch (which is
     never launched again). ``reason`` carries the typed LaunchOutcome
     reason string (e.g. "not-found", "not-launchable"); ``message`` the
-    outcome's message (an "invalid-parameters" refusal's "<id>: <what>")."""
+    outcome's message (an "invalid-parameters" refusal's "<id>: <what>", an
+    "invalid-metadata" refusal's colliding keys)."""
 
     def __init__(self, process_id: str, reason: str, message: str | None = None):
         self.process_id = process_id

@@ -71,7 +71,7 @@ export function contentDisposition(filename: string): string {
 /**
  * The headers that keep a result file inert. It renders inline in the host
  * app's origin, next to its session cookie, and `store_result` takes any
- * `content_type`: script in an HTML, SVG or XML result would run as the app.
+ * media type: script in an HTML, SVG or XML result would run as the app.
  * So the browser may not sniff a type into an active one (`nosniff`), and
  * every type but PDF is sandboxed. PDF is left out because a sandboxed
  * document may refuse Chromium's built-in PDF viewer.

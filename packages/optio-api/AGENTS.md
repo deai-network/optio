@@ -257,8 +257,10 @@ resurrect, resync, the three widget routes, the conversation read (as
 (the result file: GridFS is not read).
 
 Without any hook behaviour is exactly as before: commands go straight to
-the engine and no extra lookups run. With `scope` only or `authorize` only,
-behaviour is unchanged as well — `visibility` is strictly additive.
+the engine and no extra lookups run. A `launchMetadata` hook alone (see
+"Launch stamp") adds one: each launch reads its target, to learn whether it
+is a factory's record. With `scope` only or `authorize` only, behaviour is
+unchanged as well — `visibility` is strictly additive.
 
 **Where `visibility` is checked today.** Every process read that can reach a
 response goes through one choke point, `processReads` (`process-reads.ts`;
@@ -376,9 +378,9 @@ function launchStamp<TRequest>(hook, req, params): LaunchStamp;  // binds the ho
   `authorize`, so `launchMetadata` alone leaves every request `UNRESTRICTED`. With no
   access hooks `gateProcess` reads nothing, so `launchProcess` reads the target itself
   (`findActionTarget`) to learn whether it is a factory -- only when a stamp is set.
-- A stamp key the factory's own metadata already has, or the reserved `taskFactory`,
-  refuses the launch in the engine: 400 `invalid-metadata`, its message (naming the keys)
-  passed on unchanged.
+- A stamp key the factory's own metadata already has (with `task_for`, the instance's
+  too), or the reserved `taskFactory`, refuses the launch in the engine: 400
+  `invalid-metadata`, its message (naming the keys) passed on unchanged.
 
 Adapters bind it per request with `opts.launchMetadata && launchStamp(opts.launchMetadata,
 req, body?.params)` and pass that as `launchProcess`'s trailing `stamp`, with the
@@ -636,8 +638,10 @@ async function getProcessResult(
 ): Promise<ResultDownloadResult>
 // ResultDownloadResult =
 //   | { status: 200; headers: { 'Content-Type'; 'Content-Length'; 'Content-Disposition';
-//       'X-Content-Type-Options': 'nosniff'; 'Content-Security-Policy'?: 'sandbox' }; body: Readable }
-//   | { status: 404; body: { reason: 'not-found' | 'no-result'; message } }
+//       'X-Content-Type-Options': 'nosniff'; 'Content-Security-Policy'?: 'sandbox';
+//       'Cache-Control': 'private, no-store' }; body: Readable }
+//   | { status: 404; body: { reason: 'not-found' | 'no-result'; message };
+//       headers: { 'Cache-Control': 'private, no-store' } }
 //   | ForbiddenResult
 ```
 
@@ -733,11 +737,15 @@ file a task stored with optio-core's `store_result`: one GridFS file in the defa
   `X-Content-Type-Options: nosniff`, and every 200 whose `contentType` is not exactly one
   `application/pdf` type (any case, parameters allowed, no comma: browsers split a
   Content-Type on commas and render the last type, so `application/pdf;a=b, text/html` is
-  HTML to them) carries `Content-Security-Policy: sandbox` (`resultSafetyHeaders`): the file renders inline in the host app's origin, next to its
-  session cookie, and `store_result` takes any `content_type`, so script in an HTML, SVG,
-  XHTML or XML result would otherwise run as the app. PDF is left out because a sandboxed
-  document may refuse Chromium's built-in PDF viewer. Adapters send every header of
-  `headers`.
+  HTML to them) carries `Content-Security-Policy: sandbox` (`resultSafetyHeaders`): the
+  file renders inline in the host app's origin, next to its session cookie, and
+  `store_result` takes any media type, so script in an HTML, SVG, XHTML or XML result
+  would otherwise run as the app. PDF is left out because a sandboxed document may refuse
+  Chromium's built-in PDF viewer. Adapters send every header of `headers`.
+- The 200 and both 404s carry `Cache-Control: private, no-store` (the file is one user's,
+  and a process without a result may store one later); adapters send a 404's `headers`
+  with its JSON body (Fastify `reply.headers`, Express `res.set`, Next Pages
+  `res.setHeader`, Next App the `Response`'s headers). The 403 has none.
 - Every adapter serves it outside ts-rest (Fastify and Express as their own routes, the
   Next adapters as a raw match before ts-rest): ts-rest would send the contract's
   `application/octet-stream` in place of the file's own type, and `@ts-rest/express`

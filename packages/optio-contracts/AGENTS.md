@@ -254,8 +254,8 @@ token, or explicit `null` for unattended calls.
 
 `metadata` on `launch` is a task factory launch's stamp (optio-api's `launchMetadata` hook,
 server-side only), merged into the new launch's metadata; a key of the factory's own metadata
-or the reserved `taskFactory` refuses the launch with `invalid-metadata`, its `message` naming
-the keys.
+(with `task_for`, the instance's too) or the reserved `taskFactory` refuses the launch with
+`invalid-metadata`, its `message` naming the keys.
 
 ## Failure-reason enums
 

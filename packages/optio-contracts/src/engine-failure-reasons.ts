@@ -20,7 +20,8 @@ export const LaunchFailureReason = z.enum([
   'not-a-factory',
   'invalid-parameters',
   // A factory launch's stamp (`metadata`) with keys of the factory's own
-  // metadata or the reserved `taskFactory` (the message names them).
+  // metadata (with `task_for`, the instance's too) or the reserved
+  // `taskFactory` (the message names them).
   'invalid-metadata',
 ]);
 
