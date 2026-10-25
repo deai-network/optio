@@ -42,6 +42,7 @@ from optio_core.store import (
     get_process_by_process_id, update_status, relaunch_reset, delete_descendants,
     append_log, compute_expire_at, purge_processes, set_auto_resume_scheduled,
     finalize_if_active, set_has_unsaved_work, set_resurrecting, update_progress,
+    sweep_orphan_results,
 )
 from optio_core.state_machine import (
     ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
@@ -76,6 +77,11 @@ ORPHAN_ERROR = (
     "Process had no running task in this engine; "
     "its final state was never recorded"
 )
+
+# Seconds between two sweeps of result files whose process record is gone
+# (store.sweep_orphan_results), from run(); init() sweeps once.
+# Spec: docs/2026-10-25-factory-results-design.md §1
+RESULT_SWEEP_SECONDS = 600
 
 
 def _trace(fmt: str, *args: object) -> None:
@@ -127,6 +133,7 @@ class Optio:
         self._shutdown_task: "asyncio.Task | None" = None
         self._heartbeat_task: asyncio.Task | None = None
         self._supervisor_task: asyncio.Task | None = None
+        self._result_sweep_task: asyncio.Task | None = None
         self._auto_resume_task: asyncio.Task | None = None
         self._launch_blocks: dict[uuid.UUID, _BlockEntry] = {}
         # In-process upload-writer registry: process ObjectId -> writer
@@ -268,8 +275,11 @@ class Optio:
 
         # The process collection's indexes, on every start (new prefixes and
         # rebuilt databases included). Spec: docs/2026-10-09-process-indexes-design.md
-        from optio_core.store import ensure_process_indexes
+        # And the result files' index on the default bucket. Spec:
+        # docs/2026-10-25-factory-results-design.md §1
+        from optio_core.store import ensure_process_indexes, ensure_result_file_index
         await ensure_process_indexes(mongo_db, prefix)
+        await ensure_result_file_index(mongo_db)
 
         # Load persisted launch blocks ("perma-bans"). Spec:
         # docs/2026-04-30-persistent-launch-blocks-design.md.
@@ -284,6 +294,11 @@ class Optio:
         # state (their TaskInstances died with it), so the reconcile below
         # never sees one.
         await self._delete_ephemeral_leftovers()
+
+        # Result files whose record went since the last sweep (the TTL
+        # monitor, a bulk delete); run() sweeps again every
+        # RESULT_SWEEP_SECONDS. Spec: docs/2026-10-25-factory-results-design.md §1
+        await self._sweep_orphan_results()
 
         # Reconcile any processes left in active states by a previous session.
         # Spec: docs/2026-04-22-process-reconciliation-design.md
@@ -1534,6 +1549,7 @@ class Optio:
                 self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
             self._supervisor_task = asyncio.create_task(self._supervisor_loop())
+            self._result_sweep_task = asyncio.create_task(self._result_sweep_loop())
             # One-shot post-boot auto-resume timer. Fires once after
             # auto_resume_delay_seconds, re-launching stamped+saved processes.
             self._auto_resume_task = asyncio.create_task(self._auto_resume_timer())
@@ -1670,7 +1686,8 @@ class Optio:
                 )
             self._resurrecting.clear()
 
-            # 4. Stop supervisor (after final force-cancel pass).
+            # 4. Stop supervisor (after final force-cancel pass), and the
+            # result sweep.
             if self._supervisor_task:
                 self._supervisor_task.cancel()
                 try:
@@ -1678,6 +1695,13 @@ class Optio:
                 except asyncio.CancelledError:
                     pass
                 self._supervisor_task = None
+            if self._result_sweep_task:
+                self._result_sweep_task.cancel()
+                try:
+                    await self._result_sweep_task
+                except asyncio.CancelledError:
+                    pass
+                self._result_sweep_task = None
 
             # 5. Redis
             if self._redis:
@@ -1774,6 +1798,20 @@ class Optio:
                 f"Deleted {deleted} record(s) of ephemeral processes (with their "
                 f"descendants) left by a previous session"
             )
+
+    async def _sweep_orphan_results(self) -> None:
+        """Delete this prefix's result files whose process record is gone
+        (store.sweep_orphan_results); at init() and from _result_sweep_loop.
+        Logs, never raises: what a failed sweep leaves, the next one deletes."""
+        try:
+            deleted = await sweep_orphan_results(
+                self._config.mongo_db, self._config.prefix,
+            )
+        except Exception:
+            logger.exception("Sweep of result files whose record is gone failed")
+            return
+        if deleted:
+            logger.info(f"Deleted {deleted} result file(s) whose process record is gone")
 
     async def _rebuild_kept_launches(self, interrupted: set[ObjectId]) -> None:
         """At init(), after the sync: the task of each kept TaskFactory launch
@@ -1908,6 +1946,15 @@ class Optio:
             except Exception as e:
                 logger.exception(f"Supervisor loop error while retrying final states: {e}")
             await asyncio.sleep(0.5)
+
+    async def _result_sweep_loop(self) -> None:
+        """Sweep result files whose process record is gone every
+        RESULT_SWEEP_SECONDS (init() swept before run() started); stopped by
+        shutdown(), as the supervisor is. Spec:
+        docs/2026-10-25-factory-results-design.md §1"""
+        while self._running:
+            await asyncio.sleep(RESULT_SWEEP_SECONDS)
+            await self._sweep_orphan_results()
 
     async def _auto_resume_timer(self) -> None:
         """One-shot: wait auto_resume_delay_seconds, then sweep for stamped

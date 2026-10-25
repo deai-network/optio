@@ -60,6 +60,16 @@ PROCESS_INDEXES: list[tuple[str, list[tuple[str, int]], dict]] = [
     ("expireAt_ttl", [("expireAt", 1)], {"expireAfterSeconds": 0}),
 ]
 
+# The default GridFS bucket's index for the result files (ctx.store_result):
+# delete_result_files and sweep_orphan_results filter `fs.files` on these
+# fields. One per database, whatever the prefix; the name is MongoDB's default
+# for these keys. Spec: docs/2026-10-25-factory-results-design.md §1
+RESULT_FILE_INDEX: tuple[str, list[tuple[str, int]], dict] = (
+    "metadata.kind_1_metadata.prefix_1_metadata.processId_1",
+    [("metadata.kind", 1), ("metadata.prefix", 1), ("metadata.processId", 1)],
+    {},
+)
+
 # IndexOptionsConflict, IndexKeySpecsConflict: an index with these keys exists
 # under another name or with other options.
 _INDEX_CONFLICT_CODES = (85, 86)
@@ -69,8 +79,20 @@ async def ensure_process_indexes(db: AsyncIOMotorDatabase, prefix: str) -> None:
     """Create PROCESS_INDEXES on `{prefix}_processes`; a no-op for the ones
     that exist. An index that conflicts with an existing one is logged and
     skipped; any other error propagates."""
-    coll = _collection(db, prefix)
-    for name, keys, options in PROCESS_INDEXES:
+    await _ensure_indexes(_collection(db, prefix), PROCESS_INDEXES)
+
+
+async def ensure_result_file_index(db: AsyncIOMotorDatabase) -> None:
+    """Create RESULT_FILE_INDEX on the default bucket's `fs.files`, as
+    ensure_process_indexes creates its indexes."""
+    await _ensure_indexes(db["fs.files"], [RESULT_FILE_INDEX])
+
+
+async def _ensure_indexes(
+    coll, indexes: list[tuple[str, list[tuple[str, int]], dict]],
+) -> None:
+    """Create `indexes` on `coll`: ensure_process_indexes' rules."""
+    for name, keys, options in indexes:
         try:
             await coll.create_index(keys, name=name, **options)
         except OperationFailure as e:
@@ -473,22 +495,73 @@ async def delete_result_files(
 
     Run after the records' deletion or reset. It works on the default
     bucket's collections (store_result writes there), so that one query and
-    two deletes serve any number of records; the chunks go first, so an
-    interrupted deletion leaves a file document that the next one still
-    finds. Spec: docs/2026-10-25-factory-results-design.md §1
+    two deletes serve any number of records (_delete_files).
+    Spec: docs/2026-10-25-factory-results-design.md §1
     """
     if not process_oids:
         return 0
-    files = db["fs.files"]
-    file_ids = [doc["_id"] async for doc in files.find({
+    file_ids = [doc["_id"] async for doc in db["fs.files"].find({
         "metadata.kind": "result",
         "metadata.prefix": prefix,
         "metadata.processId": {"$in": [str(oid) for oid in process_oids]},
     }, {"_id": 1})]
+    return await _delete_files(db, file_ids)
+
+
+async def _delete_files(db: AsyncIOMotorDatabase, file_ids: list[ObjectId]) -> int:
+    """Delete these files of the default GridFS bucket; returns the number of
+    file documents deleted. The chunks go first, so an interrupted deletion
+    leaves a file document that the next one still finds."""
     if not file_ids:
         return 0
     await db["fs.chunks"].delete_many({"files_id": {"$in": file_ids}})
-    return (await files.delete_many({"_id": {"$in": file_ids}})).deleted_count
+    return (await db["fs.files"].delete_many({"_id": {"$in": file_ids}})).deleted_count
+
+
+# How many result files sweep_orphan_results checks against the process
+# collection in one query.
+_RESULT_SWEEP_BATCH = 1000
+
+
+async def sweep_orphan_results(db: AsyncIOMotorDatabase, prefix: str) -> int:
+    """Delete this prefix's result files (ctx.store_result) whose process
+    record is gone: the GridFS files tagged `kind: "result"` and this prefix
+    whose `metadata.processId` is no record's `_id`. Returns the number of
+    files deleted.
+
+    It catches the files no deletion path deleted: those of records removed
+    in bulk (purge_processes' matched roots, remove_stale_processes,
+    resync(clean=True)), by MongoDB's TTL monitor (`expireAt`), or while
+    their task was writing the file. The files' process ids are checked
+    against the process collection in batches. Chunks without a file
+    document (a write that crashed before closing) carry no metadata to
+    attribute them by, so they stay. Run by Optio at init() and from run()
+    every RESULT_SWEEP_SECONDS. Spec: docs/2026-10-25-factory-results-design.md §1
+    """
+    cursor = db["fs.files"].find(
+        {"metadata.kind": "result", "metadata.prefix": prefix},
+        {"metadata.processId": 1},
+    )
+    deleted = 0
+    while batch := await cursor.to_list(_RESULT_SWEEP_BATCH):
+        owners = {doc["_id"]: _result_owner(doc) for doc in batch}
+        live = {
+            rec["_id"] async for rec in _collection(db, prefix).find(
+                {"_id": {"$in": [oid for oid in owners.values() if oid is not None]}},
+                {"_id": 1},
+            )
+        }
+        deleted += await _delete_files(
+            db, [file_id for file_id, oid in owners.items() if oid not in live],
+        )
+    return deleted
+
+
+def _result_owner(file_doc: dict) -> ObjectId | None:
+    """The record `_id` a result file's `metadata.processId` names, or None
+    if it names no possible `_id`."""
+    pid = (file_doc.get("metadata") or {}).get("processId")
+    return ObjectId(pid) if isinstance(pid, str) and _is_objectid(pid) else None
 
 
 async def delete_descendants(

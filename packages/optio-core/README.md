@@ -107,7 +107,7 @@ Initialize Optio. Must be called before any other function.
 await optio_core.run() -> None
 ```
 
-Start the main event loop. Blocks until `shutdown()` is called. Starts the cron scheduler, the supervisor that force-cancels processes past their cancel grace, and, if `redis_url` was given, the clamator RPC server (see [Remote Control via Clamator RPC](#remote-control-via-clamator-rpc)). Installs signal handlers for `SIGTERM` and `SIGINT` that trigger graceful shutdown.
+Start the main event loop. Blocks until `shutdown()` is called. Starts the cron scheduler, the supervisor that force-cancels processes past their cancel grace, the sweep that deletes result files whose process record is gone every 10 minutes (see [`store_result()`](#store_result)), and, if `redis_url` was given, the clamator RPC server (see [Remote Control via Clamator RPC](#remote-control-via-clamator-rpc)). Installs signal handlers for `SIGTERM` and `SIGINT` that trigger graceful shutdown.
 
 Without Redis, `run()` simply blocks until `shutdown()` is called (useful for scheduler-only deployments).
 
@@ -260,7 +260,7 @@ async with ctx.store_result(filename: str, content_type: str) as writer:
 
 Write this run's result file: a file the frontend fetches when the run is done, such as a generated PDF ([optio-api](../optio-api/README.md) serves it at `GET /processes/:id/result`). It is one GridFS file, written chunk by chunk. When the block exits cleanly, the process record gets `result: {filename, contentType, size}` (size in bytes). An exception inside the block leaves no result: the partial file is deleted.
 
-A run has at most one result: a second `store_result` in the same run raises `RuntimeError` (a block that failed does not count). The file lives as long as the record's result: a relaunch or a dismiss deletes it, and so does the deletion of the record (an ephemeral run's end included).
+A run has at most one result: a second `store_result` in the same run raises `RuntimeError` (a block that failed does not count). The file lives as long as the record's result: a relaunch or a dismiss deletes it, and so does the deletion of the record (an ephemeral run's end included). The files of records removed by other means (MongoDB's TTL expiry, a purge, a resync, a stale definition's removal) are deleted by a sweep that `init()` runs and `run()` repeats every 10 minutes.
 
 #### `run_child()`
 

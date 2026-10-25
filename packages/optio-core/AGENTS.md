@@ -247,8 +247,14 @@ async with ctx.store_result(filename: str, content_type: str) as stream:
 The result file lives as long as its record: `store.relaunch_reset` (relaunch, dismiss) removes
 `result` and then deletes the file; `store.delete_process`, `store.delete_descendants` and
 `store.delete_ephemeral_processes` delete the files of the records they delete, after deleting
-them (`store.delete_result_files(db, prefix, process_oids) -> int`). Spec:
-`docs/2026-10-25-factory-results-design.md` §1
+them (`store.delete_result_files(db, prefix, process_oids) -> int`). The files of records removed
+otherwise (`purge_processes`' matched roots, `remove_stale_processes`, `resync(clean=True)`, the
+TTL monitor, a record deleted while its task wrote the file) are deleted by
+`store.sweep_orphan_results(db, prefix) -> int`: this prefix's `kind: "result"` files whose
+`metadata.processId` is no record's `_id`, checked in batches. `Optio` runs it at `init()` (after
+`_delete_ephemeral_leftovers`) and every `lifecycle.RESULT_SWEEP_SECONDS` (600) from `run()`; a
+failed sweep is logged, never raised. Chunks without a file document (a write that crashed before
+closing) carry no process id and stay. Spec: `docs/2026-10-25-factory-results-design.md` §1
 
 ---
 
@@ -743,7 +749,10 @@ Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`.
   process is dismissed or re-launched, and its result file goes (`result` unset, then the
   GridFS file deleted).
 - **Record deletion**: `store.delete_process`, `store.delete_descendants` and
-  `store.delete_ephemeral_processes` delete the result files of the records they delete.
+  `store.delete_ephemeral_processes` delete the result files of the records they delete. The
+  result files of records removed by any other path (bulk deletes, the TTL monitor) are deleted
+  by the sweep (`store.sweep_orphan_results`) at `init()` and every `RESULT_SWEEP_SECONDS` from
+  `run()`; `shutdown()` stops that loop as it stops the supervisor.
 - **Ephemeral processes** (`adhoc_define(..., ephemeral=True)`, `ctx.mark_ephemeral()`, a
   TaskFactory launch without `ttl_seconds`): the record and its descendants are deleted (and the
   ad-hoc task unregistered) whenever the run ends: at any terminal state the executor writes; after
@@ -813,10 +822,15 @@ creates, idempotently, `processId_1__id_-1`, `parentId_1_order_1`,
 `expireAt_ttl` TTL index (`expireAfterSeconds=0`, as migration m004) on
 `{prefix}_processes`; the list is `store.PROCESS_INDEXES`. An index that conflicts
 with an existing one (MongoDB codes 85/86) is logged as a warning and skipped; any
-other error fails `init`.
+other error fails `init`. Beside it, `store.ensure_result_file_index(db)` creates
+`store.RESULT_FILE_INDEX` on the default GridFS bucket's `fs.files` (one per
+database): `metadata.kind_1_metadata.prefix_1_metadata.processId_1`, which
+`store.delete_result_files` and `store.sweep_orphan_results` query, with the same
+conflict rule.
 
 `TaskInstance.ttl_seconds` is stored as `ttlSeconds`; a terminal state sets
-`expireAt` = now + `ttlSeconds`. `store.relaunch_reset` (relaunch and dismiss)
+`expireAt` = now + `ttlSeconds`; a record the TTL monitor removes leaves its result
+file to `store.sweep_orphan_results`. `store.relaunch_reset` (relaunch and dismiss)
 removes `expireAt`, so a running or dismissed record is never evicted. In the same
 update it removes `result`, and then deletes the previous run's result file
 (`store.delete_result_files`).
