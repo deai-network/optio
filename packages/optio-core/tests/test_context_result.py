@@ -126,6 +126,66 @@ async def test_after_a_failed_block_the_run_may_store_its_result(mongo_db):
     assert (await _record(mongo_db, proc["_id"]))["result"]["fileId"] == file_id
 
 
+# optio-api's result route sends them as Content-Type and Content-Disposition:
+# the type is one media type of printable ASCII (a browser splits a
+# Content-Type on commas and renders the last type), the name has no control
+# character (a CR or LF would end the header line).
+@pytest.mark.parametrize("content_type", [
+    "application/pdf", "Application/PDF", "image/svg+xml", "text/html; charset=utf-8",
+    'text/plain;charset="utf-8"', "text/plain; charset=utf-8; format=flowed", "application/pdf;",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+])
+async def test_store_result_takes_one_media_type(mongo_db, content_type):
+    proc = await upsert_process(mongo_db, "test", TaskInstance(execute=_dummy, process_id="res_t", name="T"))
+    ctx = _make_ctx(mongo_db, proc)
+    async with ctx.store_result(filename="a", content_type=content_type) as writer:
+        await writer.write(b"x")
+    assert (await _record(mongo_db, proc["_id"]))["result"]["contentType"] == content_type
+
+
+async def _refused_before_writing(mongo_db, proc_id, field, **kwargs):
+    """store_result(**kwargs) raises ValueError naming `field` before its
+    block runs: no file, no result, and the run may still store its result."""
+    proc = await upsert_process(mongo_db, "test", TaskInstance(execute=_dummy, process_id=proc_id, name="V"))
+    ctx = _make_ctx(mongo_db, proc)
+    with pytest.raises(ValueError, match=f"store_result: {field} "):
+        async with ctx.store_result(**kwargs):
+            pytest.fail("the block ran")
+    assert "result" not in await _record(mongo_db, proc["_id"])
+    assert await mongo_db["fs.files"].count_documents({}) == 0
+    await _store(ctx, b"%PDF")
+
+
+@pytest.mark.parametrize("content_type", [
+    None, 42, b"application/pdf", "", "application", "application/", "/pdf", "application/pdf/x",
+    " application/pdf", "application/pdf, text/html", "application/pdf;a=b, text/html",
+    'text/plain; a="x,y"', "text/html; <b>", "text/html\r\nX-Injected: 1", "application/pdf\n",
+    "application/pdf\x00", "text/html;\tcharset=utf-8", "applicätion/pdf", "text/html; charset=ütf-8",
+])
+async def test_store_result_refuses_what_is_not_one_media_type(mongo_db, content_type):
+    await _refused_before_writing(
+        mongo_db, "res_v", "content_type", filename="a.pdf", content_type=content_type,
+    )
+
+
+@pytest.mark.parametrize("filename", [
+    None, 3, b"a.pdf", "", "a\r\nb.pdf", "a\nb.pdf", "a\rb.pdf", "a\x00b.pdf", "a\tb.pdf",
+    "a\x1bb.pdf", "a\x7fb.pdf", "a\x85b.pdf",
+])
+async def test_store_result_refuses_a_filename_with_a_control_character(mongo_db, filename):
+    await _refused_before_writing(
+        mongo_db, "res_w", "filename", filename=filename, content_type="application/pdf",
+    )
+
+
+async def test_store_result_keeps_any_other_filename(mongo_db):
+    # Quotes, ; and non-ASCII are the route's to encode (contentDisposition).
+    proc = await upsert_process(mongo_db, "test", TaskInstance(execute=_dummy, process_id="res_n", name="N"))
+    ctx = _make_ctx(mongo_db, proc)
+    await _store(ctx, b"%PDF", filename='Feladat "1"; ő.pdf')
+    assert (await _record(mongo_db, proc["_id"]))["result"]["filename"] == 'Feladat "1"; ő.pdf'
+
+
 async def test_reset_deletes_the_result(mongo_db):
     proc = await upsert_process(mongo_db, "test", TaskInstance(execute=_dummy, process_id="res_e", name="E"))
     ctx = _make_ctx(mongo_db, proc)

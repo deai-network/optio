@@ -3,7 +3,9 @@
 import asyncio
 import logging as _logging
 import os
+import re
 import time
+import unicodedata
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any, Callable, Awaitable, Literal, TYPE_CHECKING, get_args
@@ -37,6 +39,42 @@ _log = _logging.getLogger("optio_core.context")
 # ProcessContext._result_run while no run has stored its result: no run's
 # token is this object.
 _NO_RESULT_RUN = object()
+
+# store_result's content_type: one media type (RFC 9110 8.3.1: type/subtype,
+# then optional ;-parameters whose values are tokens or quoted strings, with
+# spaces around the ;), checked beside "printable ASCII, no comma". optio-api
+# serves it as the file's Content-Type, and a browser splits a Content-Type
+# on commas and renders the last type.
+_MEDIA_TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+_ONE_MEDIA_TYPE = re.compile(
+    rf'{_MEDIA_TOKEN}/{_MEDIA_TOKEN}'
+    rf'(?: *; *(?:{_MEDIA_TOKEN}=(?:{_MEDIA_TOKEN}|"(?:[^"\\]|\\.)*"))?)*'
+)
+
+
+def _check_result_file(filename: Any, content_type: Any) -> None:
+    """store_result's arguments, refused with ValueError naming the field.
+    optio-api sends them as the result's Content-Type and Content-Disposition:
+    the type is one media type of printable ASCII, the name a non-empty str
+    without a control character (CR, LF, NUL, ...)."""
+    if not (
+        isinstance(content_type, str)
+        and content_type.isascii() and content_type.isprintable()
+        and "," not in content_type
+        and _ONE_MEDIA_TYPE.fullmatch(content_type)
+    ):
+        raise ValueError(
+            "store_result: content_type must be one media type (type/subtype, "
+            f"optional parameters, no comma) of printable ASCII, got {content_type!r}"
+        )
+    if not (
+        isinstance(filename, str) and filename
+        and not any(unicodedata.category(c) == "Cc" for c in filename)
+    ):
+        raise ValueError(
+            "store_result: filename must be a non-empty str without control "
+            f"characters, got {filename!r}"
+        )
 
 
 def _log_flush_failure(task: "asyncio.Task") -> None:
@@ -527,9 +565,14 @@ class ProcessContext:
         partial file is deleted. One result per run: a second store_result
         raises RuntimeError, as a second publish_result does; a failed block
         does not count. The record's reset (a relaunch, a dismiss) and its
-        deletion delete the file.
+        deletion delete the file. ``content_type`` must be one media type
+        (type/subtype, optional parameters, no comma) of printable ASCII and
+        ``filename`` a non-empty str without control characters: anything
+        else raises ValueError, naming the field, before anything is written
+        (it does not count as the run's result either).
         Spec: docs/2026-10-25-factory-results-design.md §1
         """
+        _check_result_file(filename, content_type)
         if self._result_run is self._run_token:
             raise RuntimeError(
                 f"store_result: '{self.process_id}' already stored a result "
