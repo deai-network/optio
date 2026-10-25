@@ -46,12 +46,14 @@ export {
   type ConversationFetchResult,
 } from './conversation-archive.js';
 
-// Authentication + per-request access (scope / visibility / authorize hooks)
+// Authentication + per-request access (scope / visibility / authorize hooks),
+// and the launch stamp (launchMetadata, not an access hook)
 export {
   checkAuth,
   accessFor,
   resolveAccess,
   hasAccessHooks,
+  launchStamp,
   UNRESTRICTED,
   type OptioRole,
   type AuthCallback,
@@ -65,6 +67,9 @@ export {
   type AuthorizeInput,
   type OptioAction,
   type ProcessRef,
+  type LaunchMetadata,
+  type LaunchMetadataCallback,
+  type LaunchStamp,
 } from './auth.js';
 // Scope helpers (for custom adapters)
 export {

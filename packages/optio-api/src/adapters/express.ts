@@ -16,8 +16,9 @@ import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
 import {
-  accessFor, checkAuth,
-  type AccessHooks, type AuthorizeCallback, type ScopeCallback, type VisibilityCallback,
+  accessFor, checkAuth, launchStamp,
+  type AccessHooks, type AuthorizeCallback, type LaunchMetadataCallback, type ScopeCallback,
+  type VisibilityCallback,
 } from '../auth.js';
 import { findReadableProcess, gateInstances } from '../access-scope.js';
 import { processReads } from '../process-reads.js';
@@ -41,6 +42,8 @@ interface BaseOptioApiOptions {
   authorize?: AuthorizeCallback<import('express').Request>;
   /** Hide processes from a request (see auth.ts). */
   visibility?: VisibilityCallback<import('express').Request>;
+  /** Stamp a task factory's launch, server-side (see auth.ts); not an access hook. */
+  launchMetadata?: LaunchMetadataCallback<import('express').Request>;
 }
 
 const c = initContract();
@@ -170,6 +173,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
     launch: async ({ params, query, body, req }) => {
       const result = await handlers.launchProcess(
         ctx, query, params.id, body?.resume === true, null, await access(req), body?.params, body?.ephemeral,
+        opts.launchMetadata && launchStamp(opts.launchMetadata, req, body?.params),
       );
       return result as any;
     },

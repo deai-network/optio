@@ -341,6 +341,31 @@ describe('launchProcess — engine RPC', () => {
     expect(typeof (result as any).body.message).toBe('string');
   });
 
+  it('400 invalid-metadata from engine: the message is optio-core\'s text, unchanged', async () => {
+    const message = 'user: already set by the factory (the stamp may not change it)';
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'invalid-metadata', message }));
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'f');
+    expect(result.status).toBe(400);
+    expect((result as any).body).toEqual({ reason: 'invalid-metadata', message });
+  });
+
+  it('400 invalid-metadata without a message falls back to a fixed text', async () => {
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'invalid-metadata' }));
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'f');
+    expect(result.status).toBe(400);
+    expect((result as any).body.reason).toBe('invalid-metadata');
+    expect(typeof (result as any).body.message).toBe('string');
+    expect((result as any).body.message.length).toBeGreaterThan(0);
+  });
+
+  it('sends no metadata key to engine.launch without a stamp', async () => {
+    const engine = makeMockEngine();
+    await launchProcess(
+      makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'f', false, null, undefined, { n: 3 }, true,
+    );
+    expect(Object.keys(engine.launch.mock.calls[0][0])).not.toContain('metadata');
+  });
+
   it('409 not-a-factory from engine', async () => {
     const engine = makeMockEngine(() => ({ ok: false, reason: 'not-a-factory' }));
     const result = await launchProcess(

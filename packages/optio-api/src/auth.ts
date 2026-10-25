@@ -38,7 +38,7 @@ export type OptioAction =
   | 'result'
   | 'instances';
 
-/** What `authorize` sees of a process. */
+/** What `authorize` (and `launchMetadata`) sees of a process. */
 export interface ProcessRef {
   _id: string;
   processId: string;
@@ -46,6 +46,8 @@ export interface ProcessRef {
   parentId?: string;
   rootId: string;
   metadata: Record<string, unknown>;
+  /** True for a task factory's record; absent for any other. */
+  taskFactory?: boolean;
 }
 
 export interface AuthorizeInput {
@@ -105,6 +107,39 @@ export interface AccessHooks<TRequest> {
 /** True when any of `scope`, `visibility` or `authorize` is set. */
 export function hasAccessHooks<TRequest>(hooks: AccessHooks<TRequest>): boolean {
   return !!(hooks.scope || hooks.visibility || hooks.authorize);
+}
+
+// --- The launch stamp: launchMetadata ---
+
+/** A launch stamp: a flat map the engine merges into a factory launch's metadata. */
+export type LaunchMetadata = Record<string, string | number | boolean | null>;
+
+/**
+ * The server-side stamp of a task factory's launch, passed next to the access
+ * hooks. Called for every launch of a task factory, after `authorize` allowed
+ * it, with the factory's record and the launch's `params`; never for a plain
+ * process's launch, which makes no new record to stamp. Its map goes to the
+ * engine with the launch, which merges it into the new child's metadata (a key
+ * the factory's metadata already has, or `taskFactory`, refuses the launch:
+ * `invalid-metadata`); `null` stamps nothing. The launch body cannot carry
+ * metadata, so the stamp is trusted. It is not an access hook: set alone, it
+ * leaves access `UNRESTRICTED`.
+ */
+export type LaunchMetadataCallback<TRequest> = (
+  req: TRequest,
+  input: { process: ProcessRef; params?: Record<string, unknown> },
+) => LaunchMetadata | null | Promise<LaunchMetadata | null>;
+
+/** `launchMetadata` bound to one request: the `stamp` `launchProcess` takes. */
+export type LaunchStamp = (process: ProcessRef) => Promise<LaunchMetadata | null>;
+
+/** Binds `launchMetadata` to a request and its launch's `params` (adapters: `opts.launchMetadata && launchStamp(...)`). */
+export function launchStamp<TRequest>(
+  hook: LaunchMetadataCallback<TRequest>,
+  req: TRequest,
+  params: Record<string, unknown> | undefined,
+): LaunchStamp {
+  return async (process) => hook(req, { process, params });
 }
 
 /** Framework-agnostic access for one request; handlers take this. */

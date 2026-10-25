@@ -116,6 +116,7 @@ export function toProcessRef(doc: Document): ProcessRef {
     ...(doc.parentId ? { parentId: doc.parentId.toString() } : {}),
     rootId: doc.rootId.toString(),
     metadata: (doc.metadata ?? {}) as Record<string, unknown>,
+    ...(doc.taskFactory === true ? { taskFactory: true } : {}),
   };
 }
 

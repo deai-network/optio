@@ -365,6 +365,13 @@ describe('toProcessRef', () => {
       metadata: { customerId: 1, kind: 'x' },
     });
   });
+
+  it('marks a task factory\'s record taskFactory: true, and no other', async () => {
+    const factory = await insertProcess({ taskFactory: true });
+    const plain = await insertProcess({ taskFactory: false });
+    expect(toProcessRef(factory)).toEqual(expect.objectContaining({ taskFactory: true }));
+    expect(toProcessRef(plain)).not.toHaveProperty('taskFactory');
+  });
 });
 
 describe('scopedResyncFilter', () => {

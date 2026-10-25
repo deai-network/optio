@@ -23,6 +23,8 @@ const launchReasons: Record<LaunchFailureReason, RegistryEntry> = {
   'not-a-factory': { i18nKey: 'errors.processes.launch.not-a-factory' },
   // Beside the field its message names (TaskFactoryLaunchModal shows the message there).
   'invalid-parameters': { i18nKey: 'errors.processes.launch.invalid-parameters' },
+  // The server's launch stamp (optio-api's launchMetadata) collides with the factory's metadata.
+  'invalid-metadata': { i18nKey: 'errors.processes.launch.invalid-metadata' },
 };
 
 // Every dismiss refusal (removing an ended launch).

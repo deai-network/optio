@@ -16,8 +16,9 @@ import type { AuthCallback } from '../auth.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { pipeline } from 'node:stream/promises';
 import {
-  accessFor, checkAuth, hasAccessHooks, UNRESTRICTED,
-  type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback, type VisibilityCallback,
+  accessFor, checkAuth, hasAccessHooks, launchStamp, UNRESTRICTED,
+  type Access, type AccessHooks, type AuthorizeCallback, type LaunchMetadataCallback, type ScopeCallback,
+  type VisibilityCallback,
 } from '../auth.js';
 import { gateInstances, inScope } from '../access-scope.js';
 import { processReads } from '../process-reads.js';
@@ -56,6 +57,8 @@ interface BaseOptioApiOptions {
   authorize?: AuthorizeCallback<NextApiRequest>;
   /** Hide processes from a request (see auth.ts). */
   visibility?: VisibilityCallback<NextApiRequest>;
+  /** Stamp a task factory's launch, server-side (see auth.ts); not an access hook. */
+  launchMetadata?: LaunchMetadataCallback<NextApiRequest>;
 }
 
 const c = initContract();
@@ -125,9 +128,11 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
       for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
       return result as any;
     },
-    launch: async ({ params, query, body }) => {
+    // `req` is the caller's own request object (`tsRestHandler(req, res)` below).
+    launch: async ({ params, query, body, req }) => {
       const result = await handlers.launchProcess(
         ctx, query, params.id, body?.resume === true, null, await currentAccess(), body?.params, body?.ephemeral,
+        opts.launchMetadata && launchStamp(opts.launchMetadata, req, body?.params),
       );
       return result as any;
     },

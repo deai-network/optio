@@ -1059,10 +1059,12 @@ export { resultQueryOf, contentDisposition, GRIDFS_RESULT_DOWNLOAD,
 // Authentication + per-request access (for custom adapters). checkAuth(req, authenticate, isWrite)
 // -> null | { status: 401 | 403, body }; accessFor / resolveAccess build the request's Access from
 // the scope / visibility / authorize hooks; UNRESTRICTED is the no-hooks Access.
-export { checkAuth, accessFor, resolveAccess, hasAccessHooks, UNRESTRICTED,
+// launchStamp(hook, req, params) binds the launchMetadata hook to a request: launchProcess's `stamp`.
+export { checkAuth, accessFor, resolveAccess, hasAccessHooks, launchStamp, UNRESTRICTED,
          type OptioRole, type AuthCallback, type AuthResult, type Access, type AccessHooks,
          type ScopeCallback, type ScopeFilter, type VisibilityCallback, type AuthorizeCallback,
-         type AuthorizeInput, type OptioAction, type ProcessRef } from 'optio-api';
+         type AuthorizeInput, type OptioAction, type ProcessRef,
+         type LaunchMetadata, type LaunchMetadataCallback, type LaunchStamp } from 'optio-api';
 
 // Conversation archive proxy (read a suspended process's record; for custom adapters)
 export { resolveConversationArchive, forgetConversationArchive, fetchConversation,
@@ -1159,6 +1161,7 @@ interface SugarOptioApiOptions {
   scope?: ScopeCallback<TRequest>;            // optional tenant boundary (see below)
   authorize?: AuthorizeCallback<TRequest>;    // optional per-action decision (see below)
   visibility?: VisibilityCallback<TRequest>;  // optional per-process hide (see below)
+  launchMetadata?: LaunchMetadataCallback<TRequest>; // optional server-side launch stamp (see below)
   verbose?: boolean;                          // Fastify only
 }
 
@@ -1170,6 +1173,7 @@ interface ExplicitOptioApiOptions {
   scope?: ScopeCallback<TRequest>;
   authorize?: AuthorizeCallback<TRequest>;
   visibility?: VisibilityCallback<TRequest>;
+  launchMetadata?: LaunchMetadataCallback<TRequest>;
 }
 
 // AuthCallback returns 'viewer' (read-only) | 'operator' (read+write) | null (deny).
@@ -1203,9 +1207,21 @@ interface ExplicitOptioApiOptions {
 // result file (action 'result', a read: a viewer reaches it) and instance discovery;
 // false gives 403 { message: 'Forbidden' }. action 'resurrect'
 // is a single-process action like 'launch' (input.process set). OptioAction has no
-// 'read' member: it was declared but never passed to authorize.
+// 'read' member: it was declared but never passed to authorize. input.process (a
+// ProcessRef: _id, processId, name, parentId?, rootId, metadata) carries taskFactory: true
+// for a task factory's record.
 //
 // Without scope/visibility/authorize nothing changes (no extra lookups).
+//
+// launchMetadata(req, { process, params? }) -> Record<string, string | number | boolean | null>
+// | null (LaunchMetadataCallback<TRequest>; packages/optio-api/AGENTS.md "Launch stamp"): the
+// server-side stamp of a task factory's launch, called for every launch of a factory
+// (process.taskFactory) after authorize allowed it; its map goes to the engine as the launch's
+// `metadata`, merged into the new child's metadata (a key the factory's metadata already has, or
+// taskFactory: 400 invalid-metadata). Never called for a plain process's launch (no metadata
+// sent); the launch body cannot carry metadata (zod strips it), so the stamp is trusted. Not an
+// access hook: hasAccessHooks ignores it and, set alone, every request stays UNRESTRICTED (with no
+// access hooks, launchProcess reads the target itself to learn whether it is a factory).
 //
 // visibility(req) -> ProcessMetadataFilter | null (a per-request metadata predicate,
 // `VisibilityCallback<TRequest>`; see packages/optio-api/AGENTS.md "Access scope
@@ -1300,11 +1316,15 @@ async function getProcessResult(ctx: OptioContext, query: InstanceQuery, id: str
 // leftover file); 403 when authorize refuses 'result'.
 async function launchProcess(ctx: OptioContext, query: InstanceQuery, id: string, resume = false,
                              sessionId: string | null = null, access?: Access,
-                             params?: Record<string, unknown>): Promise<LaunchCommandResult>
+                             params?: Record<string, unknown>, ephemeral?: boolean,
+                             stamp?: LaunchStamp): Promise<LaunchCommandResult>
 // 409 { reason: 'no-resume-support', message: "This task does not support resume" } when resume=true and supportsResume=false.
-// `params` (a task factory's values) go to the engine unchanged. 400 for parameters-required and
-// invalid-parameters (its message is the engine's "<id>: <what>", unchanged), 409 for not-a-factory
-// and shutting-down.
+// `params` (a task factory's values) go to the engine unchanged. `stamp` (launchMetadata bound to
+// the request) is called only when the target is a task factory's record, after authorize; its
+// map goes to the engine as `metadata` (none for a plain record, or a null stamp). 400 for
+// parameters-required, invalid-parameters (its message is the engine's "<id>: <what>", unchanged)
+// and invalid-metadata (its message names the colliding stamp keys, unchanged), 409 for
+// not-a-factory and shutting-down.
 async function cancelProcess(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<CancelCommandResult>
 async function dismissProcess(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<DismissCommandResult>
 async function resurrectProcess(ctx: OptioContext, query: InstanceQuery, id: string,
@@ -1965,7 +1985,7 @@ All components use `react-i18next`. Required keys:
 | `processes.factoryTitle` | TaskFactoryLaunchModal (title, `{{name}}` the factory's; default "Launch “{{name}}”") |
 | `processes.factoryLaunch` / `processes.factoryCancel` | TaskFactoryLaunchModal (buttons; defaults "Launch" / "Cancel") |
 | `processes.factoryRequired` / `processes.factoryMaxLength` | TaskFactoryLaunchModal (a required value missing, a text over `maxLength` with `{{count}}`; defaults "Required" / "At most {{count}} characters") |
-| `errors.processes.launch.<reason>` | TaskFactoryLaunchModal via `optioErrorRoutes`, one per `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`); no default (vultus-core's `routeApiError` reads `t(key)`) |
+| `errors.processes.launch.<reason>` | TaskFactoryLaunchModal via `optioErrorRoutes`, one per `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`); no default (vultus-core's `routeApiError` reads `t(key)`) |
 
 ---
 

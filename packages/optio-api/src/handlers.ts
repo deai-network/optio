@@ -4,9 +4,9 @@ import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import type { OptioContext } from './context.js';
 import { resolveDb, resolveOptioEngine } from './resolve.js';
-import { UNRESTRICTED, type Access } from './auth.js';
+import { UNRESTRICTED, type Access, type LaunchMetadata, type LaunchStamp } from './auth.js';
 import {
-  andScope, findActionTarget, findReadableProcess, gateProcess, scopedResyncFilter,
+  andScope, findActionTarget, findReadableProcess, gateProcess, scopedResyncFilter, toProcessRef,
 } from './access-scope.js';
 import { pruneOrphans } from './visibility.js';
 import { processReads, type ProcessReads } from './process-reads.js';
@@ -374,6 +374,7 @@ const LAUNCH_STATUS: Record<LaunchFailureReasonType, 400 | 404 | 409> = {
   'parameters-required': 400,
   'not-a-factory': 409,
   'invalid-parameters': 400,
+  'invalid-metadata': 400,
 };
 
 const CANCEL_STATUS: Record<CancelFailureReasonType, 404 | 409> = {
@@ -399,16 +400,23 @@ const MESSAGES: Record<
   'not-a-factory': 'This process is not a task factory and takes no parameters',
   // The engine's own text ("<id>: <what>") replaces this when it sent one.
   'invalid-parameters': 'The parameter values were refused',
+  // The engine's own text (the colliding keys) replaces this when it sent one.
+  'invalid-metadata': 'The launch stamp collides with the factory\'s metadata',
   'not-cancellable': 'Process is not cancellable in its current state',
   'not-dismissable': 'Process is not in a dismissable state',
 };
 
-// `message` is the engine's text of an invalid-parameters refusal, passed on
-// unchanged (optio-ui reads the parameter's id from it).
+// Refusals whose message is the engine's text, passed on unchanged:
+// invalid-parameters' names the parameter (optio-ui reads its id from it),
+// invalid-metadata's the stamp keys that collide.
+const ENGINE_MESSAGE_REASONS: ReadonlySet<LaunchFailureReasonType> = new Set([
+  'invalid-parameters', 'invalid-metadata',
+]);
+
 function launchFail(reason: LaunchFailureReasonType, message?: string): LaunchCommandResult {
   return {
     status: LAUNCH_STATUS[reason],
-    body: { reason, message: reason === 'invalid-parameters' && message ? message : MESSAGES[reason] },
+    body: { reason, message: ENGINE_MESSAGE_REASONS.has(reason) && message ? message : MESSAGES[reason] },
   };
 }
 
@@ -429,13 +437,24 @@ export async function launchProcess(
   access: Access = UNRESTRICTED,
   params?: Record<string, unknown>,
   ephemeral?: boolean,
+  stamp?: LaunchStamp,
 ): Promise<LaunchCommandResult> {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const reads = processReads(db, prefix, access.visibility);
   const gate = await gateProcess(reads, id, access, 'launch');
   if (!gate.ok) return gate.status === 404 ? launchFail('not-found') : FORBIDDEN;
+  // The stamp (`launchMetadata`) goes only on a task factory's launch, the one
+  // that makes a new record. Unrestricted access skips gateProcess's lookup;
+  // find the target here. Not found: no stamp, the engine answers.
+  let metadata: LaunchMetadata | null = null;
+  if (stamp) {
+    const target = gate.doc ?? (await findActionTarget(reads, id));
+    if (target?.taskFactory === true) metadata = await stamp(toProcessRef(target));
+  }
   const engine = resolveOptioEngine(ctx, query);
-  const result = await engine.launch({ processId: id, resume, sessionId, params, ephemeral });
+  const result = await engine.launch({
+    processId: id, resume, sessionId, params, ephemeral, ...(metadata ? { metadata } : {}),
+  });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return launchFail(result.reason, result.message);
 }

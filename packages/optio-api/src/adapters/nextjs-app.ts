@@ -16,8 +16,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { Readable } from 'node:stream';
 import { resultQueryOf } from '../result-download.js';
 import {
-  accessFor, checkAuth, hasAccessHooks, UNRESTRICTED,
-  type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback, type VisibilityCallback,
+  accessFor, checkAuth, hasAccessHooks, launchStamp, UNRESTRICTED,
+  type Access, type AccessHooks, type AuthorizeCallback, type LaunchMetadataCallback, type ScopeCallback,
+  type VisibilityCallback,
 } from '../auth.js';
 import { gateInstances, inScope } from '../access-scope.js';
 import { processReads } from '../process-reads.js';
@@ -56,6 +57,8 @@ interface BaseOptioApiOptions {
   authorize?: AuthorizeCallback<Request>;
   /** Hide processes from a request (see auth.ts). */
   visibility?: VisibilityCallback<Request>;
+  /** Stamp a task factory's launch, server-side (see auth.ts); not an access hook. */
+  launchMetadata?: LaunchMetadataCallback<Request>;
 }
 
 const c = initContract();
@@ -77,17 +80,23 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
   }
 
   // ts-rest's app-router handler sees its own request object, not the
-  // caller's, so the request's access travels to the routes in an
-  // AsyncLocalStorage set around the ts-rest call.
+  // caller's, so the request's access, and the caller's request itself (for
+  // `launchMetadata`), travel to the routes in an AsyncLocalStorage set around
+  // the ts-rest call.
   const hooks: AccessHooks<Request> = {
     scope: opts.scope, authorize: opts.authorize, visibility: opts.visibility,
   };
-  const requestAccess = new AsyncLocalStorage<Access>();
+  const requestAccess = new AsyncLocalStorage<{ access: Access; request: Request }>();
   function currentAccess(): Access {
-    const access = requestAccess.getStore();
-    if (access) return access;
+    const store = requestAccess.getStore();
+    if (store) return store.access;
     if (!hasAccessHooks(hooks)) return UNRESTRICTED;
     throw new Error('optio-api: route reached without the request\'s access');
+  }
+  function currentRequest(): Request {
+    const store = requestAccess.getStore();
+    if (store) return store.request;
+    throw new Error('optio-api: route reached without the caller\'s request');
   }
 
   async function authGate(request: Request): Promise<Response | null> {
@@ -136,6 +145,7 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
       launch: async ({ params, query, body }) => {
         const result = await handlers.launchProcess(
           ctx, query, params.id, body?.resume === true, null, await currentAccess(), body?.params, body?.ephemeral,
+          opts.launchMetadata && launchStamp(opts.launchMetadata, currentRequest(), body?.params),
         );
         return result as any;
       },
@@ -345,14 +355,14 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
       });
     }
 
-    return requestAccess.run(access, () => tsRestHandlers(request));
+    return requestAccess.run({ access, request }, () => tsRestHandlers(request));
   }
 
   async function POST(request: Request): Promise<Response> {
     const denied = await authGate(request);
     if (denied) return denied;
     const access = await accessFor(request, hooks);
-    return requestAccess.run(access, () => tsRestHandlers(request));
+    return requestAccess.run({ access, request }, () => tsRestHandlers(request));
   }
 
   return explicit ? { GET, POST } : { GET, POST, ctx };

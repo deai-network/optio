@@ -159,7 +159,7 @@ All adapters mount the same endpoints under `/api/processes/...`; the instance i
 | GET | `/api/processes/:id/tree/log?database=&prefix=` | Get merged subtree log |
 | GET | `/api/processes/:id/conversation?database=&prefix=` | Read a suspended process's saved conversation, proxied from the engine's conversation archive (the engine decrypts). 200 `{ events, capturedAt }`; 403/404/409/500/503 with `{reason, message}` per `ConversationFailureReason` (503 `engine-unavailable`: no engine, unreachable, no answer within 15 s, or a body over 64 MiB). Gated as the `'widget'` action; always `Cache-Control: no-store`. |
 | GET | `/api/processes/:id/result?database=&prefix=` | Download the file a task stored with optio-core's `store_result`, streamed from GridFS. 200 with the file's bytes: `Content-Type` its type, `Content-Length` its size, `Content-Disposition: inline` with an ASCII `filename` and RFC 5987 `filename*`, `X-Content-Type-Options: nosniff`, and for every type but `application/pdf` `Content-Security-Policy: sandbox` (the file renders in the host app's origin, so an HTML or SVG result must not run script as the app). 404 `{reason, message}`: `no-result` (no result, or its file is gone), `not-found` (no such process, or one the request may not see). Gated as the `'result'` action (403 when `authorize` refuses). |
-| POST | `/api/processes/:id/launch?database=&prefix=` | Forward launch to engine; optional body `{ resume?: boolean, sessionId?: string \| null, params?: Record<string, unknown>, ephemeral?: boolean }` (`params`: a task factory's values; `ephemeral`: overrides the factory's retention of the launch's record). 200 on success (a task factory's launch: the child's record); 400/404/409 with `{reason, message}` per `LaunchFailureReason` (400 `parameters-required` / `invalid-parameters`, 404 `not-found`, 409 the others). |
+| POST | `/api/processes/:id/launch?database=&prefix=` | Forward launch to engine; optional body `{ resume?: boolean, sessionId?: string \| null, params?: Record<string, unknown>, ephemeral?: boolean }` (`params`: a task factory's values; `ephemeral`: overrides the factory's retention of the launch's record; the body cannot carry `metadata`: a factory's launch is stamped server-side by `launchMetadata`, see "Multi-tenant access"). 200 on success (a task factory's launch: the child's record); 400/404/409 with `{reason, message}` per `LaunchFailureReason` (400 `parameters-required` / `invalid-parameters` / `invalid-metadata`, 404 `not-found`, 409 the others). |
 | POST | `/api/processes/:id/cancel?database=&prefix=` | Forward cancel to engine. 200 on success; 404/409 per `CancelFailureReason`. |
 | POST | `/api/processes/:id/dismiss?database=&prefix=` | Forward dismiss to engine. 200 on success (body `null` when dismissing deleted the record, an ended factory launch); 404/409 per `DismissFailureReason`. |
 | POST | `/api/processes/:id/resurrect?database=&prefix=` | Forward resurrect (save a failed run's unsaved work, then resume) to engine; optional body `{ sessionId?: string \| null }`. 200 on success; 404/409 per `ResurrectFailureReason`. |
@@ -242,8 +242,8 @@ client connects and `stop()` when they disconnect.
 ## Multi-tenant access
 
 Besides `authenticate` (viewer / operator), every adapter accepts three optional
-hooks for hosts that serve several tenants -- or several users of one tenant --
-from one optio database:
+access hooks, and a launch stamp (`launchMetadata`), for hosts that serve several
+tenants -- or several users of one tenant -- from one optio database:
 
 ```typescript
 import { registerOptioApi } from 'optio-api/fastify';
@@ -272,11 +272,19 @@ registerOptioApi(app, {
     action === 'instances' ? req.user.admin
       : action === 'resync' && clean ? req.user.admin
       : true,
+  // Stamp each launch of a task factory, after authorize allowed it: the map
+  // is merged into the new launch's metadata, so visibility and authorize can
+  // match it, and the task reads it in ctx.metadata. Never called for a plain
+  // process's launch; the request body cannot stamp. Not an access hook: set
+  // alone, it restricts nothing.
+  launchMetadata: (req) => ({ user: req.user.id }),
 });
 ```
 
 Without them nothing changes. The exact enforcement per route is in
-`AGENTS.md` ("Access scope and authorization").
+`AGENTS.md` ("Access scope and authorization", "Launch stamp"). A stamp key the
+factory's own metadata already has refuses the launch: 400 `invalid-metadata`,
+its message naming the keys.
 
 ## Return value
 

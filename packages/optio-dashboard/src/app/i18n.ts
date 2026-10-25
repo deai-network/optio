@@ -36,6 +36,7 @@ i18n.use(initReactI18next).init({
         'errors.processes.launch.parameters-required': 'This task needs the values of its parameters.',
         'errors.processes.launch.not-a-factory': 'This task takes no parameters.',
         'errors.processes.launch.invalid-parameters': 'A value was refused: see its field.',
+        'errors.processes.launch.invalid-metadata': 'The server could not stamp this launch: its stamp collides with the task\'s metadata.',
       },
     },
   },

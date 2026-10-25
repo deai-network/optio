@@ -72,7 +72,9 @@ function policy(input: AuthorizeInput, customer: number): boolean {
   return true;
 }
 
-async function buildApp(engine: any, withHooks = true): Promise<FastifyInstance> {
+async function buildApp(
+  engine: any, withHooks = true, extra: Record<string, unknown> = {},
+): Promise<FastifyInstance> {
   const app = Fastify();
   registerOptioApi(app, {
     ctx: makeCtx(engine),
@@ -84,6 +86,7 @@ async function buildApp(engine: any, withHooks = true): Promise<FastifyInstance>
           visibility: (req: any) => (customerOf(req) === 0 ? null : or(not(eq('kind', 'data-chat')), eq('ownerId', String(header(req, 'x-user') ?? '')))),
         }
       : {}),
+    ...extra,
   });
   await app.ready();
   return app;
@@ -374,6 +377,106 @@ describe('fastify adapter without hooks', () => {
     const launch = await app.inject({ method: 'POST', url: `/api/processes/${otherId}/launch?${q}`, headers: as1, payload: {} });
     expect(launch.statusCode).toBe(200);
     expect(engine.launch).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+});
+
+describe('fastify adapter: launchMetadata', () => {
+  // The stamp names the requesting user, as a host's would.
+  const hookOf = () => vi.fn((req: any, _input: any) => ({ user: String(header(req, 'x-user') ?? '') }));
+  const asU1 = { ...as1, 'x-user': 'u1' };
+  const launchUrl = (id: ObjectId) => `/api/processes/${id}/launch?${q}`;
+  // The body cannot stamp: zod strips its `metadata`.
+  const payload = { params: { n: 3 }, metadata: { user: 'forged', extra: 'x' } };
+
+  async function insertFactory(extra: Record<string, unknown> = {}): Promise<ObjectId> {
+    const factory = mk(1, { taskFactory: true, ...extra });
+    await col().insertOne(factory as any);
+    return factory._id;
+  }
+
+  for (const withHooks of [true, false]) {
+    const label = withHooks ? 'with access hooks' : 'as the only hook';
+    it(`${label}: stamps a factory launch from the request and the body's params, never from the body`, async () => {
+      const engine = makeEngine();
+      const launchMetadata = hookOf();
+      const app = await buildApp(engine, withHooks, { launchMetadata });
+      const factoryId = await insertFactory();
+      const res = await app.inject({ method: 'POST', url: launchUrl(factoryId), headers: asU1, payload });
+      expect(res.statusCode).toBe(200);
+      expect(launchMetadata).toHaveBeenCalledTimes(1);
+      const [req, input] = launchMetadata.mock.calls[0];
+      expect(header(req, 'x-user')).toBe('u1');
+      expect(input).toEqual({
+        process: expect.objectContaining({ _id: String(factoryId), taskFactory: true }),
+        params: { n: 3 },
+      });
+      expect(engine.launch).toHaveBeenCalledWith({
+        processId: String(factoryId), resume: false, sessionId: null, params: { n: 3 }, metadata: { user: 'u1' },
+      });
+      await app.close();
+    });
+
+    it(`${label}: a plain launch calls no hook and sends no metadata, whatever the body carries`, async () => {
+      const engine = makeEngine();
+      const launchMetadata = hookOf();
+      const app = await buildApp(engine, withHooks, { launchMetadata });
+      const res = await app.inject({ method: 'POST', url: launchUrl(mineId), headers: asU1, payload });
+      expect(res.statusCode).toBe(200);
+      expect(launchMetadata).not.toHaveBeenCalled();
+      expect(engine.launch).toHaveBeenCalledTimes(1);
+      expect(Object.keys(engine.launch.mock.calls[0][0])).not.toContain('metadata');
+      await app.close();
+    });
+  }
+
+  it('without the hook, a body carrying metadata sends none to the engine', async () => {
+    const engine = makeEngine();
+    const app = await buildApp(engine);
+    const factoryId = await insertFactory();
+    const res = await app.inject({ method: 'POST', url: launchUrl(factoryId), headers: asU1, payload });
+    expect(res.statusCode).toBe(200);
+    expect(Object.keys(engine.launch.mock.calls[0][0])).not.toContain('metadata');
+    await app.close();
+  });
+
+  it('authorize refusing a factory launch: 403, the hook is not called', async () => {
+    const engine = makeEngine();
+    const launchMetadata = hookOf();
+    const app = await buildApp(engine, true, { launchMetadata });
+    const guardedFactory = await insertFactory({ metadata: { customerId: 1, requiredRoles: ['admin'] } });
+    const res = await app.inject({ method: 'POST', url: launchUrl(guardedFactory), headers: asU1, payload });
+    expect(res.statusCode).toBe(403);
+    expect(launchMetadata).not.toHaveBeenCalled();
+    expect(engine.launch).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('is no access hook: set alone, access stays unrestricted (no lookup, the engine decides)', async () => {
+    const engine = makeEngine();
+    const launchMetadata = hookOf();
+    const app = await buildApp(engine, false, { launchMetadata });
+    // Restricted access would 404 an id that is not in the database before the engine.
+    const missing = new ObjectId();
+    const cancel = await app.inject({ method: 'POST', url: `/api/processes/${missing}/cancel?${q}`, headers: asU1, payload: {} });
+    expect(cancel.statusCode).toBe(200);
+    expect(engine.cancel).toHaveBeenCalledTimes(1);
+    const launch = await app.inject({ method: 'POST', url: launchUrl(missing), headers: asU1, payload });
+    expect(launch.statusCode).toBe(200);
+    expect(engine.launch).toHaveBeenCalledTimes(1);
+    expect(launchMetadata).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('400 invalid-metadata with the engine\'s message', async () => {
+    const engine = makeEngine();
+    const message = 'user: already set by the factory (the stamp may not change it)';
+    engine.launch = vi.fn(() => ({ ok: false, reason: 'invalid-metadata', message })) as any;
+    const app = await buildApp(engine, true, { launchMetadata: hookOf() });
+    const factoryId = await insertFactory();
+    const res = await app.inject({ method: 'POST', url: launchUrl(factoryId), headers: asU1, payload });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ reason: 'invalid-metadata', message });
     await app.close();
   });
 });

@@ -105,6 +105,9 @@ interface OptioApiOptions {
   scope?: ScopeCallback<TRequest>;         // Optional tenant boundary. See "Access scope".
   authorize?: AuthorizeCallback<TRequest>; // Optional per-action decision. See "Access scope".
   visibility?: VisibilityCallback<TRequest>; // Optional per-process hide. See "Access scope".
+  launchMetadata?: LaunchMetadataCallback<TRequest>; // Optional server-side stamp of a task
+                                           // factory's launch (not an access hook).
+                                           // See "Launch stamp".
   verbose?: boolean;                       // Fastify only: log the widget proxy's upstream calls
 }
 ```
@@ -160,7 +163,10 @@ type VisibilityCallback<TRequest> =
 
 type OptioAction = 'launch' | 'cancel' | 'dismiss' | 'resurrect' | 'resync'
   | 'widget' | 'widget-control' | 'widget-upload' | 'result' | 'instances';
-interface ProcessRef { _id: string; processId: string; name: string; parentId?: string; rootId: string; metadata: Record<string, unknown> }
+interface ProcessRef {
+  _id: string; processId: string; name: string; parentId?: string; rootId: string; metadata: Record<string, unknown>;
+  taskFactory?: boolean;                      // true for a task factory's record, absent otherwise
+}
 interface AuthorizeInput {
   role: OptioRole; action: OptioAction;
   process?: ProcessRef;                       // single-process actions
@@ -341,6 +347,43 @@ returned. Fastify and Express use `findReadableProcess` for their
 tree-stream and (Fastify) multi-tree lookups; the Next.js adapters use the `_id`-only
 `reads.findOne` + `inScope` form instead (see "Access scope and
 authorization" above).
+
+### Launch stamp
+
+A fourth optional hook, `launchMetadata`, accepted by all four adapters, stamps
+a task factory's launch on the server (types in `auth.ts`):
+
+```typescript
+type LaunchMetadata = Record<string, string | number | boolean | null>;
+type LaunchMetadataCallback<TRequest> =
+  (req: TRequest, input: { process: ProcessRef; params?: Record<string, unknown> })
+    => LaunchMetadata | null | Promise<LaunchMetadata | null>;
+type LaunchStamp = (process: ProcessRef) => Promise<LaunchMetadata | null>;
+function launchStamp<TRequest>(hook, req, params): LaunchStamp;  // binds the hook to one request
+```
+
+- It is called for every launch of a task factory (`process.taskFactory: true`, the
+  factory's record), after `authorize` allowed the launch (a 404 or 403 never reaches
+  it), with the request's body `params`. Its map goes to the engine as the launch's
+  `metadata`; optio-core merges it into the new child's metadata. `null` sends none.
+- A plain process's launch (a re-run, which makes no new record) never calls it and
+  sends no `metadata`.
+- The request body cannot stamp: the launch body schema has no `metadata`, and zod strips
+  one a client sends. Only server-side code stamps, so the stamp is trusted; an app's
+  `visibility` and `authorize` can match it (e.g. `{ user: <id> }`: a user sees and acts on
+  only their own launches).
+- It is not an access hook: `hasAccessHooks` stays keyed on `scope` / `visibility` /
+  `authorize`, so `launchMetadata` alone leaves every request `UNRESTRICTED`. With no
+  access hooks `gateProcess` reads nothing, so `launchProcess` reads the target itself
+  (`findActionTarget`) to learn whether it is a factory -- only when a stamp is set.
+- A stamp key the factory's own metadata already has, or the reserved `taskFactory`,
+  refuses the launch in the engine: 400 `invalid-metadata`, its message (naming the keys)
+  passed on unchanged.
+
+Adapters bind it per request with `opts.launchMetadata && launchStamp(opts.launchMetadata,
+req, body?.params)` and pass that as `launchProcess`'s trailing `stamp`, with the
+framework's own request object, the one `authenticate` got (the Next.js App Router carries
+it into the ts-rest route in its `AsyncLocalStorage`, beside the `Access`).
 
 ### One choke point
 
@@ -531,6 +574,8 @@ async function launchProcess(
   access?: Access,
   params?: Record<string, unknown>,  // a task factory's values, passed to the engine unchanged
   ephemeral?: boolean,  // overrides the factory's retention of the launch's record
+  stamp?: LaunchStamp,  // launchMetadata bound to the request; called for a factory's launch
+                        // only, its map sent as the engine's `metadata` (see "Launch stamp")
 ): Promise<LaunchCommandResult>
 
 async function cancelProcess(
@@ -606,22 +651,25 @@ The error response body (404/409, and 400 for a launch) for `launchProcess` / `c
 
 **Adapters** (`fastify`, `express`, `nextjs-app`, `nextjs-pages`): all four extract `body?.resume`
 from the request body and forward it to `launchProcess` as the fourth argument; as the fifth
-(`sessionId`), Fastify forwards `body?.sessionId ?? null` and the other three pass `null`; the
-last argument, after `access`, is `body?.params` (a task factory's values). For
-resurrect they forward `body?.sessionId ?? null` (the body is optional) to `resurrectProcess` as
-the fourth argument.
+(`sessionId`), Fastify forwards `body?.sessionId ?? null` and the other three pass `null`; after
+`access` come `body?.params` (a task factory's values), `body?.ephemeral`, and the stamp,
+`opts.launchMetadata && launchStamp(opts.launchMetadata, req, body?.params)` (see "Launch
+stamp"). For resurrect they forward `body?.sessionId ?? null` (the body is optional) to
+`resurrectProcess` as the fourth argument.
 
 Per the architectural rule above, command handlers do not validate state — they forward the raw
 id to the engine via `engine.launch / cancel / dismiss / resurrect` and translate the discriminated-union
 result into HTTP status + body. Failure reasons (`not-found`, `not-launchable`, `no-resume-support`,
 `launch-blocked`, `not-cancellable`, `not-dismissable`, `shutting-down` for launch and resurrect,
 for resurrect `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, and for launch
-the task-factory reasons `parameters-required`, `invalid-parameters`, `not-a-factory`) come from the
-engine; the API only maps each to a status: `not-found` is 404, launch's `parameters-required` and
-`invalid-parameters` are 400, every other reason is 409. A factory's launch answers 200 with the
+the task-factory reasons `parameters-required`, `invalid-parameters`, `not-a-factory`, and
+`invalid-metadata` for a launch stamp that collides) come from the engine; the API only maps each
+to a status: `not-found` is 404, launch's `parameters-required`, `invalid-parameters` and
+`invalid-metadata` are 400, every other reason is 409. A factory's launch answers 200 with the
 child's record. The body keeps `{ reason, message }`; for `invalid-parameters` the message is the
-engine's `"<id>: <what>"` text passed on unchanged (optio-ui reads the parameter's id from it; a
-fixed text only if the engine sent none), for the other reasons a fixed text.
+engine's `"<id>: <what>"` text passed on unchanged (optio-ui reads the parameter's id from it), for
+`invalid-metadata` the engine's text naming the colliding keys, unchanged (each a fixed text only if
+the engine sent none), for the other reasons a fixed text.
 
 ## Conversation archive proxy
 

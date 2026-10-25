@@ -151,10 +151,13 @@ function collectBytes(res: any, done: (err: Error | null, body: Buffer) => void)
   res.on('end', () => done(null, Buffer.concat(chunks)));
 }
 
-function expressDriver(engine: any): Call {
+// Each driver takes the adapter's options beside `ctx` (default: `hooks()`).
+type DriverOptions = Record<string, unknown>;
+
+function expressDriver(engine: any, options: DriverOptions = hooks()): Call {
   const app = express();
   app.use(express.json());
-  registerExpress(app, { ctx: makeCtx(engine), ...hooks() });
+  registerExpress(app, { ctx: makeCtx(engine), ...options } as any);
   return async (method, url, body) => {
     const pending = method === 'GET'
       ? request(app).get(url).set('x-customer', '1')
@@ -168,8 +171,8 @@ function expressDriver(engine: any): Call {
   };
 }
 
-function appRouterDriver(engine: any): Call {
-  const { GET, POST } = createOptioRouteHandlers({ ctx: makeCtx(engine), ...hooks() });
+function appRouterDriver(engine: any, options: DriverOptions = hooks()): Call {
+  const { GET, POST } = createOptioRouteHandlers({ ctx: makeCtx(engine), ...options } as any);
   return async (method, url, body) => {
     const init: RequestInit = { method, headers: { 'x-customer': '1', 'content-type': 'application/json' } };
     if (method === 'POST') init.body = JSON.stringify(body ?? {});
@@ -183,8 +186,8 @@ function appRouterDriver(engine: any): Call {
   };
 }
 
-function pagesDriver(engine: any): Call {
-  const { handler } = createOptioHandler({ ctx: makeCtx(engine), ...hooks() });
+function pagesDriver(engine: any, options: DriverOptions = hooks()): Call {
+  const { handler } = createOptioHandler({ ctx: makeCtx(engine), ...options } as any);
   return async (method, url, body) => {
     const u = new URL(`http://localhost${url}`);
     const query: Record<string, unknown> = Object.fromEntries(u.searchParams.entries());
@@ -206,7 +209,7 @@ function pagesDriver(engine: any): Call {
   };
 }
 
-const drivers: Array<[string, (engine: any) => Call]> = [
+const drivers: Array<[string, (engine: any, options?: DriverOptions) => Call]> = [
   ['express', expressDriver],
   ['nextjs-app', appRouterDriver],
   ['nextjs-pages', pagesDriver],
@@ -322,6 +325,41 @@ for (const [name, makeDriver] of drivers) {
       await storeResult(guardedId, PDF);
       expect((await call('GET', url(guardedId))).status).toBe(403);
     });
+  });
+}
+
+for (const [name, makeDriver] of drivers) {
+  describe(`${name} adapter: launchMetadata`, () => {
+    for (const withHooks of [true, false]) {
+      const label = withHooks ? 'with access hooks' : 'as the only hook';
+      it(`${label}: stamps a factory launch from the request authenticate saw and the body's params; a plain launch has none`, async () => {
+        const engine = makeEngine();
+        const authenticate = vi.fn((_req: any) => 'operator' as const);
+        const launchMetadata = vi.fn((_req: any, _input: any) => ({ user: 'u1' }));
+        const call = makeDriver(engine, { ...(withHooks ? hooks() : {}), authenticate, launchMetadata });
+        const factory = { ...mk({ customerId: 1 }), taskFactory: true };
+        await col().insertOne(factory as any);
+        // The body cannot stamp: zod strips its `metadata`.
+        const body = { params: { n: 3 }, metadata: { user: 'forged' } };
+
+        expect((await call('POST', `/api/processes/${factory._id}/launch?${q}`, body)).status).toBe(200);
+        expect(launchMetadata).toHaveBeenCalledTimes(1);
+        const [req, input] = launchMetadata.mock.calls[0];
+        expect(req).toBe(authenticate.mock.calls.at(-1)![0]);
+        expect(input).toEqual({
+          process: expect.objectContaining({ _id: String(factory._id), taskFactory: true }),
+          params: { n: 3 },
+        });
+        expect(engine.launch).toHaveBeenLastCalledWith({
+          processId: String(factory._id), resume: false, sessionId: null, params: { n: 3 }, metadata: { user: 'u1' },
+        });
+
+        expect((await call('POST', `/api/processes/${mineId}/launch?${q}`, body)).status).toBe(200);
+        expect(launchMetadata).toHaveBeenCalledTimes(1);
+        expect(engine.launch).toHaveBeenCalledTimes(2);
+        expect(Object.keys(engine.launch.mock.calls[1][0])).not.toContain('metadata');
+      });
+    }
   });
 }
 

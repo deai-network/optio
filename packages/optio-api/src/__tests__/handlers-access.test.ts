@@ -80,6 +80,7 @@ async function insertProcess(overrides: {
   depth?: number;
   metadata?: Record<string, unknown>;
   log?: { timestamp: string; level: string; message: string }[];
+  taskFactory?: boolean;
 } = {}) {
   const _id = overrides._id ?? new ObjectId();
   const rootId = overrides.rootId ?? _id;
@@ -96,6 +97,7 @@ async function insertProcess(overrides: {
     cancellable: true,
     log: overrides.log ?? [],
     metadata: overrides.metadata ?? {},
+    ...(overrides.taskFactory !== undefined ? { taskFactory: overrides.taskFactory } : {}),
   };
   await col().insertOne(doc as any);
   return doc;
@@ -196,6 +198,93 @@ describe('command handlers under a scope', () => {
       expect((engine as any)[name]).toHaveBeenCalledTimes(1);
     });
   }
+});
+
+// launchMetadata (auth.ts), bound by the adapter to the request: launchProcess
+// takes it as its trailing `stamp`.
+describe('launchProcess: the launch stamp', () => {
+  const STAMP = { user: 'u1', n: 1, ok: true, none: null };
+  const stampOf = () => vi.fn(async () => STAMP);
+  const launch = (engine: any, id: string, access: Access | undefined, stamp: any) =>
+    launchProcess(makeCtx(engine), { prefix: PREFIX }, id, false, null, access, { n: 3 }, undefined, stamp);
+  const sent = (engine: any) => engine.launch.mock.calls[0][0];
+
+  it('a factory record under access hooks: the stamp sees its ref and goes to the engine as metadata', async () => {
+    const factory = await insertProcess({ processId: 'fac', taskFactory: true, metadata: { customerId: 1 } });
+    const engine = makeEngine();
+    const access = scoped(1);
+    const stamp = stampOf();
+    const result: any = await launch(engine, 'fac', access, stamp);
+    expect(result.status).toBe(200);
+    expect(stamp).toHaveBeenCalledTimes(1);
+    expect(stamp).toHaveBeenCalledWith(expect.objectContaining({
+      _id: factory._id.toHexString(), processId: 'fac', taskFactory: true, metadata: { customerId: 1 },
+    }));
+    expect(sent(engine)).toEqual({
+      processId: 'fac', resume: false, sessionId: null, params: { n: 3 }, metadata: STAMP,
+    });
+    // authorize allowed the launch before the stamp was asked.
+    const authorized = (access.authorize as any).mock.invocationCallOrder[0];
+    expect(authorized).toBeLessThan(stamp.mock.invocationCallOrder[0]);
+  });
+
+  it('a factory record without access hooks: the target is looked up here, by either id form', async () => {
+    const factory = await insertProcess({ processId: 'fac', taskFactory: true });
+    for (const id of ['fac', factory._id.toHexString()]) {
+      const engine = makeEngine();
+      const stamp = stampOf();
+      const result: any = await launch(engine, id, undefined, stamp);
+      expect(result.status).toBe(200);
+      expect(stamp).toHaveBeenCalledWith(expect.objectContaining({ processId: 'fac', taskFactory: true }));
+      expect(sent(engine)).toEqual(expect.objectContaining({ processId: id, metadata: STAMP }));
+    }
+  });
+
+  it('a plain record: the stamp is never called and no metadata key goes to the engine', async () => {
+    await insertProcess({ processId: 'plain', metadata: { customerId: 1 } });
+    await insertProcess({ processId: 'not-factory', taskFactory: false, metadata: { customerId: 1 } });
+    for (const id of ['plain', 'not-factory']) {
+      for (const access of [scoped(1), undefined]) {
+        const engine = makeEngine();
+        const stamp = stampOf();
+        const result: any = await launch(engine, id, access, stamp);
+        expect(result.status).toBe(200);
+        expect(stamp).not.toHaveBeenCalled();
+        expect(Object.keys(sent(engine))).not.toContain('metadata');
+      }
+    }
+  });
+
+  it('a target that is not there, without access hooks: no stamp, the engine decides', async () => {
+    const engine = makeEngine();
+    const stamp = stampOf();
+    const result: any = await launch(engine, 'not-in-db', undefined, stamp);
+    expect(result.status).toBe(200);
+    expect(stamp).not.toHaveBeenCalled();
+    expect(Object.keys(sent(engine))).not.toContain('metadata');
+  });
+
+  it('authorize refusing, or the factory out of scope: the stamp is not called', async () => {
+    await insertProcess({ processId: 'fac', taskFactory: true, metadata: { customerId: 1 } });
+    const engine = makeEngine();
+    const stamp = stampOf();
+    const denied: any = await launch(engine, 'fac', scoped(1, false), stamp);
+    expect(denied).toEqual({ status: 403, body: { message: 'Forbidden' } });
+    const outside: any = await launch(engine, 'fac', scoped(2), stamp);
+    expect(outside.status).toBe(404);
+    expect(stamp).not.toHaveBeenCalled();
+    expect(engine.launch).not.toHaveBeenCalled();
+  });
+
+  it('a stamp answering null: no metadata key goes to the engine', async () => {
+    await insertProcess({ processId: 'fac', taskFactory: true });
+    const engine = makeEngine();
+    const stamp = vi.fn(async () => null);
+    const result: any = await launch(engine, 'fac', undefined, stamp);
+    expect(result.status).toBe(200);
+    expect(stamp).toHaveBeenCalledTimes(1);
+    expect(Object.keys(sent(engine))).not.toContain('metadata');
+  });
 });
 
 describe('resurrectProcess', () => {

@@ -13,8 +13,10 @@ import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import httpProxy from '@fastify/http-proxy';
 import { createHash } from 'node:crypto';
-import type { AuthCallback, AccessHooks, AuthorizeCallback, ScopeCallback, VisibilityCallback } from '../auth.js';
-import { accessFor, checkAuth } from '../auth.js';
+import type {
+  AuthCallback, AccessHooks, AuthorizeCallback, LaunchMetadataCallback, ScopeCallback, VisibilityCallback,
+} from '../auth.js';
+import { accessFor, checkAuth, launchStamp } from '../auth.js';
 import { findReadableProcess, gateInstances, gateProcess } from '../access-scope.js';
 import { processReads } from '../process-reads.js';
 import { createWidgetUpstreamRegistry } from '../widget-upstream-registry.js';
@@ -443,6 +445,8 @@ interface BaseOptioApiOptions {
   authorize?: AuthorizeCallback<import('fastify').FastifyRequest>;
   /** Hide processes from a request (see auth.ts). */
   visibility?: VisibilityCallback<import('fastify').FastifyRequest>;
+  /** Stamp a task factory's launch, server-side (see auth.ts); not an access hook. */
+  launchMetadata?: LaunchMetadataCallback<import('fastify').FastifyRequest>;
   verbose?: boolean;
 }
 
@@ -534,6 +538,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     launch: async ({ params, query, body, request }) => {
       const result = await handlers.launchProcess(
         ctx, query, params.id, body?.resume === true, body?.sessionId ?? null, await access(request), body?.params, body?.ephemeral,
+        opts.launchMetadata && launchStamp(opts.launchMetadata, request, body?.params),
       );
       return result as any;
     },
