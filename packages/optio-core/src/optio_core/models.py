@@ -223,6 +223,11 @@ class TaskFactory:
     # metadata (the factory's over the instance's, plus `taskFactory`), name
     # (`name_for`'s, if any) and ttl_seconds; the rest is the instance's.
     task_for: Callable[[dict[str, Any], str], TaskInstance] | None = None
+    # None: every launch starts at once. N (an int >= 1; sync refuses
+    # anything else): at most N launches run at once in this engine; the
+    # others wait in `scheduled` and start as runs end, oldest first
+    # (Executor.launch_process). Spec: docs/2026-10-25-factory-results-design.md §3
+    max_concurrency: int | None = None
 
 
 @dataclass

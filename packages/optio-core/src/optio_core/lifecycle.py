@@ -267,6 +267,7 @@ class Optio:
             mongo_db, prefix, services, optio=self,
             notify_parent_abnormal=self.cancel,
             notify_parent_failure=self._cancel_active_children,
+            factory_limit=self._factory_limit,
         )
 
         # Run migrations
@@ -1025,6 +1026,10 @@ class Optio:
         active children when the process's TaskInstance has
         `auto_cancel_children=True`.
 
+        A scheduled one ends `cancelled` at once and never runs (one waiting
+        for its TaskFactory's slot leaves the queue); an ephemeral one is
+        then deleted, as at the end of a run.
+
         `inherit_deadline` is for internal recursion. External callers
         omit it; a fresh deadline is computed from `cancel_grace_seconds`.
         The same monotonic deadline is threaded through the entire subtree
@@ -1076,6 +1081,15 @@ class Optio:
             )
             if result.modified_count == 0:
                 return CancelOutcome(ok=False, reason="not-cancellable")
+            # It never runs: a launch waiting for its factory's slot leaves
+            # the queue (TaskFactory.max_concurrency), and a run about to
+            # start finds the record no longer `scheduled` (the executor's
+            # conditional start). An ephemeral record is deleted, as at the
+            # end of a run. Spec: docs/2026-10-25-factory-results-design.md §3
+            withdrawn = self._executor.withdraw_waiting(proc["_id"])
+            _trace("CANCEL-TRACE %s: withdrawn from a factory's queue=%s", process_id, withdrawn)
+            if proc.get("ephemeral"):
+                await self._executor._cleanup_ephemeral(str(proc["_id"]))
         else:
             result = await coll.update_one(
                 {"_id": proc["_id"], "status.state": {"$in": list(CANCELLABLE_STATES)}},
@@ -1642,6 +1656,13 @@ class Optio:
         # Stop sign: refuse new launches (scheduler, RPC, programmatic) for the
         # entire drain so nothing half-boots into a shutting-down engine.
         self._shutting_down = True
+        # Nor does a launch waiting for its factory's slot start as the
+        # running ones end: each returns without running, its record left
+        # `scheduled` for the next init()'s reconcile. They hold no cancel
+        # entry, so the drain below never waits for them.
+        # Spec: docs/2026-10-25-factory-results-design.md §3
+        if self._executor:
+            self._executor.stop_admitting()
 
         try:
             # 1. Heartbeat
@@ -2286,6 +2307,13 @@ class Optio:
             )
         }
         return set(pids) - can_run
+
+    def _factory_limit(self, factory_id: str) -> int | None:
+        """The synced factory `factory_id`'s max_concurrency (None: no limit,
+        or no such factory): the executor's lookup, read at each admission.
+        Spec: docs/2026-10-25-factory-results-design.md §3"""
+        factory = self._factories.get(factory_id)
+        return factory.max_concurrency if factory is not None else None
 
     def _register_factories(
         self,

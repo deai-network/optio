@@ -284,7 +284,8 @@ async def update_status(
     *,
     log: tuple[str, str] | None = None,
     set_fields: dict[str, Any] | None = None,
-) -> None:
+    expected_state: str | None = None,
+) -> bool:
     """Update the status sub-document of a process.
 
     When `expire_at` is provided, also $set `expireAt` alongside the status.
@@ -296,16 +297,24 @@ async def update_status(
     `log` is a `(level, message)` entry appended and `set_fields` are further
     top-level fields set, both in the same update: a state change and its log
     line are one write. Spec: docs/2026-10-09-fewer-process-writes-design.md
+
+    With `expected_state` the update applies only while the record's
+    `status.state` is that state (the executor's start of a `scheduled`
+    record). Returns whether the record matched.
     """
     update: dict[str, Any] = {"status": status.to_dict()}
     if expire_at is not None:
         update["expireAt"] = expire_at
     if set_fields:
         update.update(set_fields)
-    await _collection(db, prefix).update_one(
-        {"_id": process_oid},
+    query: dict[str, Any] = {"_id": process_oid}
+    if expected_state is not None:
+        query["status.state"] = expected_state
+    result = await _collection(db, prefix).update_one(
+        query,
         _with_log({"$set": update}, log),
     )
+    return result.matched_count > 0
 
 
 async def finalize_if_active(

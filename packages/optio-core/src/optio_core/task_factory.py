@@ -74,9 +74,10 @@ def check_factory(factory: TaskFactory) -> None:
     """Check a factory as the sync does, which raises its error: exactly one
     of `execute` and `task_for`; neither `supports_resume` nor `auto_resume`
     with `task_for` (the instance's rule, launch options spec 1.4);
-    `auto_resume` only with `supports_resume`; then its parameters
-    (check_parameters). Raises ValueError("Task factory '<process id>':
-    <what>") at the first problem, a parameters one as "Task factory
+    `auto_resume` only with `supports_resume`; `max_concurrency` None or a
+    positive int, never a bool (factory results spec §3); then its
+    parameters (check_parameters). Raises ValueError("Task factory '<process
+    id>': <what>") at the first problem, a parameters one as "Task factory
     '<process id>': parameters: <id>: <what>". Public so that a host can
     leave out one refused factory instead of failing the whole sync."""
     if (factory.execute is None) == (factory.task_for is None):
@@ -96,6 +97,12 @@ def check_factory(factory: TaskFactory) -> None:
         raise ValueError(
             f"Task factory '{factory.process_id}': auto_resume=True requires "
             f"supports_resume=True"
+        )
+    limit = factory.max_concurrency
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+        raise ValueError(
+            f"Task factory '{factory.process_id}': max_concurrency must be a "
+            f"positive integer or None"
         )
     try:
         check_parameters(factory.parameters)

@@ -329,6 +329,9 @@ an unattended launch).
 
 While a resurrect of the process is in progress, `launch` returns `not-launchable`; so it does for
 a TaskFactory's launch, which runs once, unless `resume=True` resumes a kept one (see "TaskFactory").
+A TaskFactory's launch beyond its factory's `max_concurrency` is no refusal: `ok=True`, its record
+`scheduled` until a slot frees (`launch_and_wait` waits that long too; see "TaskFactory", the
+concurrency limit).
 
 `LaunchOutcome` (`ok`, `reason`, `proc`, `message`): `reason` is one of `not-found`,
 `not-launchable`, `launch-blocked`, `no-resume-support`, `shutting-down`, `parameters-required`,
@@ -368,6 +371,7 @@ class TaskFactory:
     validate: Callable[[dict[str, Any]], str | None] | None = None  # a returned message refuses the values
     name_for: Callable[[dict[str, Any]], str] | None = None        # a launch's name; default `name`
     task_for: Callable[[dict[str, Any], str], TaskInstance] | None = None  # instead of execute: a launch's whole task
+    max_concurrency: int | None = None       # None: every launch starts at once; N (>= 1): at most N run at once in this engine, the others wait in `scheduled`
 ```
 
 A task launched with values. `get_task_definitions` may return factories among its
@@ -413,7 +417,9 @@ running launches, the active records under a stale root (see "Optio.resync").
 - `check_factory(factory: TaskFactory) -> None` (also exported from `optio_core`) is the sync's
   whole check of a factory, which the sync runs for each one and whose `ValueError` it raises: in
   order, exactly one of `execute` and `task_for`, neither `supports_resume` nor `auto_resume` with
-  `task_for`, `auto_resume` only with `supports_resume` (the messages above), then
+  `task_for`, `auto_resume` only with `supports_resume` (the messages above), `max_concurrency`
+  None or a positive int (`ValueError("Task factory '<id>': max_concurrency must be a positive
+  integer or None")`; a bool is refused too, though Python's `True` is an int), then
   `check_parameters`. It is public so that a host whose definitions come from several parts (a
   plugin's) can check one factory first and leave out what it refuses, instead of failing the
   whole sync.
@@ -543,6 +549,49 @@ e.g. a user's cancel) keeps its state, error, timestamps, log and `expireAt` as 
 the reason goes to the engine's log as a warning (`Kept launch <id> (<state>) can no longer
 resume: <why>`). An engine without `get_task_definitions`
 rebuilds and settles nothing. Ephemeral launches are still deleted at `init()`, before.
+
+**The concurrency limit** (`max_concurrency`; factory results spec §3). `None` (the default):
+every launch starts at once. `N`: at most N launches of the factory run at once in this engine
+(in memory, as `parallel_group`'s limit; not shared between engines). The executor enforces it in
+`Executor.launch_process`, which every start of a launch goes through (`launch`, the factory path
+of `launch_and_wait`, which calls it directly, `launch_and_await_result`, a kept launch's resume
+and auto-resume). A launch's factory is its record's `metadata.taskFactory`; its limit is read
+live from `Optio._factories` (`Optio._factory_limit`, passed as `Executor(factory_limit=)`), so a
+re-sync's new limit applies from the next admission or end of a run.
+- **Slots** (`Executor._factory_slots`, a `_FactorySlots` per factory with a launch running or
+  waiting: `running`, the runs holding a slot, every launch of the factory counted, limited or not;
+  `waiting`, a FIFO of (record `_id`, future)). Once the record is `scheduled` (`relaunch_reset`),
+  `_take_slot` takes a slot at once while fewer than N run and none waits; else the launch joins
+  the FIFO, logs `Waiting for a free slot (<n> running)` on its record (best effort: a failed
+  write is a warning) and awaits its future. `_free_slot` runs in the `finally` of the run's own
+  task (the one `force_cancel` cancels), so every end of a run frees its slot, a force-cancel
+  included, and hands it to the oldest waiter (`_hand_off`: counted running at once, its future
+  resolved True). `execute` is only called once a slot is taken, so its own time limits count
+  from then.
+- **The start is conditional**: `_execute_process` writes `running` only while the record is
+  still `scheduled` (`store.update_status(..., expected_state="scheduled")`, which returns
+  whether it matched). A run whose record a cancel ended meanwhile (one handed its slot just
+  before) does not run: it returns `("cancelled", None)` without a final write, and its slot goes
+  on. This holds for every run, a `run_child` child cancelled in its `scheduled` window too.
+- **Cancel of a waiting launch** (`Optio.cancel`'s `scheduled` arm): `cancelled` with `expireAt`
+  as before, then `Executor.withdraw_waiting(_id)` takes it out of the FIFO (its future resolves
+  False: `launch_process` returns None without running; it held no slot, so it frees none), and
+  an ephemeral record is deleted with its task (`_cleanup_ephemeral`), as at the end of a run. A
+  `launch_and_await_result` caller of a launch that never runs gets `ResultNotPublished`. A
+  waiting launch whose own task is cancelled (a `launch_and_wait` caller's) leaves the FIFO, and
+  a slot handed to it before it resumed goes on; its record stays `scheduled`.
+- **Shutdown**: `Executor.stop_admitting()` at the stop sign: every waiting launch returns without
+  running and no slot is handed from then on (a launch that would start at once still does, as
+  any launch already under way). The waiting records hold no cancel entry, so the drain never
+  waits for them; they stay `scheduled` until the next `init()`, whose reconcile settles them
+  `failed` (`Process was interrupted by server restart`) after `_delete_ephemeral_leftovers`
+  deleted the ephemeral ones.
+- **Lost-write retries**: `launch_process` drops a final state parked for the row (Rule 3) once
+  it finds the row launchable, before the row turns `scheduled`, so `retry_unrecorded_finals`
+  never writes an earlier run's state over a waiting launch.
+- A re-sync that removes the factory leaves its launches without a limit: the waiting ones start
+  as slots free and, their task gone with the factory, end `failed` (`No execute function
+  found`).
 
 **The reserved key.** `metadata.taskFactory` is optio's: only a launch's definition writes it
 (`_factory_child`, through the internal `Optio._adhoc_define`, which keeps it; a launch stamp
@@ -777,8 +826,9 @@ Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`.
   TaskFactory launch without `ttl_seconds`): the record and its descendants are deleted (and the
   ad-hoc task unregistered) whenever the run ends: at any terminal state the executor writes; after
   a force-cancel (`Executor.force_cancel`, once it has force-cancelled the active children); when a
-  launch finds no execute function; and when a lost final write is settled
-  (`Optio._settle_if_orphaned`, Rule 4, once it has force-cancelled the active children). On
+  launch finds no execute function; when a lost final write is settled
+  (`Optio._settle_if_orphaned`, Rule 4, once it has force-cancelled the active children); and when
+  a `scheduled` one is cancelled (`Optio.cancel`: it never runs). On
   `init()`, before the reconcile of interrupted
   processes, `Optio._delete_ephemeral_leftovers` (`store.delete_ephemeral_processes`) deletes
   every ephemeral record of the engine's (database, prefix), whatever its state: one the restart

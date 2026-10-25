@@ -5,7 +5,8 @@ import logging
 import os as _os
 import sys
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
@@ -35,6 +36,22 @@ from optio_core.store import (
 )
 from optio_core.context import ProcessContext
 from optio_core.exceptions import ChildProcessFailed
+from optio_core.task_factory import is_factory_launch
+
+
+@dataclass
+class _FactorySlots:
+    """The launches of one TaskFactory in this executor, for its
+    max_concurrency (factory results spec §3).
+
+    `running` counts the runs that hold a slot: every launch of the factory
+    takes one to run, limited or not, and frees it when its run ends.
+    `waiting` holds the launches waiting for one, oldest first, each as
+    (its record's _id, the future its launch_process awaits: True when a
+    slot is handed to it, False when it is not to run).
+    """
+    running: int = 0
+    waiting: deque[tuple[ObjectId, asyncio.Future]] = field(default_factory=deque)
 
 
 @dataclass
@@ -80,6 +97,7 @@ class Executor:
         optio: "Optio | None" = None,
         notify_parent_abnormal: Callable[..., Awaitable[Any]] | None = None,
         notify_parent_failure: Callable[..., Awaitable[Any]] | None = None,
+        factory_limit: Callable[[str], int | None] | None = None,
     ):
         self._db = db
         self._prefix = prefix
@@ -87,6 +105,14 @@ class Executor:
         self._optio = optio
         self._notify_parent_abnormal = notify_parent_abnormal
         self._notify_parent_failure = notify_parent_failure
+        # A TaskFactory's max_concurrency by its process id (None: no limit,
+        # or no such factory), read live at each admission (Optio's synced
+        # factories); the slots of each factory with a launch running or
+        # waiting; False once shutdown began (stop_admitting).
+        # Spec: docs/2026-10-25-factory-results-design.md §3
+        self._factory_limit = factory_limit
+        self._factory_slots: dict[str, _FactorySlots] = {}
+        self._admitting = True
         self._cancellation_flags: dict[ObjectId, _CancelEntry] = {}
         self._running_tasks: dict[ObjectId, asyncio.Task] = {}
         # Rules 3 and 4 of docs/2026-10-03-lost-final-state-writes-design.md:
@@ -182,6 +208,13 @@ class Executor:
         If resume is True, ctx.resume will be True inside the execute function,
         signalling that the task should restore previous state rather than start fresh.
         A TaskFactory's record is never launched (returns None).
+
+        A TaskFactory's launch (metadata.taskFactory) runs in one of its
+        factory's slots (max_concurrency, _take_slot): it may wait for one in
+        `scheduled`, and one that never runs (cancelled while it waited, or
+        shutdown began) returns None. Every way a launch starts comes here
+        (Optio.launch, launch_and_wait, launch_and_await_result, a kept
+        launch's resume). Spec: docs/2026-10-25-factory-results-design.md §3
         """
         proc = await get_process_by_process_id(self._db, self._prefix, process_id)
         if proc is None:
@@ -194,6 +227,10 @@ class Executor:
         current_state = proc["status"]["state"]
         if current_state not in LAUNCHABLE_STATES:
             return None  # silently ignore (idempotent)
+        # A final state still parked for this launchable row (Rule 3) is
+        # moot: dropped before the row turns `scheduled`, where the retry
+        # would write it over this launch, which may wait long for a slot.
+        self._unrecorded_finals.pop(proc["_id"], None)
 
         # The previous run's children go first; then one update resets the
         # row and records the scheduled state with its log line.
@@ -208,14 +245,152 @@ class Executor:
         if proc.get("hasUnsavedWork"):
             await set_has_unsaved_work(self._db, self._prefix, proc["_id"], False)
 
-        # Use resolved doc's processId for the registry — caller may have
-        # passed OID hex, but _task_registry is processId-keyed.
-        task = self._task_registry.get(proc["processId"])
-        state, _ = await self._execute_process(
-            proc, task.execute if task else None, resume=resume,
-            session_id=session_id,
-        )
+        factory_id = proc["metadata"]["taskFactory"] if is_factory_launch(proc) else None
+        if factory_id is not None and not await self._take_slot(factory_id, proc["_id"]):
+            # It never runs: its record stays as the cancel left it (or
+            # `scheduled` until the next init()'s reconcile, after a
+            # shutdown). A launch_and_await_result caller has no result.
+            fut = self._result_futures.pop(proc["processId"], None)
+            if fut is not None and not fut.done():
+                from optio_core.exceptions import ResultNotPublished
+                fut.set_exception(ResultNotPublished(proc["processId"]))
+            return None
+        try:
+            # Use resolved doc's processId for the registry — caller may have
+            # passed OID hex, but _task_registry is processId-keyed. Read
+            # once the launch may run: a cancel while it waited may have
+            # removed an ephemeral one's task.
+            task = self._task_registry.get(proc["processId"])
+            state, _ = await self._execute_process(
+                proc, task.execute if task else None, resume=resume,
+                session_id=session_id,
+            )
+        finally:
+            # In the run's own task (the one force_cancel cancels): every
+            # end of the run frees its slot.
+            if factory_id is not None:
+                self._free_slot(factory_id)
         return state
+
+    def _has_room(self, factory_id: str, slots: _FactorySlots) -> bool:
+        """Whether one more launch of the factory may run now: fewer than its
+        max_concurrency run (no limit: always)."""
+        limit = self._factory_limit(factory_id) if self._factory_limit is not None else None
+        return limit is None or slots.running < limit
+
+    def _hand_off(self, factory_id: str) -> None:
+        """Hand the factory's free slots to its waiting launches, oldest
+        first, each by resolving its future with True (and counting it as
+        running at once, so no later arrival takes that slot). A waiter
+        whose future is done already (taken out by a cancel, or its task
+        cancelled) is skipped. Nothing is handed once shutdown began."""
+        slots = self._factory_slots.get(factory_id)
+        if slots is None:
+            return
+        while slots.waiting and self._admitting and self._has_room(factory_id, slots):
+            _oid, fut = slots.waiting.popleft()
+            if fut.done():
+                continue
+            slots.running += 1
+            fut.set_result(True)
+
+    def _drop_if_idle(self, factory_id: str) -> None:
+        """Forget the factory's slots while none runs or waits."""
+        slots = self._factory_slots.get(factory_id)
+        if slots is not None and slots.running == 0 and not slots.waiting:
+            del self._factory_slots[factory_id]
+
+    async def _take_slot(self, factory_id: str, oid: ObjectId) -> bool:
+        """Take a slot of the factory `factory_id` for its launch `oid`: at
+        once while fewer than its max_concurrency run and no launch waits
+        before it, else when a run of the factory ends, oldest first, its
+        record `scheduled` meanwhile with the log line "Waiting for a free
+        slot (<N> running)". Returns False, holding no slot, when the launch
+        is not to run: a cancel took it out of the queue (withdraw_waiting),
+        or shutdown began (stop_admitting). A slot taken is freed with
+        _free_slot. Spec: docs/2026-10-25-factory-results-design.md §3"""
+        # A limit raised by a re-sync (or a factory gone) frees slots for the
+        # launches waiting already, before this one is placed.
+        self._hand_off(factory_id)
+        slots = self._factory_slots.setdefault(factory_id, _FactorySlots())
+        if not slots.waiting and self._has_room(factory_id, slots):
+            slots.running += 1
+            return True
+        if not self._admitting:
+            # Shutdown began: no slot will be handed to it.
+            self._drop_if_idle(factory_id)
+            return False
+        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        waiter = (oid, fut)
+        slots.waiting.append(waiter)
+        try:
+            try:
+                await append_log(
+                    self._db, self._prefix, oid, "event",
+                    f"Waiting for a free slot ({slots.running} running)",
+                )
+            except PyMongoError as e:
+                # The line only informs; the launch waits all the same (a
+                # start that cannot be written is Rule 3's, at its start).
+                logger.warning(
+                    "Could not log the wait for a free slot of process %s: %r", oid, e,
+                )
+            granted = await fut
+        except BaseException:
+            # Its task was cancelled: a slot handed to it meanwhile goes on
+            # to the next launch.
+            if fut.done() and not fut.cancelled() and fut.result():
+                self._free_slot(factory_id)
+            else:
+                fut.cancel()
+                if waiter in slots.waiting:
+                    slots.waiting.remove(waiter)
+                self._drop_if_idle(factory_id)
+            raise
+        if granted and not self._admitting:
+            # Handed a slot just before shutdown began: it does not start.
+            self._free_slot(factory_id)
+            return False
+        return granted
+
+    def _free_slot(self, factory_id: str) -> None:
+        """A run of the factory ended (or does not start): its slot goes to
+        the oldest waiting launch."""
+        self._factory_slots[factory_id].running -= 1
+        self._hand_off(factory_id)
+        self._drop_if_idle(factory_id)
+
+    def withdraw_waiting(self, oid: ObjectId) -> bool:
+        """Take the launch `oid` out of its factory's queue (Optio.cancel of
+        its `scheduled` record): its launch_process returns without running.
+        It held no slot, so it frees none. Returns whether it was waiting;
+        one already handed a slot is not, and finds at its start that its
+        record is no longer `scheduled` (_execute_process)."""
+        found = False
+        for factory_id, slots in list(self._factory_slots.items()):
+            for waiter in [w for w in slots.waiting if w[0] == oid]:
+                slots.waiting.remove(waiter)
+                if not waiter[1].done():
+                    waiter[1].set_result(False)
+                found = True
+            self._drop_if_idle(factory_id)
+        return found
+
+    def stop_admitting(self) -> None:
+        """Shutdown began: every launch waiting for a slot returns without
+        running, and none is handed one from now on (a launch that would
+        start at once still does, as any launch already under way). The
+        waiting launches' records stay `scheduled`, as any run a restart
+        interrupts: the next init()'s reconcile settles them `failed` (and
+        deletes the ephemeral ones). They hold no cancel entry, so the
+        shutdown's drain never waits for them."""
+        self._admitting = False
+        for factory_id, slots in list(self._factory_slots.items()):
+            while slots.waiting:
+                _oid, fut = slots.waiting.popleft()
+                if not fut.done():
+                    fut.set_result(False)
+            self._drop_if_idle(factory_id)
 
     async def _execute_process(
         self, proc: dict, execute_fn: Callable | None,
@@ -266,12 +441,22 @@ class Executor:
             effective_session_id = (
                 parent_ctx.session_id if parent_ctx is not None else session_id
             )
-            await update_status(
+            # The start is conditional: a cancel may have ended the
+            # `scheduled` record before it (one waiting for its factory's
+            # slot that was handed the slot meanwhile, or any run about to
+            # start). It then does not run: the record keeps what the cancel
+            # wrote (an ephemeral one the cancel deleted), and the caller
+            # frees what it holds. Spec: docs/2026-10-25-factory-results-design.md §3
+            started = await update_status(
                 self._db, self._prefix, oid,
                 ProcessStatus(state="running", running_since=now),
                 log=("event", "State changed to running"),
                 set_fields={"originatingSessionId": effective_session_id},
+                expected_state="scheduled",
             )
+            if not started:
+                final_recorded = True  # this run has no final state to write
+                return ("cancelled", None)
 
             ctx = ProcessContext(
                 process_oid=oid,

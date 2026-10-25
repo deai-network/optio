@@ -4,6 +4,7 @@ launch's values, its process record, and launches with values.
 Spec: docs/2026-10-20-task-factory-design.md §1, §4.
 """
 import asyncio
+import collections
 import dataclasses
 import logging
 import re
@@ -100,12 +101,13 @@ def test_task_factory_fields_are_the_specs():
         "process_id", "name", "parameters", "execute", "description",
         "metadata", "special", "warning", "cancellable", "supports_resume",
         "auto_resume", "ui_widget", "ttl_seconds", "auto_cancel_children",
-        "validate", "name_for", "task_for",
+        "validate", "name_for", "task_for", "max_concurrency",
     ]
     f = TaskFactory(execute=_noop, process_id="f", name="F", parameters=[])
     assert f.metadata == {} and f.cancellable is True and f.ttl_seconds is None
     assert f.supports_resume is False and f.auto_resume is False
     assert f.auto_cancel_children is True and f.validate is None and f.name_for is None
+    assert f.max_concurrency is None
     assert optio_core.TaskFactory is TaskFactory
     assert "TaskFactory" in optio_core.__all__
 
@@ -630,6 +632,12 @@ async def test_sync_refuses_auto_resume_without_supports_resume(mongo_db):
      "Task factory 'fac': auto_resume=True requires supports_resume=True"),
     ({"execute": _noop, "parameters": [{"kind": "oneOf", "id": "mode"}]},
      "Task factory 'fac': parameters: mode: choices must be a non-empty list"),
+    *[
+        ({"execute": _noop, "max_concurrency": bad},
+         "Task factory 'fac': max_concurrency must be a positive integer or None")
+        # A bool is an int in Python: True is refused all the same.
+        for bad in (0, -1, 1.5, True)
+    ],
 ])
 def test_check_factory_raises_the_syncs_refusals(kw, error):
     # The sync's own check of a factory, public: a host can refuse one factory
@@ -644,6 +652,7 @@ def test_check_factory_raises_the_syncs_refusals(kw, error):
     {"execute": _noop},
     {"execute": _noop, "supports_resume": True, "auto_resume": True},
     {"task_for": lambda v, pid: None},
+    {"execute": _noop, "max_concurrency": 1},
 ])
 def test_check_factory_passes_a_factory_the_sync_takes(kw):
     good = TaskFactory(process_id="fac", name="F", parameters=PARAMS, **kw)
@@ -2099,5 +2108,386 @@ async def test_a_plain_launch_ignores_metadata(mongo_db, entry):
         assert seen == [{"module": "m"}]
         rec = await get_process_by_process_id(mongo_db, prefix, "plain")
         assert rec["metadata"] == {"module": "m"}
+    finally:
+        await fw.shutdown()
+
+
+# ---------------------------------------------------------------- the concurrency limit
+# Spec: docs/2026-10-25-factory-results-design.md §3
+
+
+WAITING = "Waiting for a free slot (1 running)"
+
+
+def _gated():
+    """An execute function that records the order in which runs start (by
+    process id) and holds each run until its gate, an asyncio.Event by
+    process id, is set."""
+    started: list[str] = []
+    gates: collections.defaultdict[str, asyncio.Event] = collections.defaultdict(asyncio.Event)
+
+    async def execute(ctx):
+        started.append(ctx.process_id)
+        await gates[ctx.process_id].wait()
+
+    return execute, started, gates
+
+
+async def _waiting(mongo_db, prefix, process_id):
+    """The record of `process_id` if it waits for a free slot: `scheduled`,
+    with the log line saying how many run."""
+    proc = await _state_is(mongo_db, prefix, process_id, "scheduled")
+    if proc is not None and any(e["message"] == WAITING for e in proc["log"]):
+        return proc
+    return None
+
+
+async def _until_started(started, pid):
+    """Wait until the run of `pid` has called its execute function (it is in
+    `started`); its record says `running` from just before."""
+    async def ran():
+        return pid in started
+
+    await _wait_until(ran)
+
+
+async def _launch_running(fw, started):
+    """Launch the factory 'fac' and wait until the launch runs (its execute
+    function, which records it in `started`, called); its record."""
+    outcome = await fw.launch("fac", session_id=None, params=GOOD)
+    assert outcome.ok
+    await _until_started(started, outcome.proc["processId"])
+    return outcome.proc
+
+
+async def _launch_waiting(fw, mongo_db, prefix):
+    """Launch the factory 'fac' and wait until the launch waits for a free
+    slot; its process id."""
+    outcome = await fw.launch("fac", session_id=None, params=GOOD)
+    assert outcome.ok
+    pid = outcome.proc["processId"]
+    await _wait_until(lambda: _waiting(mongo_db, prefix, pid))
+    return pid
+
+
+async def _new_waiting_child(mongo_db, prefix, known):
+    """Wait until a launch of 'fac' whose process id is not in `known` waits
+    for a free slot (one launch_and_wait or launch_and_await_result made);
+    its process id."""
+    fac = await get_process_by_process_id(mongo_db, prefix, "fac")
+
+    async def found():
+        for child in await _children(mongo_db, prefix, fac["_id"]):
+            pid = child["processId"]
+            if pid not in known and await _waiting(mongo_db, prefix, pid):
+                return pid
+        return None
+
+    return await _wait_until(found)
+
+
+async def test_max_concurrency_runs_n_and_queues_the_rest(mongo_db):
+    # Limit 1: one launch runs, the others wait in `scheduled` (one log line
+    # each) and start one at a time, in the order of their launches.
+    prefix = "tf_conc_queue"
+    execute, started, gates = _gated()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600, max_concurrency=1)])
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        b = await _launch_waiting(fw, mongo_db, prefix)
+        c = await _launch_waiting(fw, mongo_db, prefix)
+        # One runs, two wait in `scheduled` (_launch_waiting).
+        assert await _state_is(mongo_db, prefix, a, "running")
+        assert started == [a]
+
+        gates[a].set()
+        await _until_started(started, b)
+        assert await _state_is(mongo_db, prefix, a, "done")
+        assert await _state_is(mongo_db, prefix, b, "running")
+        assert await _state_is(mongo_db, prefix, c, "scheduled")
+        assert started == [a, b]
+
+        gates[b].set()
+        await _until_started(started, c)
+        gates[c].set()
+        done = await _wait_until(lambda: _state_is(mongo_db, prefix, c, "done"))
+        assert started == [a, b, c]
+        assert [e["message"] for e in done["log"]][:3] == [
+            "State changed to scheduled", WAITING, "State changed to running",
+        ]
+    finally:
+        await fw.shutdown()
+
+
+async def test_a_waiting_launch_cancelled_never_runs(mongo_db):
+    # A cancel ends a waiting launch `cancelled` without running it; it held
+    # no slot, so the next waiting one runs once the running one ends.
+    prefix = "tf_conc_cancel"
+    execute, started, gates = _gated()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600, max_concurrency=1)])
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        b = await _launch_waiting(fw, mongo_db, prefix)
+        c = await _launch_waiting(fw, mongo_db, prefix)
+
+        assert (await fw.cancel(b)).ok
+        cancelled = await _state_is(mongo_db, prefix, b, "cancelled")
+        assert cancelled is not None and cancelled["expireAt"] is not None
+
+        gates[a].set()
+        await _until_started(started, c)
+        assert started == [a, c]
+        gates[c].set()
+        await _wait_until(lambda: _state_is(mongo_db, prefix, c, "done"))
+        assert started == [a, c]
+        assert await _state_is(mongo_db, prefix, b, "cancelled")
+    finally:
+        await fw.shutdown()
+
+
+async def test_a_cancel_takes_a_waiting_launch_out_of_the_queue_at_once(mongo_db):
+    # The waiting launch returns at the cancel, not when a slot frees: its
+    # launch_and_wait and launch_and_await_result callers return while the
+    # running launch still holds the slot.
+    from optio_core.exceptions import ResultNotPublished
+
+    prefix = "tf_conc_withdraw"
+    execute, started, gates = _gated()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600, max_concurrency=1)])
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        to_end = asyncio.create_task(fw.launch_and_wait("fac", session_id=None, params=GOOD))
+        b = await _new_waiting_child(mongo_db, prefix, {a})
+        for_result = asyncio.create_task(fw.launch_and_await_result(
+            "fac", session_id=None, params=GOOD,
+        ))
+        c = await _new_waiting_child(mongo_db, prefix, {a, b})
+
+        assert (await fw.cancel(b)).ok
+        assert (await fw.cancel(c)).ok
+        assert await asyncio.wait_for(to_end, timeout=60.0) is None
+        with pytest.raises(ResultNotPublished):
+            await asyncio.wait_for(for_result, timeout=60.0)
+        assert await _state_is(mongo_db, prefix, a, "running")
+        assert started == [a]
+        gates[a].set()
+    finally:
+        await fw.shutdown()
+
+
+async def test_a_cancelled_waiting_ephemeral_launch_is_deleted(mongo_db):
+    # As at the end of a run: the record and its task go.
+    prefix = "tf_conc_eph"
+    execute, started, gates = _gated()
+    fw = await _init(mongo_db, prefix, [_factory(execute, max_concurrency=1)])
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        b = await _launch_waiting(fw, mongo_db, prefix)
+
+        assert (await fw.cancel(b)).ok
+        assert await get_process_by_process_id(mongo_db, prefix, b) is None
+        assert b not in fw._executor._task_registry
+
+        gates[a].set()
+
+        async def a_gone():
+            return await get_process_by_process_id(mongo_db, prefix, a) is None
+
+        await _wait_until(a_gone)
+        # The slot is free: the next launch starts at once.
+        c = (await _launch_running(fw, started))["processId"]
+        assert started == [a, c]
+        gates[c].set()
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("ttl", [3600, None])
+async def test_a_launch_cancelled_as_its_slot_comes_never_runs(mongo_db, monkeypatch, ttl):
+    # The slot is handed to the waiting launch, and a cancel lands before its
+    # start: the start is conditional, so it never runs, its record stays
+    # `cancelled` (an ephemeral one is deleted), and the slot goes on to the
+    # next waiting launch.
+    import optio_core.executor as ex
+
+    prefix = f"tf_conc_race_{ttl}"
+    execute, started, gates = _gated()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=ttl, max_concurrency=1)])
+    starting, may_start = asyncio.Event(), asyncio.Event()
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        b = await _launch_waiting(fw, mongo_db, prefix)
+        c = await _launch_waiting(fw, mongo_db, prefix)
+        b_oid = (await get_process_by_process_id(mongo_db, prefix, b))["_id"]
+        real = ex.update_status
+
+        async def held(db, prefix_, oid, status, *args, **kwargs):
+            # b's start (its `running` write) waits until the cancel landed.
+            if oid == b_oid and status.state == "running":
+                starting.set()
+                await may_start.wait()
+            return await real(db, prefix_, oid, status, *args, **kwargs)
+
+        monkeypatch.setattr(ex, "update_status", held)
+        gates[a].set()
+        await asyncio.wait_for(starting.wait(), timeout=60.0)
+        assert (await fw.cancel(b)).ok
+        may_start.set()
+
+        await _until_started(started, c)
+        assert started == [a, c]
+        rec = await get_process_by_process_id(mongo_db, prefix, b)
+        if ttl is None:
+            assert rec is None
+            assert b not in fw._executor._task_registry
+        else:
+            assert rec["status"]["state"] == "cancelled"
+        gates[c].set()
+    finally:
+        may_start.set()
+        await fw.shutdown()
+
+
+async def test_launch_and_wait_counts_against_the_limit(mongo_db):
+    # Its run takes a slot as a launch's does: it waits for one, and holds it
+    # against a later launch.
+    prefix = "tf_conc_wait"
+    execute, started, gates = _gated()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600, max_concurrency=1)])
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        waiter = asyncio.create_task(
+            fw.launch_and_wait("fac", session_id=None, params=GOOD),
+        )
+        b = await _new_waiting_child(mongo_db, prefix, {a})
+        assert started == [a]
+
+        gates[a].set()
+        await _until_started(started, b)
+        c = await _launch_waiting(fw, mongo_db, prefix)
+        assert not waiter.done()
+
+        gates[b].set()
+        await asyncio.wait_for(waiter, timeout=60.0)
+        await _until_started(started, c)
+        assert started == [a, b, c]
+        gates[c].set()
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("when", ["waiting", "as_its_slot_comes"])
+async def test_a_waiting_launch_whose_caller_is_cancelled_holds_no_slot(mongo_db, when):
+    # The task of a waiting launch_and_wait is cancelled while it waits, or
+    # just after a slot was handed to it: the slot goes on to the next launch.
+    prefix = f"tf_conc_caller_{when}"
+    execute, started, gates = _gated()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600, max_concurrency=1)])
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        waiter = asyncio.create_task(fw.launch_and_wait("fac", session_id=None, params=GOOD))
+        b = await _new_waiting_child(mongo_db, prefix, {a})
+        c = await _launch_waiting(fw, mongo_db, prefix)
+        if when == "waiting":
+            waiter.cancel()
+        else:
+            real = fw._executor._hand_off
+
+            def hand_off(factory_id):
+                # The slot a's end frees goes to b; b's task is cancelled
+                # before it resumes.
+                real(factory_id)
+                if not waiter.cancelling():
+                    waiter.cancel()
+
+            fw._executor._hand_off = hand_off
+
+        gates[a].set()
+        await _until_started(started, c)
+        assert started == [a, c]
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert b not in started
+        gates[c].set()
+    finally:
+        await fw.shutdown()
+
+
+async def test_no_limit_starts_every_launch(mongo_db):
+    prefix = "tf_conc_none"
+    execute, started, gates = _gated()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        b = (await _launch_running(fw, started))["processId"]
+        assert await _state_is(mongo_db, prefix, a, "running")
+        assert await _state_is(mongo_db, prefix, b, "running")
+        assert started == [a, b]
+        gates[a].set()
+        gates[b].set()
+        await _wait_until(lambda: _state_is(mongo_db, prefix, b, "done"))
+    finally:
+        await fw.shutdown()
+
+
+async def test_a_force_cancelled_launch_frees_its_slot(mongo_db):
+    # The slot is freed in the run's own task, whatever ends it.
+    prefix = "tf_conc_force"
+    execute, started, gates = _gated()
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600, max_concurrency=1)])
+    try:
+        a = await _launch_running(fw, started)
+        b = await _launch_waiting(fw, mongo_db, prefix)
+
+        await fw._executor.force_cancel(a["_id"])
+        assert await _state_is(mongo_db, prefix, a["processId"], "failed")
+        await _until_started(started, b)
+        assert started == [a["processId"], b]
+        gates[b].set()
+    finally:
+        await fw.shutdown()
+
+
+async def test_shutdown_ends_the_waiting_launches_without_running_them(mongo_db):
+    # Shutdown waits for no waiting launch (none holds a cancel flag) and
+    # starts none as the running ones end; each waiting caller returns. The
+    # records stay `scheduled` until the next init()'s reconcile, as any run
+    # a restart interrupted.
+    from optio_core.exceptions import ResultNotPublished
+
+    prefix = "tf_conc_shutdown"
+    started: list[str] = []
+
+    async def until_cancelled(ctx):
+        started.append(ctx.process_id)
+        await ctx.cancellation_flag.wait()
+
+    defs = [_factory(until_cancelled, ttl_seconds=3600, max_concurrency=1)]
+    fw = await _init(mongo_db, prefix, defs)
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        b = await _launch_waiting(fw, mongo_db, prefix)
+        for_result = asyncio.create_task(fw.launch_and_await_result(
+            "fac", session_id=None, params=GOOD,
+        ))
+        c = await _new_waiting_child(mongo_db, prefix, {a, b})
+        to_end = asyncio.create_task(fw.launch_and_wait("fac", session_id=None, params=GOOD))
+        d = await _new_waiting_child(mongo_db, prefix, {a, b, c})
+    finally:
+        await fw.shutdown()
+
+    with pytest.raises(ResultNotPublished):
+        await asyncio.wait_for(for_result, timeout=60.0)
+    assert await asyncio.wait_for(to_end, timeout=60.0) is None
+    assert started == [a]
+    assert await _state_is(mongo_db, prefix, a, "cancelled")
+    for pid in (b, c, d):
+        assert await _state_is(mongo_db, prefix, pid, "scheduled")
+
+    fw = await _init(mongo_db, prefix, defs)
+    try:
+        for pid in (b, c, d):
+            rec = await _state_is(mongo_db, prefix, pid, "failed")
+            assert rec["status"]["error"] == "Process was interrupted by server restart"
     finally:
         await fw.shutdown()

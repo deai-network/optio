@@ -210,6 +210,9 @@ await optio_core.cancel(process_id: str) -> CancelOutcome
 # their own children's shutdown. Force-cancel after grace always cascades through
 # the live subtree regardless of the flag. The cancel grace deadline is shared
 # across the subtree — descendants inherit the root cancel's monotonic deadline.
+# A scheduled process ends cancelled at once and never runs (a TaskFactory launch waiting for
+# a free slot leaves its factory's queue; the executor's start is conditional on `scheduled`);
+# an ephemeral one is then deleted, as at the end of a run.
 await optio_core.group_cancel(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None, purge_records: bool = False) -> int             # fire-and-forget; cancels every active process matching the (non-empty) filter, returns how many (persist=True requires block_new_launches=True; purge_records=True also deletes the matching records and their descendants)
 await optio_core.group_cancel_and_wait(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None, purge_records: bool = False) -> int    # blocks until every matching process is terminal (persist=True requires block_new_launches=True)
 async with optio_core.block_launches(launch_filter: dict, *, persist: bool = False, reason: str | None = None): ...   # async CM; rejects matching launches with LaunchBlocked. persist=True writes a Mongo record and the block survives the CM
@@ -329,6 +332,7 @@ class TaskFactory:
     validate: Callable[[dict[str, Any]], str | None] | None = None  # after the fields' checks: a returned message ("<id>: <what>") refuses the values
     name_for: Callable[[dict[str, Any]], str] | None = None        # a launch's name; default `name`
     task_for: Callable[[dict[str, Any], str], TaskInstance] | None = None  # instead of execute: a launch's whole task
+    max_concurrency: int | None = None       # None: every launch starts at once; N (>= 1): at most N run at once in this engine
 ```
 
 - **`execute` or `task_for`:** exactly one (sync raises `ValueError` for both or neither). `task_for(values,
@@ -406,6 +410,21 @@ class TaskFactory:
   factory changed by a re-sync keeps its launches' existing tasks until the next restart, which
   rebuilds them from the new definition. optio-ui shows a resumable kept launch the
   Resume control (never a play button) beside its Remove.
+- **The concurrency limit** (spec `docs/2026-10-25-factory-results-design.md` §3):
+  `max_concurrency=N` (an int >= 1; sync refuses anything else, a bool too: `ValueError("Task
+  factory '<id>': max_concurrency must be a positive integer or None")`) lets at most N launches of
+  the factory run at once in this engine (in memory, not shared between engines); `None` starts
+  every launch at once. Enforced in `Executor.launch_process`, where every start of a launch goes
+  (`launch`, `launch_and_wait`, `launch_and_await_result`, a kept launch's resume): a launch beyond
+  the limit is answered `ok` and waits in `scheduled` (log line `Waiting for a free slot (<n>
+  running)`), and starts when a run of the factory ends, oldest first; the slot is freed in the
+  run's own task, whatever ends it (a force-cancel too). The start is conditional on the record
+  still being `scheduled`: a waiting launch cancelled meanwhile never runs (`cancelled`, an
+  ephemeral one deleted), frees nothing, and leaves the queue at once; a `launch_and_await_result`
+  caller then gets `ResultNotPublished`. `shutdown()` ends the waiting launches without running
+  them (their records stay `scheduled` for the next `init()`'s reconcile: `failed`, "interrupted
+  by server restart"); the drain never waits for them. The limit is read live from the synced
+  factory, so a re-sync's new value applies from the next admission.
 
 ---
 
@@ -710,7 +729,7 @@ Collection: `{prefix}_processes`
 | `order` | int | Sort order among siblings |
 | `cancellable` | bool | Whether cancel is permitted |
 | `adhoc` | bool | True if created via `adhoc_define()` |
-| `ephemeral` | bool | The record is deleted (with its descendants) when its run ends: any terminal state the executor writes, a force-cancel, a start that finds no execute function, the settle of a row that lost its final write (Rule 4). `init()` deletes every ephemeral record a previous session left, in any state (its TaskInstance died with that engine) |
+| `ephemeral` | bool | The record is deleted (with its descendants) when its run ends: any terminal state the executor writes, a force-cancel, a start that finds no execute function, the settle of a row that lost its final write (Rule 4), a cancel while `scheduled`. `init()` deletes every ephemeral record a previous session left, in any state (its TaskInstance died with that engine) |
 | `special` | bool | Marks administrative/special-purpose processes |
 | `warning` | string \| null | Warning text shown before launch |
 | `status` | object | See ProcessStatus sub-document |
@@ -1929,12 +1948,12 @@ All components use `react-i18next`. Required keys:
 - **No Redis mode**: `init()` with `redis_url=None` and no `rpc_server` disables the command surface; use direct Python API calls (`optio.launch()`, etc.) instead.
 - **Progress flushing**: buffered every 100ms; override with `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` env var
 - **Child processes**: stored as MongoDB documents with `parentId`/`rootId`; automatically deleted on parent re-launch and dismiss (`delete_descendants`); each carries its parent's `ttlSeconds`
-- **Ephemeral processes**: deleted from DB (with their descendants) when their run ends: after reaching an end state, after a force-cancel (once its children are force-cancelled), when a launch finds no execute function, and when a lost final write is settled (Rule 4; its active children are force-cancelled first). `init()` first deletes every ephemeral record of its (database, prefix), whatever its state: one a restart interrupted, one whose end did not delete it, one defined and never launched. Its TaskInstance died with the engine that defined it, so it can never run again
+- **Ephemeral processes**: deleted from DB (with their descendants) when their run ends: after reaching an end state, after a force-cancel (once its children are force-cancelled), when a launch finds no execute function, when a lost final write is settled (Rule 4; its active children are force-cancelled first), and when a `scheduled` one is cancelled (it never runs). `init()` first deletes every ephemeral record of its (database, prefix), whatever its state: one a restart interrupted, one whose end did not delete it, one defined and never launched. Its TaskInstance died with the engine that defined it, so it can never run again
 - **Migrations**: run automatically on `init()` via `mongo-quaestor` (PyPI name; legacy `quaestor` import name); migrations live in `packages/optio-core/src/optio_core/migrations/`
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync
 - **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"` (no ephemeral one is left by then: see "Ephemeral processes"), and every `resurrecting` marker is cleared (no resurrect survives an engine restart). On `shutdown(grace_seconds=None)` (None = `cancel_grace_seconds`, default 5.0), tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not unwind within cancellation grace period"` (an ephemeral one is then deleted). Spec: `docs/2026-04-22-process-reconciliation-design.md`
 - **Lost final-state writes**: if MongoDB is unreachable when a process ends, the executor keeps the final state in memory and the supervisor loop retries it (backing off from 1 s to 30 s, no attempt limit) until it lands; the row gets a `"State recorded late: <state> (database was unavailable)"` log entry. `cancel()`, `cancel_and_wait()` and `group_cancel_and_wait()` settle an active row that no task in this engine owns instead of waiting on it (to the queued final state, else `failed` with `error="Process had no running task in this engine; its final state was never recorded"`; an ephemeral row is then deleted). Spec: `docs/2026-10-03-lost-final-state-writes-design.md`
-- **Process writes**: each lifecycle step of a process is one update on its document -- relaunch (reset, `scheduled` and its log line), start (`running`, its log line and `originatingSessionId`), a progress message and its log line, the end (final status, `expireAt`, its log or error line and the `widgetUpstream` clear), dismiss. Log entries keep their own timestamps and order; nothing is buffered. `store.update_status(..., log=, set_fields=)`, `store.update_progress(..., log=)` and `store.relaunch_reset` carry the combined writes. Spec: `docs/2026-10-09-fewer-process-writes-design.md`
+- **Process writes**: each lifecycle step of a process is one update on its document -- relaunch (reset, `scheduled` and its log line), start (`running`, its log line and `originatingSessionId`; conditional on the record still being `scheduled`, else the run does not start), a progress message and its log line, the end (final status, `expireAt`, its log or error line and the `widgetUpstream` clear), dismiss. Log entries keep their own timestamps and order; nothing is buffered. `store.update_status(..., log=, set_fields=, expected_state=)` (returns whether the record matched), `store.update_progress(..., log=)` and `store.relaunch_reset` carry the combined writes. Spec: `docs/2026-10-09-fewer-process-writes-design.md`
 - **Process indexes**: every `init()` ensures six indexes on `{prefix}_processes` (`store.ensure_process_indexes`): `processId`+`_id` desc, `parentId`+`order`, `rootId`+`depth`+`order`, `status.state`, `originatingSessionId`, and the `expireAt` TTL index (`expireAt_ttl`, as migration m004 creates it). It also ensures `store.RESULT_FILE_INDEX` on the default GridFS bucket's `fs.files` (`metadata.kind`+`metadata.prefix`+`metadata.processId`, one per database; `store.ensure_result_file_index`), which the result files' deletions and sweep query. An index that conflicts with an existing one is logged and skipped. A record the TTL monitor evicts leaves its result file to `store.sweep_orphan_results`. A relaunch or dismiss removes `expireAt` (a terminal state sets it again), and a child copies its parent's `ttlSeconds`, so a tree expires with its root. Spec: `docs/2026-10-09-process-indexes-design.md`
 - **Persistent launch blocks**: `block_launches(..., persist=True)` and `group_cancel*(..., block_new_launches=True, persist=True)` write a record to `{prefix}_launch_blocks` (Mongo); records are reloaded into the in-memory block list on every `init()` so the block survives restarts. Removed only by `unblock_launches(launch_filter)` (exact filter match). When set, `reason` is stored on the record and appended to the `LaunchBlocked` exception message (`...; reason={reason}`). Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`
 
