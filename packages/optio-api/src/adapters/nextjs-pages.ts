@@ -252,6 +252,9 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
         ctx, parsed.query, decodeURIComponent(resultMatch[1]), access,
       );
       if (result.status !== 200) {
+        if ('headers' in result) {
+          for (const [name, value] of Object.entries(result.headers)) res.setHeader(name, value);
+        }
         res.status(result.status).json(result.body);
         return;
       }

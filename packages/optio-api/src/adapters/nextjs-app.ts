@@ -275,7 +275,7 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
       if (result.status !== 200) {
         return new Response(JSON.stringify(result.body), {
           status: result.status,
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...('headers' in result ? result.headers : {}) },
         });
       }
       return new Response(Readable.toWeb(result.body) as ReadableStream, {

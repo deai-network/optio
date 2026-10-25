@@ -292,6 +292,7 @@ for (const [name, makeDriver] of drivers) {
       const none = await call('GET', url(mineId));
       expect(none.status).toBe(404);
       expect(none.json).toEqual({ reason: 'no-result', message: expect.any(String) });
+      expect(none.header('cache-control')).toBe('private, no-store');
 
       await storeResult(mineId, PDF);
       const ok = await call('GET', url(mineId));
@@ -302,6 +303,7 @@ for (const [name, makeDriver] of drivers) {
       expect(ok.header('content-disposition')).toBe(`inline; filename="a.pdf"; filename*=UTF-8''a.pdf`);
       expect(ok.header('x-content-type-options')).toBe('nosniff');
       expect(ok.header('content-security-policy')).toBeUndefined();
+      expect(ok.header('cache-control')).toBe('private, no-store');
 
       // An active type renders sandboxed.
       await storeResult(mineId, Buffer.from('<script>1</script>'), 'a.html', 'text/html; charset=utf-8');

@@ -41,6 +41,9 @@ beforeEach(async () => {
 
 const ctx = () => ({ dbOpts: { db } }) as unknown as OptioContext;
 
+// The file and the 404s (a result may come later) stay out of every cache.
+const NOT_CACHED = { 'Cache-Control': 'private, no-store' };
+
 // Not valid UTF-8: the bytes must come back untouched.
 const PDF = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x00, 0xff, 0xfe, 0x0a, 0x80]);
 
@@ -99,6 +102,7 @@ describe('getProcessResult', () => {
       'Content-Length': String(PDF.length),
       'Content-Disposition': `inline; filename="a.pdf"; filename*=UTF-8''a.pdf`,
       'X-Content-Type-Options': 'nosniff',
+      ...NOT_CACHED,
     });
     expect(res.headers).not.toHaveProperty('Content-Security-Policy');
     expect((await readAll(res.body)).equals(PDF)).toBe(true);
@@ -134,8 +138,11 @@ describe('getProcessResult', () => {
 
   // Browsers split a Content-Type on commas and render the last type, so a
   // value is PDF only when it is one media type, exactly application/pdf.
-  it('sandboxes anything that is not exactly one PDF type: a comma-separated list, a longer name', async () => {
-    for (const contentType of ['application/pdf;a=b, text/html', 'application/pdf;a=b, image/svg+xml', 'application/pdfx']) {
+  it('sandboxes anything that is not exactly one PDF type: a comma-separated list, a longer name, a PDF parameter', async () => {
+    for (const contentType of [
+      'application/pdf;a=b, text/html', 'application/pdf;a=b, image/svg+xml', 'application/pdfx',
+      'text/html;x=application/pdf',
+    ]) {
       const id = await insertProcess();
       await storeResult(id, Buffer.from('<script>1</script>'), 'a.pdf', contentType);
       const res: any = await getProcessResult(ctx(), { prefix: PREFIX }, id.toHexString());
@@ -156,7 +163,9 @@ describe('getProcessResult', () => {
   it('answers 404 no-result for a process without a result', async () => {
     const id = await insertProcess();
     const res = await getProcessResult(ctx(), { prefix: PREFIX }, id.toHexString());
-    expect(res).toEqual({ status: 404, body: { reason: 'no-result', message: expect.any(String) } });
+    expect(res).toEqual({
+      status: 404, body: { reason: 'no-result', message: expect.any(String) }, headers: NOT_CACHED,
+    });
   });
 
   it('answers 404 no-result when the result\'s file is gone, not 500', async () => {
@@ -164,13 +173,17 @@ describe('getProcessResult', () => {
     const fileId = await storeResult(id, PDF);
     await new GridFSBucket(db).delete(fileId);
     const res = await getProcessResult(ctx(), { prefix: PREFIX }, id.toHexString());
-    expect(res).toEqual({ status: 404, body: { reason: 'no-result', message: expect.any(String) } });
+    expect(res).toEqual({
+      status: 404, body: { reason: 'no-result', message: expect.any(String) }, headers: NOT_CACHED,
+    });
   });
 
   it('answers 404 not-found for an unknown id, in either form', async () => {
     for (const id of [new ObjectId().toHexString(), 'no-such-process']) {
       const res = await getProcessResult(ctx(), { prefix: PREFIX }, id);
-      expect(res, id).toEqual({ status: 404, body: { reason: 'not-found', message: expect.any(String) } });
+      expect(res, id).toEqual({
+        status: 404, body: { reason: 'not-found', message: expect.any(String) }, headers: NOT_CACHED,
+      });
     }
   });
 
@@ -180,7 +193,9 @@ describe('getProcessResult', () => {
     await col().deleteOne({ _id: id });
     const deps = watchedDeps();
     const res = await getProcessResult(ctx(), { prefix: PREFIX }, id.toHexString(), undefined, deps);
-    expect(res).toEqual({ status: 404, body: { reason: 'not-found', message: expect.any(String) } });
+    expect(res).toEqual({
+      status: 404, body: { reason: 'not-found', message: expect.any(String) }, headers: NOT_CACHED,
+    });
     expect(deps.bucket).not.toHaveBeenCalled();
   });
 
@@ -190,7 +205,9 @@ describe('getProcessResult', () => {
     const access = restricted({ visibility: not(eq('kind', 'data-chat')) });
     const deps = watchedDeps();
     const res = await getProcessResult(ctx(), { prefix: PREFIX }, id.toHexString(), access, deps);
-    expect(res).toEqual({ status: 404, body: { reason: 'not-found', message: expect.any(String) } });
+    expect(res).toEqual({
+      status: 404, body: { reason: 'not-found', message: expect.any(String) }, headers: NOT_CACHED,
+    });
     expect(access.authorize).not.toHaveBeenCalled();
     expect(deps.bucket).not.toHaveBeenCalled();
   });
@@ -201,7 +218,9 @@ describe('getProcessResult', () => {
     const res = await getProcessResult(
       ctx(), { prefix: PREFIX }, id.toHexString(), restricted({ scope: { customerId: 1 } }),
     );
-    expect(res).toEqual({ status: 404, body: { reason: 'not-found', message: expect.any(String) } });
+    expect(res).toEqual({
+      status: 404, body: { reason: 'not-found', message: expect.any(String) }, headers: NOT_CACHED,
+    });
   });
 
   it('asks authorize with action result and the process; 403 when it refuses, without reading GridFS', async () => {

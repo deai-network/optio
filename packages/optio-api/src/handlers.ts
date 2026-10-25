@@ -276,10 +276,14 @@ export async function getProcessConversation(
 
 // --- A task's result file (result-download.ts) ---
 
+const PRIVATE_NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
+
 /**
  * `GET /processes/:id/result`. A 200's `body` is the file's GridFS download
- * stream, for the adapter to pipe out with `headers` (all of them: the last
- * two keep an active type inert, see `resultSafetyHeaders`).
+ * stream, for the adapter to pipe out with `headers` (all of them: the
+ * safety pair keeps an active type inert, see `resultSafetyHeaders`). A 200
+ * and a 404 are never cached: the file is one user's, and a process that has
+ * no result yet may store one later.
  */
 export type ResultDownloadResult =
   | {
@@ -290,10 +294,14 @@ export type ResultDownloadResult =
         'Content-Disposition': string;
         'X-Content-Type-Options': 'nosniff';
         'Content-Security-Policy'?: 'sandbox';
-      };
+      } & typeof PRIVATE_NO_STORE;
       body: Readable;
     }
-  | { status: 404; body: { reason: 'not-found' | 'no-result'; message: string } }
+  | {
+      status: 404;
+      body: { reason: 'not-found' | 'no-result'; message: string };
+      headers: typeof PRIVATE_NO_STORE;
+    }
   | ForbiddenResult;
 
 /**
@@ -316,11 +324,15 @@ export async function getProcessResult(
   if (!gate.ok && gate.status === 403) return FORBIDDEN;
   // Unrestricted access skips gateProcess's lookup; find the document here.
   const doc = gate.ok ? (gate.doc ?? (await findActionTarget(reads, id))) : null;
-  if (!doc) return { status: 404, body: { reason: 'not-found', message: 'No such process.' } };
+  if (!doc) {
+    return { status: 404, body: { reason: 'not-found', message: 'No such process.' }, headers: PRIVATE_NO_STORE };
+  }
   const stored = doc.result as StoredResult | undefined;
   const file = stored?.fileId ? await openResult(deps, db, stored) : null;
   if (!stored || !file) {
-    return { status: 404, body: { reason: 'no-result', message: 'This process has no result.' } };
+    return {
+      status: 404, body: { reason: 'no-result', message: 'This process has no result.' }, headers: PRIVATE_NO_STORE,
+    };
   }
   return {
     status: 200,
@@ -329,6 +341,7 @@ export async function getProcessResult(
       'Content-Length': String(file.length),
       'Content-Disposition': contentDisposition(stored.filename),
       ...resultSafetyHeaders(stored.contentType),
+      ...PRIVATE_NO_STORE,
     },
     body: file.stream,
   };

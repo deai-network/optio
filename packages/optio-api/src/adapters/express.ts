@@ -218,6 +218,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
     }
     const result = await handlers.getProcessResult(ctx, parsed.query, req.params.id, await access(req));
     if (result.status !== 200) {
+      if ('headers' in result) res.set(result.headers);
       res.status(result.status).json(result.body);
       return;
     }

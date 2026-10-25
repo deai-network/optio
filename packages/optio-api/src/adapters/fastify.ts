@@ -685,7 +685,10 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     const result = await handlers.getProcessResult(
       ctx, parsed.query, (request.params as { id: string }).id, await access(request),
     );
-    if (result.status !== 200) return reply.code(result.status).send(result.body);
+    if (result.status !== 200) {
+      if ('headers' in result) reply.headers(result.headers);
+      return reply.code(result.status).send(result.body);
+    }
     return reply.code(200).headers(result.headers).send(result.body);
   });
 
