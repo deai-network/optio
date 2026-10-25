@@ -862,7 +862,7 @@ describe('createListPoller reads only what it sends', () => {
     warning: 1, metadata: 1, depth: 1, supportsResume: 1, hasSavedState: 1,
     supportsResurrect: 1, hasUnsavedWork: 1, resurrecting: 1,
     autoResumeScheduled: 1, browserOpenRequests: 1,
-    taskFactory: 1, parameters: 1, ttlSeconds: 1,
+    taskFactory: 1, parameters: 1, ttlSeconds: 1, result: 1,
   };
 
   /** `db` whose process collection records the options of every find(). */

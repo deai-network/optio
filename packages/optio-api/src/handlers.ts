@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb';
+import type { Readable } from 'node:stream';
 import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import type { OptioContext } from './context.js';
@@ -10,6 +11,10 @@ import {
 import { pruneOrphans } from './visibility.js';
 import { processReads, type ProcessReads } from './process-reads.js';
 import { fetchConversation, type ConversationFetchResult } from './conversation-archive.js';
+import {
+  contentDisposition, GRIDFS_RESULT_DOWNLOAD, openResult, publicResult,
+  type ResultDownloadDeps, type StoredResult,
+} from './result-download.js';
 import type {
   LaunchFailureReason as LaunchFailureReasonType,
   CancelFailureReason as CancelFailureReasonType,
@@ -18,11 +23,13 @@ import type {
   ConversationFailureReason as ConversationFailureReasonType,
 } from 'optio-contracts';
 
-// Fields only the server may see: both upstreams carry innerAuth credentials.
+// Fields only the server may see: both upstreams carry innerAuth credentials;
+// a result's fileId is the GridFS id the result route reads by.
 function stripServerSideFields<T extends Record<string, any>>(
   proc: T,
 ): Omit<T, 'widgetUpstream' | 'controlUpstream'> {
   const { widgetUpstream: _widget, controlUpstream: _control, ...rest } = proc;
+  if (rest.result) return { ...rest, result: publicResult(rest.result) };
   return rest;
 }
 
@@ -265,6 +272,58 @@ export async function getProcessConversation(
   }
   const result = await fetchConversation(db, prefix, doc._id.toString());
   return { ...result, headers: NO_STORE };
+}
+
+// --- A task's result file (result-download.ts) ---
+
+/**
+ * `GET /processes/:id/result`. A 200's `body` is the file's GridFS download
+ * stream, for the adapter to pipe out with `headers`.
+ */
+export type ResultDownloadResult =
+  | {
+      status: 200;
+      headers: { 'Content-Type': string; 'Content-Length': string; 'Content-Disposition': string };
+      body: Readable;
+    }
+  | { status: 404; body: { reason: 'not-found' | 'no-result'; message: string } }
+  | ForbiddenResult;
+
+/**
+ * The result file a task stored (optio-core's `store_result`), streamed from
+ * GridFS. Gated as the 'result' action (scope, visibility: 404 not-found;
+ * authorize: 403). The record is read first and the file only through it, so
+ * a removed or hidden record never serves a leftover file; a record whose file
+ * is gone answers no-result, as one that never had a result.
+ */
+export async function getProcessResult(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,
+  access: Access = UNRESTRICTED,
+  deps: ResultDownloadDeps = GRIDFS_RESULT_DOWNLOAD,
+): Promise<ResultDownloadResult> {
+  const { db, prefix } = resolveDb(ctx.dbOpts, query);
+  const reads = processReads(db, prefix, access.visibility);
+  const gate = await gateProcess(reads, id, access, 'result');
+  if (!gate.ok && gate.status === 403) return FORBIDDEN;
+  // Unrestricted access skips gateProcess's lookup; find the document here.
+  const doc = gate.ok ? (gate.doc ?? (await findActionTarget(reads, id))) : null;
+  if (!doc) return { status: 404, body: { reason: 'not-found', message: 'No such process.' } };
+  const stored = doc.result as StoredResult | undefined;
+  const file = stored?.fileId ? await openResult(deps, db, stored) : null;
+  if (!stored || !file) {
+    return { status: 404, body: { reason: 'no-result', message: 'This process has no result.' } };
+  }
+  return {
+    status: 200,
+    headers: {
+      'Content-Type': stored.contentType,
+      'Content-Length': String(file.length),
+      'Content-Disposition': contentDisposition(stored.filename),
+    },
+    body: file.stream,
+  };
 }
 
 // --- Command handlers ---

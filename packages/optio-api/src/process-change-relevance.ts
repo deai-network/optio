@@ -18,6 +18,8 @@ export const LIST_PROJECTION = {
   autoResumeScheduled: 1, browserOpenRequests: 1,
   // A task factory's record: optio-ui opens its launch form from them.
   taskFactory: 1, parameters: 1, ttlSeconds: 1,
+  // A task's result file; the stream strips its fileId before sending.
+  result: 1,
 } as const;
 
 const LIST_FIELDS: ReadonlySet<string> = new Set(Object.keys(LIST_PROJECTION));

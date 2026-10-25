@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { MongoClient, ObjectId, type Db } from 'mongodb';
+import { GridFSBucket, MongoClient, ObjectId, type Db } from 'mongodb';
 import { registerOptioApi } from '../adapters/fastify.js';
 import type { OptioContext } from '../context.js';
 import type { AuthorizeInput } from '../auth.js';
@@ -105,6 +107,21 @@ async function insertHiddenChat(): Promise<ObjectId> {
   const chat = mk(1, { metadata: { customerId: 1, kind: 'data-chat', ownerId: 'other' } });
   await col().insertOne(chat as any);
   return chat._id;
+}
+
+// Not valid UTF-8: the result route must pass the bytes through untouched.
+const PDF = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x00, 0xff, 0xfe, 0x0a, 0x80]);
+
+/** What optio-core's store_result leaves: the GridFS file, and the record's `result`. */
+async function storeResult(processOid: ObjectId, bytes: Buffer): Promise<void> {
+  const upload = new GridFSBucket(db).openUploadStream('a.pdf', {
+    metadata: { processId: processOid.toHexString(), prefix: PREFIX, name: 'a.pdf', kind: 'result' },
+  });
+  await pipeline(Readable.from([bytes]), upload);
+  await col().updateOne(
+    { _id: processOid },
+    { $set: { result: { fileId: upload.id, filename: 'a.pdf', contentType: 'application/pdf', size: bytes.length } } },
+  );
 }
 
 let otherId: ObjectId;
@@ -284,6 +301,39 @@ describe('fastify adapter with scope + authorize', () => {
     });
     expect(upload.statusCode).toBe(404);
     expect(engine.materializeUpload).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('serves a result file with its own headers; 404s with the reason; 403s what authorize denies', async () => {
+    const app = await buildApp(makeEngine());
+    const url = (id: ObjectId) => `/api/processes/${id}/result?${q}`;
+
+    const none = await app.inject({ method: 'GET', url: url(mineId), headers: as1 });
+    expect(none.statusCode).toBe(404);
+    expect(none.json()).toEqual({ reason: 'no-result', message: expect.any(String) });
+
+    await storeResult(mineId, PDF);
+    const ok = await app.inject({ method: 'GET', url: url(mineId), headers: as1 });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.rawPayload.equals(PDF)).toBe(true);
+    expect(ok.headers['content-type']).toBe('application/pdf');
+    expect(ok.headers['content-length']).toBe(String(PDF.length));
+    expect(ok.headers['content-disposition']).toBe(`inline; filename="a.pdf"; filename*=UTF-8''a.pdf`);
+
+    await storeResult(otherId, PDF);
+    const other = await app.inject({ method: 'GET', url: url(otherId), headers: as1 });
+    expect(other.statusCode).toBe(404);
+    expect(other.json()).toEqual({ reason: 'not-found', message: expect.any(String) });
+
+    const hiddenChatId = await insertHiddenChat();
+    await storeResult(hiddenChatId, PDF);
+    const hidden = await app.inject({ method: 'GET', url: url(hiddenChatId), headers: as1 });
+    expect(hidden.statusCode).toBe(404);
+    expect(hidden.json()).toEqual({ reason: 'not-found', message: expect.any(String) });
+
+    await storeResult(guardedId, PDF);
+    const denied = await app.inject({ method: 'GET', url: url(guardedId), headers: as1 });
+    expect(denied.statusCode).toBe(403);
     await app.close();
   });
 

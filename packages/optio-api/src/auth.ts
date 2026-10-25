@@ -35,6 +35,7 @@ export type ScopeFilter = Record<string, string | number | boolean | null>;
 export type OptioAction =
   | 'launch' | 'cancel' | 'dismiss' | 'resurrect' | 'resync'
   | 'widget' | 'widget-control' | 'widget-upload'
+  | 'result'
   | 'instances';
 
 /** What `authorize` sees of a process. */
@@ -83,7 +84,7 @@ export type VisibilityCallback<TRequest> =
 
 /**
  * Decides what a request may do to a process it can see (actions, widget
- * access, the saved conversation), plus resync and instance discovery;
+ * access, the saved conversation, the result file), plus resync and instance discovery;
  * `false` gives 403. A process the request cannot see is a 404 before
  * `authorize` is asked.
  */

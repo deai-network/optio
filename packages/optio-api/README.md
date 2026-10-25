@@ -158,6 +158,7 @@ All adapters mount the same endpoints under `/api/processes/...`; the instance i
 | GET | `/api/processes/:id/log?database=&prefix=` | Get process log |
 | GET | `/api/processes/:id/tree/log?database=&prefix=` | Get merged subtree log |
 | GET | `/api/processes/:id/conversation?database=&prefix=` | Read a suspended process's saved conversation, proxied from the engine's conversation archive (the engine decrypts). 200 `{ events, capturedAt }`; 403/404/409/500/503 with `{reason, message}` per `ConversationFailureReason` (503 `engine-unavailable`: no engine, unreachable, no answer within 15 s, or a body over 64 MiB). Gated as the `'widget'` action; always `Cache-Control: no-store`. |
+| GET | `/api/processes/:id/result?database=&prefix=` | Download the file a task stored with optio-core's `store_result`, streamed from GridFS. 200 with the file's bytes: `Content-Type` its type, `Content-Length` its size, `Content-Disposition: inline` with an ASCII `filename` and RFC 5987 `filename*`. 404 `{reason, message}`: `no-result` (no result, or its file is gone), `not-found` (no such process, or one the request may not see). Gated as the `'result'` action (403 when `authorize` refuses). |
 | POST | `/api/processes/:id/launch?database=&prefix=` | Forward launch to engine; optional body `{ resume?: boolean, sessionId?: string \| null, params?: Record<string, unknown>, ephemeral?: boolean }` (`params`: a task factory's values; `ephemeral`: overrides the factory's retention of the launch's record). 200 on success (a task factory's launch: the child's record); 400/404/409 with `{reason, message}` per `LaunchFailureReason` (400 `parameters-required` / `invalid-parameters`, 404 `not-found`, 409 the others). |
 | POST | `/api/processes/:id/cancel?database=&prefix=` | Forward cancel to engine. 200 on success; 404/409 per `CancelFailureReason`. |
 | POST | `/api/processes/:id/dismiss?database=&prefix=` | Forward dismiss to engine. 200 on success (body `null` when dismissing deleted the record, an ended factory launch); 404/409 per `DismissFailureReason`. |
@@ -165,6 +166,8 @@ All adapters mount the same endpoints under `/api/processes/...`; the instance i
 | POST | `/api/processes/resync?database=&prefix=` | 202 Accepted; engine handles resync asynchronously. |
 
 Command endpoints do not validate state in this package. The engine owns all command-acceptance rules; the API translates the engine's discriminated-union result into HTTP status + body. See the architectural rule at the top of `AGENTS.md`.
+
+A process with a result carries `result: { filename, contentType, size }` in every response and stream; the GridFS id of its file stays on the server.
 
 ### List Query Parameters
 
@@ -207,11 +210,11 @@ import {
   listProcesses, getProcess, getProcessTree,
   getProcessLog, getProcessTreeLog,
   launchProcess, cancelProcess, dismissProcess, resurrectProcess, resyncProcesses,
-  getProcessConversation,
+  getProcessConversation, getProcessResult, resultQueryOf,
   createListPoller, createTreePoller,
   type ListQuery, type PaginationQuery, type TreeLogQuery,
   type LaunchCommandResult, type CancelCommandResult, type DismissCommandResult,
-  type ResurrectCommandResult, type ConversationResult,
+  type ResurrectCommandResult, type ConversationResult, type ResultDownloadResult,
   type StreamPollerOptions, type TreePollerOptions, type ListPollerHandle,
 } from 'optio-api';
 ```
@@ -227,6 +230,11 @@ are `{ reason, message }` — map these to HTTP responses directly.
 
 `getProcessConversation` returns `{ status, body, headers }`: send `headers`
 (`Cache-Control: no-store`) with the response.
+
+`getProcessResult` answers a 200's `body` as a `Readable` (the GridFS file) with
+`headers` to send; pipe it out yourself, as the built-in adapters do, rather than
+through a ts-rest router (which would replace its `Content-Type`). Check the
+query with `resultQueryOf` first (a malformed one is a 400).
 
 Stream pollers expose a `{ start(), stop() }` handle; call `start()` when the
 client connects and `stop()` when they disconnect.

@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import express from 'express';
 import request from 'supertest';
 import { createMocks } from 'node-mocks-http';
 import { NextRequest } from 'next/server';
-import { MongoClient, ObjectId, type Db } from 'mongodb';
+import { GridFSBucket, MongoClient, ObjectId, type Db } from 'mongodb';
 import { registerOptioApi as registerExpress } from '../adapters/express.js';
 import { createOptioRouteHandlers } from '../adapters/nextjs-app.js';
 import { createOptioHandler } from '../adapters/nextjs-pages.js';
@@ -93,6 +96,21 @@ async function insertHiddenChat(): Promise<ObjectId> {
   return chat._id;
 }
 
+// Not valid UTF-8: the result route must pass the bytes through untouched.
+const PDF = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x00, 0xff, 0xfe, 0x0a, 0x80]);
+
+/** What optio-core's store_result leaves: the GridFS file, and the record's `result`. */
+async function storeResult(processOid: ObjectId, bytes: Buffer): Promise<void> {
+  const upload = new GridFSBucket(db).openUploadStream('a.pdf', {
+    metadata: { processId: processOid.toHexString(), prefix: PREFIX, name: 'a.pdf', kind: 'result' },
+  });
+  await pipeline(Readable.from([bytes]), upload);
+  await col().updateOne(
+    { _id: processOid },
+    { $set: { result: { fileId: upload.id, filename: 'a.pdf', contentType: 'application/pdf', size: bytes.length } } },
+  );
+}
+
 let otherId: ObjectId;
 let mineId: ObjectId;
 let guardedId: ObjectId;
@@ -110,18 +128,41 @@ beforeEach(async () => {
 
 const q = `prefix=${PREFIX}`;
 
-// A uniform driver per adapter: (method, path-with-query, body?) -> { status, json }.
-type Call = (method: 'GET' | 'POST', url: string, body?: unknown) => Promise<{ status: number; json: any }>;
+// A uniform driver per adapter: (method, path-with-query, body?) ->
+// { status, json, bytes, header }. `bytes` is the raw body (the result
+// route's file); `json` its parse when the answer is JSON.
+interface Reply {
+  status: number;
+  json: any;
+  bytes: Buffer;
+  header: (name: string) => string | undefined;
+}
+type Call = (method: 'GET' | 'POST', url: string, body?: unknown) => Promise<Reply>;
+
+const jsonOf = (bytes: Buffer, contentType: string | null | undefined) =>
+  contentType?.includes('json') && bytes.length > 0 ? JSON.parse(bytes.toString('utf8')) : null;
+
+// superagent buffers only text and JSON by itself; collect every body as bytes.
+function collectBytes(res: any, done: (err: Error | null, body: Buffer) => void) {
+  const chunks: Buffer[] = [];
+  res.on('data', (chunk: Buffer) => chunks.push(chunk));
+  res.on('end', () => done(null, Buffer.concat(chunks)));
+}
 
 function expressDriver(engine: any): Call {
   const app = express();
   app.use(express.json());
   registerExpress(app, { ctx: makeCtx(engine), ...hooks() });
   return async (method, url, body) => {
-    const r = method === 'GET'
-      ? await request(app).get(url).set('x-customer', '1')
-      : await request(app).post(url).set('x-customer', '1').send((body ?? {}) as object);
-    return { status: r.status, json: r.body };
+    const pending = method === 'GET'
+      ? request(app).get(url).set('x-customer', '1')
+      : request(app).post(url).set('x-customer', '1').send((body ?? {}) as object);
+    const r = await pending.buffer(true).parse(collectBytes);
+    const bytes = r.body as Buffer;
+    return {
+      status: r.status, bytes, json: jsonOf(bytes, r.headers['content-type']),
+      header: (name) => r.headers[name.toLowerCase()],
+    };
   };
 }
 
@@ -132,8 +173,11 @@ function appRouterDriver(engine: any): Call {
     if (method === 'POST') init.body = JSON.stringify(body ?? {});
     // ts-rest's Next handler reads `nextUrl`: hand it a NextRequest, as Next.js does.
     const res = await (method === 'GET' ? GET : POST)(new NextRequest(`http://localhost${url}`, init as any));
-    const text = await res.text();
-    return { status: res.status, json: text ? JSON.parse(text) : null };
+    const bytes = Buffer.from(await res.arrayBuffer());
+    return {
+      status: res.status, bytes, json: jsonOf(bytes, res.headers.get('content-type')),
+      header: (name) => res.headers.get(name) ?? undefined,
+    };
   };
 }
 
@@ -143,14 +187,19 @@ function pagesDriver(engine: any): Call {
     const u = new URL(`http://localhost${url}`);
     const query: Record<string, unknown> = Object.fromEntries(u.searchParams.entries());
     query['ts-rest'] = u.pathname.split('/').slice(1);
-    const { req, res } = createMocks({
-      method, url, query: query as any, headers: { 'x-customer': '1' }, body: (body ?? {}) as any,
-    });
+    // A real EventEmitter: a piped body (the result file) ends on the
+    // response's `finish`, which the default mock emitter never delivers.
+    const { req, res } = createMocks(
+      { method, url, query: query as any, headers: { 'x-customer': '1' }, body: (body ?? {}) as any },
+      { eventEmitter: EventEmitter },
+    );
     await handler(req as any, res as any);
     const data = res._getData();
     return {
       status: res._getStatusCode(),
       json: typeof data === 'string' ? (data ? JSON.parse(data) : null) : data,
+      bytes: res._getBuffer(),
+      header: (name) => res.getHeader(name) as string | undefined,
     };
   };
 }
@@ -229,6 +278,37 @@ for (const [name, makeDriver] of drivers) {
 
       expect((await call('POST', `/api/processes/${hiddenChatId}/cancel?${q}`)).status).toBe(404);
       expect(engine.cancel).not.toHaveBeenCalled();
+    });
+
+    it('serves a result file with its own headers; 404s with the reason; 403s what authorize denies', async () => {
+      const call = makeDriver(makeEngine());
+      const url = (id: ObjectId) => `/api/processes/${id}/result?${q}`;
+
+      const none = await call('GET', url(mineId));
+      expect(none.status).toBe(404);
+      expect(none.json).toEqual({ reason: 'no-result', message: expect.any(String) });
+
+      await storeResult(mineId, PDF);
+      const ok = await call('GET', url(mineId));
+      expect(ok.status).toBe(200);
+      expect(ok.bytes.equals(PDF)).toBe(true);
+      expect(ok.header('content-type')).toBe('application/pdf');
+      expect(ok.header('content-length')).toBe(String(PDF.length));
+      expect(ok.header('content-disposition')).toBe(`inline; filename="a.pdf"; filename*=UTF-8''a.pdf`);
+
+      await storeResult(otherId, PDF);
+      const other = await call('GET', url(otherId));
+      expect(other.status).toBe(404);
+      expect(other.json).toEqual({ reason: 'not-found', message: expect.any(String) });
+
+      const hiddenChatId = await insertHiddenChat();
+      await storeResult(hiddenChatId, PDF);
+      const hidden = await call('GET', url(hiddenChatId));
+      expect(hidden.status).toBe(404);
+      expect(hidden.json).toEqual({ reason: 'not-found', message: expect.any(String) });
+
+      await storeResult(guardedId, PDF);
+      expect((await call('GET', url(guardedId))).status).toBe(403);
     });
   });
 }

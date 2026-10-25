@@ -1042,13 +1042,19 @@ When N projects need the same code — especially interface, contract, or wire-f
 ```typescript
 // Handlers (framework-agnostic)
 export { listProcesses, getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
-         getProcessConversation,
+         getProcessConversation, getProcessResult,
          launchProcess, cancelProcess, dismissProcess, resurrectProcess,
          resyncProcesses } from 'optio-api';
 export type { ListQuery, PaginationQuery, TreeLogQuery,
               LaunchCommandResult, CancelCommandResult, DismissCommandResult,
               ResurrectCommandResult, ResyncCommandResult, ForbiddenResult,
-              ConversationResult } from 'optio-api';
+              ConversationResult, ResultDownloadResult } from 'optio-api';
+
+// A task's result file (for custom adapters): resultQueryOf checks the route's query with
+// the contract's schema (the adapters serve it outside ts-rest); contentDisposition builds
+// the header; GRIDFS_RESULT_DOWNLOAD is getProcessResult's default GridFS dependency.
+export { resultQueryOf, contentDisposition, GRIDFS_RESULT_DOWNLOAD,
+         type ResultDownloadDeps, type ResultQueryResult } from 'optio-api';
 
 // Authentication + per-request access (for custom adapters). checkAuth(req, authenticate, isWrite)
 // -> null | { status: 401 | 403, body }; accessFor / resolveAccess build the request's Access from
@@ -1181,7 +1187,7 @@ interface ExplicitOptioApiOptions {
 // matches it (a child lacking the keys is judged by its root). Applied to
 // every process lookup: lists and list/session-events streams (ANDed into the
 // query), single-process reads and tree streams, launch/cancel/dismiss/resurrect,
-// the widget proxy, widget-control and widget-upload. Outside the scope a process
+// the result file, the widget proxy, widget-control and widget-upload. Outside the scope a process
 // behaves as not found (404; missing in multi-tree resolution). A scoped
 // resync runs with the client's flat filter plus the scope keys; a filter
 // contradicting the scope is 403, a predicate tree 400. Resync is unaffected
@@ -1193,8 +1199,9 @@ interface ExplicitOptioApiOptions {
 // authorize(req, { role, action, process?, metadataFilter?, clean? }) -> boolean:
 // called only after a process is confirmed in scope and (where checked) visible —
 // a process the request cannot see is a 404 before authorize is asked, not a 403.
-// Runs for launch/cancel/dismiss/resurrect/resync, the three widget routes and
-// instance discovery; false gives 403 { message: 'Forbidden' }. action 'resurrect'
+// Runs for launch/cancel/dismiss/resurrect/resync, the three widget routes, the
+// result file (action 'result', a read: a viewer reaches it) and instance discovery;
+// false gives 403 { message: 'Forbidden' }. action 'resurrect'
 // is a single-process action like 'launch' (input.process set). OptioAction has no
 // 'read' member: it was declared but never passed to authorize.
 //
@@ -1240,7 +1247,10 @@ registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): OptioContext | vo
 // Explicit form (caller passed ctx): returns void; caller owns ctx lifecycle.
 // Single entry point for the Fastify integration. Registers:
 //   - The authenticate onRequest hook (app-wide, see OptioApiOptions above)
-//   - REST endpoints from processesContract under /api/processes/... (?database=&prefix=)
+//   - REST endpoints from processesContract under /api/processes/... (?database=&prefix=);
+//     GET /api/processes/:id/result (a task's result file) as a raw route, as in every
+//     adapter (the Next ones match it before ts-rest): ts-rest would send the contract's
+//     application/octet-stream in place of the file's own Content-Type
 //   - SSE endpoints GET /api/processes/:id/tree/stream, GET /api/processes/stream,
 //     GET /api/processes/tree/multi/stream and GET /api/session-events/stream
 //   - Instance discovery GET /api/optio/instances (only instances of opts.prefix when set)
@@ -1277,6 +1287,14 @@ async function getProcessTree(ctx: OptioContext, query: InstanceQuery & { maxDep
 async function getProcessLog(ctx: OptioContext, query: PaginationQuery & InstanceQuery, id: string, access?: Access): Promise<PaginatedResponse<LogEntry> | null>
 async function getProcessTreeLog(ctx: OptioContext, query: TreeLogQuery & InstanceQuery, id: string, access?: Access): Promise<PaginatedResponse | null>
 async function getProcessConversation(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<ConversationResult>
+async function getProcessResult(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access,
+                                deps?: ResultDownloadDeps): Promise<ResultDownloadResult>
+// GET /processes/:id/result: the file of optio-core's store_result, from GridFS (default bucket).
+// 200 { headers: Content-Type (the record's), Content-Length, Content-Disposition (inline; an
+// ASCII filename with ", \, ;, % and non-ASCII as _; RFC 5987 filename*), body: Readable };
+// 404 { reason: 'no-result' } (no result, or its file is gone) | { reason: 'not-found' } (no such
+// record, out of scope or hidden; the record is read first, so a removed one never serves a
+// leftover file); 403 when authorize refuses 'result'.
 async function launchProcess(ctx: OptioContext, query: InstanceQuery, id: string, resume = false,
                              sessionId: string | null = null, access?: Access,
                              params?: Record<string, unknown>): Promise<LaunchCommandResult>
@@ -1379,9 +1397,14 @@ factory's launch form from them. The list stream reads them (`LIST_PROJECTION`);
 `taskFactory` and `parameters` are in every stream's snapshot fingerprint, so a resync that changes
 only a factory's definition is sent again.
 
+All three also carry `result` (a task's result file, `{ filename, contentType, size }`; absent when
+there is none), read by `LIST_PROJECTION` and in every stream's snapshot fingerprint.
+
 `widgetData` is included in tree-stream payloads and tracked in the snapshot fingerprint so
 worker-side mutations trigger SSE events. The list stream does **not** include `widgetData`.
-`widgetUpstream` and `controlUpstream` are never present in any client-facing payload.
+`widgetUpstream` and `controlUpstream` are never present in any client-facing payload, nor is a
+result's GridFS `fileId`: REST answers drop it in `stripServerSideFields`, the streams send
+`result` through `publicResult`.
 
 ---
 

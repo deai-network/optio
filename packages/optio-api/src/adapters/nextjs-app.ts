@@ -13,6 +13,8 @@ import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { Readable } from 'node:stream';
+import { resultQueryOf } from '../result-download.js';
 import {
   accessFor, checkAuth, hasAccessHooks, UNRESTRICTED,
   type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback, type VisibilityCallback,
@@ -242,6 +244,33 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
         },
+      });
+    }
+
+    // A task's result file: /api/processes/<id>/result, before ts-rest, which
+    // would send the contract's application/octet-stream instead of the
+    // file's own Content-Type.
+    const resultMatch = pathname.match(/^\/api\/processes\/([^/]+)\/result$/);
+    if (resultMatch) {
+      const parsed = resultQueryOf(Object.fromEntries(url.searchParams.entries()));
+      if (!parsed.ok) {
+        return new Response(JSON.stringify(parsed.body), {
+          status: parsed.status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const result = await handlers.getProcessResult(
+        ctx, parsed.query, decodeURIComponent(resultMatch[1]), access,
+      );
+      if (result.status !== 200) {
+        return new Response(JSON.stringify(result.body), {
+          status: result.status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(Readable.toWeb(result.body) as ReadableStream, {
+        status: 200,
+        headers: result.headers,
       });
     }
 

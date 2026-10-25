@@ -37,6 +37,7 @@ import {
 import { createOptioContext, type OptioContext } from '../context.js';
 import { forwardAgentInput } from '../agent-input.js';
 import { forwardUpload } from '../upload-forward.js';
+import { resultQueryOf } from '../result-download.js';
 import { resolveOptioEngine } from '../resolve.js';
 import { GridFSBucket } from 'mongodb';
 import fastifyMultipart from '@fastify/multipart';
@@ -670,6 +671,18 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       reply.code(result.status).send(result.body);
     },
   );
+
+  // A task's result file, outside ts-rest: ts-rest would replace the file's
+  // own Content-Type with the contract's application/octet-stream.
+  app.get('/api/processes/:id/result', async (request: any, reply: any) => {
+    const parsed = resultQueryOf((request.query as Record<string, unknown>) ?? {});
+    if (!parsed.ok) return reply.code(parsed.status).send(parsed.body);
+    const result = await handlers.getProcessResult(
+      ctx, parsed.query, (request.params as { id: string }).id, await access(request),
+    );
+    if (result.status !== 200) return reply.code(result.status).send(result.body);
+    return reply.code(200).headers(result.headers).send(result.body);
+  });
 
   app.get('/api/processes/:id/tree/stream', async (request: any, reply: any) => {
     const { id } = request.params as { id: string };

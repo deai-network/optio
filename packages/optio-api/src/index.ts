@@ -6,6 +6,7 @@ export {
   getProcessLog,
   getProcessTreeLog,
   getProcessConversation,
+  getProcessResult,
   launchProcess,
   cancelProcess,
   dismissProcess,
@@ -21,7 +22,17 @@ export {
   type ResyncCommandResult,
   type ForbiddenResult,
   type ConversationResult,
+  type ResultDownloadResult,
 } from './handlers.js';
+
+// A task's result file (GridFS; for custom adapters)
+export {
+  resultQueryOf,
+  contentDisposition,
+  GRIDFS_RESULT_DOWNLOAD,
+  type ResultDownloadDeps,
+  type ResultQueryResult,
+} from './result-download.js';
 
 // Conversation archive proxy (read a suspended process's record; for custom adapters)
 export {

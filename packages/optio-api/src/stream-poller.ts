@@ -9,6 +9,7 @@ import {
   LIST_PROJECTION, listRelevant, treeRelevant, sessionRelevant, type ProcessChange,
 } from './process-change-relevance.js';
 import { getProcessChangeHub, type HubSubscriber, type ProcessChangeHub } from './process-change-hub.js';
+import { publicResult } from './result-download.js';
 
 export interface StreamPollerOptions {
   db: Db;
@@ -130,6 +131,7 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
         taskFactory: p.taskFactory ?? false,
         parameters: p.parameters,
         ttlSeconds: p.ttlSeconds,
+        result: publicResult(p.result),
       })),
     );
 
@@ -158,6 +160,8 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
           taskFactory: p.taskFactory ?? false,
           parameters: p.parameters,
           ttlSeconds: p.ttlSeconds,
+          // A task's result file, without its GridFS fileId (optio's own).
+          result: publicResult(p.result),
         })),
       });
     }
@@ -185,6 +189,7 @@ function treeSnapshotOf(p: any) {
     taskFactory: p.taskFactory ?? false,
     parameters: p.parameters,
     ttlSeconds: p.ttlSeconds,
+    result: publicResult(p.result),
   };
 }
 
@@ -217,6 +222,8 @@ function treeUpdateOf(p: any) {
     taskFactory: p.taskFactory ?? false,
     parameters: p.parameters,
     ttlSeconds: p.ttlSeconds,
+    // A task's result file, without its GridFS fileId (optio's own).
+    result: publicResult(p.result),
   };
 }
 

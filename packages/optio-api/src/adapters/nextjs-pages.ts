@@ -14,6 +14,7 @@ import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { pipeline } from 'node:stream/promises';
 import {
   accessFor, checkAuth, hasAccessHooks, UNRESTRICTED,
   type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback, type VisibilityCallback,
@@ -21,6 +22,7 @@ import {
 import { gateInstances, inScope } from '../access-scope.js';
 import { processReads } from '../process-reads.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
+import { resultQueryOf } from '../result-download.js';
 import {
   detectLegacyMetadataParams,
   formatLegacyMetadataMessage,
@@ -97,6 +99,10 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
+    // Never reached: `handler` below serves the result route before ts-rest.
+    // Listed because @ts-rest/next, matching a request, recurses without end
+    // into a contract route that has no implementation.
+    getResult: async () => ({ status: 404 as const, body: { reason: 'not-found', message: 'No such process.' } }),
     getTree: async ({ params, query }) => {
       const result = await handlers.getProcessTree(ctx, query, params.id, await currentAccess());
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
@@ -224,6 +230,32 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
 
       poller.start();
       req.on('close', () => poller.stop());
+      return;
+    }
+
+    // A task's result file: /api/processes/<id>/result, before ts-rest, which
+    // would send the contract's application/octet-stream instead of the
+    // file's own Content-Type.
+    const resultMatch = path.match(/^\/api\/processes\/([^/]+)\/result$/);
+    if (resultMatch && method === 'GET') {
+      const parsed = resultQueryOf(req.query as Record<string, unknown>);
+      if (!parsed.ok) {
+        res.status(parsed.status).json(parsed.body);
+        return;
+      }
+      const result = await handlers.getProcessResult(
+        ctx, parsed.query, decodeURIComponent(resultMatch[1]), access,
+      );
+      if (result.status !== 200) {
+        res.status(result.status).json(result.body);
+        return;
+      }
+      res.writeHead(200, result.headers);
+      try {
+        await pipeline(result.body, res);
+      } catch {
+        // The client went away or GridFS failed mid-file; pipeline closed both ends.
+      }
       return;
     }
 

@@ -1,5 +1,6 @@
 // @ts-nocheck — type inference for ts-rest router handlers requires the full
 // monorepo type resolution. The adapter is tested via API integration tests.
+import { pipeline } from 'node:stream/promises';
 import { createExpressEndpoints } from '@ts-rest/express';
 import { initContract } from '@ts-rest/core';
 import { processesContract } from 'optio-contracts';
@@ -21,6 +22,7 @@ import {
 import { findReadableProcess, gateInstances } from '../access-scope.js';
 import { processReads } from '../process-reads.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
+import { resultQueryOf } from '../result-download.js';
 import { createOptioContext, type OptioContext } from '../context.js';
 
 export type OptioApiOptions =
@@ -200,6 +202,27 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
     }
     const instances = await discoverInstances(dbOpts, redis, opts.prefix);
     res.json({ instances });
+  });
+
+  // A task's result file, outside ts-rest: ts-rest would pipe it without
+  // tearing the response down when GridFS fails mid-file.
+  app.get('/api/processes/:id/result', async (req: any, res: any) => {
+    const parsed = resultQueryOf((req.query as Record<string, unknown>) ?? {});
+    if (!parsed.ok) {
+      res.status(parsed.status).json(parsed.body);
+      return;
+    }
+    const result = await handlers.getProcessResult(ctx, parsed.query, req.params.id, await access(req));
+    if (result.status !== 200) {
+      res.status(result.status).json(result.body);
+      return;
+    }
+    res.writeHead(200, result.headers);
+    try {
+      await pipeline(result.body, res);
+    } catch {
+      // The client went away or GridFS failed mid-file; pipeline closed both ends.
+    }
   });
 
   // SSE tree stream

@@ -2,14 +2,25 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import {
   getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
-  listProcesses, launchProcess, cancelProcess, dismissProcess, resyncProcesses,
+  listProcesses, launchProcess, cancelProcess, dismissProcess, resurrectProcess, resyncProcesses,
 } from '../handlers.js';
+import { createListPoller, createTreePoller, createMultiTreePoller } from '../stream-poller.js';
 import { createOptioContext } from '../context.js';
 import type { OptioContext } from '../context.js';
 
 const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_handlers';
 const PREFIX = 'test';
+
+/** Poll until `pred` holds; the ceiling only bounds a genuine hang. */
+async function waitUntil(pred: () => boolean, timeoutMs = 60_000, stepMs = 20): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (pred()) return;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  throw new Error('waitUntil: condition not met within timeout');
+}
 
 const fakeRedis: any = { duplicate: () => fakeRedis };
 
@@ -113,6 +124,95 @@ describe('widgetUpstream stripping', () => {
       expect(item).not.toHaveProperty('controlUpstream');
     }
   });
+});
+
+// A task's result: `fileId` is the GridFS id the result route reads by,
+// optio's own. No response and no stream carries it.
+describe('result.fileId stripping', () => {
+  const RESULT = { filename: 'a.pdf', contentType: 'application/pdf', size: 3 };
+  const stored = () => ({ ...RESULT, fileId: new ObjectId() });
+
+  async function insertRoot(extra: Record<string, unknown> = {}): Promise<ObjectId> {
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid, processId: 'r', name: 'R', rootId: oid, parentId: null, depth: 0, order: 0,
+      status: { state: 'done' }, progress: { percent: 100 }, cancellable: false, log: [],
+      ...extra,
+    });
+    return oid;
+  }
+
+  it('getProcess, getProcessTree (children too) and listProcesses answer result without fileId', async () => {
+    const rootId = await insertRoot({ result: stored() });
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: new ObjectId(), processId: 'c', name: 'C', rootId, parentId: rootId, depth: 1, order: 0,
+      status: { state: 'done' }, progress: { percent: 100 }, cancellable: false, log: [],
+      result: stored(),
+    });
+    const id = rootId.toString();
+
+    const got: any = await getProcess(makeCtx(db), { prefix: PREFIX }, id);
+    expect(got.result).toEqual(RESULT);
+
+    const tree: any = await getProcessTree(makeCtx(db), { prefix: PREFIX }, id);
+    expect(tree.result).toEqual(RESULT);
+    expect(tree.children[0].result).toEqual(RESULT);
+
+    const list = await listProcesses(makeCtx(db), { limit: 10, prefix: PREFIX });
+    expect(list.items).toHaveLength(2);
+    for (const item of list.items as any[]) expect(item.result).toEqual(RESULT);
+  });
+
+  it('launch, cancel, dismiss and resurrect replies answer result without fileId', async () => {
+    const reply = (params: any) => ({
+      ok: true,
+      process: {
+        _id: new ObjectId(), processId: params.processId, name: 'P', rootId: new ObjectId(),
+        parentId: null, status: { state: 'done' }, result: stored(),
+      },
+    });
+    const engine = {
+      launch: vi.fn(reply), cancel: vi.fn(reply), dismiss: vi.fn(reply), resurrect: vi.fn(reply),
+    };
+    const ctx = makeCtxWithMockEngine(db, engine);
+    const replies = [
+      await launchProcess(ctx, { prefix: PREFIX }, 'p'),
+      await cancelProcess(ctx, { prefix: PREFIX }, 'p'),
+      await dismissProcess(ctx, { prefix: PREFIX }, 'p'),
+      await resurrectProcess(ctx, { prefix: PREFIX }, 'p'),
+    ];
+    for (const r of replies as any[]) {
+      expect(r.status).toBe(200);
+      expect(r.body.result).toEqual(RESULT);
+    }
+  });
+
+  it.each(['list', 'tree', 'multiTree'] as const)(
+    'the %s stream sends result without fileId, and sends again when only the result changes',
+    async (kind) => {
+      const rootId = await insertRoot();
+      const updates: any[] = [];
+      const sendEvent = (e: any) => { if (e.type === 'update') updates.push(e); };
+      const base = { db, prefix: PREFIX, sendEvent, onError: () => {}, visibility: null };
+      const poller = kind === 'list'
+        ? createListPoller(base)
+        : kind === 'tree'
+          ? createTreePoller({ ...base, rootId: rootId.toString(), baseDepth: 0 })
+          : createMultiTreePoller({ ...base, treeRoots: [{ rootId, baseDepth: 0 }], flatIds: [] });
+      const latest = () => updates.at(-1)?.processes.find((x: any) => x._id === rootId.toString());
+      poller.start();
+      try {
+        await waitUntil(() => latest() !== undefined);
+        expect(latest().result).toBeUndefined();
+        await db.collection(`${PREFIX}_processes`).updateOne({ _id: rootId }, { $set: { result: stored() } });
+        await waitUntil(() => latest()?.result !== undefined);
+        expect(latest().result).toEqual(RESULT);
+      } finally {
+        poller.stop();
+      }
+    },
+    120_000,
+  );
 });
 
 describe('launchProcess — engine RPC', () => {

@@ -2,7 +2,7 @@
 
 ## Architectural rule
 
-**Engine owns all writes.** This package reads MongoDB directly for queries (REST GETs, SSE streams, widget proxy, the conversation-archive proxy) and forwards every mutating operation to the engine via clamator RPC. The API enforces no state machine, no policy, no command-acceptance rules. The engine is the single source of truth for what commands are allowed and what state results.
+**Engine owns all writes.** This package reads MongoDB directly for queries (REST GETs, SSE streams, widget proxy, the conversation-archive proxy, a task's result file in GridFS) and forwards every mutating operation to the engine via clamator RPC. The API enforces no state machine, no policy, no command-acceptance rules. The engine is the single source of truth for what commands are allowed and what state results.
 
 ---
 
@@ -114,7 +114,8 @@ interface OptioApiOptions {
 The `authenticate` callback is invoked on every request to every route across
 all four adapters:
 
-- REST endpoints from `processesContract` under `/api/processes/...`
+- REST endpoints from `processesContract` under `/api/processes/...` (the result file,
+  `GET /api/processes/:id/result`, is served outside ts-rest; see "Result file")
 - SSE streams: `/api/processes/stream` and `/api/processes/:id/tree/stream`; also
   `/api/processes/tree/multi/stream` (Fastify, Next.js Pages Router) and
   `/api/session-events/stream` (Fastify only)
@@ -158,7 +159,7 @@ type VisibilityCallback<TRequest> =
   (req: TRequest) => ProcessMetadataFilter | null | Promise<ProcessMetadataFilter | null>;
 
 type OptioAction = 'launch' | 'cancel' | 'dismiss' | 'resurrect' | 'resync'
-  | 'widget' | 'widget-control' | 'widget-upload' | 'instances';
+  | 'widget' | 'widget-control' | 'widget-upload' | 'result' | 'instances';
 interface ProcessRef { _id: string; processId: string; name: string; parentId?: string; rootId: string; metadata: Record<string, unknown> }
 interface AuthorizeInput {
   role: OptioRole; action: OptioAction;
@@ -172,6 +173,8 @@ type AuthorizeCallback<TRequest> = (req: TRequest, input: AuthorizeInput) => boo
 `'resurrect'` is a single-process action like `'launch'`: `authorize` receives the
 target `process`. `'widget'` also gates `GET /api/processes/:id/conversation` (reading
 a suspended process's conversation record), with the target `process`.
+`'result'` gates `GET /api/processes/:id/result` (a task's result file), with the
+target `process`; it is a read, so a `viewer` reaches it.
 `OptioAction` has no `'read'` member: it was declared but never passed to
 `authorize`; a host that matched on `case 'read':` gets a compile error
 pointing it at `visibility` instead.
@@ -228,6 +231,7 @@ visibility: (req) => or(
 | `GET /api/processes/tree/multi/stream` | reported in `missing` |
 | `POST /api/processes/:id/launch` / `cancel` / `dismiss` / `resurrect` | 404 `{ reason: 'not-found' }`; the engine is not called |
 | `GET /api/processes/:id/conversation` | 404 `{ reason: 'not-found' }`; the engine is not called |
+| `GET /api/processes/:id/result` | 404 `{ reason: 'not-found' }`; GridFS is not read |
 | widget proxy, `widget-control`, `widget-upload` (Fastify) | the route's not-found response |
 | `POST /api/processes/resync` | runs with the client's flat filter plus the scope keys (the engine filters regenerated tasks and pruned records by it); 403 if the filter contradicts the scope, 400 for a predicate-tree filter |
 
@@ -241,9 +245,10 @@ regenerates, and prunes records whose task no longer exists.
 and (where checked) visible: a process the request cannot see is a 404
 *before* `authorize` is asked, not a 403. It runs for launch, cancel, dismiss,
 resurrect, resync, the three widget routes, the conversation read (as
-`'widget'`) and `GET /api/optio/instances`; `false` gives **403**
-`{ message: 'Forbidden' }` (the conversation read: `{ reason: 'forbidden',
-message: 'Forbidden' }`) and the engine is not called.
+`'widget'`), the result file (as `'result'`) and `GET /api/optio/instances`;
+`false` gives **403** `{ message: 'Forbidden' }` (the conversation read:
+`{ reason: 'forbidden', message: 'Forbidden' }`) and the engine is not called
+(the result file: GridFS is not read).
 
 Without any hook behaviour is exactly as before: commands go straight to
 the engine and no extra lookups run. With `scope` only or `authorize` only,
@@ -253,7 +258,8 @@ behaviour is unchanged as well — `visibility` is strictly additive.
 response goes through one choke point, `processReads` (`process-reads.ts`;
 see "One choke point" below) — no handler ANDs the visibility condition
 itself. `gateProcess` — the single-process action gate behind launch, cancel,
-dismiss, resurrect, the three widget routes and the conversation read —
+dismiss, resurrect, the three widget routes, the conversation read and the
+result file —
 checks `access.visibility` right alongside `access.scope`, via an explicit
 `isVisible` check, before `authorize` is asked: a hidden process is a 404
 the same as an out-of-scope one, including when a duplicated `processId`
@@ -442,7 +448,9 @@ const my = new MyClient(ctx.transports.get(database, prefix));
 registers everything below itself.
 
 REST routes: all of `processesContract` under `/api/processes/...` (instance chosen by
-the `?database=&prefix=` query parameters), using `@ts-rest/fastify`.
+the `?database=&prefix=` query parameters), using `@ts-rest/fastify`, except
+`GET /api/processes/:id/result` (a task's result file), a raw route as in every adapter
+(see "Result file").
 
 SSE routes (raw HTTP, not ts-rest), each taking the optional `?database=&prefix=`:
 
@@ -572,9 +580,22 @@ async function getProcessConversation(
 // ConversationResult = ({ status: 200; body: { events: unknown[]; capturedAt: string | null } }
 //   | { status: 403 | 404 | 409 | 500 | 503; body: { reason: ConversationFailureReason; message } })
 //   & { headers: { 'Cache-Control': 'no-store' } }   // adapters must send `headers`
+
+// GET /api/processes/:id/result: a task's result file, streamed from GridFS.
+async function getProcessResult(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,           // either id form
+  access?: Access,
+  deps?: ResultDownloadDeps,  // default GRIDFS_RESULT_DOWNLOAD (result-download.ts)
+): Promise<ResultDownloadResult>
+// ResultDownloadResult =
+//   | { status: 200; headers: { 'Content-Type'; 'Content-Length'; 'Content-Disposition' }; body: Readable }
+//   | { status: 404; body: { reason: 'not-found' | 'no-result'; message } }
+//   | ForbiddenResult
 ```
 
-See "Conversation archive proxy" below.
+See "Conversation archive proxy" and "Result file" below.
 
 The error response body (404/409, and 400 for a launch) for `launchProcess` / `cancelProcess` /
 `dismissProcess` / `resurrectProcess` is `{ reason, message }`, typed via `LaunchErrorBody` / `CancelErrorBody` /
@@ -640,6 +661,39 @@ relays (spec `docs/2026-10-12-suspended-conversation-view-design.md` §3):
   `res.set`, Next Pages `res.setHeader`, Next App ts-rest `responseHeaders`).
 - Nothing on this path logs; the password and the record never reach a log line or
   an error message. No MongoDB writes.
+
+## Result file
+
+`GET /api/processes/:id/result` (contract route `processes.getResult`) streams the
+file a task stored with optio-core's `store_result`: one GridFS file in the default
+`fs` bucket, named on the record as `result: { fileId, filename, contentType, size }`
+(spec `docs/2026-10-25-factory-results-design.md` §1).
+
+- `getProcessResult` (`handlers.ts`): `gateProcess(..., 'result')` (out of scope or
+  hidden: 404 `not-found`; refused: 403 `{ message: 'Forbidden' }`); resolves the
+  record (`findActionTarget`, either id form; missing: 404 `not-found`); then opens its
+  file through `ResultDownloadDeps` (`result-download.ts`; `bucket(db)`, default
+  `GRIDFS_RESULT_DOWNLOAD`). The record is read first and the file only through it, so
+  a removed or hidden record never serves a leftover file (the engine's sweep deletes
+  those later). No `result`, or a `result` whose file is gone: 404 `no-result`.
+- 200: the GridFS download stream with `Content-Type` the record's `contentType`,
+  `Content-Length` the GridFS file's length, and `contentDisposition(filename)`:
+  `inline; filename="<ascii>"; filename*=UTF-8''<percent-encoded>`, where the ASCII
+  fallback has anything outside printable ASCII, and `"`, `\`, `;`, `%`, replaced by
+  `_`, so the header stays one valid line.
+- Every adapter serves it outside ts-rest (Fastify and Express as their own routes, the
+  Next adapters as a raw match before ts-rest): ts-rest would send the contract's
+  `application/octet-stream` in place of the file's own type, and `@ts-rest/express`
+  pipes without closing the response when GridFS fails mid-file. Express and the Pages
+  Router pipe with `pipeline` (a client abort or a GridFS error closes both ends), the
+  App Router answers `Readable.toWeb(body)`, Fastify sends the stream. The query is
+  checked with the contract's own schema (`resultQueryOf`; a malformed one is a 400).
+  The Pages Router's ts-rest router still lists a never-reached `getResult`:
+  `@ts-rest/next` recurses without end into a contract route that has no
+  implementation, which would break every route after it.
+- `result.fileId` is optio's own: `stripServerSideFields` drops it from every REST
+  answer (single reads, lists, trees, command replies), and the streams send `result`
+  through `publicResult` (see "Stream Poller").
 
 ## Types
 
@@ -819,7 +873,10 @@ snapshot and one payload builder (`treeSnapshotOf`, `treeUpdateOf` in `stream-po
 three also carry `ttlSeconds` (how long the record is kept after its run ended, in seconds; a
 factory's is its launches', which optio-ui's launch form reads): every record has it, `null` when
 it has no TTL (spec `docs/2026-10-22-task-factory-launch-options-design.md` §1.3). It is read by
-`LIST_PROJECTION` and part of every snapshot fingerprint.
+`LIST_PROJECTION` and part of every snapshot fingerprint. All three carry `result` too (a task's
+result file, `{ filename, contentType, size }`; absent when there is none), read by
+`LIST_PROJECTION` and part of every snapshot fingerprint, always through `publicResult`
+(`result-download.ts`), which drops its GridFS `fileId`.
 
 `createTreePoller` sends all existing log entries on the first poll, then only deltas. It detects log truncation (e.g. after resync) and emits `log-clear` before new entries.
 
@@ -827,7 +884,7 @@ The `widgetData` field is included in tree-stream `update` events and is part of
 
 `createListPoller` reads only the fields it sends (a projection: no `log`, `widgetData`, `params` or `sessionEvents`), so a poll costs the summary, not the processes' logs.
 
-`widgetUpstream` and `controlUpstream` are **never** included in any client-facing payload (list stream, tree stream, or REST responses): both carry `innerAuth` credentials. REST responses drop them in `stripServerSideFields` (handlers.ts); the streams never select them.
+`widgetUpstream` and `controlUpstream` are **never** included in any client-facing payload (list stream, tree stream, or REST responses): both carry `innerAuth` credentials. REST responses drop them in `stripServerSideFields` (handlers.ts); the streams never select them. A result's `fileId` (the GridFS id the result route reads by) is never included either: `stripServerSideFields` drops it, and the streams, which do read `result`, send it through `publicResult`.
 
 ## Building Custom Adapters
 
