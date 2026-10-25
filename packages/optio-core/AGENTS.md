@@ -410,7 +410,8 @@ deferred migrations) finds one, and the scheduler never gets one.
 `no-resume-support` (so the auto-resume sweep skips it), `resurrect` answers
 `no-resurrect-support`, and `Executor.launch_process` returns None for a `taskFactory` record
 (any direct path). Its own state never changes. A resync that removes the factory cancels its
-running launches, the active records under a stale root (see "Optio.resync").
+running launches, the active records under a stale root, and ends those waiting for a slot,
+`cancelled` without running (see "Optio.resync").
 
 **Checks** (`optio_core.task_factory`):
 
@@ -589,9 +590,15 @@ re-sync's new limit applies from the next admission or end of a run.
 - **Lost-write retries**: `launch_process` drops a final state parked for the row (Rule 3) once
   it finds the row launchable, before the row turns `scheduled`, so `retry_unrecorded_finals`
   never writes an earlier run's state over a waiting launch.
-- A re-sync that removes the factory leaves its launches without a limit: the waiting ones start
-  as slots free and, their task gone with the factory, end `failed` (`No execute function
-  found`).
+- **A re-sync that removes the factory** ends its waiting launches without running them: its
+  stale-cancel (`_cancel_stale_processes`) flags the running ones and, in the same synchronous
+  loop, takes each `scheduled` one that has no cancel entry out of the FIFO
+  (`withdraw_waiting`), so the slot a flagged run frees as it stops is handed to none of them;
+  then it ends them as `cancel` ends a scheduled record (`Optio._cancel_scheduled`, the arm
+  factored out of `cancel`: `cancelled` with `expireAt`, an ephemeral one deleted; no
+  `cancellable` check, as the flags ignore it). One handed its slot before that loop and started
+  since (its conditional write then matches nothing) gets its flag instead. The stale-cancel
+  then waits only for the flagged runs (see "Optio.resync").
 
 **The reserved key.** `metadata.taskFactory` is optio's: only a launch's definition writes it
 (`_factory_child`, through the internal `Optio._adhoc_define`, which keeps it; a launch stamp
@@ -692,10 +699,16 @@ deleted, but first what still runs there is asked to stop: the stale roots in an
 and the active records under every stale root (`store.find_active_descendants`) — not only a
 removed TaskFactory's launches but also a stale task's children, those under a parent with
 `auto_cancel_children=False` included, since each gets its cancellation flag directly
-(`Executor.request_cancel_with_deadline`). The resync waits for all of them to reach a terminal
-state (or disappear) within the same `cancel_grace_seconds`; a record that no task of this engine
-runs never does, so it makes the resync wait the whole grace, after which the stale roots are
-deleted anyway (logged as a warning). Returns `{processId: oid_hex}` of the definitions synced.
+(`Executor.request_cancel_with_deadline`). A `scheduled` one with no cancel entry (no task of
+this engine started it: a TaskFactory launch waiting for its slot, a record left `scheduled`)
+has no flag to set: it is ended at once instead, `cancelled` without running (an ephemeral one
+deleted), as `cancel` ends a scheduled record (`Optio._cancel_scheduled`, without the
+`cancellable` check), after leaving its factory's queue in the same synchronous loop that sets
+the flags (see "TaskFactory", the concurrency limit). The resync waits for all of them to reach a
+terminal state (or disappear) within the same `cancel_grace_seconds`; a record in `running`,
+`cancel_requested` or `cancelling` that no task of this engine runs never does, so it makes the
+resync wait the whole grace, after which the stale roots are deleted anyway (logged as a
+warning). Returns `{processId: oid_hex}` of the definitions synced.
 The executor's task registry then holds the synced tasks, plus the tasks of the launches of
 every factory still synced that can still run (see "Resuming a kept launch").
 

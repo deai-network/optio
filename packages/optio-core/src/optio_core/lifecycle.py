@@ -1065,31 +1065,8 @@ class Optio:
         coll = _collection(self._config.mongo_db, self._config.prefix)
         current_state = proc["status"]["state"]
         if current_state == "scheduled":
-            now = datetime.now(timezone.utc)
-            expire_at = compute_expire_at(proc.get("ttlSeconds"), now=now)
-            new_status = ProcessStatus(state="cancelled", stopped_at=now).to_dict()
-            set_doc: dict = {"status": new_status}
-            if expire_at is not None:
-                set_doc["expireAt"] = expire_at
-            result = await coll.update_one(
-                {"_id": proc["_id"], "status.state": "scheduled"},
-                {"$set": set_doc},
-            )
-            _trace(
-                "CANCEL-TRACE %s: scheduled→cancelled match=%d",
-                process_id, result.modified_count,
-            )
-            if result.modified_count == 0:
+            if not await self._cancel_scheduled(proc):
                 return CancelOutcome(ok=False, reason="not-cancellable")
-            # It never runs: a launch waiting for its factory's slot leaves
-            # the queue (TaskFactory.max_concurrency), and a run about to
-            # start finds the record no longer `scheduled` (the executor's
-            # conditional start). An ephemeral record is deleted, as at the
-            # end of a run. Spec: docs/2026-10-25-factory-results-design.md §3
-            withdrawn = self._executor.withdraw_waiting(proc["_id"])
-            _trace("CANCEL-TRACE %s: withdrawn from a factory's queue=%s", process_id, withdrawn)
-            if proc.get("ephemeral"):
-                await self._executor._cleanup_ephemeral(str(proc["_id"]))
         else:
             result = await coll.update_one(
                 {"_id": proc["_id"], "status.state": {"$in": list(CANCELLABLE_STATES)}},
@@ -1142,6 +1119,43 @@ class Optio:
         # the record read before it stands in.
         post = await self._resolve(str(proc["_id"]))
         return CancelOutcome(ok=True, proc=post if post is not None else proc)
+
+    async def _cancel_scheduled(self, proc: dict) -> bool:
+        """End the `scheduled` record `proc` (its `_id`, `processId`,
+        `ttlSeconds` and `ephemeral` are read) `cancelled`, `expireAt` set
+        from its TTL, only while it is still `scheduled`; returns whether it
+        was. It never runs: a launch waiting for its TaskFactory's slot leaves
+        the queue (Executor.withdraw_waiting), and a run about to start, one
+        handed its slot included, finds the record no longer `scheduled` (the
+        executor's conditional start). An ephemeral record is then deleted,
+        as at the end of a run. No `cancellable` check here: cancel() makes
+        it, a re-sync's stale-cancel does not (_cancel_stale_processes).
+        Spec: docs/2026-10-25-factory-results-design.md §3"""
+        from optio_core.store import _collection
+        coll = _collection(self._config.mongo_db, self._config.prefix)
+        now = datetime.now(timezone.utc)
+        expire_at = compute_expire_at(proc.get("ttlSeconds"), now=now)
+        set_doc: dict = {"status": ProcessStatus(state="cancelled", stopped_at=now).to_dict()}
+        if expire_at is not None:
+            set_doc["expireAt"] = expire_at
+        result = await coll.update_one(
+            {"_id": proc["_id"], "status.state": "scheduled"},
+            {"$set": set_doc},
+        )
+        _trace(
+            "CANCEL-TRACE %s: scheduled→cancelled match=%d",
+            proc.get("processId"), result.modified_count,
+        )
+        if result.modified_count == 0:
+            return False
+        withdrawn = self._executor.withdraw_waiting(proc["_id"])
+        _trace(
+            "CANCEL-TRACE %s: withdrawn from a factory's queue=%s",
+            proc.get("processId"), withdrawn,
+        )
+        if proc.get("ephemeral"):
+            await self._executor._cleanup_ephemeral(str(proc["_id"]))
+        return True
 
     async def cancel_and_wait(self, process_id: str) -> str | None:
         """Cancel and wait until the process reaches a terminal state.
@@ -2105,10 +2119,17 @@ class Optio:
         """Cooperatively cancel stale non-terminal tasks; wait until terminal or grace.
 
         For each (oid, process_id, state) whose state is non-terminal, set the
-        cooperative cancel flag with a deadline. Then poll Mongo until either
-        the record reaches a terminal state (done/failed/cancelled), the
-        record disappears, or `grace_seconds` elapses. On grace timeout, log
-        a warning; the caller (resync) proceeds with deletion regardless.
+        cooperative cancel flag with a deadline. A `scheduled` one that has no
+        flag (no task of this engine started it: a launch waiting for its
+        TaskFactory's slot, one handed its slot but not yet resumed, a record
+        left `scheduled`) is ended instead, as cancel() ends a scheduled
+        record (_cancel_scheduled, without its `cancellable` check, as the
+        flags ignore it): `cancelled` at once, never run, an ephemeral one
+        deleted. Then poll Mongo until either the record reaches a terminal
+        state (done/failed/cancelled), the record disappears, or
+        `grace_seconds` elapses. On grace timeout, log a warning; the caller
+        (resync) proceeds with deletion regardless.
+        Spec: docs/2026-10-25-factory-results-design.md §3
         """
         non_terminal = ACTIVE_STATES
         targets = [(oid, pid) for (oid, pid, st) in stale if st in non_terminal]
@@ -2116,10 +2137,31 @@ class Optio:
             return
 
         deadline = time.monotonic() + grace_seconds
-        for oid, _pid in targets:
-            self._executor.request_cancel_with_deadline(oid, deadline=deadline)
+        unstarted: list[ObjectId] = []
+        for oid, _pid, st in stale:
+            if st not in non_terminal:
+                continue
+            found = self._executor.request_cancel_with_deadline(oid, deadline=deadline)
+            if not found and st == "scheduled":
+                # Out of its factory's queue in this same loop, with no await
+                # since the flags were set: the slot a flagged run frees as it
+                # stops is never handed to it.
+                self._executor.withdraw_waiting(oid)
+                unstarted.append(oid)
 
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        if unstarted:
+            docs = await coll.find(
+                {"_id": {"$in": unstarted}},
+                {"processId": 1, "ttlSeconds": 1, "ephemeral": 1},
+            ).to_list(None)
+            for doc in docs:
+                if not await self._cancel_scheduled(doc):
+                    # No longer scheduled: one handed its slot before the
+                    # loop above has started since (its entry is registered
+                    # before its start), or another writer ended it. A
+                    # started one gets its flag now.
+                    self._executor.request_cancel_with_deadline(doc["_id"], deadline=deadline)
 
         async def _wait_for_terminal(oid: ObjectId) -> bool:
             while time.monotonic() < deadline:

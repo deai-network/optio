@@ -456,7 +456,7 @@ await optio_core.resync(
 ) -> dict[str, str]
 ```
 
-Re-run the task generator and sync definitions with the database. New tasks are created, the root records of tasks no longer generated are deleted, and metadata on existing tasks is updated without disturbing runtime state. Before the deletion, what still runs there is cancelled: an active root and the active processes under it (its children, even under a parent with `auto_cancel_children=False`, or a removed task factory's launches), all waited for within one `cancel_grace_seconds`. Returns a `{processId: oid_hex}` map of the tasks synced.
+Re-run the task generator and sync definitions with the database. New tasks are created, the root records of tasks no longer generated are deleted, and metadata on existing tasks is updated without disturbing runtime state. Before the deletion, what still runs there is cancelled: an active root and the active processes under it (its children, even under a parent with `auto_cancel_children=False`, or a removed task factory's launches), all waited for within one `cancel_grace_seconds`; a `scheduled` one that has not started (a task factory's launch waiting for a free slot) ends `cancelled` at once without running, an ephemeral one deleted. Returns a `{processId: oid_hex}` map of the tasks synced.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

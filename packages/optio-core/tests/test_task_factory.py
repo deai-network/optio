@@ -2229,8 +2229,14 @@ async def test_a_waiting_launch_cancelled_never_runs(mongo_db):
         a = (await _launch_running(fw, started))["processId"]
         b = await _launch_waiting(fw, mongo_db, prefix)
         c = await _launch_waiting(fw, mongo_db, prefix)
+        c_oid = (await get_process_by_process_id(mongo_db, prefix, c))["_id"]
 
         assert (await fw.cancel(b)).ok
+        # It frees nothing: a still holds the only slot, c still waits.
+        slots = fw._executor._factory_slots["fac"]
+        assert slots.running == 1
+        assert [oid for oid, _fut in slots.waiting] == [c_oid]
+        assert started == [a]
         cancelled = await _state_is(mongo_db, prefix, b, "cancelled")
         assert cancelled is not None and cancelled["expireAt"] is not None
 
@@ -2265,6 +2271,9 @@ async def test_a_cancel_takes_a_waiting_launch_out_of_the_queue_at_once(mongo_db
 
         assert (await fw.cancel(b)).ok
         assert (await fw.cancel(c)).ok
+        # Neither held a slot: a still holds the only one, none waits.
+        slots = fw._executor._factory_slots["fac"]
+        assert slots.running == 1 and not slots.waiting
         assert await asyncio.wait_for(to_end, timeout=60.0) is None
         with pytest.raises(ResultNotPublished):
             await asyncio.wait_for(for_result, timeout=60.0)
@@ -2489,5 +2498,54 @@ async def test_shutdown_ends_the_waiting_launches_without_running_them(mongo_db)
         for pid in (b, c, d):
             rec = await _state_is(mongo_db, prefix, pid, "failed")
             assert rec["status"]["error"] == "Process was interrupted by server restart"
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("ttl", [3600, None])
+async def test_a_resync_that_removes_a_factory_cancels_its_waiting_launches(
+    mongo_db, caplog, ttl,
+):
+    # The running launch stops on its stale-cancel flag; the waiting one has
+    # no flag, so it is ended at once, `cancelled` without running (an
+    # ephemeral one deleted), and the slot the running one frees is not
+    # handed to it. The stale-cancel then waits for nothing.
+    prefix = f"tf_conc_resync_{ttl}"
+    started: list[str] = []
+
+    async def until_cancelled(ctx):
+        started.append(ctx.process_id)
+        await ctx.cancellation_flag.wait()
+
+    defs = [_factory(until_cancelled, ttl_seconds=ttl, max_concurrency=1)]
+    # The grace only bounds the wait of a regression; nothing here waits it out.
+    fw = await _init(mongo_db, prefix, defs, cancel_grace_seconds=30.0)
+    try:
+        a = (await _launch_running(fw, started))["processId"]
+        b = await _launch_waiting(fw, mongo_db, prefix)
+
+        defs.clear()
+        with caplog.at_level(logging.WARNING, logger="optio_core_core"):
+            await fw.resync()
+
+        assert not [
+            r for r in caplog.records if "cancel-stale grace exceeded" in r.getMessage()
+        ]
+        assert started == [a]
+        rec = await get_process_by_process_id(mongo_db, prefix, b)
+        if ttl is None:
+            assert rec is None
+            assert b not in fw._executor._task_registry
+        else:
+            assert rec["status"]["state"] == "cancelled"
+            assert rec["expireAt"] is not None
+            assert await _state_is(mongo_db, prefix, a, "cancelled")
+
+        # a's run task ends after its final write: then no slot is held.
+        async def no_slots():
+            return "fac" not in fw._executor._factory_slots
+
+        await _wait_until(no_slots)
+        assert started == [a]
     finally:
         await fw.shutdown()
