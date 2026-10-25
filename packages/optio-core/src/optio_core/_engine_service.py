@@ -77,13 +77,15 @@ def _to_process_dict(doc: dict) -> dict:
 
 def _launch_stamp(metadata: dict | None) -> dict | None:
     """A launch's stamp as optio-api sent it. The generated LaunchParams
-    parses every JSON number as a float (42 arrives as 42.0): a whole one is
-    the int it was; 1.5 stays a float.
+    parses every JSON number as a float (42 arrives as 42.0): a whole one
+    below 2**53 in magnitude is the int it was; 1.5 stays a float, and so
+    does a whole one from 2**53 on (a double no longer holds every int
+    there, and 1e19 as an int would not fit BSON's int64).
     Spec: docs/2026-10-25-factory-results-design.md §2"""
     if metadata is None:
         return None
     return {
-        k: int(v) if isinstance(v, float) and v.is_integer() else v
+        k: int(v) if isinstance(v, float) and v.is_integer() and abs(v) < 2 ** 53 else v
         for k, v in metadata.items()
     }
 

@@ -2,6 +2,7 @@
 
 import re
 
+import bson
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from bson import ObjectId
@@ -171,6 +172,30 @@ async def test_launch_forwards_metadata(fake_optio):
     assert type(forwarded["user"]) is int
     assert type(forwarded["share"]) is float
     assert forwarded["admin"] is True
+
+
+@pytest.mark.asyncio
+async def test_launch_keeps_a_whole_float_from_2_to_the_53_a_float(fake_optio):
+    """A double holds every int below 2**53 exactly, so only a whole float
+    below it is surely the int that was sent; a larger one stays the float it
+    is. As an int, 1e19 would not fit BSON's int64: storing the launch's
+    record would raise.
+    Spec: docs/2026-10-25-factory-results-design.md §2"""
+    from optio_core._engine_service import OptioEngineService
+    below = 2.0 ** 53 - 1
+    stamp = {"big": 1e19, "edge": 2.0 ** 53, "below": below, "negative": -below}
+    svc = OptioEngineService(fake_optio)
+    result = await svc.launch(LaunchParams.model_validate(
+        {"processId": "f", "sessionId": None, "params": {}, "metadata": stamp}
+    ))
+    assert result.root.ok is True
+    forwarded = fake_optio.launch.await_args.kwargs["metadata"]
+    assert type(forwarded["big"]) is float and forwarded["big"] == 1e19
+    assert type(forwarded["edge"]) is float
+    assert type(forwarded["below"]) is int and forwarded["below"] == 2 ** 53 - 1
+    assert type(forwarded["negative"]) is int and forwarded["negative"] == -(2 ** 53 - 1)
+    # The child's metadata, as MongoDB gets it.
+    bson.encode({"metadata": forwarded})
 
 
 @pytest.mark.asyncio
