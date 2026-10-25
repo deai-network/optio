@@ -84,8 +84,17 @@ async def ensure_process_indexes(db: AsyncIOMotorDatabase, prefix: str) -> None:
 
 async def ensure_result_file_index(db: AsyncIOMotorDatabase) -> None:
     """Create RESULT_FILE_INDEX on the default bucket's `fs.files`, as
-    ensure_process_indexes creates its indexes."""
-    await _ensure_indexes(db["fs.files"], [RESULT_FILE_INDEX])
+    ensure_process_indexes creates its indexes, except that no MongoDB error
+    propagates: every OperationFailure is logged as a warning. An app that
+    never stores a result must start without the right to create indexes on
+    fs.files; without the index the result files' queries only scan."""
+    try:
+        await _ensure_indexes(db["fs.files"], [RESULT_FILE_INDEX])
+    except OperationFailure as e:
+        logger.warning(
+            "Index %s not created on fs.files; the result files' queries run without it (%s)",
+            RESULT_FILE_INDEX[0], e.details.get("errmsg") if e.details else e,
+        )
 
 
 async def _ensure_indexes(

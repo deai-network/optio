@@ -9,6 +9,7 @@ import logging
 import time
 
 from bson import ObjectId
+from pymongo.errors import OperationFailure
 
 from optio_core import lifecycle, store
 from optio_core.context import ProcessContext
@@ -228,3 +229,30 @@ async def test_a_conflicting_result_file_index_is_a_warning(mongo_db, caplog):
     indexes = await _index_keys(files)
     assert indexes["my_result_ix"] == RESULT_FILE_INDEX_KEYS
     assert "metadata.kind_1_metadata.prefix_1_metadata.processId_1" not in indexes
+
+
+async def test_init_starts_when_the_result_file_index_cannot_be_created(mongo_db, caplog, monkeypatch):
+    # An app that never stores a result, whose MongoDB user may not create
+    # indexes on fs.files: any refusal there is a warning, not a failed init.
+    real_ensure_indexes = store._ensure_indexes
+
+    async def refusing_fs_files(coll, indexes):
+        if coll.name == "fs.files":
+            raise OperationFailure("not authorized to execute command createIndexes", code=13)
+        await real_ensure_indexes(coll, indexes)
+
+    monkeypatch.setattr(store, "_ensure_indexes", refusing_fs_files)
+    caplog.set_level(logging.WARNING, logger="optio_core.store")
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="sweepnoix")
+    try:
+        warnings = [r for r in caplog.records
+                    if r.name == "optio_core.store" and r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "metadata.kind_1_metadata.prefix_1_metadata.processId_1" in message
+        assert "not authorized" in message
+        # The process indexes are made as always.
+        assert "processId_1__id_-1" in await _index_keys(mongo_db["sweepnoix_processes"])
+    finally:
+        await optio.shutdown()
