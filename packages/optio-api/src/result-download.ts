@@ -73,15 +73,21 @@ export function contentDisposition(filename: string): string {
  * app's origin, next to its session cookie, and `store_result` takes any
  * `content_type`: script in an HTML, SVG or XML result would run as the app.
  * So the browser may not sniff a type into an active one (`nosniff`), and
- * every type but PDF is sandboxed (judged by the media type alone: lowercased,
- * parameters stripped). PDF is left out because a sandboxed document may
- * refuse Chromium's built-in PDF viewer.
+ * every type but PDF is sandboxed. PDF is left out because a sandboxed
+ * document may refuse Chromium's built-in PDF viewer.
+ *
+ * A value is PDF only when the whole of it is one media type, exactly
+ * `application/pdf` (any case), with parameters but no comma: browsers split
+ * a Content-Type on commas and render the last type, so
+ * `application/pdf;a=b, text/html` is HTML to them. A PDF type with a comma
+ * inside a quoted parameter is sandboxed too, the safe direction.
  */
+const SINGLE_PDF_TYPE = /^\s*application\/pdf\s*(;[^,]*)?$/i;
+
 export function resultSafetyHeaders(
   contentType: string,
 ): { 'X-Content-Type-Options': 'nosniff'; 'Content-Security-Policy'?: 'sandbox' } {
-  const mediaType = contentType.split(';', 1)[0].trim().toLowerCase();
-  if (mediaType === 'application/pdf') return { 'X-Content-Type-Options': 'nosniff' };
+  if (SINGLE_PDF_TYPE.test(contentType)) return { 'X-Content-Type-Options': 'nosniff' };
   return { 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' };
 }
 

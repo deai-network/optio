@@ -48,8 +48,9 @@ async with ctx.store_result(filename="Feladat.pdf", content_type="application/pd
 - 200 with the file's bytes, streamed from GridFS: `Content-Type` its `contentType`,
   `Content-Length` its size, `Content-Disposition: inline` with the file name (an ASCII
   fallback `filename=` and RFC 5987 `filename*=UTF-8''…`).
-- Every 200 also carries `X-Content-Type-Options: nosniff`, and every 200 whose media type
-  (lowercased, parameters stripped) is not `application/pdf` carries
+- Every 200 also carries `X-Content-Type-Options: nosniff`, and every 200 whose
+  `contentType` is not exactly one `application/pdf` type (any case, parameters allowed, no
+  comma: browsers split a Content-Type on commas and render the last type) carries
   `Content-Security-Policy: sandbox`. The file renders inline in the host app's origin, next
   to its session cookie, and `store_result` takes any `content_type`: script in an HTML, SVG,
   XHTML or XML result would otherwise run as the app. PDF is left out because a sandboxed

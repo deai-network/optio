@@ -132,6 +132,19 @@ describe('getProcessResult', () => {
     svgRes.body.destroy();
   });
 
+  // Browsers split a Content-Type on commas and render the last type, so a
+  // value is PDF only when it is one media type, exactly application/pdf.
+  it('sandboxes anything that is not exactly one PDF type: a comma-separated list, a longer name', async () => {
+    for (const contentType of ['application/pdf;a=b, text/html', 'application/pdf;a=b, image/svg+xml', 'application/pdfx']) {
+      const id = await insertProcess();
+      await storeResult(id, Buffer.from('<script>1</script>'), 'a.pdf', contentType);
+      const res: any = await getProcessResult(ctx(), { prefix: PREFIX }, id.toHexString());
+      expect(res.headers['Content-Security-Policy'], contentType).toBe('sandbox');
+      expect(res.headers['X-Content-Type-Options'], contentType).toBe('nosniff');
+      res.body.destroy();
+    }
+  });
+
   it('finds the process by its processId too', async () => {
     const id = await insertProcess();
     await storeResult(id, PDF);
