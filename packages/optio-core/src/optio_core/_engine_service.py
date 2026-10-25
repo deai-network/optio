@@ -75,6 +75,19 @@ def _to_process_dict(doc: dict) -> dict:
     return out
 
 
+def _launch_stamp(metadata: dict | None) -> dict | None:
+    """A launch's stamp as optio-api sent it. The generated LaunchParams
+    parses every JSON number as a float (42 arrives as 42.0): a whole one is
+    the int it was; 1.5 stays a float.
+    Spec: docs/2026-10-25-factory-results-design.md §2"""
+    if metadata is None:
+        return None
+    return {
+        k: int(v) if isinstance(v, float) and v.is_integer() else v
+        for k, v in metadata.items()
+    }
+
+
 def _ok_payload(proc: dict | None) -> dict:
     """The payload of an ok outcome: the process, as the wire renders it.
 
@@ -98,12 +111,13 @@ class OptioEngineService(OptioEngineServiceBase):
         outcome = await self._optio.launch(
             params.process_id, resume=bool(params.resume),
             session_id=params.session_id, params=params.params,
-            ephemeral=params.ephemeral,
+            ephemeral=params.ephemeral, metadata=_launch_stamp(params.metadata),
         )
         if not outcome.ok:
             refusal: dict = {"ok": False, "reason": outcome.reason}
             if outcome.message is not None:
-                # An invalid-parameters refusal: "<id>: <what>", unchanged.
+                # An invalid-parameters refusal ("<id>: <what>") or an
+                # invalid-metadata one (the colliding keys), unchanged.
                 refusal["message"] = outcome.message
             return LaunchResult.model_validate(refusal)
         return LaunchResult.model_validate(_ok_payload(outcome.proc))

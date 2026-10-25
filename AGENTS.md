@@ -158,9 +158,9 @@ await optio_core.shutdown(grace_seconds: float | None = None)  # graceful shutdo
 
 # Commands. session_id is keyword-only and required (None is valid): the session that started
 # the run (optio-ui sends its browser session's id), stored as originatingSessionId, read as ctx.session_id.
-await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down, parameters-required, not-a-factory, invalid-parameters)
-await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError, but LaunchBlocked for a launch block)
-await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None, ephemeral: bool | None = None) -> Any
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down, parameters-required, not-a-factory, invalid-parameters, invalid-metadata)
+await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError, but LaunchBlocked for a launch block)
+await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> Any
 # Launches like launch() and returns the object the task passes to ctx.publish_result(obj) while it keeps
 # running. Raises LaunchError(reason, message) on a refused launch, ResultNotPublished when the task ends without
 # publishing, asyncio.TimeoutError on timeout. optio_core.get_published_result(process_id) -> Any | None
@@ -170,7 +170,14 @@ await optio_core.launch_and_await_result(process_id: str, resume: bool = False, 
 # session_id; the outcome's proc is the child's record. Refusals, in this order: shutting-down, not-found,
 # no-resume-support (resume=True), parameters-required (no params), not-launchable (no synced definition),
 # invalid-parameters (LaunchOutcome.message "<id>: <what>": the fields' checks, then the factory's
-# validate), launch-blocked (the child's metadata). params or ephemeral on any other record: not-a-factory.
+# validate), invalid-metadata (below), launch-blocked (the child's metadata). params or ephemeral on any
+# other record: not-a-factory.
+# metadata: the launch's stamp (optio-api's launchMetadata hook; the engine RPC's launch forwards it),
+# merged into the child's metadata, which ctx.metadata reads and the records under the launch inherit. A
+# key the child's metadata has already (the factory's own, or the reserved taskFactory) refuses the
+# launch before anything is defined: invalid-metadata, LaunchOutcome.message "<key>, <key>: already set
+# by the factory (its metadata, or the reserved taskFactory)". Any other launch makes no new record to
+# stamp: there metadata is ignored.
 # ephemeral (None | True | False): whether the launch's record is deleted when its run ends; None follows the
 # factory (ttl_seconds is None), a bool overrides it. "ephemeral" is a reserved parameter id. No child is
 # defined while shutting down (all three entry points). A factory's record never runs itself, and a
@@ -364,7 +371,8 @@ class TaskFactory:
   `adhoc_define(child, parent_id=<record _id>, ephemeral=<the launch's ephemeral, default ttl_seconds is None>)`), process id
   `<factory id>_<8 hex digits>` (a path segment when the factory's id is one, as optio-host wants
   an agent task's), name `name_for(values)` or `name`, `params` the values, metadata
-  the factory's plus `taskFactory: <factory id>`, the factory's other fields, `ttlSeconds` copied
+  the factory's plus `taskFactory: <factory id>` and the launch's stamp (`metadata=`, see
+  `launch`), the factory's other fields, `ttlSeconds` copied
   from the record; launched with the launch's `session_id`. If that launch is refused (a launch
   block or a shutdown since), the child is deleted. Its TaskInstance lives only in memory (as any
   ad-hoc process's; a sync keeps it registered while the factory is synced and the launch can

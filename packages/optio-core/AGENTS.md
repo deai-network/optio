@@ -311,13 +311,14 @@ payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them, and `t
 
 ### Optio.launch / Optio.launch_and_wait
 
-Both methods gain a `resume` keyword argument (default `False`), and `params` and `ephemeral` (a
-TaskFactory's launch values, and whether its launch's record is deleted when its run ends; below):
+Both methods gain a `resume` keyword argument (default `False`), and `params`, `ephemeral` and
+`metadata` (a TaskFactory's launch values, whether its launch's record is deleted when its run
+ends, and the launch's stamp; see "TaskFactory"):
 
 ```python
-await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None) -> LaunchOutcome
-await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None) -> None
-await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None, ephemeral: bool | None = None) -> Any
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> LaunchOutcome
+await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> None
+await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> Any
 ```
 
 When `resume=True`, the executor sets `ctx.resume = True` when the task starts. `launch`
@@ -331,7 +332,8 @@ a TaskFactory's launch, which runs once, unless `resume=True` resumes a kept one
 
 `LaunchOutcome` (`ok`, `reason`, `proc`, `message`): `reason` is one of `not-found`,
 `not-launchable`, `launch-blocked`, `no-resume-support`, `shutting-down`, `parameters-required`,
-`not-a-factory`, `invalid-parameters`; `message` is set for `invalid-parameters` only. On
+`not-a-factory`, `invalid-parameters`, `invalid-metadata`; `message` is set for
+`invalid-parameters` and `invalid-metadata` only (the engine RPC's launch answers it unchanged). On
 `ok=True`, `proc` is the record re-read after the launch, as `cancel`'s `CancelOutcome.proc` is
 after the cancel; an ephemeral record that its run has already deleted by then (a run that
 ended at once, or on the cancel's flag) is answered as read before the action. The engine RPC
@@ -444,14 +446,15 @@ running launches, the active records under a stale root (see "Optio.resync").
   an empty one are one shape, whether a form (optio-ui sends `''` and `[]`) or a program launched
   it. `False` and `0` are values and stay.
 
-**A launch** (`launch(factory_id, session_id=..., params=values, ephemeral=None)`), refusals in this order:
+**A launch** (`launch(factory_id, session_id=..., params=values, ephemeral=None, metadata=None)`), refusals in this order:
 `shutting-down`, `not-found`, `no-resume-support`, `parameters-required`, `not-launchable` (no
-definition synced for the record), `invalid-parameters`, `launch-blocked` (a block matching the
-child's metadata). No child is defined while shutting down, whichever entry point. Then
+definition synced for the record), `invalid-parameters`, `invalid-metadata` (the stamp, below),
+`launch-blocked` (a block matching the child's metadata). No child is defined while shutting
+down, whichever entry point. Then
 `task_factory.child_task(factory, values)` is the child's TaskInstance (with `task_for`, the one
 it returns, see above): the factory's `execute`
 and fields, `params` = the values without the no-values (`without_no_values`), metadata the
-factory's plus `taskFactory: <factory id>`, process id
+factory's plus `taskFactory: <factory id>` (and the launch's stamp, below), process id
 `f"{factory.process_id}:{secrets.token_hex(4)}"`, name `name_for(values)` or `name`.
 It is defined with `adhoc_define(child, parent_id=<factory record _id>,
 ephemeral=<see below>)` (its record copies the factory record's `ttlSeconds`) and
@@ -463,10 +466,26 @@ deleted when its run ends: None (the default) follows the factory (`factory.ttl_
 True or False overrides it (a TTL'd factory's launch may be ephemeral, a TTL-less one's kept; a
 kept one without a TTL stays until a dismiss). `ephemeral` is a reserved parameter id:
 `check_parameters` refuses it (`parameters[i]: id 'ephemeral' is reserved for the launch's own
-flag`). `launch_and_wait` and `launch_and_await_result` take `params` and `ephemeral` the same way;
+flag`). `launch_and_wait` and `launch_and_await_result` take `params`, `ephemeral` and `metadata` the same way;
 their refusals raise `LaunchError` (a launch block in `launch_and_wait`: `LaunchBlocked`), and
 `launch_and_await_result`'s result future is keyed by the child's process id before the child
 starts.
+
+**The launch stamp** (`metadata=`; factory results spec §2). A map of scalars (str, int, float,
+bool, None) that server-side code stamps on one launch, e.g. `{"user": <id>}` from optio-api's
+`launchMetadata` hook; the engine RPC's `launch` forwards `LaunchParams.metadata` (the generated
+model parses a JSON number as a float: `_engine_service._launch_stamp` turns a whole one back
+into an int, `42.0 -> 42`, `1.5` stays). `_factory_child` merges it into the metadata
+`child_task` composed, before the child is defined: the child's metadata is the factory's, the
+stamp and `taskFactory`, which `ctx.metadata` reads and the records under the launch inherit (so
+an app's `visibility`/`authorize` can match it). A stamp key the composed metadata has already
+(the factory's own, with `task_for` the instance's, or the reserved `taskFactory`) never
+overrides it: the launch is refused before anything is defined,
+`LaunchOutcome(ok=False, reason="invalid-metadata", message="kind, taskFactory: already set by
+the factory (its metadata, or the reserved taskFactory)")` (the colliding keys in the stamp's
+order; `LaunchError` from `launch_and_wait` and `launch_and_await_result`). A launch that is no
+factory's (a task's run, a kept launch's resume) makes no new record to stamp: `metadata` is
+ignored there.
 
 **A launch runs once** (spec §1.2). A record whose metadata carries `taskFactory`
 (`task_factory.is_factory_launch`: a launch, e.g. one its factory's `ttl_seconds` keeps, and the
@@ -526,7 +545,8 @@ resume: <why>`). An engine without `get_task_definitions`
 rebuilds and settles nothing. Ephemeral launches are still deleted at `init()`, before.
 
 **The reserved key.** `metadata.taskFactory` is optio's: only a launch's definition writes it
-(`_factory_child`, through the internal `Optio._adhoc_define`, which keeps it). The public
+(`_factory_child`, through the internal `Optio._adhoc_define`, which keeps it; a launch stamp
+with the key is `invalid-metadata`). The public
 `adhoc_define` drops a `taskFactory` key from the task's metadata, for a root and for a child, so
 a process a launch's task defines with its `ctx.metadata` (or `{**ctx.metadata, ...}`) is no
 launch of a factory, and launches. A `run_child` child inherits its parent's metadata as given

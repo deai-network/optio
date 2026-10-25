@@ -15,13 +15,14 @@ class LaunchOutcome:
     deleted by then, its run having ended, is the one read before the
     action); None on failure. A TaskFactory's launch answers its child's
     record. `message` is the refusal's text for "invalid-parameters"
-    ("<id>: <what>"); None otherwise.
+    ("<id>: <what>") and "invalid-metadata" (the colliding stamp keys:
+    "<key>, <key>: <what>"); None otherwise.
     """
     ok: bool
     reason: Literal[
         "not-found", "not-launchable", "launch-blocked", "no-resume-support",
         "shutting-down", "parameters-required", "not-a-factory",
-        "invalid-parameters",
+        "invalid-parameters", "invalid-metadata",
     ] | None = None
     proc: dict[str, Any] | None = None
     message: str | None = None

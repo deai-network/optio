@@ -1995,3 +1995,109 @@ async def test_a_kept_launch_of_an_execute_factory_without_supports_resume_does_
         )
     finally:
         await fw.shutdown()
+
+
+# ---------------------------------------------------------------- the launch stamp
+# Spec: docs/2026-10-25-factory-results-design.md §2
+
+
+ENTRIES = ["launch", "launch_and_wait", "launch_and_await_result"]
+
+
+async def _launch_by(fw, entry, process_id, **kw):
+    """Launch `process_id` by `entry` (one of ENTRIES; launch_and_await_result
+    with the hang ceiling as its timeout)."""
+    if entry == "launch_and_await_result":
+        kw["timeout"] = 60
+    return await getattr(fw, entry)(process_id, session_id=None, **kw)
+
+
+@pytest.mark.parametrize("entry", ENTRIES)
+async def test_a_launch_stamp_reaches_the_childs_metadata(mongo_db, entry):
+    # The stamp joins the factory's metadata and taskFactory on the launch's
+    # record, and the task reads it in ctx.metadata.
+    prefix = f"tf_stamp_{entry}"
+    seen: dict[str, dict] = {}
+
+    async def execute(ctx):
+        seen[ctx.process_id] = ctx.metadata
+        ctx.publish_result("ok")
+
+    fw = await _init(mongo_db, prefix, [_factory(execute, ttl_seconds=3600)])
+    try:
+        stamp = {"user": "u1", "seat": 3, "admin": False, "team": None}
+        await _launch_by(fw, entry, "fac", params=GOOD, metadata=stamp)
+
+        async def ran():
+            return seen
+
+        [(pid, metadata)] = (await _wait_until(ran)).items()
+        assert metadata["user"] == "u1"
+        assert metadata == {"module": "m", **stamp, "taskFactory": "fac"}
+        rec = await get_process_by_process_id(mongo_db, prefix, pid)
+        assert rec["metadata"] == {"module": "m", **stamp, "taskFactory": "fac"}
+    finally:
+        await fw.shutdown()
+
+
+async def test_a_stamp_colliding_with_the_factorys_metadata_is_refused(mongo_db):
+    # A stamp never overrides the factory's metadata nor the reserved
+    # taskFactory: the launch is refused, naming the colliding keys, before
+    # anything is defined or run.
+    prefix = "tf_stamp_clash"
+    execute, seen, _ = _recorder()
+    fw = await _init(mongo_db, prefix, [
+        _factory(execute, metadata={"module": "m", "kind": "print"}),
+    ])
+    try:
+        fac = await get_process_by_process_id(mongo_db, prefix, "fac")
+        reserved = "already set by the factory (its metadata, or the reserved taskFactory)"
+
+        assert await fw.launch(
+            "fac", session_id=None, params=GOOD, metadata={"user": "u1", "kind": "x"},
+        ) == LaunchOutcome(ok=False, reason="invalid-metadata", message=f"kind: {reserved}")
+        assert await fw.launch(
+            "fac", session_id=None, params=GOOD, metadata={"taskFactory": "other"},
+        ) == LaunchOutcome(
+            ok=False, reason="invalid-metadata", message=f"taskFactory: {reserved}",
+        )
+        for entry in ("launch_and_wait", "launch_and_await_result"):
+            with pytest.raises(LaunchError) as exc:
+                await _launch_by(
+                    fw, entry, "fac", params=GOOD,
+                    metadata={"kind": "x", "user": "u1", "taskFactory": "other"},
+                )
+            assert exc.value.reason == "invalid-metadata"
+            assert exc.value.message == f"kind, taskFactory: {reserved}"
+
+        assert await _children(mongo_db, prefix, fac["_id"]) == []
+        assert seen == {}
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("entry", ENTRIES)
+async def test_a_plain_launch_ignores_metadata(mongo_db, entry):
+    # A launch that is no factory's makes no new record to stamp: its
+    # record's metadata stays as it is.
+    prefix = f"tf_stamp_plain_{entry}"
+    seen: list[dict] = []
+
+    async def execute(ctx):
+        seen.append(ctx.metadata)
+        ctx.publish_result("ok")
+
+    task = TaskInstance(
+        execute=execute, process_id="plain", name="Plain", metadata={"module": "m"},
+    )
+    fw = await _init(mongo_db, prefix, [task])
+    try:
+        outcome = await _launch_by(fw, entry, "plain", metadata={"user": "u1"})
+        if entry == "launch":
+            assert outcome.ok
+        await _wait_until(lambda: _state_is(mongo_db, prefix, "plain", "done"))
+        assert seen == [{"module": "m"}]
+        rec = await get_process_by_process_id(mongo_db, prefix, "plain")
+        assert rec["metadata"] == {"module": "m"}
+    finally:
+        await fw.shutdown()

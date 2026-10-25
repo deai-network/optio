@@ -113,7 +113,7 @@ async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
 
     assert result.root.ok is True
     fake_optio.launch.assert_awaited_once_with(
-        hex_id, resume=False, session_id=None, params=None, ephemeral=None,
+        hex_id, resume=False, session_id=None, params=None, ephemeral=None, metadata=None,
     )
 
 
@@ -133,7 +133,7 @@ async def test_launch_success(fake_optio, sample_idle_proc):
     assert result.root.ok is True
     assert result.root.process.process_id == "p1"
     fake_optio.launch.assert_awaited_once_with(
-        "p1", resume=False, session_id=None, params=None, ephemeral=None,
+        "p1", resume=False, session_id=None, params=None, ephemeral=None, metadata=None,
     )
 
 
@@ -146,8 +146,31 @@ async def test_launch_passes_params_through(fake_optio, sample_idle_proc):
     ))
     assert result.root.ok is True
     fake_optio.launch.assert_awaited_once_with(
-        "f", resume=False, session_id=None, params={"n": 3}, ephemeral=None,
+        "f", resume=False, session_id=None, params={"n": 3}, ephemeral=None, metadata=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_launch_forwards_metadata(fake_optio):
+    """A factory launch's stamp reaches Optio.launch. The generated model
+    parses a JSON number as a float: a whole one is the int it was (42, not
+    42.0); 1.5 stays a float, a bool a bool.
+    Spec: docs/2026-10-25-factory-results-design.md §2"""
+    from optio_core._engine_service import OptioEngineService
+    stamp = {"user": 42, "role": "admin", "share": 1.5, "admin": True, "team": None}
+    svc = OptioEngineService(fake_optio)
+    result = await svc.launch(LaunchParams.model_validate(
+        {"processId": "f", "sessionId": None, "params": {"n": 3}, "metadata": stamp}
+    ))
+    assert result.root.ok is True
+    fake_optio.launch.assert_awaited_once_with(
+        "f", resume=False, session_id=None, params={"n": 3}, ephemeral=None, metadata=stamp,
+    )
+    # 42 == 42.0 and True == 1: the types are the point.
+    forwarded = fake_optio.launch.await_args.kwargs["metadata"]
+    assert type(forwarded["user"]) is int
+    assert type(forwarded["share"]) is float
+    assert forwarded["admin"] is True
 
 
 @pytest.mark.asyncio
@@ -179,18 +202,24 @@ async def test_launch_answers_every_reason_optio_core_returns(fake_optio, reason
 
 
 @pytest.mark.asyncio
-async def test_launch_invalid_parameters_carries_the_message(fake_optio):
+@pytest.mark.parametrize("reason,message", [
+    ("invalid-parameters", "n: must be at most 5"),
+    ("invalid-metadata", "kind: already set by the factory (its metadata, or the reserved taskFactory)"),
+])
+async def test_launch_invalid_parameters_or_metadata_carries_the_message(
+    fake_optio, reason, message,
+):
     from optio_core._engine_service import OptioEngineService
     fake_optio.launch = AsyncMock(return_value=LaunchOutcome(
-        ok=False, reason="invalid-parameters", message="n: must be at most 5",
+        ok=False, reason=reason, message=message,
     ))
     svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate(
         {"processId": "f", "sessionId": None, "params": {"n": 9}}
     ))
     assert result.root.ok is False
-    assert result.root.reason == "invalid-parameters"
-    assert result.root.message == "n: must be at most 5"
+    assert result.root.reason == reason
+    assert result.root.message == message
 
 
 @pytest.mark.asyncio
@@ -306,7 +335,7 @@ async def test_launch_passes_ephemeral_through(fake_optio):
     ))
     assert result.root.ok is True
     fake_optio.launch.assert_awaited_once_with(
-        "f", resume=False, session_id=None, params={"n": 3}, ephemeral=True,
+        "f", resume=False, session_id=None, params={"n": 3}, ephemeral=True, metadata=None,
     )
 
 

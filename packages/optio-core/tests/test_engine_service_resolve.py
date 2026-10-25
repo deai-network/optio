@@ -235,6 +235,7 @@ async def test_launch_accepts_object_id_hex_form():
     assert result.root.ok is True
     svc._optio.launch.assert_awaited_once_with(
         str(proc["_id"]), resume=False, session_id=None, params=None, ephemeral=None,
+        metadata=None,
     )
 
 
@@ -253,4 +254,5 @@ async def test_launch_accepts_process_id_string_form():
     assert result.root.ok is True
     svc._optio.launch.assert_awaited_once_with(
         "launch-by-pid", resume=False, session_id=None, params=None, ephemeral=None,
+        metadata=None,
     )

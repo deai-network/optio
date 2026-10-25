@@ -16,7 +16,7 @@ import uuid
 # cancel-propagation races; safe to leave compiled in because each log
 # call is guarded by the module-level flag below.
 _CANCEL_TRACE = _os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager, AsyncExitStack
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
@@ -524,6 +524,7 @@ class Optio:
         self, process_id: str, resume: bool = False, *, session_id: str | None,
         params: dict[str, Any] | None = None,
         ephemeral: bool | None = None,
+        metadata: Mapping[str, str | int | float | bool | None] | None = None,
     ) -> LaunchOutcome:
         """Fire-and-forget launch. Returns LaunchOutcome with a typed reason on
         precondition failure (not-found, not-launchable -- also while a
@@ -541,16 +542,23 @@ class Optio:
         shutting-down and not-found, in this order: no-resume-support
         (`resume`), parameters-required (no `params`), not-launchable (no
         factory definition synced for the record), invalid-parameters (with
-        `message`), launch-blocked; `params` or `ephemeral` on any other
-        record is not-a-factory. The launch's record is deleted when its run
-        ends if `ephemeral` is True (the default for a factory without
-        ttl_seconds; False keeps it, until its TTL or a dismiss). A factory's launch (its child, and the records under
+        `message`), invalid-metadata (with `message`), launch-blocked;
+        `params` or `ephemeral` on any other record is not-a-factory.
+        `metadata` is the launch's stamp (optio-api's launchMetadata hook):
+        merged into the child's metadata; a key the child's metadata has
+        already (the factory's, or the reserved taskFactory) is
+        invalid-metadata, naming the keys. Any other launch makes no new
+        record to stamp: there `metadata` is ignored. The launch's record
+        is deleted when its run ends if `ephemeral` is True (the default
+        for a factory without ttl_seconds; False keeps it, until its TTL or
+        a dismiss). A factory's launch (its child, and the records under
         it) ran once, with its values: launching it again is not-launchable,
         whatever the task registry holds; only `resume` runs a kept one again
         (_relaunch_refusal), its task registered by its launch or rebuilt at
         init() (_rebuild_kept_launches).
         Spec: docs/2026-10-20-task-factory-design.md §1.2,
-        docs/2026-10-22-task-factory-launch-options-design.md §1.5"""
+        docs/2026-10-22-task-factory-launch-options-design.md §1.5,
+        docs/2026-10-25-factory-results-design.md §2"""
         # Stop sign: once shutdown has begun, refuse new launches so nothing
         # half-boots into a shutting-down engine. Covers scheduler, RPC, and
         # programmatic launch paths.
@@ -562,7 +570,7 @@ class Optio:
         if proc.get("taskFactory") or params is not None or ephemeral is not None:
             # A factory's record never runs: its launch is a child's.
             try:
-                child = await self._factory_child(proc, resume, params, ephemeral)
+                child = await self._factory_child(proc, resume, params, ephemeral, metadata)
             except LaunchBlocked:
                 return LaunchOutcome(ok=False, reason="launch-blocked")
             if isinstance(child, LaunchOutcome):
@@ -646,6 +654,7 @@ class Optio:
     async def _factory_child(
         self, proc: dict, resume: bool, params: dict[str, Any] | None,
         ephemeral: bool | None = None,
+        metadata: Mapping[str, str | int | float | bool | None] | None = None,
     ) -> dict | LaunchOutcome:
         """The ad-hoc child (idle) of a factory's record `proc` for one launch
         with `params`, or the launch's refusal, in this order: shutting-down,
@@ -653,10 +662,14 @@ class Optio:
         parameters-required, not-launchable (no factory definition is synced
         for the record), invalid-parameters (the fields' checks, then the
         factory's `validate`, which gets the values without the ones that
-        are no value, as the task does). A launch block on the child's
+        are no value, as the task does), invalid-metadata (keys of the stamp
+        `metadata` that the metadata child_task composed has already: the
+        factory's, or the reserved taskFactory; nothing is defined). The
+        stamp joins the child's metadata. A launch block on the child's
         metadata raises LaunchBlocked (adhoc_define's check). The child is
         ephemeral as `ephemeral` says, by default when the factory has no TTL.
-        Spec: docs/2026-10-20-task-factory-design.md §1.2, §1.4"""
+        Spec: docs/2026-10-20-task-factory-design.md §1.2, §1.4,
+        docs/2026-10-25-factory-results-design.md §2"""
         if self._shutting_down:
             return LaunchOutcome(ok=False, reason="shutting-down")
         if not proc.get("taskFactory"):
@@ -674,8 +687,19 @@ class Optio:
             return LaunchOutcome(ok=False, reason="invalid-parameters", message=message)
         # child_task drops the no-values too. The internal define keeps the
         # reserved metadata.taskFactory key child_task writes.
+        task = child_task(factory, params)
+        if metadata:
+            # The stamp never overrides what the factory set.
+            clash = [key for key in metadata if key in task.metadata]
+            if clash:
+                return LaunchOutcome(
+                    ok=False, reason="invalid-metadata",
+                    message=f"{', '.join(clash)}: already set by the factory "
+                    f"(its metadata, or the reserved taskFactory)",
+                )
+            task = dataclasses.replace(task, metadata={**task.metadata, **metadata})
         return await self._adhoc_define(
-            child_task(factory, params), parent_id=proc["_id"],
+            task, parent_id=proc["_id"],
             ephemeral=factory.ttl_seconds is None if ephemeral is None else ephemeral,
         )
 
@@ -696,6 +720,7 @@ class Optio:
     async def launch_and_wait(
         self, process_id: str, resume: bool = False, *, session_id: str | None,
         params: dict[str, Any] | None = None, ephemeral: bool | None = None,
+        metadata: Mapping[str, str | int | float | bool | None] | None = None,
     ) -> None:
         """Launch and wait for the process to complete. Full progress tracking.
 
@@ -704,7 +729,8 @@ class Optio:
 
         A TaskFactory's record is launched with `params`, as by launch(): the
         launch's child is defined and run to completion; a refusal raises
-        LaunchError(reason, message); `ephemeral` as there. A factory's
+        LaunchError(reason, message); `ephemeral` and `metadata` (the
+        stamp) as there. A factory's
         launch is never launched again (LaunchError(not-launchable)), only
         resumed, as by launch() (LaunchError(<its refusal>) otherwise).
 
@@ -714,7 +740,7 @@ class Optio:
         if proc is not None and (
             proc.get("taskFactory") or params is not None or ephemeral is not None
         ):
-            child = await self._factory_child(proc, resume, params, ephemeral)
+            child = await self._factory_child(proc, resume, params, ephemeral, metadata)
             if isinstance(child, LaunchOutcome):
                 raise LaunchError(process_id, child.reason, child.message)
             await self._executor.launch_process(child["processId"], session_id=session_id)
@@ -732,11 +758,13 @@ class Optio:
         self, process_id: str, resume: bool = False, *,
         session_id: str | None, timeout: float | None = None,
         params: dict[str, Any] | None = None, ephemeral: bool | None = None,
+        metadata: Mapping[str, str | int | float | bool | None] | None = None,
     ) -> Any:
         """Launch like ``launch()`` and wait for the task to call
         ``ctx.publish_result(obj)``; return that object while the task keeps
         running. A TaskFactory's record is launched with `params`, as by
-        launch() (`ephemeral` too), and the result is its launch's.
+        launch() (`ephemeral` and `metadata`, the stamp, too), and the result
+        is its launch's.
 
         Raises LaunchError(reason) when the launch is refused,
         ResultNotPublished when the task ends without publishing, and
@@ -752,7 +780,7 @@ class Optio:
             # The result comes from the launch's child: define it first, so
             # that its future exists before it can publish.
             try:
-                made = await self._factory_child(proc, resume, params, ephemeral)
+                made = await self._factory_child(proc, resume, params, ephemeral, metadata)
             except LaunchBlocked:
                 raise LaunchError(process_id, "launch-blocked") from None
             if isinstance(made, LaunchOutcome):
