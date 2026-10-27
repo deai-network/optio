@@ -9,6 +9,7 @@ import { CodeBlock } from './CodeBlock.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 import { FILE_LINK_CLASS, fileName } from './FileCards.js';
 import { useDarkTheme } from './themeMode.js';
+import { useMermaidConfig } from './mermaidTheme.js';
 
 // The one public seam for rendering an assistant answer (also the compaction
 // summary and task descriptions): pass the markdown text, get it rendered.
@@ -35,10 +36,16 @@ const PURIFY = {
     /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|optio-file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
 };
 
+// A mermaid fence, drawn in the host's antd theme (mermaidTheme.ts): left alone, X's Mermaid
+// draws in mermaid's light default theme, also on a dark host.
+function ThemedMermaid({ children }: { children: string }) {
+  return <Mermaid config={useMermaidConfig()}>{children}</Mermaid>;
+}
+
 function Code({ className, children, block, lang }: ComponentProps) {
   const language = lang ?? className?.match(/language-(\w+)/)?.[1] ?? '';
   if (!block || typeof children !== 'string') return <code className={className}>{children}</code>;
-  if (language === 'mermaid') return <Mermaid>{children}</Mermaid>;
+  if (language === 'mermaid') return <ThemedMermaid>{children}</ThemedMermaid>;
   if (!language) return <code className={className}>{children}</code>;
   return <CodeBlock lang={language}>{children}</CodeBlock>;
 }
