@@ -95,13 +95,31 @@ def _result_error(event: dict) -> str | None:
     return f"the turn ended in an error ({event.get('subtype')})"
 
 
-async def _quietly(step: str, cleanup: Awaitable[object]) -> None:
-    """One cleanup step of a check. A failure is logged, not raised: the
-    model's outcome stands."""
-    try:
-        await cleanup
-    except Exception:  # noqa: BLE001
-        _LOG.warning("gateway check: %s failed", step, exc_info=True)
+async def _cleanup(steps: Sequence[tuple[str, Callable[[], Awaitable[object]]]]) -> None:
+    """A check's cleanup steps, each run in order whatever the others do. A
+    failed step is logged, not raised: the model's outcome stands. A
+    cancellation stops only the step it lands in; the remaining steps still
+    run, and it is raised after the last one."""
+    cancelled: asyncio.CancelledError | None = None
+    for step, run in steps:
+        try:
+            await run()
+        except asyncio.CancelledError as e:
+            cancelled = e
+        except Exception:  # noqa: BLE001
+            _LOG.warning("gateway check: %s failed", step, exc_info=True)
+    if cancelled is not None:
+        raise cancelled
+
+
+async def _stop_reader(reader: asyncio.Task) -> None:
+    """Cancel the conversation's reader and wait until it has ended. An error
+    it ended with (asyncssh's when the connection is lost) is raised, for the
+    cleanup to log; its own cancellation is not."""
+    reader.cancel()
+    await asyncio.wait({reader})
+    if not reader.cancelled() and reader.exception() is not None:
+        raise reader.exception()
 
 
 async def _check_model(
@@ -182,16 +200,14 @@ async def _check_model(
             return True, None
         return False, f"did not answer with the word (answered {_redact(answer, seed.token)[:120]!r})"
     finally:
+        steps: list[tuple[str, Callable[[], Awaitable[object]]]] = []
         if handle is not None:
-            await _quietly("stopping claude", host.terminate_subprocess(handle, aggressive=True))
+            steps.append(("stopping claude", lambda: host.terminate_subprocess(handle, aggressive=True)))
         if reader is not None:
-            reader.cancel()
-            try:
-                await reader
-            except asyncio.CancelledError:
-                pass
-        await _quietly("removing the task directory", host.cleanup_taskdir(aggressive=True))
-        await _quietly("disconnecting", host.disconnect())
+            steps.append(("stopping the reader", lambda: _stop_reader(reader)))
+        steps.append(("removing the task directory", lambda: host.cleanup_taskdir(aggressive=True)))
+        steps.append(("disconnecting", host.disconnect))
+        await _cleanup(steps)
 
 
 async def validate_gateway_models(
@@ -208,9 +224,13 @@ async def validate_gateway_models(
     (``ssh``, None: this machine), at most ``concurrency`` at once, each turn
     within ``per_model_timeout`` seconds. Returns ``{model_id: (ok, reason)}``
     in the order given. ``report(done, total, model_id, ok, reason)`` is
-    called after each model. A check that raises fails its model only, with
-    ``"check failed: <type>: <message>"``. ``install_dir`` is the claude
-    cache override (as ``ClaudeCodeTaskConfig.install_dir``)."""
+    called after each model; an error it raises is logged, and the outcomes
+    stand. A check that raises fails its model only, with ``"check failed:
+    <type>: <message>"``. ``install_dir`` is the claude cache override (as
+    ``ClaudeCodeTaskConfig.install_dir``). ValueError for a ``concurrency``
+    below 1."""
+    if concurrency < 1:
+        raise ValueError(f"concurrency must be at least 1, not {concurrency!r}")
     gate = asyncio.Semaphore(concurrency)
     install_lock = _InstallLock()
     results: dict[str, tuple[bool, str | None]] = {}
@@ -232,7 +252,10 @@ async def validate_gateway_models(
         results[model_id] = (ok, reason)
         done += 1
         if report is not None:
-            report(done, len(model_ids), model_id, ok, reason)
+            try:
+                report(done, len(model_ids), model_id, ok, reason)
+            except Exception:  # noqa: BLE001 — the checks go on; the outcome stands
+                _LOG.warning("gateway check: report for %s failed", model_id, exc_info=True)
 
     await asyncio.gather(*(_one(model_id) for model_id in model_ids))
     return {model_id: results[model_id] for model_id in model_ids}

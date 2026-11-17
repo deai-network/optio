@@ -1122,11 +1122,16 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
   | claude exited first | `(False, "claude exited (exit <rc>) before answering")` |
 
   Whatever happens, claude is SIGKILLed, the reader stopped, the task
-  directory removed and the host disconnected. A failed cleanup step is
-  logged, and the outcome stands.
-- **The batch.** `asyncio.Semaphore(concurrency)` and `gather`. A check that
+  directory removed and the host disconnected (`_cleanup`). Each step runs
+  whatever the others do. A failed step is logged, and the outcome stands;
+  this includes a reader that ended with an error, such as asyncssh's when
+  the connection is lost. A cancellation stops only the step it lands in, and
+  is raised after the last step.
+- **The batch.** `asyncio.Semaphore(concurrency)` and `gather`; a
+  `concurrency` below 1 raises `ValueError` before anything runs. A check that
   raises fails its model only, with `"check failed: <type>: <message, first
-  200>"`. `report(done, total, model_id, ok, reason)` runs after each model.
+  200>"`. `report(done, total, model_id, ok, reason)` runs after each model;
+  an error it raises is logged, and the outcomes stand.
   The token never reaches a reason: it is replaced by `***` in every reason,
   and in an answer or a message before it is cut short.
 - Tests: `tests/test_gateway_validation.py`, using fake_claude's

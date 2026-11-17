@@ -2,9 +2,13 @@
 
 import asyncio
 import json
+import logging
 import os
 
+import pytest
+
 from optio_claudecode import gateway_setup
+from optio_claudecode.conversation import ClaudeCodeConversation
 from optio_claudecode.gateway import GatewayModel, GatewaySeed
 from optio_claudecode.gateway_setup import validate_gateway_models
 
@@ -161,3 +165,85 @@ async def test_report_follows_each_model(task_root, claude_cache_dir, monkeypatc
                                         report=lambda *args: calls.append(args))
     assert [(done, total) for done, total, *_ in calls] == [(1, 3), (2, 3), (3, 3)]
     assert {model: (ok, reason) for _, _, model, ok, reason in calls} == out
+
+
+async def _passes(seed, model_id, *, ssh, install_dir, per_model_timeout, install_lock):
+    return True, None
+
+
+async def test_a_report_that_raises_leaves_every_outcome(monkeypatch):
+    monkeypatch.setattr(gateway_setup, "_check_model", _passes)
+    reported = []
+
+    def _report(done, total, model_id, ok, reason):
+        reported.append(model_id)
+        raise RuntimeError("report broke")
+
+    ids = [f"m/{i}" for i in range(4)]
+    out = await validate_gateway_models(SEED, ids, report=_report)
+    assert out == {mid: (True, None) for mid in ids}
+    assert sorted(reported) == ids
+
+
+async def test_concurrency_must_be_at_least_one(monkeypatch):
+    checked = []
+
+    async def _check(seed, model_id, **kwargs):
+        checked.append(model_id)
+        return True, None
+
+    monkeypatch.setattr(gateway_setup, "_check_model", _check)
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="concurrency must be at least 1"):
+            await asyncio.wait_for(validate_gateway_models(SEED, ["m/pass"], concurrency=bad), 60)
+    assert checked == []
+
+
+async def test_a_reader_that_fails_leaves_the_outcome_and_the_cleanup(
+        task_root, claude_cache_dir, monkeypatch, caplog):
+    # The reader ends with an error, as asyncssh's does when the connection
+    # drops, whether it reached the end of claude's output or was stopped.
+    _fake(monkeypatch)
+
+    class _LosesTheConnection(ClaudeCodeConversation):
+        async def run_reader(self):
+            try:
+                await super().run_reader()
+            except asyncio.CancelledError:
+                pass
+            raise ConnectionResetError("connection lost")
+
+    monkeypatch.setattr(gateway_setup, "ClaudeCodeConversation", _LosesTheConnection)
+    with caplog.at_level(logging.WARNING, logger=gateway_setup.__name__):
+        out = await validate_gateway_models(SEED, ["m/pass"],
+                                            install_dir=str(claude_cache_dir), per_model_timeout=60)
+    assert out == {"m/pass": (True, None)}
+    assert os.listdir(task_root) == []
+    assert any("stopping the reader failed" in r.getMessage() for r in caplog.records)
+
+
+async def test_the_cleanup_runs_every_step_through_a_failure_and_a_cancellation():
+    ran = []
+    blocked = asyncio.Event()
+
+    async def _hangs():
+        ran.append("hangs")
+        blocked.set()
+        await asyncio.Event().wait()
+
+    async def _fails():
+        ran.append("fails")
+        raise OSError("gone")
+
+    async def _last():
+        ran.append("last")
+
+    cleanup = asyncio.create_task(
+        gateway_setup._cleanup([("hangs", _hangs), ("fails", _fails), ("last", _last)]),
+    )
+    await asyncio.wait_for(blocked.wait(), 60)
+    cleanup.cancel()
+    await asyncio.wait({cleanup}, timeout=60)
+    assert ran == ["hangs", "fails", "last"]
+    # The cancellation is not lost: it ends the cleanup once every step ran.
+    assert cleanup.cancelled()
