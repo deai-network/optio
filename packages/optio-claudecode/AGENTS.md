@@ -863,6 +863,66 @@ that the UI is the gate.
 When `False` (default): behavior is byte-identical to plain
 conversation mode (`ui_widget=None`, no listener, no extra argv flags).
 
+## Gateway mode (Claude Code + Requesty)
+
+Full design: `docs/2026-11-17-claudecode-gateway-design.md`.
+
+### Gateway seeds
+
+`optio_claudecode.gateway`. A gateway seed is a document in
+`{prefix}_claudecode_requesty_seeds` (`seed_manifest.REQUESTY_SEED_SUFFIX`)
+whose GridFS blob is one JSON document, encrypted by the consumer's seed
+cipher (`encrypt` / `decrypt` None means plaintext):
+
+```
+{"version": 1, "provider", "region", "baseUrl", "token",
+ "models": [{"id", "label", "group", "efforts": [..] | null, "status", "reason"}],
+ "defaultModel", "presets": {"fast" | "extensive": {"model", "effort"}} | null,
+ "testedAt": ISO-UTC | null}
+```
+
+The document carries the non-secret part, so a consumer lists and labels
+seeds without decrypting:
+
+```
+{_id, createdAt, blobId, status: "pending" | "alive" | "dead", updatedAt?,
+ metadata: {gateway: {"provider", "region", "keyHint": <token's last 4>,
+   "defaultModel", "models": [{"id", "label", "status", "reason"}],
+   "presets": {"fast" | "extensive": {"model", "effort"}} | None,
+   "testedAt": datetime | None}}}
+```
+
+`metadata.gateway.presets` is the only home of the data-chat presets besides
+the blob; consumers read them there.
+
+- `GatewaySeed(provider, region, base_url, token, models, default_model,
+  presets=None, tested_at=None)` with `GatewayModel(id, label, group, efforts,
+  status="untested", reason=None)` and `GatewayPreset(model, effort=None)`, all
+  frozen. `token` is left out of the repr. `usable_models()` are the models
+  with status `"ok"`; `effective_default_model()` is the default if usable,
+  else the first usable model, else None.
+- `write_gateway_seed(db, *, prefix, suffix, seed, encrypt, status="pending")`
+  checks that the default and every preset's model are among the models and
+  that preset keys are `fast` / `extensive` (`ValueError`), uploads the blob,
+  then writes the document in ONE `insert_one`, status included: there is no
+  moment where it exists without a status. `seeds.acquire` skips `pending` and
+  `dead`. Returns the seed id.
+- `read_gateway_seed(db, *, prefix, suffix, seed_id, decrypt)`: `KeyError` for
+  an unknown id, `ValueError` for a blob that is not version 1. `efforts` come
+  back as tuples, `tested_at` as an aware UTC datetime.
+- `update_gateway_seed(db, *, prefix, suffix, seed_id, seed, encrypt,
+  status=None)` swaps the content in place: new blob, then one `$set` of
+  `blobId`, `metadata.gateway`, `updatedAt` (and `status` when given), then
+  the old blob is deleted (a missing one is tolerated). It does not re-check
+  the seed: a setup run may drop a model a preset still names.
+- `gateway_seed_status(...)` is the document's status, None for an unknown id;
+  `seed_summary(seed)` is `"<provider> <region>, default <model>, key …<last 4>"`.
+- `seeds.purge_seed(db, prefix=..., suffix=REQUESTY_SEED_SUFFIX, seed_id=...)`
+  removes a gateway seed like any other. A gateway seed is never leased.
+- Errors of gateway calls: `GatewayError`, with `GatewayAuthError`,
+  `GatewayUnreachable` and `GatewayEmptyList` for the known causes; anything
+  else is a plain `GatewayError`. No message ever contains the token.
+
 ## Hooks
 
 `before_execute(hook_ctx)`, `after_execute(hook_ctx)`,

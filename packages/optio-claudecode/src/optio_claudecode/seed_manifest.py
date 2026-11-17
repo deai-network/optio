@@ -17,6 +17,7 @@ from optio_host.host import Host
 _LOG = logging.getLogger(__name__)
 
 CLAUDE_SEED_SUFFIX = "_claudecode_seeds"
+REQUESTY_SEED_SUFFIX = "_claudecode_requesty_seeds"
 # v2: dropped ".claude/plugins" from the seed (was the official marketplace
 # tree -- ~376 files / 4.2 MB, 99% of the seed). Claude re-installs the
 # marketplace on launch (network is available in analyze), so the seed stays
