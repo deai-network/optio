@@ -923,6 +923,40 @@ the blob; consumers read them there.
   `GatewayUnreachable` and `GatewayEmptyList` for the known causes; anything
   else is a plain `GatewayError`. No message ever contains the token.
 
+### Requesty provider
+
+`optio_claudecode.gateways.requesty` (the `gateways` package holds one module
+per provider). `PROVIDER = "requesty"`; `REGIONS` maps `global` to
+`https://router.requesty.ai` and `eu` to `https://router.eu.requesty.ai`.
+
+- `list_models(token, region, *, timeout=15.0, base_url=None) ->
+  list[ModelChoice]`, with `ModelChoice(id, label, group, efforts, eu_only)`
+  frozen. One aiohttp session (`ClientTimeout(total=timeout)`) sends GET
+  `{base}/v1/models` (the account's pinned models and policies), then GET
+  `{base}/v1/models/managed` (the bare managed names), each with
+  `Authorization: Bearer <token>`. A body is `{"data": [...]}` or a bare list
+  of entries with a string `id`. `base_url` replaces the region's URL (tests);
+  the region is still checked (`ValueError`) and still decides the `@eu` names.
+- Groups: every managed-list entry is `managed`; in `/v1/models`, `policy/...`
+  is `policy`, an id with `/` is `pinned`, anything else `managed`. A duplicate
+  id keeps its first entry (`/v1/models` first). An id ending in `@eu`
+  (`eu_only`) is listed for region `eu` only. Order: managed, pinned, policy,
+  each sorted by id; `label` is the id.
+- Efforts: the entry's `reasoning.supported_efforts`, kept to
+  `models.EFFORT_LEVELS` in that order (Requesty's `minimal` is dropped), None
+  when none is left. An entry without levels borrows those of the first
+  non-policy entry with the same `model_canonical_name`. A policy always gets
+  None and never lends: its feature flags are placeholders.
+- Errors, each raised `from None` with a message naming only the path and the
+  status (`GET /v1/models: HTTP 401`): 401/403 `GatewayAuthError`; 5xx, a
+  connection error or a timeout `GatewayUnreachable`; any other non-2xx status
+  (e.g. 429), a body that is not JSON or not a list of entries, a plain
+  `GatewayError`. An empty merged list raises `GatewayEmptyList("the account
+  allows no models")`.
+- `new_seed(*, token, region, models, default_model, presets=None) ->
+  GatewaySeed`: `provider=PROVIDER`, `base_url=REGIONS[region]`, `models` as a
+  tuple, for `write_gateway_seed`. An unknown region raises `ValueError`.
+
 ## Hooks
 
 `before_execute(hook_ctx)`, `after_execute(hook_ctx)`,
