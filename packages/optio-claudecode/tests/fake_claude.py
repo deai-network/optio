@@ -322,6 +322,8 @@ def run_stream_json_mode(argv: list[str]) -> int:
                                    appended; 'hang' reads stdin until EOF
                                    and never answers; 'exit' exits with 3. A
                                    model it does not name replies as usual.
+      FAKE_CLAUDE_STARTED_DIR    — a directory: touch ``<dir>/<pid>`` at
+                                   start (a test waits until claude runs).
 
     The reply template may also name ``{model}`` (the model the turn runs on,
     a full id) and ``{effort}`` (its effort level, ``default`` when none was
@@ -338,6 +340,9 @@ def run_stream_json_mode(argv: list[str]) -> int:
         sys.stdout.write(json.dumps(obj) + "\n")
         sys.stdout.flush()
 
+    started_dir = os.environ.get("FAKE_CLAUDE_STARTED_DIR")
+    if started_dir:
+        Path(started_dir, str(os.getpid())).touch()
     argv_log = os.environ.get("FAKE_CLAUDE_ARGV_LOG")
     if argv_log:
         with open(argv_log, "a", encoding="utf-8") as fh:

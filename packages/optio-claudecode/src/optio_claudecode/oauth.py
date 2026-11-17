@@ -23,7 +23,7 @@ from optio_agents import seeds
 from optio_agents.account import EMPTY, accounts_to_metadata
 
 from optio_claudecode.account import analyze_account
-from optio_claudecode.seed_manifest import CLAUDE_SEED_SUFFIX
+from optio_claudecode.seed_manifest import CLAUDE_SEED_SUFFIX, REQUESTY_SEED_SUFFIX
 
 _LOG = logging.getLogger(__name__)
 
@@ -151,9 +151,15 @@ async def verify_and_refresh_seed(
     rotates the single-use refresh token, so verifying a seed in use by a live
     session leaves that session's next refresh stranded (and its save-back
     would clobber this one). The caller owns the lease discipline; this
-    function does not acquire or check leases."""
+    function does not acquire or check leases.
+
+    Raises ValueError for a gateway seed (``suffix`` is
+    ``REQUESTY_SEED_SUFFIX``): it holds no OAuth credentials, and the gateway
+    setup task (``gateway_setup.create_gateway_setup_task``) tests it."""
     from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 
+    if suffix == REQUESTY_SEED_SUFFIX:
+        raise ValueError("gateway seeds are tested by the setup task (create_gateway_setup_task)")
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
         return {"alive": False, "accounts": []}

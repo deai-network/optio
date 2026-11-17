@@ -972,7 +972,8 @@ the blob; consumers read them there.
   status=None)` swaps the content in place: new blob, then one `$set` of
   `blobId`, `metadata.gateway`, `updatedAt` (and `status` when given), then
   the old blob is deleted (a missing one is tolerated). It does not re-check
-  the seed: a setup run may drop a model a preset still names.
+  the seed; the setup task keeps the default and the presets among the
+  models (see Setup task).
 - `gateway_seed_status(...)` is the document's status, None for an unknown id;
   `seed_summary(seed)` is `"<provider> <region>, default <model>, key …<last 4>"`.
 - `seeds.purge_seed(db, prefix=..., suffix=REQUESTY_SEED_SUFFIX, seed_id=...)`
@@ -1137,6 +1138,50 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
 - Tests: `tests/test_gateway_validation.py`, using fake_claude's
   `FAKE_CLAUDE_GATEWAY_MODELS` (model id to `pass`, `wrong`, `error`,
   `error-with-token`, `hang` or `exit`).
+
+### Setup task
+
+`optio_claudecode.gateway_setup.create_gateway_setup_task(process_id, name, *,
+seed_id, prefix, suffix, encrypt, decrypt, ssh=None, on_seed_saved=None,
+retest=False, description=None, metadata=None, install_dir=None,
+per_model_timeout=90.0) -> TaskInstance` (`cancellable=True`,
+`supports_resume=False`) tests the gateway seed `seed_id` in `{prefix}{suffix}`
+through `ctx._db`. The consumer passes its optio prefix, `REQUESTY_SEED_SUFFIX`
+and its seed cipher pair. Every model of the seed is checked with
+`validate_gateway_models` (`ssh`, `install_dir` and `per_model_timeout` as
+there), and each one reports a progress line, `"<id>: passed"` or `"<id>:
+failed (<reason>)"`. Those lines are what the consumer shows: a published
+result lives in memory only.
+
+| Flow | Condition | Effect | Published |
+|---|---|---|---|
+| setup (`retest=False`, a `pending` seed) | the default model passed | written `alive` with only the models that passed; a preset naming a dropped model is cleared (`presets` None when none is left); `on_seed_saved` | `alive` |
+| setup | the default model failed | `seeds.purge_seed` (document and blob); the run fails with `RuntimeError("default model <id>: <reason>")` | nothing |
+| Test again (`retest=True`, an `alive` or `dead` seed) | some model passed | every model written with its outcome (a failing one stays as `failed`, unusable); presets unchanged; `alive`; `on_seed_saved` | `alive` |
+| Test again | every model failed | the same, but `dead`; `on_seed_saved` | `dead` |
+
+- `on_seed_saved(seed_id, seed_summary(seed))` (sync or async) runs after the
+  write. An exception it raises fails the run, and the seed stays as written.
+  Then the result `{"seedId", "status", "models": [{"id", "status",
+  "reason"}]}` is published, listing every model tested. `testedAt` is the
+  test's time (UTC).
+- A flow that does not fit the seed fails the run with `ValueError` and leaves
+  the seed as it is: `"unknown gateway seed <id>"`, `"gateway seed <id> is
+  pending: Test again needs an alive or dead seed"`, or `"gateway seed <id> is
+  <status>: the setup needs a pending seed (Test again is retest=True)"`.
+- A cancellation stops the checks, lets their cleanup end, and the run ends
+  `cancelled`. In a setup, a cancellation or an exception before the seed is
+  written removes the pending seed in a `finally`. That removal tolerates a
+  seed already gone and logs any other failure, so the run's own error stands.
+  Test again leaves the seed as it was.
+- No error or progress line carries the token: the reasons are redacted (see
+  Validation).
+- `oauth.verify_and_refresh_seed` refuses a gateway seed (`suffix ==
+  REQUESTY_SEED_SUFFIX`) with `ValueError("gateway seeds are tested by the
+  setup task (create_gateway_setup_task)")`.
+- Tests: `tests/test_gateway_setup.py`, on the engine, with fake_claude's
+  `FAKE_CLAUDE_GATEWAY_MODELS` and `FAKE_CLAUDE_STARTED_DIR` (touches
+  `<dir>/<pid>` when claude starts).
 
 ## Hooks
 
