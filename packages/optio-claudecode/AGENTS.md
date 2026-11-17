@@ -948,12 +948,15 @@ per provider). `PROVIDER = "requesty"`; `REGIONS` maps `global` to
   when none is left. An entry without levels borrows those of the first
   non-policy entry with the same `model_canonical_name`. A policy always gets
   None and never lends: its feature flags are placeholders.
-- Errors, each raised `from None` with a message naming only the path and the
-  status (`GET /v1/models: HTTP 401`): 401/403 `GatewayAuthError`; 5xx, a
-  connection error or a timeout `GatewayUnreachable`; any other non-2xx status
-  (e.g. 429, or a 3xx, whose `Location` the message does not name), a body
-  that is not JSON or not a list of entries, a plain `GatewayError`. An empty merged list raises `GatewayEmptyList("the account
-  allows no models")`.
+- Errors, each with a message naming only the path and the status
+  (`GET /v1/models: HTTP 401`): 401/403 `GatewayAuthError`; 5xx, a connection
+  error or a timeout `GatewayUnreachable`; any other non-2xx status (e.g. 429,
+  or a 3xx, whose `Location` the message does not name), a body that is not
+  JSON or not a list of entries, a plain `GatewayError`. An empty merged list
+  raises `GatewayEmptyList("the account allows no models")`. No error is
+  raised inside an except block, so none has a `__context__` or `__cause__`:
+  an aiohttp exception's `request_info` holds the Authorization header, and
+  `from None` would only hide it from tracebacks.
 - `new_seed(*, token, region, models, default_model, presets=None) ->
   GatewaySeed`: `provider=PROVIDER`, `base_url=REGIONS[region]`, `models` as a
   tuple, for `write_gateway_seed`. An unknown region raises `ValueError`.

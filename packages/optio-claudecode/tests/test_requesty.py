@@ -165,6 +165,8 @@ async def test_errors_are_typed_and_carry_no_token(requesty, caplog, path, answe
         await list_models(TOKEN, "eu", timeout=timeout, base_url=base_url)
     exc = info.value
     assert type(exc) is expected
+    # aiohttp's exceptions carry request_info, Authorization header included.
+    assert exc.__context__ is None and exc.__cause__ is None
     if path is not None:
         assert f"{path}:" in str(exc)
     if isinstance(answer, int):
@@ -181,6 +183,7 @@ async def test_a_redirect_is_not_followed(requesty, caplog):               # RF1
         await list_models(TOKEN, "eu", base_url=requesty.url)
     exc = info.value
     assert type(exc) is GatewayError
+    assert exc.__context__ is None and exc.__cause__ is None
     assert f"{MODELS_PATH}:" in str(exc) and "302" in str(exc)
     assert requesty.paths == [MODELS_PATH]  # the token never reached the target
     shown = "".join(traceback.format_exception(exc))
@@ -190,8 +193,9 @@ async def test_a_redirect_is_not_followed(requesty, caplog):               # RF1
 
 
 async def test_list_models_refuses_an_unknown_region(requesty):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as info:
         await list_models(TOKEN, "mars", base_url=requesty.url)
+    assert info.value.__context__ is None and info.value.__cause__ is None
     assert requesty.auth == []
 
 

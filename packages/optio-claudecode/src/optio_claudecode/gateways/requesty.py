@@ -67,18 +67,31 @@ class ModelChoice:
     eu_only: bool
 
 
+_NOT_JSON = object()
+
+
 def _region_url(region: str) -> str:
+    url = REGIONS.get(region)
+    if url is None:
+        raise ValueError(f"unknown Requesty region {region!r}; known: {', '.join(REGIONS)}")
+    return url
+
+
+def _json(body: bytes) -> object:
+    """The decoded body, or _NOT_JSON."""
     try:
-        return REGIONS[region]
-    except KeyError:
-        raise ValueError(f"unknown Requesty region {region!r}; known: {', '.join(REGIONS)}") from None
+        return json.loads(body)
+    except ValueError:
+        return _NOT_JSON
 
 
 async def _entries(session: aiohttp.ClientSession, base: str, path: str, token: str) -> list[dict]:
-    """The entries one endpoint lists. Every error is raised from None: the
-    aiohttp exception it replaces is never chained into a traceback.
+    """The entries one endpoint lists. No error is raised inside an except
+    block, so none carries a `__context__`: an aiohttp exception's
+    `request_info` holds the Authorization header, token included.
     Redirects are not followed, so the token never goes to another URL: a 3xx
     is an unexpected status like any other (its Location is not named)."""
+    failure = None
     try:
         async with session.get(
             base + path, headers={"Authorization": f"Bearer {token}"}, allow_redirects=False,
@@ -86,25 +99,26 @@ async def _entries(session: aiohttp.ClientSession, base: str, path: str, token: 
             status = resp.status
             body = await resp.read()
     except asyncio.TimeoutError:
-        raise GatewayUnreachable(f"GET {path}: timed out") from None
+        failure = "timed out"
     except aiohttp.ClientError:
-        raise GatewayUnreachable(f"GET {path}: connection failed") from None
+        failure = "connection failed"
+    if failure is not None:
+        raise GatewayUnreachable(f"GET {path}: {failure}")
     if status in (401, 403):
-        raise GatewayAuthError(f"GET {path}: HTTP {status}") from None
+        raise GatewayAuthError(f"GET {path}: HTTP {status}")
     if status >= 500:
-        raise GatewayUnreachable(f"GET {path}: HTTP {status}") from None
+        raise GatewayUnreachable(f"GET {path}: HTTP {status}")
     if not 200 <= status < 300:
-        raise GatewayError(f"GET {path}: HTTP {status}") from None
-    try:
-        data = json.loads(body)
-    except ValueError:
-        raise GatewayError(f"GET {path}: HTTP {status}, the body is not JSON") from None
+        raise GatewayError(f"GET {path}: HTTP {status}")
+    data = _json(body)
+    if data is _NOT_JSON:
+        raise GatewayError(f"GET {path}: HTTP {status}, the body is not JSON")
     if isinstance(data, dict):
         data = data.get("data")
     if not isinstance(data, list) or not all(
         isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"] for e in data
     ):
-        raise GatewayError(f"GET {path}: HTTP {status}, unexpected body shape") from None
+        raise GatewayError(f"GET {path}: HTTP {status}, unexpected body shape")
     return data
 
 
