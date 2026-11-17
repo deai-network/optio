@@ -18,7 +18,7 @@ the same `model_canonical_name`. Policies get none: their feature flags are
 placeholders.
 
 The token goes into the request header only: no error message, log line or
-repr carries it.
+repr carries it. Redirects are not followed, so it never reaches another URL.
 """
 
 from __future__ import annotations
@@ -76,9 +76,13 @@ def _region_url(region: str) -> str:
 
 async def _entries(session: aiohttp.ClientSession, base: str, path: str, token: str) -> list[dict]:
     """The entries one endpoint lists. Every error is raised from None: the
-    aiohttp exception it replaces is never chained into a traceback."""
+    aiohttp exception it replaces is never chained into a traceback.
+    Redirects are not followed, so the token never goes to another URL: a 3xx
+    is an unexpected status like any other (its Location is not named)."""
     try:
-        async with session.get(base + path, headers={"Authorization": f"Bearer {token}"}) as resp:
+        async with session.get(
+            base + path, headers={"Authorization": f"Bearer {token}"}, allow_redirects=False,
+        ) as resp:
             status = resp.status
             body = await resp.read()
     except asyncio.TimeoutError:
@@ -160,8 +164,8 @@ async def list_models(
     rejected (HTTP 401 / 403), GatewayUnreachable on a connection error, a
     timeout (`timeout` seconds per request) or HTTP 5xx, GatewayEmptyList when
     the merged list is empty, and a plain GatewayError for any other answer (an
-    unexpected status such as 429, a body that is not JSON or not a list of
-    entries with an id)."""
+    unexpected status such as 429 or a redirect, which is never followed, a
+    body that is not JSON or not a list of entries with an id)."""
     region_url = _region_url(region)  # checked even when base_url replaces it
     base = (base_url or region_url).rstrip("/")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:

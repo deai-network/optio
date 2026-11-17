@@ -4,6 +4,7 @@ import asyncio
 import logging
 import socket
 import traceback
+from dataclasses import dataclass
 
 import pytest
 import pytest_asyncio
@@ -31,26 +32,39 @@ MANAGED = {"data": [{"id": "kimi-k3.1-pro", "model_canonical_name": "kimi-k3.1-p
 
 MODELS_PATH = "/v1/models"
 MANAGED_PATH = "/v1/models/managed"
+ELSEWHERE_PATH = "/elsewhere"  # a redirect target; answers MODELS
 HANG = object()  # the handler waits until the fixture's teardown
+
+
+@dataclass(frozen=True)
+class Redirect:
+    location: str
 
 
 class FakeRequesty:
     """Answers each path with its entry in `answers`: a JSON body (dict or
     list), an int (that status, with a JSON error body), a str (that text as
-    the body, status 200) or HANG. Records every Authorization header."""
+    the body, status 200), a Redirect (302 to its location) or HANG. Records
+    every path asked and every Authorization header."""
 
     def __init__(self) -> None:
         self.url = ""
+        self.paths: list[str] = []
         self.auth: list[str | None] = []
-        self.answers: dict[str, object] = {MODELS_PATH: MODELS, MANAGED_PATH: MANAGED}
+        self.answers: dict[str, object] = {
+            MODELS_PATH: MODELS, MANAGED_PATH: MANAGED, ELSEWHERE_PATH: MODELS,
+        }
         self.release = asyncio.Event()
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
+        self.paths.append(request.path)
         self.auth.append(request.headers.get("Authorization"))
         answer = self.answers[request.path]
         if answer is HANG:
             await self.release.wait()
             return web.json_response({"data": []})
+        if isinstance(answer, Redirect):
+            return web.Response(status=302, headers={"Location": answer.location})
         if isinstance(answer, int):
             return web.json_response({"error": {"message": "no"}}, status=answer)
         if isinstance(answer, str):
@@ -64,6 +78,7 @@ async def requesty():
     app = web.Application()
     app.router.add_get(MODELS_PATH, fake.handle)
     app.router.add_get(MANAGED_PATH, fake.handle)
+    app.router.add_get(ELSEWHERE_PATH, fake.handle)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -157,6 +172,21 @@ async def test_errors_are_typed_and_carry_no_token(requesty, caplog, path, answe
     shown = "".join(traceback.format_exception(exc))
     for text in (str(exc), repr(exc), shown, caplog.text):
         assert TOKEN not in text
+
+
+async def test_a_redirect_is_not_followed(requesty, caplog):               # RF1
+    caplog.set_level(logging.DEBUG)
+    requesty.answers[MODELS_PATH] = Redirect(f"{ELSEWHERE_PATH}?sig=loc-query-5150")
+    with pytest.raises(GatewayError) as info:
+        await list_models(TOKEN, "eu", base_url=requesty.url)
+    exc = info.value
+    assert type(exc) is GatewayError
+    assert f"{MODELS_PATH}:" in str(exc) and "302" in str(exc)
+    assert requesty.paths == [MODELS_PATH]  # the token never reached the target
+    shown = "".join(traceback.format_exception(exc))
+    for text in (str(exc), repr(exc), shown, caplog.text):
+        assert TOKEN not in text
+        assert "loc-query-5150" not in text
 
 
 async def test_list_models_refuses_an_unknown_region(requesty):
