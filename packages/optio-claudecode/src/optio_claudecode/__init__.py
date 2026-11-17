@@ -10,10 +10,15 @@ from optio_host import (
 )
 
 from optio_claudecode.account import analyze_account
-from optio_claudecode.info import AGENT_INFO
-from optio_claudecode.session import create_claudecode_task, run_claudecode_session
+from optio_claudecode.info import AGENT_INFO, REQUESTY_AGENT_INFO
+from optio_claudecode.session import (
+    create_claudecode_requesty_task,
+    create_claudecode_task,
+    run_claudecode_session,
+)
 from optio_claudecode.types import (
     AllowedDir,
+    ClaudeCodeRequestyTaskConfig,
     ClaudeCodeTaskConfig,
     DeliverableCallback,
     HookCallback,
@@ -23,6 +28,7 @@ from optio_claudecode.types import (
 from optio_claudecode.seed_manifest import (
     CLAUDE_SEED_MANIFEST,
     CLAUDE_SEED_SUFFIX,
+    REQUESTY_SEED_SUFFIX,
     delete_seed,
     list_seeds,
     purge_seed,
@@ -39,11 +45,14 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 
 __all__ = [
     "AGENT_INFO",
+    "REQUESTY_AGENT_INFO",
     "analyze_account",
     "create_claudecode_task",
+    "create_claudecode_requesty_task",
     "run_claudecode_session",
     "AllowedDir",
     "ClaudeCodeTaskConfig",
+    "ClaudeCodeRequestyTaskConfig",
     "DeliverableCallback",
     "HookCallback",
     "PermissionMode",
@@ -55,6 +64,7 @@ __all__ = [
     "RunResult",
     "CLAUDE_SEED_MANIFEST",
     "CLAUDE_SEED_SUFFIX",
+    "REQUESTY_SEED_SUFFIX",
     "delete_seed",
     "list_seeds",
     "purge_seed",

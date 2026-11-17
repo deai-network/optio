@@ -827,7 +827,9 @@ Full details: `packages/optio-opencode/AGENTS.md`.
 
 All 7 engine `TaskConfig` dataclasses (claudecode, opencode, codex, cursor,
 grok, kimicode, antigravity) inherit their common field sets from mixins in
-`optio_agents.config_types` — fields stay top-level on each config:
+`optio_agents.config_types` — fields stay top-level on each config. Claude
+Code through Requesty (`claudecode_requesty`) is `ClaudeCodeRequestyTaskConfig`,
+a `ClaudeCodeTaskConfig` subclass, so it has the same fields:
 
 - **`ClaustrumConfigMixin`** — the claustrum filesystem-isolation triad
   (`fs_isolation`, `extra_allowed_dirs`, `delivery_type`).

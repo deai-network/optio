@@ -7,3 +7,10 @@ AGENT_INFO = AgentInfo(
     name="Claude Code",
     url="https://claude.com/product/claude-code",
 )
+
+# Claude Code through Requesty (ClaudeCodeRequestyTaskConfig).
+REQUESTY_AGENT_INFO = AgentInfo(
+    slug="claudecode_requesty",
+    name="Claude Code + Requesty",
+    url="https://requesty.ai",
+)

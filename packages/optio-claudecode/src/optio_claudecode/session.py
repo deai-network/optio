@@ -82,7 +82,7 @@ from optio_claudecode.snapshots import (
     prune_snapshots,
 )
 from optio_claudecode.transcript import rebase_session_blob
-from optio_claudecode.types import ClaudeCodeTaskConfig
+from optio_claudecode.types import ClaudeCodeRequestyTaskConfig, ClaudeCodeTaskConfig
 
 
 _LOG = logging.getLogger(__name__)
@@ -2450,4 +2450,25 @@ def create_claudecode_task(
             (lambda ctx: _read_conversation(ctx, decrypt=config.session_blob_decrypt))
             if config.conversation_ui else None
         ),
+    )
+
+
+def create_claudecode_requesty_task(
+    process_id: str,
+    name: str,
+    config: ClaudeCodeRequestyTaskConfig,
+    description: str | None = None,
+    metadata: dict | None = None,
+) -> TaskInstance:
+    """Return a TaskInstance that runs one Claude Code session through
+    Requesty (agent type ``claudecode_requesty``): ``create_claudecode_task``
+    with a ``ClaudeCodeRequestyTaskConfig``, which puts the session in gateway
+    mode. Any other config raises ``TypeError``."""
+    if not isinstance(config, ClaudeCodeRequestyTaskConfig):
+        raise TypeError(
+            "create_claudecode_requesty_task needs a ClaudeCodeRequestyTaskConfig, "
+            f"got {type(config).__name__}"
+        )
+    return create_claudecode_task(
+        process_id, name, config, description=description, metadata=metadata,
     )

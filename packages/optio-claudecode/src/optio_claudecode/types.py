@@ -6,7 +6,7 @@ re-exports them alongside the package-specific ``ClaudeCodeTaskConfig``.
 """
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, ClassVar, Literal
 
 from bson import ObjectId
 
@@ -37,6 +37,7 @@ from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
 from optio_claudecode.controls import validate_custom_controls
+from optio_claudecode.seed_manifest import REQUESTY_SEED_SUFFIX
 
 # AllowedDir, ConversationMode, ToolVerbosity, ThinkingVerbosity, SeedProvider
 # and SeedUnavailableError are the shared vocabulary owned by optio_agents; they
@@ -56,6 +57,7 @@ __all__ = [
     "UploadCallback",
     "SSHConfig",
     "ClaudeCodeTaskConfig",
+    "ClaudeCodeRequestyTaskConfig",
     "ConversationMode",
     "PermissionMode",
     "ReasoningEffort",
@@ -119,6 +121,11 @@ class ClaudeCodeTaskConfig(
     consumer_instructions: str
 
     agent_type: Literal["claudecode"] = "claudecode"
+    # Gateway mode switch (class-level, not constructor fields): None here;
+    # a gateway subclass (ClaudeCodeRequestyTaskConfig) names its provider and
+    # the seed collection suffix its gateway seeds live in.
+    gateway_provider: ClassVar[str | None] = None
+    gateway_seed_suffix: ClassVar[str | None] = None
 
     credentials_json: dict[str, Any] | bytes | str | None = None
     claude_config: dict[str, Any] | None = None
@@ -442,3 +449,55 @@ class ClaudeCodeTaskConfig(
                 "session_restore_from is incompatible with auto_start "
                 "(a restored conversation is continued by the caller)"
             )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ClaudeCodeRequestyTaskConfig(ClaudeCodeTaskConfig):
+    """Claude Code through Requesty (agent type ``claudecode_requesty``).
+
+    Every ``ClaudeCodeTaskConfig`` field, in gateway mode: the session reads
+    the gateway seed ``seed_id`` names (a plain id string; the seed lives in
+    ``{prefix}`` + ``gateway_seed_suffix``) and takes the child's environment,
+    the model catalog and the effort levels from it. Conversation mode only,
+    and none of the OAuth inputs: see ``__post_init__``.
+    """
+
+    agent_type: Literal["claudecode_requesty"] = "claudecode_requesty"
+    mode: ConversationMode = "conversation"
+
+    gateway_provider: ClassVar[str | None] = "requesty"
+    gateway_seed_suffix: ClassVar[str | None] = REQUESTY_SEED_SUFFIX
+
+    def __post_init__(self) -> None:
+        if self.mode != "conversation":
+            raise ValueError(
+                f"ClaudeCodeRequestyTaskConfig.mode={self.mode!r}: gateway mode "
+                "requires mode='conversation' (iframe mode puts the launch "
+                "environment on the tmux command line, where process listings "
+                "show it)."
+            )
+        if callable(self.seed_id):
+            raise ValueError(
+                "ClaudeCodeRequestyTaskConfig: seed_id must be a gateway seed id "
+                "(a plain string), not a SeedProvider (that picks from the OAuth "
+                "seed pool)."
+            )
+        if self.credentials_json is not None:
+            raise ValueError(
+                "ClaudeCodeRequestyTaskConfig: credentials_json is not used in "
+                "gateway mode (the gateway seed carries the credentials)."
+            )
+        if self.on_seed_saved is not None:
+            raise ValueError(
+                "ClaudeCodeRequestyTaskConfig: on_seed_saved is not used in "
+                "gateway mode (gateway sessions capture no seed; the gateway "
+                "setup task saves seeds)."
+            )
+        anthropic_keys = sorted(k for k in (self.env or {}) if k.startswith("ANTHROPIC_"))
+        if anthropic_keys:
+            raise ValueError(
+                f"ClaudeCodeRequestyTaskConfig: env keys {anthropic_keys} are "
+                "refused (in gateway mode the gateway seed sets the ANTHROPIC_* "
+                "environment)."
+            )
+        super().__post_init__()

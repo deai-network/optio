@@ -81,6 +81,30 @@ refresh): claude reads `resume.log` when that notice arrives, for its
 transcript launches without `--continue` and sends no notice; that is a new
 conversation, which reads CLAUDE.md anew.
 
+Claude Code through Requesty, agent type `claudecode_requesty`
+(`REQUESTY_AGENT_INFO`: "Claude Code + Requesty", `https://requesty.ai`):
+
+```python
+from optio_claudecode import ClaudeCodeRequestyTaskConfig, create_claudecode_requesty_task
+
+create_claudecode_requesty_task(
+    process_id="my-task",
+    name="My task",
+    config=ClaudeCodeRequestyTaskConfig(
+        consumer_instructions="...",
+        seed_id="<gateway seed id>",  # a plain string, never a SeedProvider
+        permission_mode="dontAsk",
+        conversation_ui=True,
+    ),
+)
+```
+
+`create_claudecode_requesty_task(process_id, name, config, description=None,
+metadata=None)` raises `TypeError` for any config that is not a
+`ClaudeCodeRequestyTaskConfig`, and is otherwise `create_claudecode_task`.
+`REQUESTY_SEED_SUFFIX` (`"_claudecode_requesty_seeds"`) is exported for
+consumers that list or purge gateway seeds. See Gateway mode below.
+
 ## Snapshot capture and unsaved work
 
 `session._capture_snapshot` runs at teardown (only when `supports_resume`
@@ -495,6 +519,18 @@ when the hook returns, and when it raises `NothingToResurrect`.
   `seed_encrypt` / `seed_decrypt` accessors.
 * HOME isolation: every task sees `HOME=<workdir>/home` so concurrent
   tasks on one host never share `~/.claude/` state.
+* `ClaudeCodeRequestyTaskConfig` (agent type `claudecode_requesty`) — the
+  gateway config: a `ClaudeCodeTaskConfig` subclass with every field,
+  `agent_type="claudecode_requesty"` and `mode` defaulting to
+  `"conversation"`. The ClassVars `gateway_provider` and `gateway_seed_suffix`
+  (None on `ClaudeCodeTaskConfig`; `"requesty"` and `REQUESTY_SEED_SUFFIX`
+  here) mark it; they are not constructor fields, so only the subclass is a
+  gateway config. Its `__post_init__` refuses (`ValueError`), before the base
+  checks run: a mode other than `"conversation"` (iframe mode puts the launch
+  environment on the tmux command line, where process listings show it), a
+  callable `seed_id` (a `SeedProvider`; the gateway seed id is a plain
+  string), `credentials_json`, `on_seed_saved`, and `env` keys starting with
+  `ANTHROPIC_` (the message names the keys, never a value).
 
 ## Conversation mode
 
