@@ -2,6 +2,7 @@
 
 import io
 import json
+import traceback
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -34,6 +35,16 @@ SEED = GatewaySeed(
     default_model="prov-a/kimi-k3.1-pro",
 )
 COLL = "t_claudecode_requesty_seeds"
+# SEED's blob, decrypted.
+SEED_BLOB = {
+    "version": 1, "provider": "requesty", "region": "eu",
+    "baseUrl": "https://router.eu.requesty.ai", "token": "rq-test-0123456789abcd",
+    "models": [
+        {"id": "prov-a/kimi-k3.1-pro", "label": "prov-a/kimi-k3.1-pro", "group": "pinned",
+         "efforts": ["low", "high"], "status": "untested", "reason": None},
+        {"id": "glm-flash", "label": "glm-flash", "group": "managed",
+         "efforts": None, "status": "untested", "reason": None}],
+    "defaultModel": "prov-a/kimi-k3.1-pro", "presets": None, "testedAt": None}
 
 
 def enc(b: bytes) -> bytes:
@@ -45,10 +56,31 @@ def dec(b: bytes) -> bytes:
     return bytes(reversed(b[1:]))
 
 
+def wrong_enc(b: bytes) -> bytes:
+    """Another cipher: `dec` accepts its output but yields garbage."""
+    return b"X" + bytes(x ^ 0x5A for x in reversed(b))
+
+
 async def _blob_bytes(db, blob_id) -> bytes:
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(blob_id, buf)
     return buf.getvalue()
+
+
+async def _plant(db, plain: bytes, cipher=enc) -> str:
+    """A seed document whose blob is `plain`, encrypted by `cipher`."""
+    blob = await AsyncIOMotorGridFSBucket(db).upload_from_stream("seed", cipher(plain))
+    res = await db[COLL].insert_one({
+        "createdAt": datetime.now(timezone.utc), "blobId": blob, "status": "alive", "metadata": {},
+    })
+    return str(res.inserted_id)
+
+
+def _assert_carries_no_token(exc: BaseException) -> None:
+    """No exception context, and the token in neither str, repr nor traceback (RF1)."""
+    assert exc.__context__ is None and exc.__cause__ is None
+    shown = str(exc) + repr(exc) + "".join(traceback.format_exception(exc))
+    assert SEED.token not in shown
 
 
 async def _write(db, seed=SEED, **kw) -> str:
@@ -80,15 +112,7 @@ async def test_a_written_seed_reads_back_through_the_cipher(mongo_db):      # RF
     blob = await _blob_bytes(mongo_db, doc["blobId"])
     assert SEED.token.encode() not in blob
     assert SEED.token not in str(doc) and SEED.token not in repr(SEED)
-    assert json.loads(dec(blob)) == {
-        "version": 1, "provider": "requesty", "region": "eu",
-        "baseUrl": "https://router.eu.requesty.ai", "token": "rq-test-0123456789abcd",
-        "models": [
-            {"id": "prov-a/kimi-k3.1-pro", "label": "prov-a/kimi-k3.1-pro", "group": "pinned",
-             "efforts": ["low", "high"], "status": "untested", "reason": None},
-            {"id": "glm-flash", "label": "glm-flash", "group": "managed",
-             "efforts": None, "status": "untested", "reason": None}],
-        "defaultModel": "prov-a/kimi-k3.1-pro", "presets": None, "testedAt": None}
+    assert json.loads(dec(blob)) == SEED_BLOB
 
 
 async def test_the_document_carries_the_non_secret_part(mongo_db):
@@ -195,14 +219,35 @@ async def test_unknown_seed_and_unknown_version(mongo_db):
     sid = await _write(mongo_db)
     assert await gateway_seed_status(mongo_db, prefix="t", suffix=REQUESTY_SEED_SUFFIX, seed_id=sid) == "pending"
 
-    blob = await AsyncIOMotorGridFSBucket(mongo_db).upload_from_stream(
-        "seed", enc(json.dumps({"version": 2}).encode()),
-    )
-    res = await mongo_db[COLL].insert_one({
-        "createdAt": datetime.now(timezone.utc), "blobId": blob, "status": "alive", "metadata": {},
-    })
-    with pytest.raises(ValueError, match="version"):
-        await _read(mongo_db, str(res.inserted_id))
+    v2 = await _plant(mongo_db, json.dumps({**SEED_BLOB, "version": 2}).encode())
+    with pytest.raises(ValueError, match="version") as ei:
+        await _read(mongo_db, v2)
+    _assert_carries_no_token(ei.value)
+
+
+@pytest.mark.parametrize("plain, cipher", [
+    (json.dumps(SEED_BLOB).encode()[:-40], enc),
+    (json.dumps(SEED_BLOB).encode(), wrong_enc),
+], ids=["cut-short", "wrong-cipher"])
+async def test_a_blob_that_is_not_json_raises_with_no_context(mongo_db, plain, cipher):   # RF1
+    assert SEED.token.encode() in plain     # the decode error would carry it
+    sid = await _plant(mongo_db, plain, cipher)
+    with pytest.raises(ValueError, match="not JSON") as ei:
+        await _read(mongo_db, sid)
+    _assert_carries_no_token(ei.value)
+
+
+@pytest.mark.parametrize("blob", [
+    {k: v for k, v in SEED_BLOB.items() if k != "models"},
+    {**SEED_BLOB, "models": [["prov-a/kimi-k3.1-pro"]]},
+    {**SEED_BLOB, "presets": ["fast"]},
+    {**SEED_BLOB, "testedAt": "yesterday"},
+], ids=["missing-field", "model-not-an-object", "presets-not-an-object", "bad-date"])
+async def test_a_version_1_blob_with_a_bad_field_raises_value_error(mongo_db, blob):
+    sid = await _plant(mongo_db, json.dumps(blob).encode())
+    with pytest.raises(ValueError, match="missing or malformed") as ei:
+        await _read(mongo_db, sid)
+    _assert_carries_no_token(ei.value)
 
 
 @pytest.mark.parametrize("seed", [

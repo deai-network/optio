@@ -44,6 +44,7 @@ from optio_agents import seeds
 
 GATEWAY_SEED_VERSION = 1
 _PRESET_KEYS = ("fast", "extensive")
+_MALFORMED = object()
 
 SeedStatus = Literal["pending", "alive", "dead"]
 
@@ -191,6 +192,28 @@ def _seed_from_json(data: dict) -> GatewaySeed:
     )
 
 
+# Neither helper below raises: an error raised inside an except block keeps the
+# original on `__context__` (`from None` only hides it from the printout), and a
+# JSON decode error's `.doc` / `.object` is the decrypted blob, which holds the
+# token when the JSON is cut short. read_gateway_seed raises outside them.
+
+
+def _loads(plain: bytes) -> object:
+    """The decoded blob, or _MALFORMED."""
+    try:
+        return json.loads(plain)
+    except ValueError:
+        return _MALFORMED
+
+
+def _seed_or_malformed(data: dict) -> object:
+    """The GatewaySeed, or _MALFORMED for a missing or malformed field."""
+    try:
+        return _seed_from_json(data)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return _MALFORMED
+
+
 def _metadata(seed: GatewaySeed) -> dict:
     return {
         "provider": seed.provider,
@@ -260,7 +283,8 @@ async def read_gateway_seed(
     decrypt: Callable[[bytes], bytes] | None,
 ) -> GatewaySeed:
     """Load and decrypt a gateway seed. Raises KeyError for an unknown id and
-    ValueError for a blob that is not a version-1 gateway seed."""
+    ValueError for a blob that is not a well-formed version-1 gateway seed
+    (raised with no exception context, so no plaintext travels with it)."""
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
         raise KeyError(f"unknown gateway seed: {seed_id!r}")
@@ -268,15 +292,16 @@ async def read_gateway_seed(
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
     raw = buf.getvalue()
     plain = decrypt(raw) if decrypt is not None else raw
-    try:
-        data = json.loads(plain)
-    except ValueError:
-        # from None: the decode error carries the plaintext, token included.
-        raise ValueError(f"gateway seed {seed_id!r}: the blob is not JSON (wrong cipher?)") from None
+    data = _loads(plain)
+    if data is _MALFORMED:
+        raise ValueError(f"gateway seed {seed_id!r}: the blob is not JSON (wrong cipher?)")
     version = data.get("version") if isinstance(data, dict) else None
     if version != GATEWAY_SEED_VERSION:
         raise ValueError(f"gateway seed {seed_id!r}: unsupported blob version {version!r}")
-    return _seed_from_json(data)
+    seed = _seed_or_malformed(data)
+    if seed is _MALFORMED:
+        raise ValueError(f"gateway seed {seed_id!r}: the blob has a missing or malformed field")
+    return seed
 
 
 async def update_gateway_seed(

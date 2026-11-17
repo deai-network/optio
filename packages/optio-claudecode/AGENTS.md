@@ -907,9 +907,12 @@ the blob; consumers read them there.
   then writes the document in ONE `insert_one`, status included: there is no
   moment where it exists without a status. `seeds.acquire` skips `pending` and
   `dead`. Returns the seed id.
-- `read_gateway_seed(db, *, prefix, suffix, seed_id, decrypt)`: `KeyError` for
-  an unknown id, `ValueError` for a blob that is not version 1. `efforts` come
-  back as tuples, `tested_at` as an aware UTC datetime.
+- `read_gateway_seed(db, *, prefix, suffix, seed_id, decrypt)`: `KeyError` only
+  for an unknown id; `ValueError` for a blob that is not JSON (a wrong cipher,
+  a cut-short blob), not version 1, or has a missing or malformed field. That
+  `ValueError` is raised outside any except block, so it has no `__context__`:
+  a JSON decode error's `.doc` is the decrypted blob, token included. `efforts`
+  come back as tuples, `tested_at` as an aware UTC datetime.
 - `update_gateway_seed(db, *, prefix, suffix, seed_id, seed, encrypt,
   status=None)` swaps the content in place: new blob, then one `$set` of
   `blobId`, `metadata.gateway`, `updatedAt` (and `status` when given), then
