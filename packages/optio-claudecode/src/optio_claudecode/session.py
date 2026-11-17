@@ -575,6 +575,9 @@ async def run_claudecode_session(
         # while the CLI could not tell (then the picker offers the bare
         # aliases, and each live switch asks again: apply_settings).
         cli_models = None
+        # Gateway mode: the saved model pick is no longer usable (saved over
+        # below, before the launch).
+        pick_fell_back = False
         if gateway_seed is not None:
             # The model list is the seed's usable models, never initialize's;
             # a switch is checked against them alone (no task models), and a
@@ -593,6 +596,16 @@ async def run_claudecode_session(
                     None,
                     f"{REQUESTY_AGENT_INFO.name} runs {current_model}: {preferred} "
                     "is not usable in this gateway configuration",
+                )
+            # As _restore_picks does, the fallback (model and effort) replaces
+            # a saved pick that is no longer usable: what the switcher shows
+            # is what runs, and a later resume does not return to the old
+            # model once a Test again makes it usable again.
+            pick_fell_back = bool(saved_picks and saved_picks.model
+                                  and saved_picks.model != current_model)
+            if pick_fell_back:
+                picks = dataclasses.replace(
+                    picks, model=current_model, model_resolved=None, effort=current_effort,
                 )
             conversation.models_offered = cli_models = cc_gateway.gateway_catalog(gateway_seed)
             conversation.task_models = frozenset()
@@ -639,6 +652,10 @@ async def run_claudecode_session(
             # permission branch below may both save).
             async with picks_lock:
                 await cc_picks.save(host, picks)
+
+        if pick_fell_back:
+            # Written now: no switch may follow to save it.
+            await _save_picks()
 
         def _restore_picks(catalog: list[dict]) -> bool:
             # The restored picks against the CLI's list, asked of a claude

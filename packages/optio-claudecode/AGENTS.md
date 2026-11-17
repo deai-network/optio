@@ -1042,7 +1042,11 @@ unchanged.
   model (or a custom control's default). When it is not usable, the effective
   default runs, with the progress line `"Claude Code + Requesty runs <id>:
   <preferred> is not usable in this gateway configuration"`. `--effort` is
-  `gateway.launch_effort(...)`, and a model without levels gets none.
+  `gateway.launch_effort(...)`, and a model without levels gets none. A
+  saved model pick that is not usable is replaced by what runs (model and
+  effort), written to the picks file before the launch, as non-gateway mode
+  forgets a pick it cannot restore: a later resume stays on it even when a
+  Test again makes the old model usable again.
   `conversation.models_offered` is `gateway.gateway_catalog(seed)`,
   `task_models` is empty and `effort_needs_levels` is True, so a live switch
   is checked against the seed's usable models only. There is no model probe

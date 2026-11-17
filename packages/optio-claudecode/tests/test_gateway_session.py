@@ -31,6 +31,7 @@ from optio_claudecode import (
     ClaudeCodeRequestyTaskConfig,
     create_claudecode_requesty_task,
 )
+from optio_claudecode import picks as cc_picks
 from optio_claudecode import resurrect
 from optio_claudecode import session as session_mod
 from optio_claudecode import snapshots
@@ -547,6 +548,71 @@ async def test_a_resumed_gateway_session_whose_model_failed_runs_the_default(
     assert "--continue" in resumed
     assert (_flag(resumed, "--model"), _flag(resumed, "--effort")) == (KIMI.id, "high")
     assert "default" not in resumed
+
+
+def _plant_and_remember(into: dict):
+    """before_execute: the transcript a resume continues, and the workdir (to
+    read the picks file)."""
+    plant, remember = _plant_transcript_on(KIMI.id), _remember_workdir(into)
+
+    async def before(hook_ctx):
+        await plant(hook_ctx)
+        await remember(hook_ctx)
+    return before
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_from_an_unusable_pick_becomes_the_saved_pick(
+    shim_install_dir, claude_cache_dir, task_root, mongo_db, tmp_path,
+):
+    """RF4, as in non-gateway mode: the model a resume falls back to (with its
+    effort) replaces the unusable saved pick, so what the switcher shows is
+    what runs, and a later resume does not return to the old model even once
+    a Test again has made it usable again."""
+    argv_log = tmp_path / "argv.jsonl"
+    seen: dict = {}
+    pid = "gw-fallback-saved"
+    optio = await _make_optio(mongo_db, "gwfallbacksaved")
+    try:
+        config = await _gw_config(
+            mongo_db, "gwfallbacksaved", shim_install_dir, claude_cache_dir,
+            supports_resume=True, before_execute=_plant_and_remember(seen),
+            env={"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        await optio.adhoc_define(
+            create_claudecode_requesty_task(process_id=pid, name="Fallback saved", config=config),
+        )
+
+        async def _test_again(glm: GatewayModel) -> None:
+            await update_gateway_seed(
+                mongo_db, prefix="gwfallbacksaved", suffix=REQUESTY_SEED_SUFFIX,
+                seed_id=config.seed_id, seed=_seed(models=(KIMI, glm, BROKEN)), encrypt=_cipher,
+            )
+
+        await _run_switched_to(optio, pid, GLM.id)
+        await _test_again(replace(GLM, status="failed", reason="no answer"))
+
+        conv = await optio.launch_and_await_result(pid, resume=True, session_id=None, timeout=60)
+        await _wait_widget_data(optio, pid)
+        saved = cc_picks.loads(pathlib.Path(seen["workdir"], cc_picks.PICKS_RELPATH).read_text())
+        assert (saved.model, saved.effort) == (KIMI.id, "high")
+        await conv.close()
+        await _wait_terminal(optio, pid)
+
+        await _test_again(GLM)              # usable again
+        conv = await optio.launch_and_await_result(pid, resume=True, session_id=None, timeout=60)
+        controls = _controls(await _wait_widget_data(optio, pid))
+        assert [o["value"] for o in controls["model"]["options"]] == [KIMI.id, GLM.id]
+        assert controls["model"]["value"] == KIMI.id
+        await conv.close()
+        await _wait_terminal(optio, pid)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    _fresh, fallback, later = _log_lines(argv_log)
+    for argv in (fallback, later):
+        assert "--continue" in argv
+        assert (_flag(argv, "--model"), _flag(argv, "--effort")) == (KIMI.id, "high")
 
 
 @pytest.mark.asyncio
