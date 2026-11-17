@@ -27,6 +27,13 @@ removes it (document and blob) like any other seed.
 
 The token lives only in the encrypted blob: never in the document, a repr, or
 an error message.
+
+At launch a seed gives the session its catalog (`gateway_catalog`), the
+child's non-secret environment (`gateway_launch_env`), `--model`
+(`launch_model`) and `--effort` (`launch_effort`). The token is not part of
+that environment: the launch command reads `GATEWAY_SECRET_ENV` from its first
+stdin line (`host_actions.with_stdin_secrets`, `write_stdin_secrets`), so it
+reaches the child's environment without ever being on a command line.
 """
 
 from __future__ import annotations
@@ -41,6 +48,8 @@ from gridfs.errors import NoFile
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
 from optio_agents import seeds
+
+from optio_claudecode import models as cc_models
 
 GATEWAY_SEED_VERSION = 1
 _PRESET_KEYS = ("fast", "extensive")
@@ -338,3 +347,81 @@ async def update_gateway_seed(
         await bucket.delete(doc["blobId"])
     except NoFile:
         pass
+
+
+# --- launch -----------------------------------------------------------------
+
+# The child's secret environment variables, in the order the launch reads them
+# from stdin. Never passed in `env=`: a remote host writes that into the command
+# line sshd runs.
+GATEWAY_SECRET_ENV = ("ANTHROPIC_AUTH_TOKEN",)
+
+# Inherited variables a gateway launch removes (`env_remove` globs), so no other
+# Anthropic endpoint, key or OAuth token reaches the child.
+GATEWAY_ENV_REMOVE = ("ANTHROPIC_*", "CLAUDE_CODE_OAUTH_TOKEN")
+
+# Claude Code's model aliases. Each points at the default model, so its own
+# background calls (haiku) and alias-based subagents stay on a validated model.
+_MODEL_ALIASES = ("OPUS", "SONNET", "HAIKU", "FABLE")
+
+
+def _usable_default(seed: GatewaySeed) -> str:
+    model = seed.effective_default_model()
+    if model is None:
+        raise GatewayError("the gateway seed has no usable model")
+    return model
+
+
+def gateway_catalog(seed: GatewaySeed) -> list[dict]:
+    """The session's model catalog: the usable models in seed order, as
+    `models.parse_cli_models` entries `{"id", "label", "effort"?}`, with
+    `effort` only for a model that has levels."""
+    out: list[dict] = []
+    for m in seed.usable_models():
+        entry: dict = {"id": m.id, "label": m.label}
+        if m.efforts:
+            entry["effort"] = list(m.efforts)
+        out.append(entry)
+    return out
+
+
+def gateway_launch_env(seed: GatewaySeed) -> dict[str, str]:
+    """The child's environment from the seed, without the token
+    (`GATEWAY_SECRET_ENV`). The aliases point at the effective default model.
+    `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` (Claude Code sends no effort for a model
+    id it does not know without it) is set when some usable model has levels:
+    the environment is fixed at launch and models switch live. GatewayError
+    when no model is usable."""
+    default = _usable_default(seed)
+    env = {
+        "ANTHROPIC_BASE_URL": seed.base_url,
+        **{f"ANTHROPIC_DEFAULT_{alias}_MODEL": default for alias in _MODEL_ALIASES},
+        # The server-side auto-mode classifier needs Anthropic's API.
+        "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
+        # Keeps the token from the agent's Bash commands, hooks and MCP servers.
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+    }
+    if any(m.efforts for m in seed.usable_models()):
+        env["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] = "1"
+    return env
+
+
+def launch_model(seed: GatewaySeed, preferred: str | None) -> str:
+    """`--model` for a launch, an exact id: `preferred` when it is usable, else
+    the effective default model (never the `default` alias). GatewayError when
+    no model is usable."""
+    if preferred in {m.id for m in seed.usable_models()}:
+        return preferred
+    return _usable_default(seed)
+
+
+def launch_effort(seed: GatewaySeed, model: str, preferred: str | None) -> str | None:
+    """`--effort` for a launch on `model`: None when the model has no levels
+    or is not usable (none is sent); `preferred` when the model lists it;
+    else the level the switcher preselects (`models.model_effort`: "high"
+    when listed, else the highest; seed levels are in `models.EFFORT_LEVELS`
+    order)."""
+    levels, preselected = cc_models.model_effort(model, gateway_catalog(seed))
+    if not levels:
+        return None
+    return preferred if preferred in levels else preselected

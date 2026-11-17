@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shlex
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
@@ -1330,6 +1331,39 @@ def conversation_launch_env(
         **_CHECKLIST_ENV,
         **extra,
     }
+
+
+# A shell variable name: nothing in it reaches the shell as syntax.
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def with_stdin_secrets(command: str, names: Sequence[str]) -> str:
+    """``command`` (one simple command, since it is ``exec``ed) behind a prefix
+    that reads each of ``names`` from its own stdin line and exports it:
+    ``IFS= read -r N && export N && ... exec <command>`` (``IFS=`` and ``-r``
+    keep the value byte for byte). The values reach the child's environment
+    and never a command line, which ``env=`` cannot promise:
+    ``RemoteHost.launch_subprocess`` writes it into the command line sshd
+    runs. Launch with ``stdin=True``, then ``write_stdin_secrets``; the child
+    reads whatever follows on stdin. ValueError for a name that is not a shell
+    variable name."""
+    for name in names:
+        if not _ENV_NAME_RE.fullmatch(name):
+            raise ValueError(f"not an environment variable name: {name!r}")
+    reads = "".join(f"IFS= read -r {name} && export {name} && " for name in names)
+    return f"{reads}exec {command}"
+
+
+async def write_stdin_secrets(handle: "ProcessHandle", values: Sequence[str]) -> None:
+    """Write ``values`` to ``handle``'s stdin, one line each, in the order of
+    the names given to ``with_stdin_secrets``, then drain. ValueError, before
+    anything is written, for a value holding a line break or a NUL, which
+    ``read`` would split or cut; the message does not include the value."""
+    if any(c in value for value in values for c in "\n\r\0"):
+        raise ValueError("a stdin secret must not contain a line break or a NUL character")
+    for value in values:
+        handle.stdin.write(value.encode("utf-8") + b"\n")
+    await handle.stdin.drain()
 
 
 # Positional prompt appended to the claude launch when ``auto_start`` is set —
