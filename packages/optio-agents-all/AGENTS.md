@@ -1,8 +1,10 @@
 # optio-agents-all — Agent Cheatsheet
 
 Meta-factory over every wrapped agent engine: a single entry point dispatching
-on `config.agent_type` over the tagged union of the seven engine `TaskConfig`
-dataclasses.
+on `config.agent_type` over the tagged union of the eight agent-type
+`TaskConfig` dataclasses: the seven engines, plus `claudecode_requesty`
+(optio-claudecode's `ClaudeCodeRequestyTaskConfig`, Claude Code through
+Requesty).
 
 ## Public surface (`optio_agents_all`)
 
@@ -12,30 +14,32 @@ dataclasses.
   **verbatim** (identity) — the dispatcher adds no defaulting, copying, or
   translation, so every engine-config field (crypto transforms included)
   reaches the engine untouched.
-* `AgentType` — `Literal` of the 7 slugs; `AgentTaskConfig` — the union of the
-  7 engine configs. Every engine config class and `create_<engine>_task`
-  factory is re-exported for convenience.
+* `AgentType` — `Literal` of the 8 slugs; `AgentTaskConfig` — the union of the
+  8 configs. Every config class and `create_<agent_type>_task` factory is
+  re-exported for convenience.
 * `analyze_account(agent_type, creds)` / `analyze_accounts(agent_type, creds)`
   — dispatch to the per-engine account analyzer (plural form fans opencode out
   to one `AccountInfo` per configured provider; single-account engines return
-  a 0/1-element list).
+  a 0/1-element list). `claudecode_requesty` backs no account (its gateway
+  seed holds an API key): `EMPTY`, and `[]` in the plural form.
 * `AGENTS` / `get_agent_info(agent_type)` — canonical per-engine metadata
   (`optio_agents.AgentInfo`).
-* `MCP_AGENT_TYPES` / `supports_mcp(agent_type)` -- the engines whose config
-  accepts `mcp_servers` (only `claudecode` for now; guarded by
-  `tests/test_capabilities.py`).
+* `MCP_AGENT_TYPES` / `supports_mcp(agent_type)` -- the agent types whose
+  config accepts `mcp_servers` (only `claudecode` and `claudecode_requesty`
+  for now; guarded by `tests/test_capabilities.py`).
 * `CUSTOM_CONTROLS_AGENT_TYPES` / `supports_custom_controls(agent_type)` --
-  the engines whose config accepts a non-empty `custom_controls` (only
-  `claudecode` for now; guarded by `tests/test_capabilities.py`, which also
-  keeps `optio_agents.custom_controls`' known effort levels and permission
-  modes equal to optio-claudecode's).
+  the agent types whose config accepts a non-empty `custom_controls` (only
+  `claudecode` and `claudecode_requesty` for now; guarded by
+  `tests/test_capabilities.py`, which also keeps
+  `optio_agents.custom_controls`' known effort levels and permission modes
+  equal to optio-claudecode's).
 
 ## Config uniformity guarantee
 
 Every member of `AgentTaskConfig` subclasses the shared mixins from
 `optio_agents.config_types` (and `optio_agents.mcp`,
-`optio_agents.custom_controls`), so these field sets are uniform across all 7
-engines (guarded by `tests/test_config_uniformity.py`):
+`optio_agents.custom_controls`), so these field sets are uniform across all 8
+configs (guarded by `tests/test_config_uniformity.py`):
 
 * `ClaustrumConfigMixin` — `fs_isolation` / `extra_allowed_dirs` /
   `delivery_type`.

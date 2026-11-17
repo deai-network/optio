@@ -3,11 +3,12 @@
 
 import type { AgentInfo } from './agent-info.js';
 
-export type AgentType = 'antigravity' | 'claudecode' | 'codex' | 'cursor' | 'grok' | 'kimicode' | 'opencode';
+export type AgentType = 'antigravity' | 'claudecode' | 'claudecode_requesty' | 'codex' | 'cursor' | 'grok' | 'kimicode' | 'opencode';
 
 export const AGENTS: Record<AgentType, AgentInfo> = {
   antigravity: { slug: 'antigravity', name: "Antigravity CLI", url: "https://antigravity.google" },
   claudecode: { slug: 'claudecode', name: "Claude Code", url: "https://claude.com/product/claude-code" },
+  claudecode_requesty: { slug: 'claudecode_requesty', name: "Claude Code + Requesty", url: "https://requesty.ai" },
   codex: { slug: 'codex', name: "Codex", url: "https://openai.com/codex" },
   cursor: { slug: 'cursor', name: "Cursor CLI", url: "https://cursor.com/cli" },
   grok: { slug: 'grok', name: "Grok Build", url: "https://x.ai/cli" },

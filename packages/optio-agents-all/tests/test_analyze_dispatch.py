@@ -54,6 +54,12 @@ async def test_analyze_accounts_all_single_engines_registered():
         assert engine in factory._ANALYZE_ACCOUNTS_REGISTRY
 
 
+async def test_claudecode_requesty_has_no_account_to_analyze():
+    # A gateway seed holds a Requesty API key, not an account login.
+    assert await analyze_account("claudecode_requesty", None) is EMPTY
+    assert await analyze_accounts("claudecode_requesty", None) == []
+
+
 async def test_analyze_accounts_opencode_dispatches_to_meta_analyzer():
     # opencode's real per-provider meta-analyzer: a configured provider yields
     # exactly one AccountInfo. An unknown provider maps to a placeholder — no

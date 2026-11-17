@@ -3,6 +3,7 @@ from __future__ import annotations
 from optio_agents import AgentInfo
 from optio_antigravity import AGENT_INFO as _antigravity_info
 from optio_claudecode import AGENT_INFO as _claudecode_info
+from optio_claudecode import REQUESTY_AGENT_INFO as _claudecode_requesty_info
 from optio_codex import AGENT_INFO as _codex_info
 from optio_cursor import AGENT_INFO as _cursor_info
 from optio_grok import AGENT_INFO as _grok_info
@@ -13,6 +14,7 @@ from .types import AgentType
 
 AGENTS: dict[AgentType, AgentInfo] = {
     "claudecode": _claudecode_info,
+    "claudecode_requesty": _claudecode_requesty_info,
     "opencode": _opencode_info,
     "codex": _codex_info,
     "cursor": _cursor_info,

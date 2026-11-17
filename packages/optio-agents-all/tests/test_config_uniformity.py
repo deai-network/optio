@@ -1,10 +1,10 @@
-"""Uniformity guard: the shared config surface must be identical across all 7
-engines. Every ``AgentTaskConfig`` union member inherits the blob-crypto,
-claustrum, session-controls, welcome, MCP, custom-controls and resume field
-sets from the ``optio_agents.config_types``, ``optio_agents.mcp`` and
-``optio_agents.custom_controls`` mixins, so the guard is structural (subclass
-checks) plus behavioral (validation + fallback behave the same on each
-concrete config class)."""
+"""Uniformity guard: the shared config surface must be identical across all 8
+agent-type configs. Every ``AgentTaskConfig`` union member inherits the
+blob-crypto, claustrum, session-controls, welcome, MCP, custom-controls and
+resume field sets from the ``optio_agents.config_types``, ``optio_agents.mcp``
+and ``optio_agents.custom_controls`` mixins, so the guard is structural
+(subclass checks) plus behavioral (validation + fallback behave the same on
+each concrete config class)."""
 from typing import get_args
 
 import pytest
@@ -16,14 +16,18 @@ from optio_agents import (
 from optio_agents.config_types import ClaustrumConfigMixin, SessionControlsConfigMixin
 
 import optio_agents_all as aa
+from optio_agents_all import ClaudeCodeRequestyTaskConfig
 from optio_agents_all.factory import _REGISTRY
 
 CONFIG_TYPES = get_args(aa.AgentTaskConfig)
 
 
 def _make(cls, **kw):
-    """Minimal valid config of any engine (claustrum opted out)."""
-    return cls(consumer_instructions="x", fs_isolation=False, **kw)
+    """Minimal valid config of any engine (claustrum opted out). The Requesty
+    config runs in conversation mode only, which needs a headless permission
+    mode."""
+    extra = {ClaudeCodeRequestyTaskConfig: {"permission_mode": "dontAsk"}}.get(cls, {})
+    return cls(consumer_instructions="x", fs_isolation=False, **extra, **kw)
 
 
 # Distinct sentinel transforms so identity assertions can tell the pairs apart.

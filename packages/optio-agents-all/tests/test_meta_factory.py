@@ -10,9 +10,9 @@ from optio_agents_all.types import AgentType
 def test_every_slug_registered_and_in_union():
     slugs = set(get_args(AgentType))
     assert set(_REGISTRY) == slugs
-    # union covers exactly the 7 configs
+    # union covers exactly the 8 configs
     union_types = {t.__name__ for t in get_args(aa.AgentTaskConfig)}
-    assert len(union_types) == 7
+    assert len(union_types) == 8
 
 
 def test_create_task_dispatches_by_agent_type(monkeypatch):
@@ -46,6 +46,7 @@ def test_import_surface():
         "GrokTaskConfig",
         "CursorTaskConfig",
         "ClaudeCodeTaskConfig",
+        "ClaudeCodeRequestyTaskConfig",
         "CodexTaskConfig",
         "OpencodeTaskConfig",
         "AntigravityTaskConfig",
@@ -53,6 +54,7 @@ def test_import_surface():
         "create_grok_task",
         "create_cursor_task",
         "create_claudecode_task",
+        "create_claudecode_requesty_task",
         "create_codex_task",
         "create_opencode_task",
         "create_antigravity_task",
@@ -66,3 +68,14 @@ def test_agent_type_defaults_per_engine():
     assert (
         aa.AntigravityTaskConfig(consumer_instructions="x", fs_isolation=False).agent_type == "antigravity"
     )
+    # Conversation mode only, so it needs a headless permission mode.
+    assert (
+        aa.ClaudeCodeRequestyTaskConfig(
+            consumer_instructions="x", fs_isolation=False, permission_mode="dontAsk"
+        ).agent_type
+        == "claudecode_requesty"
+    )
+
+
+def test_claudecode_requesty_dispatches_to_its_own_factory():
+    assert _REGISTRY["claudecode_requesty"] is aa.create_claudecode_requesty_task

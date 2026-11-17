@@ -2,13 +2,14 @@
 
 Exposes a single ``create_task`` that dispatches to the right per-engine
 factory based on ``config.agent_type``, over a tagged discriminated union
-of the seven engine ``TaskConfig`` dataclasses.
+of the eight agent-type ``TaskConfig`` dataclasses (the seven engines, plus
+Claude Code through Requesty).
 """
 
 from __future__ import annotations
 
 from optio_antigravity import create_antigravity_task
-from optio_claudecode import create_claudecode_task
+from optio_claudecode import create_claudecode_requesty_task, create_claudecode_task
 from optio_codex import create_codex_task
 from optio_cursor import create_cursor_task
 from optio_grok import create_grok_task
@@ -31,6 +32,7 @@ from optio_agents_all.types import (
     AgentTaskConfig,
     AgentType,
     AntigravityTaskConfig,
+    ClaudeCodeRequestyTaskConfig,
     ClaudeCodeTaskConfig,
     CodexTaskConfig,
     CursorTaskConfig,
@@ -55,6 +57,7 @@ __all__ = [
     "GrokTaskConfig",
     "CursorTaskConfig",
     "ClaudeCodeTaskConfig",
+    "ClaudeCodeRequestyTaskConfig",
     "CodexTaskConfig",
     "OpencodeTaskConfig",
     "AntigravityTaskConfig",
@@ -62,6 +65,7 @@ __all__ = [
     "create_grok_task",
     "create_cursor_task",
     "create_claudecode_task",
+    "create_claudecode_requesty_task",
     "create_codex_task",
     "create_opencode_task",
     "create_antigravity_task",

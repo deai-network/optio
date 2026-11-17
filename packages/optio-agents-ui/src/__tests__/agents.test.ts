@@ -5,6 +5,7 @@ import { AGENTS, getAgentInfo, type AgentType } from '../index.js';
 const EXPECTED: Record<AgentType, { name: string; url: string }> = {
   antigravity: { name: 'Antigravity CLI', url: 'https://antigravity.google' },
   claudecode: { name: 'Claude Code', url: 'https://claude.com/product/claude-code' },
+  claudecode_requesty: { name: 'Claude Code + Requesty', url: 'https://requesty.ai' },
   codex: { name: 'Codex', url: 'https://openai.com/codex' },
   cursor: { name: 'Cursor CLI', url: 'https://cursor.com/cli' },
   grok: { name: 'Grok Build', url: 'https://x.ai/cli' },
@@ -13,7 +14,7 @@ const EXPECTED: Record<AgentType, { name: string; url: string }> = {
 };
 
 describe('AGENTS catalog', () => {
-  it('has exactly the 7 canonical engines', () => {
+  it('has exactly the 8 canonical engines', () => {
     expect(Object.keys(AGENTS).sort()).toEqual(Object.keys(EXPECTED).sort());
   });
 

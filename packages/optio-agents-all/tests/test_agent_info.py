@@ -16,3 +16,4 @@ def test_each_entry_slug_matches_key():
 def test_get_agent_info_lookup():
     assert get_agent_info("claudecode").name == "Claude Code"
     assert get_agent_info("grok").url == "https://x.ai/cli"
+    assert get_agent_info("claudecode_requesty").url == "https://requesty.ai"

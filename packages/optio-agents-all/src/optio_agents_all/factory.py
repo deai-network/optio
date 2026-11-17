@@ -11,7 +11,7 @@ from optio_cursor import analyze_account as _cursor_analyze
 from optio_kimicode import analyze_account as _kimicode_analyze
 from optio_antigravity import analyze_account as _antigravity_analyze
 from optio_grok import analyze_account as _grok_analyze
-from optio_claudecode import create_claudecode_task
+from optio_claudecode import create_claudecode_requesty_task, create_claudecode_task
 from optio_codex import create_codex_task
 from optio_cursor import create_cursor_task
 from optio_grok import create_grok_task
@@ -26,6 +26,7 @@ _REGISTRY: dict[AgentType, Callable] = {
     "grok": create_grok_task,
     "cursor": create_cursor_task,
     "claudecode": create_claudecode_task,
+    "claudecode_requesty": create_claudecode_requesty_task,
     "codex": create_codex_task,
     "opencode": create_opencode_task,
     "antigravity": create_antigravity_task,
@@ -48,11 +49,19 @@ def create_task(
     )  # type: ignore[arg-type]
 
 
+async def _no_accounts(creds) -> AccountInfo:
+    """The analyzer of an agent type whose seed backs no account:
+    claudecode_requesty's gateway seed holds a Requesty API key, not an
+    account login."""
+    return EMPTY
+
+
 # Per-engine account analyzers, keyed by agent_type. claudecode is the reference
 # implementation; the other six land as their follow-up plans give them an
 # ``analyze_account`` (until then they are absent from the registry).
 _ANALYZE_REGISTRY: dict[AgentType, Callable] = {
     "claudecode": _claudecode_analyze,
+    "claudecode_requesty": _no_accounts,
     "codex": _codex_analyze,
     "cursor": _cursor_analyze,
     "kimicode": _kimicode_analyze,
@@ -97,6 +106,7 @@ _ANALYZE_ACCOUNTS_REGISTRY: dict[
     AgentType, Callable[..., Awaitable[list[AccountInfo]]]
 ] = {
     "claudecode": _single(_claudecode_analyze),
+    "claudecode_requesty": _single(_no_accounts),
     "codex": _single(_codex_analyze),
     "cursor": _single(_cursor_analyze),
     "kimicode": _single(_kimicode_analyze),

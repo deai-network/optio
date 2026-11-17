@@ -6,7 +6,7 @@ from __future__ import annotations
 
 # Engines whose TaskConfig accepts ``mcp_servers`` (and hands the servers to its
 # agent). Every other engine's config raises ValueError on any non-None value.
-MCP_AGENT_TYPES: frozenset[str] = frozenset({"claudecode"})
+MCP_AGENT_TYPES: frozenset[str] = frozenset({"claudecode", "claudecode_requesty"})
 
 
 def supports_mcp(agent_type: str) -> bool:
@@ -18,7 +18,7 @@ def supports_mcp(agent_type: str) -> bool:
 # Engines whose TaskConfig accepts a non-empty ``custom_controls`` (and applies
 # the picks to its agent). Every other engine's config raises ValueError on a
 # non-empty list.
-CUSTOM_CONTROLS_AGENT_TYPES: frozenset[str] = frozenset({"claudecode"})
+CUSTOM_CONTROLS_AGENT_TYPES: frozenset[str] = frozenset({"claudecode", "claudecode_requesty"})
 
 
 def supports_custom_controls(agent_type: str) -> bool:

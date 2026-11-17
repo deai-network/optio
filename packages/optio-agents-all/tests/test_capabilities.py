@@ -13,10 +13,15 @@ from optio_claudecode.models import EFFORT_LEVELS as CLAUDECODE_EFFORT_LEVELS
 
 import optio_agents_all as aa
 from optio_agents_all import (CUSTOM_CONTROLS_AGENT_TYPES, MCP_AGENT_TYPES,
-                              ClaudeCodeTaskConfig, supports_custom_controls, supports_mcp)
+                              ClaudeCodeRequestyTaskConfig, ClaudeCodeTaskConfig,
+                              supports_custom_controls, supports_mcp)
 
 CONFIG_TYPES = get_args(aa.AgentTaskConfig)
-UNSUPPORTED_CONFIG_TYPES = [c for c in CONFIG_TYPES if c is not ClaudeCodeTaskConfig]
+UNSUPPORTED_CONFIG_TYPES = [
+    c for c in CONFIG_TYPES
+    if c.__dataclass_fields__["agent_type"].default not in MCP_AGENT_TYPES
+]
+CLAUDE_CODE_CONFIGS = [ClaudeCodeTaskConfig, ClaudeCodeRequestyTaskConfig]
 
 _SERVER = McpServer(name="k", url="https://k.example/mcp")
 
@@ -41,10 +46,11 @@ async def _provider(process_id: str) -> list[McpServer]:
     return [_SERVER]
 
 
-def test_only_claudecode_supports_mcp():
+def test_only_the_claude_code_types_support_mcp():
     assert isinstance(MCP_AGENT_TYPES, frozenset)
-    assert MCP_AGENT_TYPES == {"claudecode"}
+    assert MCP_AGENT_TYPES == {"claudecode", "claudecode_requesty"}
     assert supports_mcp("claudecode") is True
+    assert supports_mcp("claudecode_requesty") is True
     assert supports_mcp("codex") is False
 
 
@@ -60,20 +66,25 @@ def test_unsupported_configs_refuse_mcp_servers(cls):
     assert _make(cls).mcp_servers is None
 
 
-def test_claudecode_config_accepts_mcp_servers():
-    assert _make(ClaudeCodeTaskConfig, mcp_servers=[_SERVER]).mcp_servers == [_SERVER]
-    assert _make(ClaudeCodeTaskConfig, mcp_servers=_provider).mcp_servers is _provider
+@pytest.mark.parametrize("cls", CLAUDE_CODE_CONFIGS, ids=lambda c: c.__name__)
+def test_claudecode_configs_accept_mcp_servers(cls):
+    # The Requesty config runs in conversation mode only, which needs a
+    # headless permission mode; the same value is valid on both.
+    mode = {"permission_mode": "dontAsk"}
+    assert _make(cls, mcp_servers=[_SERVER], **mode).mcp_servers == [_SERVER]
+    assert _make(cls, mcp_servers=_provider, **mode).mcp_servers is _provider
     # A malformed static list is still refused on the supporting engine.
     with pytest.raises(ValueError, match="duplicate MCP server name"):
-        _make(ClaudeCodeTaskConfig, mcp_servers=[_SERVER, _SERVER])
+        _make(cls, mcp_servers=[_SERVER, _SERVER], **mode)
 
 
 # --- custom session controls ---------------------------------------------------------
 
-def test_only_claudecode_supports_custom_controls():
+def test_only_the_claude_code_types_support_custom_controls():
     assert isinstance(CUSTOM_CONTROLS_AGENT_TYPES, frozenset)
-    assert CUSTOM_CONTROLS_AGENT_TYPES == {"claudecode"}
+    assert CUSTOM_CONTROLS_AGENT_TYPES == {"claudecode", "claudecode_requesty"}
     assert supports_custom_controls("claudecode") is True
+    assert supports_custom_controls("claudecode_requesty") is True
     assert supports_custom_controls("codex") is False
 
 
@@ -88,13 +99,14 @@ def test_unsupported_configs_refuse_custom_controls(cls):
     assert _make(cls, custom_controls=[]).custom_controls == []
 
 
-def test_claudecode_config_accepts_custom_controls():
+@pytest.mark.parametrize("cls", CLAUDE_CODE_CONFIGS, ids=lambda c: c.__name__)
+def test_claudecode_configs_accept_custom_controls(cls):
     # Claude Code shows them in its conversation widget only.
     widget = {"mode": "conversation", "conversation_ui": True, "permission_mode": "dontAsk"}
-    assert _make(ClaudeCodeTaskConfig, custom_controls=[_SPEED], **widget).custom_controls == [_SPEED]
+    assert _make(cls, custom_controls=[_SPEED], **widget).custom_controls == [_SPEED]
     # A malformed list is still refused on the supporting engine.
     with pytest.raises(ValueError, match="duplicate control id 'speed'"):
-        _make(ClaudeCodeTaskConfig, custom_controls=[_SPEED, _SPEED], **widget)
+        _make(cls, custom_controls=[_SPEED, _SPEED], **widget)
 
 
 def test_known_values_match_the_supporting_engine():
