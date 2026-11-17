@@ -262,6 +262,28 @@ async def test_test_again_with_every_model_failing_marks_the_seed_dead(
     assert seed.usable_models() == () and [m.id for m in seed.models] == [KIMI.id, GLM.id]
 
 
+async def test_test_again_on_a_dead_seed_with_a_passing_model_makes_it_alive(
+    task_root, claude_cache_dir, mongo_db, monkeypatch,
+):
+    _fake(monkeypatch, {KIMI.id: "pass", GLM.id: "error"})
+    dead = tuple(replace(m, status="failed", reason=ERROR) for m in (KIMI, GLM))
+    sid = await _write(mongo_db, status="dead", models=dead)
+    saved = []
+    async with _engine(mongo_db) as optio:
+        result, proc = await _run(optio, _task(
+            "gw-retest-revived", sid, claude_cache_dir, retest=True,
+            on_seed_saved=lambda *args: saved.append(args),
+        ))
+
+    assert result["status"] == "alive" and result["seedId"] == sid
+    assert [(m["id"], m["status"]) for m in result["models"]] == [(KIMI.id, "ok"), (GLM.id, "failed")]
+    assert saved == [(sid, SUMMARY)]
+    assert proc["status"]["state"] == "done"
+    assert (await _doc(mongo_db))["status"] == "alive"
+    seed = await _read(mongo_db, sid)
+    assert [(m.id, m.status, m.reason) for m in seed.models] == [(KIMI.id, "ok", None), (GLM.id, "failed", ERROR)]
+
+
 async def test_an_on_seed_saved_that_raises_fails_the_run_and_keeps_the_seed(
     task_root, claude_cache_dir, mongo_db, monkeypatch,
 ):
@@ -291,9 +313,11 @@ async def test_an_on_seed_saved_that_raises_fails_the_run_and_keeps_the_seed(
         ("pending", True, "gateway seed {sid} is pending: Test again needs an alive or dead seed"),
         ("alive", False, "gateway seed {sid} is alive: the setup needs a pending seed "
                          "(Test again is retest=True)"),
+        ("dead", False, "gateway seed {sid} is dead: the setup needs a pending seed "
+                        "(Test again is retest=True)"),
         (None, False, "unknown gateway seed {sid}"),
     ],
-    ids=["retest-pending", "setup-alive", "unknown"],
+    ids=["retest-pending", "setup-alive", "setup-dead", "unknown"],
 )
 async def test_the_flow_must_fit_the_seed_status(
     status, retest, expected, task_root, claude_cache_dir, mongo_db,
