@@ -1081,6 +1081,58 @@ length, for a handle without stdin, and for a value that cannot be encoded as
 UTF-8 or holds `\n`, `\r` or NUL. No message includes a value, and none is
 raised inside an except block.
 
+### Validation
+
+`optio_claudecode.gateway_setup.validate_gateway_models(seed, model_ids, *,
+ssh=None, concurrency=3, per_model_timeout=90.0, report=None,
+install_dir=None) -> dict[str, tuple[bool, str | None]]` checks each model
+with one short real gateway-mode conversation on the session host (`ssh`, None
+for this machine), and returns `{model_id: (ok, reason)}` in the order given.
+`install_dir` is the claude cache override, as in `ClaudeCodeTaskConfig`.
+
+- **One model** (`_check_model`, the seam tests patch). It gets its own task
+  directory, `task_dir(ssh=ssh, process_id="gateway-check-<12 hex>",
+  consumer_name="optio-claudecode")`, then `connect` and `setup_workdir`.
+  claude is installed under the batch's install lock, so one install runs at a
+  time: the first also checks upstream for a newer claude, and the others link
+  the cached one. The workdir gets `CHECK_FILE` (`optio-check.txt`), holding a
+  random word with four digits. claude launches with `--permission-mode
+  dontAsk --allowed-tools Read --tools Read --model <id>`. The prompt
+  (`CHECK_PROMPT`) asks it to read the file with the Read tool and reply with
+  only the word.
+- **Gateway mode, the model alone.** The launch is a gateway launch (see
+  Gateway launch: `gateway_launch_env`, `GATEWAY_ENV_REMOVE`, the token as the
+  first stdin line through `with_stdin_secrets` / `write_stdin_secrets`). It
+  uses the seed as it would be with that model as its only usable model and its
+  default. A seed being set up has no usable model yet. This way the aliases
+  (`ANTHROPIC_DEFAULT_*_MODEL`) point at the model under test, so each result
+  depends on that model alone. `--effort` is `launch_effort`'s preselected
+  level, and a model without levels gets none.
+- **The outcome.** `probe_turn` is raced against claude's exit. The `result`
+  event decides whether the turn was an error: an `is_error` result also
+  reaches `on_message`, so `probe_turn` alone would return its text as an
+  answer.
+
+  | Outcome | Result |
+  |---|---|
+  | no error, the word in the answer (case-insensitive) | `(True, None)` |
+  | an `is_error` result | `(False, <its text>)` |
+  | an answer without the word | `(False, "did not answer with the word (answered '<first 120>')")` |
+  | no answer within the timeout | `(False, "no answer within <t> s")` |
+  | claude exited first | `(False, "claude exited (exit <rc>) before answering")` |
+
+  Whatever happens, claude is SIGKILLed, the reader stopped, the task
+  directory removed and the host disconnected. A failed cleanup step is
+  logged, and the outcome stands.
+- **The batch.** `asyncio.Semaphore(concurrency)` and `gather`. A check that
+  raises fails its model only, with `"check failed: <type>: <message, first
+  200>"`. `report(done, total, model_id, ok, reason)` runs after each model.
+  The token never reaches a reason: it is replaced by `***` in every reason,
+  and in an answer or a message before it is cut short.
+- Tests: `tests/test_gateway_validation.py`, using fake_claude's
+  `FAKE_CLAUDE_GATEWAY_MODELS` (model id to `pass`, `wrong`, `error`,
+  `error-with-token`, `hang` or `exit`).
+
 ## Hooks
 
 `before_execute(hook_ctx)`, `after_execute(hook_ctx)`,

@@ -231,6 +231,36 @@ def _user_text(msg: dict) -> str:
                    if isinstance(part, dict))
 
 
+_GATEWAY_ERROR = "API Error: 404 model not available"
+
+
+def _gateway_turn(behaviour: str, emit, session_id: str) -> "int | None":
+    """One turn as FAKE_CLAUDE_GATEWAY_MODELS scripts it: None once it is
+    answered, else the exit code the process ends with."""
+    if behaviour == "hang":
+        for _line in sys.stdin:
+            pass
+        return 0
+    if behaviour == "exit":
+        return 3
+    if behaviour == "pass":
+        text, is_error = Path("optio-check.txt").read_text(encoding="utf-8").strip(), False
+    elif behaviour == "wrong":
+        text, is_error = "I could not read it", False
+    elif behaviour == "error":
+        text, is_error = _GATEWAY_ERROR, True
+    elif behaviour == "error-with-token":
+        text, is_error = f"{_GATEWAY_ERROR} {os.environ.get('ANTHROPIC_AUTH_TOKEN', '')}", True
+    else:
+        raise SystemExit(f"unknown FAKE_CLAUDE_GATEWAY_MODELS behaviour {behaviour!r}")
+    emit({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "text", "text": text}],
+    }, "session_id": session_id})
+    emit({"type": "result", "subtype": "success", "result": text,
+          "session_id": session_id, "is_error": is_error, "total_cost_usd": 0.0})
+    return None
+
+
 def run_stream_json_mode(argv: list[str]) -> int:
     """Bidirectional NDJSON fake: one scripted reply per user message.
 
@@ -281,6 +311,17 @@ def run_stream_json_mode(argv: list[str]) -> int:
                                    the real CLI drops a level it does not
                                    know), so get_settings reports another
                                    effort than optio asked for.
+      FAKE_CLAUDE_GATEWAY_MODELS — a JSON object, model id -> how a turn on
+                                   that model goes (gateway validation):
+                                   'pass' answers the stripped content of
+                                   ./optio-check.txt; 'wrong' answers 'I
+                                   could not read it'; 'error' ends the turn
+                                   in an is_error result 'API Error: 404
+                                   model not available'; 'error-with-token'
+                                   the same with $ANTHROPIC_AUTH_TOKEN
+                                   appended; 'hang' reads stdin until EOF
+                                   and never answers; 'exit' exits with 3. A
+                                   model it does not name replies as usual.
 
     The reply template may also name ``{model}`` (the model the turn runs on,
     a full id) and ``{effort}`` (its effort level, ``default`` when none was
@@ -313,6 +354,7 @@ def run_stream_json_mode(argv: list[str]) -> int:
     exit_after = int(os.environ.get("FAKE_CLAUDE_EXIT_AFTER", "0"))
     hold_turn = os.environ.get("FAKE_CLAUDE_HOLD_TURN") == "1"
     stdin_log = os.environ.get("FAKE_CLAUDE_STDIN_LOG")
+    gateway_models = json.loads(os.environ.get("FAKE_CLAUDE_GATEWAY_MODELS") or "{}")
     session_id = "fake-session-0000"
     # Permission mode as the real CLI reports and switches it (verified on
     # 2.1.268): init names the launch mode; set_permission_mode answers, then
@@ -441,6 +483,12 @@ def run_stream_json_mode(argv: list[str]) -> int:
                 f.write(json.dumps(_user_text(msg)) + "\n")
         n += 1
         emit(init_event())
+        behaviour = gateway_models.get(running_model)
+        if behaviour is not None:
+            code = _gateway_turn(behaviour, emit, session_id)
+            if code is not None:
+                return code
+            continue
         decision_note = ""
         if want_permission and n == 1:
             emit({"type": "control_request", "request_id": "perm-1",
