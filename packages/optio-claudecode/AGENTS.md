@@ -382,7 +382,12 @@ when the hook returns, and when it raises `NothingToResurrect`.
   account's default, not the launch flags): the effort sent with a model
   change is the running level when the new model lists it (or lists none),
   else the model's preselected one; an effort change carries the running
-  model (`default` when none was set). A permission mode is
+  model (`default` when none was set). The one exception is gateway mode
+  (`conversation.effort_needs_levels`): a model whose catalog entry lists no
+  `effort` is switched to with `{model}` alone, no `effortLevel` key, and
+  `conversation.effort` becomes None; an effort for such a model raises
+  `ValueError`. Claude Code then sends its own default effort, since no
+  form makes it send none (measured facts under Testing). A permission mode is
   `set_permission_mode`, sent first and switched back if claude then refuses
   the model/effort change. Claude takes an unknown model as given and drops
   an unknown level silently, so each value is checked first against the
@@ -1093,3 +1098,55 @@ a tmpdir.
 
 Remote SSH automated tests are deferred to a follow-up plan. See the
 design doc's "Open follow-ups" section.
+
+### Live probe: the effort Claude Code sends behind a gateway
+
+`tests/live/probe_gateway_effort.py` is not collected by pytest. Run it on a
+host with a cached claude binary, from the repo root:
+`python packages/optio-claudecode/tests/live/probe_gateway_effort.py`. It
+prints `no cached claude binary` and exits 2 when the cache holds none. It
+uses only the loopback: an aiohttp server on 127.0.0.1 stands in for the
+gateway and answers every `/v1/messages*` with a 400. Each scenario runs the
+newest cached claude in conversation mode (stream-json in and out) with a
+fresh HOME and `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
+`DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and
+`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`. It optionally switches with one
+`apply_flag_settings`, sends one message, and prints the `effort` and
+`thinking` parameters of the bodies sent for the model under test.
+
+Measured with Claude Code 2.1.319 on 2026-11-17. Both ids are unknown to
+Claude Code. Every `apply_flag_settings` answered success, and every body
+also carried `thinking: {"type": "adaptive"}` (some with
+`"display": "updates"`).
+
+| | extra env | launch | `apply_flag_settings` | effort sent |
+|---|---|---|---|---|
+| A | | `--model gw/plain` | | `output_config.effort: "high"` |
+| B | | `--model gw/levels --effort high` | `{model: gw/plain}` | `"high"` |
+| C | | as B | `{model: gw/plain, effortLevel: null}` | `"high"` |
+| D | `CLAUDE_CODE_EFFORT_LEVEL=unset` | `--model gw/levels --effort high` | | none |
+| E | `CLAUDE_CODE_EFFORT_LEVEL=unset` | `--model gw/plain` | `{model: gw/levels, effortLevel: high}` | none |
+| F | `CLAUDE_CODE_EFFORT_LEVEL=unset` | as B | `{model: gw/plain}` | none |
+| G | `CLAUDE_CODE_EFFORT_LEVEL=auto` | `--model gw/plain` | | none |
+| H | `CLAUDE_CODE_EFFORT_LEVEL=auto` | `--model gw/levels --effort high` | | none |
+| I | `CLAUDE_CODE_EFFORT_LEVEL=auto` | `--model gw/plain` | `{model: gw/levels, effortLevel: high}` | none |
+| J | `CLAUDE_CODE_EFFORT_LEVEL=auto` | as B | `{model: gw/plain}` | none |
+| K | | as B | `{model: gw/plain, effortLevel: auto}` | `"high"` |
+| L | | as B | `{model: gw/plain, effortLevel: unset}` | `"high"` |
+| M | | `--model gw/levels --effort low` | | `"low"` |
+| N | | `--model gw/plain` | `{model: gw/levels, effortLevel: low}` | `"low"` |
+
+What the table shows:
+
+- While `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` is set, an unknown model always
+  gets an effort, `high` by default (A).
+- No `apply_flag_settings` form drops it: not leaving the key out, not
+  `null`, not `auto`, not `unset` (B, C, K, L).
+- `CLAUDE_CODE_EFFORT_LEVEL=unset` or `auto` drops the effort for the whole
+  process, including an explicit `--effort` and an explicit live level (D to
+  J). Gateway mode therefore never sets it.
+- Explicit levels reach the wire, both at launch and live (M, N).
+
+So gateway mode leaves `effortLevel` out for a model without levels, and the
+CLI sends its default effort for it. Whether a gateway accepts that is
+checked in the live test.

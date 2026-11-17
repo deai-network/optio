@@ -554,3 +554,61 @@ async def test_a_turn_starting_after_the_mode_switch_puts_the_mode_back():
     assert handle.stdin.lines.empty()
     assert (conv.model, conv.effort, conv.permission_mode) == ("opus[1m]", "high", "default")
     await _done(handle, reader)
+
+
+# --- gateway mode: an effort only for a model that lists levels ----------------------
+
+GATEWAY = [{"id": "prov-a/kimi-k3.1-pro", "label": "prov-a/kimi-k3.1-pro", "effort": ["low", "high"]},
+           {"id": "glm-flash", "label": "glm-flash"}]
+
+
+def _gw(model, effort):
+    conv, handle, reader = _conv(model=model, effort=effort)
+    conv.models_offered, conv.effort_needs_levels = GATEWAY, True
+    return conv, handle, reader
+
+
+async def test_gateway_a_model_without_levels_is_sent_no_effort():          # RF3
+    conv, handle, reader = _gw("prov-a/kimi-k3.1-pro", "high")
+    switch = asyncio.create_task(conv.apply_settings(model="glm-flash"))
+    req = await _next_request(handle)
+    assert req["request"]["settings"] == {"model": "glm-flash"}             # NO_EFFORT form
+    _answer(handle, req)
+    await _answer_readback(handle)
+    await asyncio.wait_for(switch, 60)
+    assert (conv.model, conv.effort) == ("glm-flash", None)
+    await _done(handle, reader)
+
+
+async def test_gateway_back_to_a_model_with_levels_sends_its_preselected_level():
+    conv, handle, reader = _gw("glm-flash", None)
+    switch = asyncio.create_task(conv.apply_settings(model="prov-a/kimi-k3.1-pro"))
+    req = await _next_request(handle)
+    assert req["request"]["settings"] == {"model": "prov-a/kimi-k3.1-pro", "effortLevel": "high"}
+    _answer(handle, req)
+    await _answer_readback(handle)
+    await asyncio.wait_for(switch, 60)
+    assert (conv.model, conv.effort) == ("prov-a/kimi-k3.1-pro", "high")
+    await _done(handle, reader)
+
+
+@pytest.mark.parametrize("running, call", [
+    ("glm-flash", lambda conv: conv.set_control("reasoning_effort", "high")),
+    ("prov-a/kimi-k3.1-pro", lambda conv: conv.apply_settings(model="glm-flash", effort="high")),
+])
+async def test_gateway_an_effort_for_a_model_without_levels_is_refused(running, call):
+    effort = None if running == "glm-flash" else "high"
+    conv, handle, reader = _gw(running, effort)
+    with pytest.raises(ValueError):
+        await asyncio.wait_for(call(conv), 60)
+    assert handle.stdin.lines.empty()
+    assert (conv.model, conv.effort) == (running, effort)
+    await _done(handle, reader)
+
+
+async def test_gateway_a_model_outside_the_seed_is_refused():
+    conv, handle, reader = _gw("prov-a/kimi-k3.1-pro", "high")
+    with pytest.raises(ValueError):
+        await asyncio.wait_for(conv.apply_settings(model="claude-opus-5"), 60)
+    assert handle.stdin.lines.empty()
+    await _done(handle, reader)

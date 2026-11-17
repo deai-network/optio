@@ -114,6 +114,11 @@ class ClaudeCodeConversation:
         # like a configured model, though the CLI's list (its picker's
         # entries, e.g. no plain `opus`) may not name them.
         self.task_models: frozenset[str] = frozenset()
+        # Gateway mode (set by the owning body): a model whose catalog entry
+        # lists no effort levels is switched to without an effortLevel, and an
+        # effort for it is refused; ``effort`` is then None. Off: such a model
+        # keeps the running level.
+        self.effort_needs_levels: bool = False
         # Awaited after every model/effort switch claude answered, with
         # whether it took it: the owning body keeps the picks for a resume
         # and re-emits the controls snapshot (after a refusal too: the widget
@@ -442,7 +447,9 @@ class ClaudeCodeConversation:
         always with explicit values: claude falls a missing or null one back
         to the account's default, not to the launch flags. The level sent
         with a model change is the running one when the new model lists it
-        (or lists none), else the new model's preselected level. A
+        (or lists none), else the new model's preselected level. With
+        ``effort_needs_levels`` (gateway mode) a model that lists no levels
+        is sent without ``effortLevel`` and an effort for it is refused. A
         permission mode change is ``set_permission_mode``, sent first; if
         claude then refuses the model/effort change, the mode is switched
         back (best effort).
@@ -515,14 +522,16 @@ class ClaudeCodeConversation:
                 self.runtime_model = None
                 self.runtime_model_observed.clear()
             self.model = model
-        self.effort = settings["effortLevel"]
+        self.effort = settings.get("effortLevel")
         await self._settings_changed(applied=True)
         await self._check_settings()
 
     async def _flag_settings(self, model, effort) -> dict:
         """The ``apply_flag_settings`` settings for a change to ``model``
         and/or ``effort`` (None: unchanged), checked against the CLI's model
-        list; ValueError for a value it does not offer."""
+        list; ValueError for a value it does not offer. Without an
+        ``effortLevel`` for a model that lists no levels when
+        ``effort_needs_levels``."""
         if model is not None and (not isinstance(model, str) or not model):
             raise ValueError(f"model {model!r} is not offered by this session")
         if effort is not None and effort not in cc_models.EFFORT_LEVELS:
@@ -538,6 +547,13 @@ class ClaudeCodeConversation:
         levels, preselected = cc_models.model_effort(
             cc_models.shown_model(catalog, picked=target, runtime=None), catalog,
         )
+        if self.effort_needs_levels and not levels:
+            # No published levels: no effortLevel key. Claude Code (2.1.319)
+            # then sends its own default; no form makes it send none (AGENTS.md,
+            # Testing).
+            if effort is not None:
+                raise ValueError(f"reasoning effort {effort!r} is not offered for {target}")
+            return {"model": target}
         if effort is not None:
             if levels and effort not in levels:
                 raise ValueError(f"reasoning effort {effort!r} is not offered for {target}")
