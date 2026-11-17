@@ -421,16 +421,16 @@ def _oid_or_none(seed_id: str):
 async def acquire(
     db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, poolKey: str, holder: str,
 ) -> str | None:
-    """Atomically lease the least-recently-leased free, non-dead seed in the
-    pool. Returns its seed_id, or None if none is available. Lazy reclaim: a
-    seed whose lease is null or whose lease.expiresAt is not in the future
-    counts as free. Selection is round-robin via `lastLeasedAt` (missing sorts
-    first)."""
+    """Atomically lease the least-recently-leased free seed in the pool that is
+    neither 'dead' nor 'pending'. Returns its seed_id, or None if none is
+    available. Lazy reclaim: a seed whose lease is null or whose
+    lease.expiresAt is not in the future counts as free. Selection is
+    round-robin via `lastLeasedAt` (missing sorts first)."""
     coll = _collection(db, prefix, suffix)
     doc = await coll.find_one_and_update(
         {
             "poolKey": poolKey,
-            "status": {"$ne": "dead"},
+            "status": {"$nin": ["dead", "pending"]},
             "$expr": {
                 "$or": [
                     {"$eq": [{"$ifNull": ["$lease", None]}, None]},
@@ -487,8 +487,9 @@ async def release(
 async def mark_seed_status(
     db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str, status: str,
 ) -> None:
-    """Set status ('alive' | 'dead'). A 'dead' seed is never handed out by
-    acquire. Consumer policy decides when a seed is dead (e.g. invalid_grant)."""
+    """Set status ('pending' | 'alive' | 'dead'). acquire never hands out a
+    'dead' or a 'pending' seed. 'pending' is a seed written but not yet
+    validated. Consumer policy decides when a seed is dead (e.g. invalid_grant)."""
     oid = _oid_or_none(seed_id)
     if oid is None:
         return

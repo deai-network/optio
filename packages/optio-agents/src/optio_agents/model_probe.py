@@ -26,6 +26,7 @@ import asyncio
 import inspect
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from optio_core.exceptions import ResultNotPublished
 from optio_core.models import TaskInstance
@@ -42,7 +43,9 @@ async def _maybe_await(value):
     return value
 
 
-async def _probe_turn(conversation, question: str, timeout: float, *, error_from_event=None):
+async def probe_turn(
+    conversation, question: str, timeout: float, *, error_from_event=None,
+) -> tuple[str, Any]:
     """Send one prompt; return ``(answer_text, error)``.
 
     ``answer_text`` is the turn's assistant text ("" on timeout / no answer);
@@ -74,6 +77,10 @@ async def _probe_turn(conversation, question: str, timeout: float, *, error_from
         unsub_msg()
         if unsub_evt is not None:
             unsub_evt()
+
+
+# The former private name, kept so existing imports keep working.
+_probe_turn = probe_turn
 
 
 async def run_probe_child(ctx, *, name: str, description: str | None = None, probe):
@@ -146,7 +153,7 @@ async def probe_models(
     for i, mid in enumerate(model_ids):
         try:
             await _maybe_await(set_model(conversation, mid))
-            answer, error = await _probe_turn(
+            answer, error = await probe_turn(
                 conversation, question, per_model_timeout,
                 error_from_event=error_from_event,
             )

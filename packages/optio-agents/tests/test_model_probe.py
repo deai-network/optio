@@ -100,6 +100,11 @@ async def test_probe_models_error_signal_marks_errored_unusable():
     assert usable == {"m-default": True, "m-bad": False}
 
 
+def test_probe_turn_is_public():
+    from optio_agents.model_probe import _probe_turn, probe_turn
+    assert probe_turn is _probe_turn
+
+
 async def test_probe_models_reports_progress():
     conv = FakeConv()
     seen = []

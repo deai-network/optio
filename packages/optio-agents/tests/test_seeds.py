@@ -479,6 +479,14 @@ async def test_acquire_skips_dead_seeds(mongo_db):
     assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p3", holder="h1") is None
 
 
+async def test_acquire_skips_pending_seeds(mongo_db):          # RF2
+    sid = await _pooled_seed(mongo_db, "p-pending")
+    await seeds.mark_seed_status(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, status="pending")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p-pending", holder="h1") is None
+    await seeds.mark_seed_status(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, status="alive")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p-pending", holder="h1") == sid
+
+
 async def test_acquire_ignores_other_pools(mongo_db):
     await _pooled_seed(mongo_db, "pA")
     assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="pB", holder="h1") is None

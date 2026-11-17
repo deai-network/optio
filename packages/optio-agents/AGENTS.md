@@ -419,6 +419,18 @@ the workdir capture cap design (`docs/2026-10-13-workdir-capture-cap-design.md`)
   through `compose_instructions_file`, so `test_wrapper_compose_signature_is_uniform`
   (optio-agents-all) still holds.
 
+## Seed statuses and the probe turn
+
+* A seed document's `status` is `pending`, `alive` or `dead`
+  (`seeds.mark_seed_status`); a document without one counts as `alive`.
+  `pending` is a seed that is written but not yet validated: the consumer
+  makes it `alive` once it passes, or removes it. The pool (`seeds.acquire`)
+  never leases a `pending` or a `dead` seed.
+* `model_probe.probe_turn(conversation, question, timeout, *,
+  error_from_event=None)` sends one prompt and returns `(answer_text,
+  error)`. It is public so engines reuse it for their own one-turn checks
+  instead of copying it. `_probe_turn` stays as an alias of it.
+
 ## Dependency direction
 
 Depends on `optio-host` and `optio-core`; consumed by every engine wrapper
