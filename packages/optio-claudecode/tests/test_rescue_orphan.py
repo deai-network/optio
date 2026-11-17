@@ -48,6 +48,7 @@ class _Host:
 class _Config:
     workdir_exclude = None
     session_blob_encrypt = None
+    gateway_provider = None     # ClaudeCodeTaskConfig's ClassVar
 
 
 class _Ctx:
@@ -131,6 +132,19 @@ async def test_rescue_capture_keeps_the_default_excludes(patched, tmp_path):
     await S._rescue_orphan_if_present(_Ctx(), _Host(str(tmp_path)), _Config())
     exclude = patched["capture"][0]["workdir_exclude"]
     assert exclude == [*DEFAULT_WORKDIR_EXCLUDES, ".optio-rescue-pending"]
+
+
+@pytest.mark.asyncio
+async def test_rescue_capture_guards_on_what_the_launch_planted(patched, tmp_path):
+    """The rescue capture's guard checks the file the session's launch wrote:
+    the OAuth credentials, or in gateway mode the gateway marker."""
+    class _GatewayConfig(_Config):
+        gateway_provider = "requesty"
+
+    patched["alive"] = True
+    await S._rescue_orphan_if_present(_Ctx(), _Host(str(tmp_path)), _Config())
+    await S._rescue_orphan_if_present(_Ctx(), _Host(str(tmp_path)), _GatewayConfig())
+    assert [c["guard_file"] for c in patched["capture"]] == [".credentials.json", ".optio-gateway"]
 
 
 @pytest.mark.asyncio

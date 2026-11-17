@@ -69,7 +69,8 @@ level the model lacks gives way to its default; a
 permission mode the task does not offer is dropped. When that probe cannot
 tell, claude is launched on the configured model (else `default`), its list is
 used, and a correction is switched to live, before the first message. See
-`docs/2026-05-29-optio-claudecode-resume-design.md`.
+`docs/2026-05-29-optio-claudecode-resume-design.md`. Gateway mode asks no
+probe: the picks are checked against the gateway seed (see Gateway launch).
 
 Every resume that continues a transcript tells claude so with
 `System: you have been resumed` (`RESUME_NOTICE`), with or without
@@ -111,9 +112,13 @@ consumers that list or purge gateway seeds. See Gateway mode below.
 and claude came up) and in crash-orphan rescue. It returns `True` when it
 inserted a snapshot record and `False` when its credentials guard refused
 (teardown ignores the result; rescue logs which one happened). Its first half: the credentials guard (no
-`home/.claude/.credentials.json` → no snapshot), the session blob (tar of
-`home/.claude`, through `session_blob_encrypt`), the conversation blob when
-its `conversation: bytes | None` kwarg is given (`_store_conversation_blob`:
+non-empty `home/.claude/<guard_file>` → no snapshot; teardown, rescue and
+Resurrect pass `guard_file=session._snapshot_guard_file(config)`:
+`.credentials.json`, or in gateway mode the marker `.optio-gateway` its
+launch wrote, since a gateway session has no credentials file), the
+session blob (tar of `home/.claude`, through `session_blob_encrypt`), the
+conversation blob when its `conversation: bytes | None` kwarg is given
+(`_store_conversation_blob`:
 GridFS name `conversation`, through `session_blob_encrypt` too; the
 conversation-mode teardown passes the listener's `export_buffer()` JSON,
 exported in memory before `stop()` and never written to the host), or,
@@ -273,8 +278,12 @@ from the snapshot it stored. The hook is
 4. Save. Excludes: `session._excludes_with_rescue_marker(config)`, the
    effective `workdir_exclude` (the archive defaults when unset) plus the
    rescue marker, as crash-orphan rescue uses. The branch is chosen by
-   `home/.claude/.credentials.json` being non-empty (`test -s`), the same
-   test as the capture's credentials guard.
+   `resurrect._session_state_present(host, guard_file)` with
+   `guard_file=session._snapshot_guard_file(config)`:
+   `home/.claude/.credentials.json`, or in gateway mode the marker
+   `home/.claude/.optio-gateway`, being non-empty (`test -s`), the same
+   test as the capture's credentials guard, which gets the same `guard_file`.
+   "Credentials" below means that file.
    - Present (crash while running, or the capture failed before its session
      step): `_capture_snapshot(end_state="resurrected")`. If its own guard
      refuses after all (the credentials disappeared since the hook's test),
@@ -1027,7 +1036,9 @@ unchanged.
   into `settings.json`). Then the marker `home/.claude/.optio-gateway` is
   written, with the fixed content `gateway\n`.
 - **Model and effort.** `--model` is `gateway.launch_model(seed, preferred)`,
-  an exact id. `preferred` is the resume's saved pick, else the configured
+  an exact id, on a resume too (`--continue --model <id>`, never the
+  `default` alias or `models.restore_model`). `preferred` is the resume's
+  saved pick, else the configured
   model (or a custom control's default). When it is not usable, the effective
   default runs, with the progress line `"Claude Code + Requesty runs <id>:
   <preferred> is not usable in this gateway configuration"`. `--effort` is
@@ -1049,10 +1060,11 @@ unchanged.
   a log line.
 - **No OAuth path.** No credentials watcher, no save-back, no seed capture
   and no account resolution.
-- **Snapshots.** The teardown capture passes
+- **Snapshots.** The teardown capture, crash-orphan rescue and Resurrect pass
   `guard_file=_snapshot_guard_file(config)` (`".optio-gateway"`, else
   `".credentials.json"`), so the guard checks the marker instead of the
-  credentials file.
+  credentials file. Rescue and Resurrect run in a later run, on the workdir
+  alone: the marker is what tells them a gateway launch ran there.
 
 `host_actions.with_stdin_secrets(command, names) -> str` gives `IFS= read -r N
 && export N && ... exec <command>`. A bare str `names` raises `TypeError` (it

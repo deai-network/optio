@@ -94,12 +94,14 @@ def _home_claude(host) -> str:
     return host.workdir.rstrip("/") + "/home/.claude"
 
 
-async def _credentials_present(host) -> bool:
-    """The capture's own credentials guard: without them it refuses."""
+async def _session_state_present(host, guard_file: str) -> bool:
+    """The capture's own guard: ``home/.claude/<guard_file>`` non-empty
+    (``S._snapshot_guard_file``: the OAuth credentials, or the gateway
+    marker). Without it the capture refuses."""
     return await _probe(
         host,
-        f"test -s {shlex.quote(_home_claude(host) + '/.credentials.json')}",
-        "credentials",
+        f"test -s {shlex.quote(_home_claude(host) + '/' + guard_file)}",
+        "session state",
     )
 
 
@@ -140,8 +142,10 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
         # blob to adopt.
         record = await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
         committed = await settle_pending_capture(ctx)
-        credentials = await _credentials_present(host)
-        if committed and not credentials:
+        # The credentials, or in gateway mode the marker its launch wrote.
+        guard_file = S._snapshot_guard_file(config)
+        state_present = await _session_state_present(host, guard_file)
+        if committed and not state_present:
             # This run's capture was cut off after inserting its snapshot (it
             # removes home/.claude before recording): the work is saved.
             await ctx.clear_unsaved_work()
@@ -155,7 +159,7 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
         # that blob, and _store_workdir_snapshot never discards the one it
         # records.
         adopted = await _adoptable_conversation_blob(ctx, record, committed=committed)
-        if credentials:
+        if state_present:
             conversation_blob_id = (
                 adopted if adopted is not None else await S._carry_conversation_forward(ctx)
             )
@@ -165,6 +169,7 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
                 workdir_exclude=exclude,
                 session_blob_encrypt=config.session_blob_encrypt,
                 conversation_blob_id=conversation_blob_id,
+                guard_file=guard_file,
             )
             if not saved:
                 # The capture's own guard refused after our check: nothing

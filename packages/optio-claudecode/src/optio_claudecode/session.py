@@ -2075,10 +2075,11 @@ async def _rescue_orphan_if_present(
         )
 
     # 3. Capture the now-static workdir — identical artifacts to a normal
-    #    teardown capture. Exclude the marker so a restored workdir cannot
+    #    teardown capture, behind the same guard (the credentials, or the
+    #    gateway marker). Exclude the rescue marker so a restored workdir cannot
     #    re-trigger rescue in a loop. No live listener here: the conversation
     #    record of the last suspend is carried forward (a copy; dropped again
-    #    when the credentials guard refuses).
+    #    when the guard refuses).
     exclude = _excludes_with_rescue_marker(config)
     conversation_blob_id = await _carry_conversation_forward(ctx)
     saved = await _capture_snapshot(
@@ -2087,6 +2088,7 @@ async def _rescue_orphan_if_present(
         workdir_exclude=exclude,
         session_blob_encrypt=config.session_blob_encrypt,
         conversation_blob_id=conversation_blob_id,
+        guard_file=_snapshot_guard_file(config),
     )
     if not saved and conversation_blob_id is not None:
         await ctx.delete_blob(conversation_blob_id)

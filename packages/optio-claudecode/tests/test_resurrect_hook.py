@@ -12,7 +12,7 @@ from bson import ObjectId
 import optio_claudecode.session as S
 from optio_claudecode import pending_captures as PC
 from optio_claudecode import resurrect as R
-from optio_claudecode import ClaudeCodeTaskConfig
+from optio_claudecode import ClaudeCodeRequestyTaskConfig, ClaudeCodeTaskConfig
 from optio_claudecode.snapshots import insert_snapshot, load_latest_snapshot
 from optio_core import NothingToResurrect
 from optio_host.host import LocalHost
@@ -107,6 +107,33 @@ async def test_resurrect_with_home_claude_present(mongo_db, host, ctx_and_captur
 
 
 @pytest.mark.asyncio
+async def test_a_gateway_workdir_is_saved_on_its_marker(mongo_db, host, ctx_and_captures):
+    """Gateway mode plants no credentials file: the marker its launch wrote
+    chooses the hook's branch and passes the capture's guard, so the live
+    session state is saved, as with credentials."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _prepare(mongo_db, ctx)
+    _write(f"{host.workdir}/CLAUDE.md", "work")
+    _write(f"{host.workdir}/home/.claude/.optio-gateway", "gateway\n")
+    _write(f"{host.workdir}/home/.claude/projects/t.jsonl", "{}")
+    config = ClaudeCodeRequestyTaskConfig(
+        consumer_instructions="(resurrect test)",
+        permission_mode="bypassPermissions",
+        fs_isolation=False,
+        supports_resume=True,
+        session_blob_encrypt=lambda b: b,
+        session_blob_decrypt=lambda b: b,
+    )
+    await R.resurrect_claudecode_session(ctx, config)
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["endState"] == "resurrected"
+    assert {"home/.claude/.optio-gateway", "home/.claude/projects/t.jsonl"} <= (
+        await _archive_names(ctx, snap["sessionBlobId"]))
+    assert not _under(await _archive_names(ctx, snap["workdirBlobId"]), "home/.claude")
+    assert not os.path.exists(host.taskdir)
+
+
+@pytest.mark.asyncio
 async def test_credentials_gone_during_the_save_keeps_the_taskdir(mongo_db, host, ctx_and_captures, monkeypatch):
     """The hook saw credentials, but the capture's own guard then refused
     (they disappeared in between): no snapshot was inserted, so the host is
@@ -116,13 +143,13 @@ async def test_credentials_gone_during_the_save_keeps_the_taskdir(mongo_db, host
     _write(f"{host.workdir}/CLAUDE.md", "work")
     creds = f"{host.workdir}/home/.claude/.credentials.json"
     _write(creds, '{"t": 1}')
-    real_check = R._credentials_present
+    real_check = R._session_state_present
 
-    async def _check_then_lose_them(host_):
-        present = await real_check(host_)
+    async def _check_then_lose_them(host_, guard_file):
+        present = await real_check(host_, guard_file)
         os.remove(creds)
         return present
-    monkeypatch.setattr(R, "_credentials_present", _check_then_lose_them)
+    monkeypatch.setattr(R, "_session_state_present", _check_then_lose_them)
 
     with pytest.raises(NothingToResurrect, match="credentials disappeared during the save"):
         await R.resurrect_claudecode_session(ctx, _config())
@@ -405,17 +432,20 @@ class _ProbeHost:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("probe", ["_workdir_has_content", "_credentials_present"])
-async def test_a_failed_probe_raises_instead_of_answering_absent(probe):
+@pytest.mark.parametrize(("probe", "args"), [
+    ("_workdir_has_content", ()),
+    ("_session_state_present", (".credentials.json",)),
+])
+async def test_a_failed_probe_raises_instead_of_answering_absent(probe, args):
     """A probe whose command fails (connection lost, shell error) gives no
     answer: taking it for "absent" would end in NothingToResurrect, a cleared
     flag and a Resume that wipes the work."""
     fn = getattr(R, probe)
     with pytest.raises(RuntimeError, match=r"exit 255.*connection lost"):
-        await fn(_ProbeHost(stderr="ssh: connection lost", exit_code=255))
+        await fn(_ProbeHost(stderr="ssh: connection lost", exit_code=255), *args)
     # Clean answers stay answers.
-    assert await fn(_ProbeHost(stdout="")) is False
-    assert await fn(_ProbeHost(stdout="YES\n")) is True
+    assert await fn(_ProbeHost(stdout=""), *args) is False
+    assert await fn(_ProbeHost(stdout="YES\n"), *args) is True
 
 
 @pytest.mark.asyncio

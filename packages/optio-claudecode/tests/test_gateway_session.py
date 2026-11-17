@@ -3,11 +3,14 @@
 Real engine and claude shim, as in test_conversation_ui_session.py: the
 session reads the gateway seed, the child gets the seed's environment (the
 token over stdin, never argv or a file), the switcher offers the seed's usable
-models with their effort levels, and no OAuth path runs.
+models with their effort levels, and no OAuth path runs. A resume runs the
+saved pick's exact id while it is usable, and the snapshot guard of later runs
+(rescue, Resurrect) takes the gateway marker.
 """
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
 import logging
@@ -28,9 +31,15 @@ from optio_claudecode import (
     ClaudeCodeRequestyTaskConfig,
     create_claudecode_requesty_task,
 )
+from optio_claudecode import resurrect
 from optio_claudecode import session as session_mod
 from optio_claudecode import snapshots
-from optio_claudecode.gateway import GatewayModel, gateway_launch_env, write_gateway_seed
+from optio_claudecode.gateway import (
+    GatewayModel,
+    gateway_launch_env,
+    update_gateway_seed,
+    write_gateway_seed,
+)
 from optio_claudecode.gateways import requesty
 
 from .test_conversation_ui_session import (
@@ -39,6 +48,7 @@ from .test_conversation_ui_session import (
     _has_control,
     _log_lines,
     _make_optio,
+    _plant_transcript_on,
     _post_control,
     _read_until,
     _remember_workdir,
@@ -417,3 +427,154 @@ async def test_a_failed_secret_write_stops_the_launched_shell(
     assert "rq-first-line" not in error and "rq-second-line" not in error
     assert len(terminated) == 1
     assert terminated[0].pid_like.returncode is not None
+
+
+# --- resume, rescue and Resurrect -------------------------------------------
+
+
+async def _run_switched_to(optio, pid: str, model: str) -> None:
+    """A first run that switches to ``model`` live, then closes: the picks
+    file (saved before the switch's controls update goes out) keeps it for
+    the resume."""
+    conv = await optio.launch_and_await_result(pid, session_id=None, timeout=60)
+    upstream = (await _wait_widget_upstream(optio, pid))["widgetUpstream"]
+    await _wait_widget_data(optio, pid)
+    url, headers = upstream["url"], _basic(upstream["innerAuth"]["password"])
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{url}/events", headers=headers) as events:
+            await _post_control(session, url, headers, "model", model)
+            await _read_until(events, lambda e: _has_control(e, "model", model))
+    await conv.close()
+    proc = await _wait_terminal(optio, pid)
+    assert proc["status"]["state"] == "done"
+
+
+def _flag(argv: list[str], name: str) -> str | None:
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+async def _log_message(optio, pid: str, needle: str, timeout: float = 60.0) -> str | None:
+    """The first process log message holding ``needle``, polled for (the log
+    is written behind report_progress); None after ``timeout``."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    while True:
+        proc = await optio.get_process(pid)
+        found = [e["message"] for e in (proc or {}).get("log", [])
+                 if needle in (e.get("message") or "")]
+        if found or loop.time() > end:
+            return found[0] if found else None
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_gateway_session_runs_the_model_it_was_switched_to(
+    shim_install_dir, claude_cache_dir, task_root, mongo_db, tmp_path,
+):
+    """RF4: the model the operator switched to comes back on a resume as the
+    exact id, with --continue and never the `default` alias; a model without
+    levels is launched without an effort, and the switcher shows it with no
+    effort control."""
+    argv_log = tmp_path / "argv.jsonl"
+    pid = "gw-resume"
+    optio = await _make_optio(mongo_db, "gwresume")
+    try:
+        task = await _gw_task(
+            mongo_db, "gwresume", pid, shim_install_dir, claude_cache_dir,
+            supports_resume=True, before_execute=_plant_transcript_on(KIMI.id),
+            env={"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        await optio.adhoc_define(task)
+        await _run_switched_to(optio, pid, GLM.id)
+
+        conv = await optio.launch_and_await_result(pid, resume=True, session_id=None, timeout=60)
+        controls = _controls(await _wait_widget_data(optio, pid))
+        assert controls["model"]["value"] == GLM.id
+        assert "reasoning_effort" not in controls
+        await conv.close()
+        await _wait_terminal(optio, pid)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    # One launch per run: gateway mode asks no model probe.
+    fresh, resumed = _log_lines(argv_log)
+    assert "--continue" not in fresh
+    assert "--continue" in resumed
+    assert _flag(resumed, "--model") == GLM.id
+    assert "--effort" not in resumed
+    assert "default" not in resumed
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_gateway_session_whose_model_failed_runs_the_default(
+    shim_install_dir, claude_cache_dir, task_root, mongo_db, tmp_path,
+):
+    """RF4: the saved pick failed its Test again since: the resume runs the
+    effective default model with its preselected effort, and says why."""
+    argv_log = tmp_path / "argv.jsonl"
+    pid = "gw-resume-failed"
+    optio = await _make_optio(mongo_db, "gwresumefailed")
+    try:
+        config = await _gw_config(
+            mongo_db, "gwresumefailed", shim_install_dir, claude_cache_dir,
+            supports_resume=True, before_execute=_plant_transcript_on(KIMI.id),
+            env={"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        await optio.adhoc_define(
+            create_claudecode_requesty_task(process_id=pid, name="Failed pick", config=config),
+        )
+        await _run_switched_to(optio, pid, GLM.id)
+        failed = replace(GLM, status="failed", reason="no answer")
+        await update_gateway_seed(
+            mongo_db, prefix="gwresumefailed", suffix=REQUESTY_SEED_SUFFIX,
+            seed_id=config.seed_id, seed=_seed(models=(KIMI, failed, BROKEN)), encrypt=_cipher,
+        )
+
+        conv = await optio.launch_and_await_result(pid, resume=True, session_id=None, timeout=60)
+        controls = _controls(await _wait_widget_data(optio, pid))
+        assert [o["value"] for o in controls["model"]["options"]] == [KIMI.id]
+        assert controls["model"]["value"] == KIMI.id
+        assert controls["reasoning_effort"]["value"] == "high"
+        assert await _log_message(optio, pid, "is not usable") == (
+            f"{_NAME} runs {KIMI.id}: {GLM.id} is not usable in this gateway configuration"
+        )
+        await conv.close()
+        await _wait_terminal(optio, pid)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    _fresh, resumed = _log_lines(argv_log)
+    assert "--continue" in resumed
+    assert (_flag(resumed, "--model"), _flag(resumed, "--effort")) == (KIMI.id, "high")
+    assert "default" not in resumed
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_guard_takes_the_gateway_marker(ctx_and_captures, tmp_path):
+    """Crash-orphan rescue and Resurrect run in later runs, on the workdir
+    alone: the marker a gateway launch wrote is what both the capture's guard
+    and Resurrect's probe check, and nothing else stands in for it."""
+    ctx, _cap, _cancel = ctx_and_captures
+
+    def _workdir(name: str, *, marker: bool) -> LocalHost:
+        host = LocalHost(taskdir=str(tmp_path / name))
+        home = pathlib.Path(host.workdir, "home/.claude")
+        home.mkdir(parents=True)
+        if marker:
+            (home / ".optio-gateway").write_text("gateway\n")
+        return host
+
+    with_marker = _workdir("with-marker", marker=True)
+    assert await resurrect._session_state_present(with_marker, ".optio-gateway") is True
+    assert await session_mod._capture_snapshot(
+        ctx, with_marker, end_state="done", workdir_exclude=None, guard_file=".optio-gateway",
+    ) is True
+    assert await snapshots.load_latest_snapshot(
+        ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+    ) is not None
+
+    without = _workdir("without-marker", marker=False)
+    assert await resurrect._session_state_present(without, ".optio-gateway") is False
+    assert await session_mod._capture_snapshot(
+        ctx, without, end_state="done", workdir_exclude=None, guard_file=".optio-gateway",
+    ) is False
