@@ -174,6 +174,12 @@ async def test_the_document_carries_the_non_secret_part(mongo_db):
   - `git -C REPO add` gateway.py, seed_manifest.py, AGENTS.md and test_gateway_seed.py (absolute paths);
   - `git -C REPO commit -F SP/msg-t2.txt`.
 
+**Controller rulings (pre-flight scan, 2026-11-17; binding over the text above where they differ):**
+- F8, exact signatures: `@dataclass(frozen=True) class GatewayModel: id: str; label: str; group: Literal["managed", "pinned", "policy"]; efforts: tuple[str, ...] | None; status: Literal["untested", "ok", "failed"] = "untested"; reason: str | None = None`. `@dataclass(frozen=True) class GatewayPreset: model: str; effort: str | None = None`. `@dataclass(frozen=True) class GatewaySeed: provider: str; region: str; base_url: str; token: str = field(repr=False); models: tuple[GatewayModel, ...]; default_model: str; presets: dict[str, GatewayPreset] | None = None; tested_at: datetime | None = None` (fields in this order).
+- F8, errors: `class GatewayError(Exception)`; `GatewayAuthError(GatewayError)`, `GatewayUnreachable(GatewayError)`, `GatewayEmptyList(GatewayError)`. Any other failure (an unexpected status such as 429, a malformed body) raises plain `GatewayError`. No message ever contains the token.
+- F8, storage: `async def write_gateway_seed(db, *, prefix: str, suffix: str, seed: GatewaySeed, encrypt, status: Literal["pending", "alive", "dead"] = "pending") -> str` and `async def update_gateway_seed(db, *, prefix: str, suffix: str, seed_id: str, seed: GatewaySeed, encrypt, status: Literal["pending", "alive", "dead"] | None = None) -> None`.
+- F18: `metadata.gateway` also carries `"presets"`: `{"fast": {"model", "effort"}, "extensive": {"model", "effort"}}` from `seed.presets`, or `None`. Consumers read the presets there; nobody stores a second copy.
+
 ### Task 3: the Requesty provider
 
 **Files:**
@@ -241,6 +247,11 @@ async def test_eu_lists_the_three_groups(requesty):                         # RF
 - [ ] Implement as above.
 - [ ] `SYNC`, RUN. Expected: PASS.
 - [ ] Commit `SP/msg-t3.txt`: `feat(optio-claudecode): the Requesty provider lists an account's models in three groups`.
+
+**Controller rulings (pre-flight scan, 2026-11-17; binding over the text above where they differ):**
+- F8: `def new_seed(*, token: str, region: str, models: Sequence[GatewayModel], default_model: str, presets: dict[str, GatewayPreset] | None = None) -> GatewaySeed`, which sets `provider=PROVIDER` and `base_url=REGIONS[region]`; an unknown region raises `ValueError`.
+- F15: an unexpected answer (a status other than 2xx/401/403, a malformed body) raises plain `GatewayError`; add one test for it (a 429).
+- Commit steps in Tasks 3-12: `git add` names exactly the task's Files (as Tasks 1-2 do).
 
 ### Task 4: the agent type `claudecode_requesty`
 
@@ -349,6 +360,9 @@ async def test_gateway_a_model_without_levels_is_sent_no_effort():          # RF
 - [ ] Implement as above.
 - [ ] `SYNC`, RUN. Expected: PASS.
 - [ ] Commit `SP/msg-t5.txt`: `feat(optio-claudecode): a gateway model without effort levels is switched to without an effort`. Include the probe and AGENTS.md.
+
+**Controller rulings (pre-flight scan, 2026-11-17; binding over the text above where they differ):**
+- F5: add scenario F: D's environment with B's launch and live switch. The adopted no-effort form must make F send no effort. If no form achieves that against the real CLI, keep the omission form, mark it for the live test in the report, and say so.
 
 ### Task 6: launch helpers and the stdin secret
 
@@ -465,6 +479,11 @@ async def test_a_gateway_session_gets_the_seed_in_its_environment_only(..., monk
 - [ ] `SYNC`, then `RUN PKG/tests/test_gateway_session.py`, `RUN PKG/tests/test_conversation_ui_session.py` and `RUN PKG/tests/test_session_seed_capture.py` (unchanged OAuth paths). Expected: PASS.
 - [ ] Commit `SP/msg-t7.txt`: `feat(optio-claudecode): gateway mode: the seed's environment, catalog and effort levels; no OAuth paths`.
 
+**Controller rulings (pre-flight scan, 2026-11-17; binding over the text above where they differ):**
+- F9: the progress text uses `REQUESTY_AGENT_INFO.name` ("Claude Code + Requesty"), not `AGENT_INFO.name`.
+- `test_no_oauth_path_runs` drops the `capture_seed` recorder (vacuous: Task 4 already refuses `on_seed_saved`); it keeps the watcher, save-back and `merge_seed` recorders.
+- The test helpers `_files_containing` and `_snapshot_blobs` do not exist yet: write them in the new test file.
+
 ### Task 8: resume, rescue and Resurrect in gateway mode
 
 **Files:**
@@ -491,6 +510,9 @@ async def test_a_gateway_session_gets_the_seed_in_its_environment_only(..., monk
 - [ ] Implement as above.
 - [ ] `SYNC`, then the same two RUNs plus `RUN PKG/tests/test_rescue_orphan.py`. Expected: PASS.
 - [ ] Commit `SP/msg-t8.txt`: `feat(optio-claudecode): a resumed gateway session keeps its exact model; the snapshot guard checks the gateway marker`.
+
+**Controller rulings (pre-flight scan, 2026-11-17; binding over the text above where they differ):**
+- F2: Files includes `PKG/tests/test_resurrect_hook.py`: update its `R._credentials_present` references (around lines 119, 125, 408) to the new name. That file then passes; only the new tests are RED before the change.
 
 ### Task 9: validation, one short conversation per model
 
@@ -562,6 +584,10 @@ async def test_each_model_passes_or_fails_with_its_reason(task_root, claude_cach
 - [ ] `SYNC`, RUN. Expected: PASS.
 - [ ] Commit `SP/msg-t9.txt`: `feat(optio-claudecode): validate gateway models with one short real conversation each, three at once`.
 
+**Controller rulings (pre-flight scan, 2026-11-17; binding over the text above where they differ):**
+- F1: call `build_claude_flags(..., disallowed_tools=None, ...)` (a required keyword).
+- F6: `_check_model` reads `is_error` from the `result` event itself (an `is_error` result also fires `on_message`, before the event dispatch), and the error test asserts the exact reason string.
+
 ### Task 10: the setup task
 
 **Files:**
@@ -619,6 +645,12 @@ async def test_a_pending_seed_whose_default_passes_becomes_alive(...):
 - [ ] `SYNC`, then `RUN PKG/tests/test_gateway_setup.py` and `RUN PKG/tests/test_oauth.py`. Expected: PASS.
 - [ ] Commit `SP/msg-t10.txt`: `feat(optio-claudecode): the gateway setup task: test, then alive, removed or dead`.
 
+**Controller rulings (pre-flight scan, 2026-11-17; binding over the text above where they differ):**
+- F3: `test_the_flow_must_fit_the_seed_status` asserts the ValueError's message text in the terminal record's error (the record stores `str(e)`, no class name).
+- F4: name T10's own fixture token, e.g. `TOKEN = "rq-setup-token-1234abcd"`, and assert the summary's key hint from its last four characters (`key …abcd`).
+- F10: the pending flow keeps a `purged` flag; the `finally` purges only when not purged yet and tolerates `KeyError`, so the error text stays `default model <id>: <reason>`.
+- Spec wording (both specs: a failing model is dropped / only passing models are saved): in the PENDING flow, failed models are NOT kept in the alive seed: it holds only the models that passed; their failures live in the progress lines (and in the failed process's error when the default failed). In a RETEST, a model that now fails stays in the seed with status `failed` (unusable). So `test_a_pending_seed_whose_default_passes_becomes_alive` asserts the document's `metadata.gateway.models` lists only kimi, while the published result's `models` lists both with their statuses.
+
 ### Task 11: registration in optio-agents-all and optio-agents-ui
 
 **Files:**
@@ -652,6 +684,9 @@ async def test_a_pending_seed_whose_default_passes_becomes_alive(...):
   Expected: `AgentType` gains `'claudecode_requesty'`.
 - [ ] `SYNC`, the five RUNs, then `RT vitest:REPO/packages/optio-agents-ui REPO/packages/optio-agents-ui/src/__tests__/agents.test.ts` and `RT tsc:REPO/packages/optio-agents-ui`. Expected: PASS.
 - [ ] Commit `SP/msg-t11.txt`: `feat(optio-agents-all,optio-agents-ui): register claudecode_requesty`.
+
+**Controller rulings (pre-flight scan, 2026-11-17; binding over the text above where they differ):**
+- F7: after the codegen step, build the package's dist in the mirror so excavator's TypeScript sees the new `AgentType`: `ssh -F /home/csillag/share/fleet-ssh/config excavator bash /home/csillag/requesty-work/bin/rt.sh optio build:packages/optio-agents-ui` (the package's own `tsc`; never pnpm inside the sibling optio copy). dist is not committed.
 
 ### Task 12: optio-conversation-ui, no effort control for a model without levels
 
