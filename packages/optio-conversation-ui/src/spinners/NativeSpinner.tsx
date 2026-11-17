@@ -224,6 +224,7 @@ function AntigravitySpinner({ size }: { size: number }) {
 
 const BUILDERS: Record<SpinnerEngine, (p: { size: number }) => React.ReactElement> = {
   claudecode: ClaudeSpinner,
+  claudecode_requesty: ClaudeSpinner,
   opencode: OpencodeSpinner,
   grok: GrokSpinner,
   codex: CodexSpinner,

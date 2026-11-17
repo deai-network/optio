@@ -663,6 +663,15 @@ describe('model control fold', () => {
     const s = reduceEvent(initialChatState, { type: 'system', subtype: 'init', model: 'claude-opus-4-8' }, 1);
     expect(s).toEqual(initialChatState);
   });
+
+  it('a control snapshot without reasoning_effort drops the effort control (a gateway model without levels)', () => {
+    const model = (value: string) => ({ id: 'model', kind: 'select', label: 'Model', value,
+      options: [{ value: 'prov-a/kimi-k3.1-pro', label: 'prov-a/kimi-k3.1-pro' }, { value: 'glm-flash', label: 'glm-flash' }] });
+    const start = { ...initialChatState, controls: [model('prov-a/kimi-k3.1-pro'),
+      { id: 'reasoning_effort', kind: 'slider', label: 'Effort', value: 'high', levels: ['low', 'high'] }] } as ChatState;
+    const s = reduceEvent(start, { type: 'x-optio-control-update', controls: [model('glm-flash')] }, 9);
+    expect(s.controls.map((c) => c.id)).toEqual(['model']);
+  });
 });
 
 describe('System-message block separation', () => {
