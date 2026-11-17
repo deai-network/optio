@@ -48,10 +48,12 @@ from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 
 from optio_claudecode import cred_watcher
+from optio_claudecode import gateway as cc_gateway
 from optio_claudecode import host_actions
 from optio_claudecode import models as cc_models
 from optio_claudecode import picks as cc_picks
-from optio_claudecode.info import AGENT_INFO
+from optio_claudecode.gateway import GatewaySeed
+from optio_claudecode.info import AGENT_INFO, REQUESTY_AGENT_INFO
 from optio_claudecode.conversation import ClaudeCodeConversation
 from optio_claudecode.todos import (
     ClaudeTodoExtractor, todo_progress_from_transcript,
@@ -515,11 +517,20 @@ async def run_claudecode_session(
         else:
             resolved_seed_id = config.seed_id
 
+        # Gateway mode: the seed gives the child's environment, the catalog
+        # and the effort levels; nothing of it is planted (no merge_seed), and
+        # the marker is what the snapshot guard checks instead of the
+        # credentials file.
+        gateway_seed = (await _load_gateway_seed(ctx, config, resolved_seed_id)
+                        if config.gateway_provider else None)
         cred_baseline_out, focus_env = await _plant_session_content(
             ctx, host, hook_ctx, config, protocol,
-            resuming=resuming, resolved_seed_id=resolved_seed_id,
+            resuming=resuming,
+            resolved_seed_id=None if gateway_seed is not None else resolved_seed_id,
         )
         cred_baseline = cred_baseline_out
+        if gateway_seed is not None:
+            await host.write_text(_GATEWAY_MARKER, _GATEWAY_MARKER_CONTENT)
         # Resolved once per launch (_spawn); the model probe gets neither the
         # file nor its flags.
         mcp_config_path = await _plant_mcp_servers(ctx, host, config)
@@ -564,6 +575,28 @@ async def run_claudecode_session(
         # while the CLI could not tell (then the picker offers the bare
         # aliases, and each live switch asks again: apply_settings).
         cli_models = None
+        if gateway_seed is not None:
+            # The model list is the seed's usable models, never initialize's;
+            # a switch is checked against them alone (no task models), and a
+            # model without levels gets no effort. `--model` is always an
+            # exact id from the seed, `--effort` one of that model's levels
+            # or none. (Saved picks without a model, e.g. a permission mode
+            # only, keep the configured one.)
+            preferred = (saved_picks.model if saved_picks else None) or base_model
+            current_model = cc_gateway.launch_model(gateway_seed, preferred)
+            current_effort = cc_gateway.launch_effort(
+                gateway_seed, current_model,
+                (saved_picks.effort if saved_picks else None) or base_effort,
+            )
+            if preferred and preferred != current_model:
+                ctx.report_progress(
+                    None,
+                    f"{REQUESTY_AGENT_INFO.name} runs {current_model}: {preferred} "
+                    "is not usable in this gateway configuration",
+                )
+            conversation.models_offered = cli_models = cc_gateway.gateway_catalog(gateway_seed)
+            conversation.task_models = frozenset()
+            conversation.effort_needs_levels = True
         # Set inside the conversation_ui block once the model list is in:
         # () -> the serialized control list for the running values. Reused on
         # every live switch to re-emit the controls snapshot (effort presence
@@ -665,18 +698,32 @@ async def run_claudecode_session(
             if wrap:
                 argv = [*wrap, *argv]
             cmd = " ".join(shlex.quote(a) for a in argv)
+            if gateway_seed is not None:
+                # The token reaches claude's environment over its first stdin
+                # line, never a command line (RemoteHost writes `env=` into
+                # the one sshd runs).
+                cmd = host_actions.with_stdin_secrets(cmd, cc_gateway.GATEWAY_SECRET_ENV)
             handle = await host.launch_subprocess(
                 cmd, env=env, cwd=host.workdir,
-                env_remove=config.scrub_env, stdin=True,
+                env_remove=env_remove, stdin=True,
             )
+            if gateway_seed is not None:
+                # Before attach: the secret is the first line claude's stdin
+                # gets, ahead of every stream-json line.
+                await _write_gateway_secret(host, handle, gateway_seed)
             conversation.attach(handle)
             reader = asyncio.create_task(conversation.run_reader())
             return handle, reader
 
+        # The gateway's environment goes last, and the hosts apply `env` after
+        # `env_remove`, so neither the config nor a scrub pattern undoes it.
         env = host_actions.conversation_launch_env(
             host.workdir,
-            {**(config.env or {}), **focus_env, **(hook_ctx.browser_launch_env or {})},
+            {**(config.env or {}), **focus_env, **(hook_ctx.browser_launch_env or {}),
+             **(cc_gateway.gateway_launch_env(gateway_seed) if gateway_seed is not None else {})},
         )
+        env_remove = (config.scrub_env if gateway_seed is None
+                      else [*(config.scrub_env or []), *cc_gateway.GATEWAY_ENV_REMOVE])
         async def _probe_cli_models(model: str | None) -> list[dict] | None:
             """The CLI's model list before the launch: a short-lived claude
             (same env and fs-isolation, ``--model model``, no ``--continue``)
@@ -738,7 +785,9 @@ async def run_claudecode_session(
         # The probe's list (None: not asked, or it could not tell); also what
         # x-optio-resumed's selection is derived over (below).
         probed = None
-        if saved_picks is not None and (saved_picks.model or saved_picks.effort):
+        # Gateway mode: the picks were checked against the seed above.
+        if (gateway_seed is None and saved_picks is not None
+                and (saved_picks.model or saved_picks.effort)):
             probed = await _probe_cli_models(current_model)
             if probed is not None:
                 _restore_picks(probed)
@@ -874,12 +923,14 @@ async def run_claudecode_session(
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
-            # Before the first message: claude answers initialize at once.
-            cli_models = await cc_models.fetch_cli_models(conversation)
-            # What a live switch is checked against (a switch made before
-            # this point may have asked claude already).
-            cli_models = cli_models or conversation.models_offered
-            conversation.models_offered = cli_models
+            if gateway_seed is None:
+                # Before the first message: claude answers initialize at once.
+                # (Gateway mode has the seed's catalog and asks nothing.)
+                cli_models = await cc_models.fetch_cli_models(conversation)
+                # What a live switch is checked against (a switch made before
+                # this point may have asked claude already).
+                cli_models = cli_models or conversation.models_offered
+                conversation.models_offered = cli_models
             checked = False
             if restore_pending and cli_models is not None and _restore_picks(cli_models):
                 # The launched claude runs a restored pick its list no longer
@@ -989,7 +1040,8 @@ async def run_claudecode_session(
             # listener is reachable) goes after the opening messages.
             conv_listener.open_input()
 
-        if resolved_seed_id is not None:
+        # Gateway mode has no OAuth credentials to watch.
+        if resolved_seed_id is not None and not config.gateway_provider:
             cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(
                 ctx, host,
                 seed_id=resolved_seed_id,
@@ -1248,7 +1300,8 @@ async def run_claudecode_session(
                     except Exception:
                         _LOG.exception("lease release failed (TTL will reclaim)")
 
-            if resolved_seed_id is not None:
+            # A gateway seed holds no OAuth credentials: nothing to save back.
+            if resolved_seed_id is not None and not config.gateway_provider:
                 async with _traced("finally: credential save-back"):
                     try:
                         await cred_watcher.save_back_if_changed(
@@ -1261,7 +1314,10 @@ async def run_claudecode_session(
                     except Exception:
                         _LOG.exception("final credential save-back failed")
 
-            if not resuming and config.on_seed_saved is not None:
+            # (A gateway config refuses on_seed_saved; the setup task saves
+            # gateway seeds.)
+            if (not resuming and config.on_seed_saved is not None
+                    and not config.gateway_provider):
                 # Credentials-present guard: never store a seed whose home/.claude
                 # has no valid credentials (a login-less or aborted setup session).
                 # Without a usable refresh token the seed is dead on arrival —
@@ -1377,6 +1433,7 @@ async def run_claudecode_session(
                         session_blob_encrypt=config.session_blob_encrypt,
                         conversation=conversation_export,
                         conversation_blob_id=carried,
+                        guard_file=_snapshot_guard_file(config),
                     )
                     if not saved and carried is not None:
                         await ctx.delete_blob(carried)
@@ -1624,6 +1681,65 @@ async def _end_turn_gracefully(
         _LOG.exception("session end: graceful interrupt failed; killing claude")
         return False
     return True
+
+
+# Gateway mode's snapshot guard file (under home/.claude), written at launch
+# right after the seed is read. Fixed content: nothing of the seed is planted.
+# Later runs (crash-orphan rescue, Resurrect) apply the same guard through it.
+_GATEWAY_GUARD_FILE = ".optio-gateway"
+_GATEWAY_MARKER = f"home/.claude/{_GATEWAY_GUARD_FILE}"
+_GATEWAY_MARKER_CONTENT = "gateway\n"
+
+
+def _snapshot_guard_file(config: ClaudeCodeTaskConfig) -> str:
+    """The file under ``home/.claude`` whose presence lets a snapshot be
+    taken: the gateway marker in gateway mode, else the OAuth credentials."""
+    return _GATEWAY_GUARD_FILE if config.gateway_provider else ".credentials.json"
+
+
+async def _load_gateway_seed(
+    ctx: ProcessContext, config: ClaudeCodeTaskConfig, seed_id: str | None,
+) -> GatewaySeed:
+    """The gateway seed a launch runs on, read through ``config.seed_decrypt``.
+    RuntimeError, naming the seed id only, when there is none to run: no id,
+    an unknown id, a seed still being tested (pending), or one without a
+    usable model (dead, or every model failed). read_gateway_seed's own
+    errors pass through (no plaintext with them)."""
+    name = REQUESTY_AGENT_INFO.name
+    if seed_id is None:
+        raise RuntimeError(f"{name}: no gateway seed configured")
+    status = await cc_gateway.gateway_seed_status(
+        ctx._db, prefix=ctx._prefix, suffix=config.gateway_seed_suffix, seed_id=seed_id,
+    )
+    if status is None:
+        raise RuntimeError(f"{name}: unknown gateway seed {seed_id}")
+    if status == "pending":
+        raise RuntimeError(f"{name}: gateway seed {seed_id} is still being tested")
+    seed = None if status == "dead" else await cc_gateway.read_gateway_seed(
+        ctx._db, prefix=ctx._prefix, suffix=config.gateway_seed_suffix, seed_id=seed_id,
+        decrypt=config.seed_decrypt,
+    )
+    if seed is None or seed.effective_default_model() is None:
+        raise RuntimeError(f"{name}: gateway seed {seed_id} has no usable model (run Test again)")
+    return seed
+
+
+async def _write_gateway_secret(host: Host, handle: ProcessHandle, seed: GatewaySeed) -> None:
+    """The token, as the first stdin line of a launch wrapped by
+    ``with_stdin_secrets(..., GATEWAY_SECRET_ENV)``. When it cannot be written
+    the launched shell is stopped (nothing else would: it is not attached
+    yet, and it waits on that line), and the error is raised as it is; no
+    message of write_stdin_secrets includes the value."""
+    try:
+        await host_actions.write_stdin_secrets(
+            handle, [seed.token], names=cc_gateway.GATEWAY_SECRET_ENV,
+        )
+    except BaseException:
+        try:
+            await host.terminate_subprocess(handle, aggressive=True)
+        except Exception:  # noqa: BLE001 — the write error is the one to raise
+            _LOG.warning("could not stop the launch after a failed secret write")
+        raise
 
 
 async def _plant_session_content(
@@ -2117,6 +2233,7 @@ async def _capture_snapshot(
     session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
     conversation: bytes | None = None,
     conversation_blob_id: ObjectId | None = None,
+    guard_file: str = ".credentials.json",
 ) -> bool:
     """Capture a snapshot: session blob, conversation blob (when
     ``conversation``, the listener's exported replay buffer, is given), then
@@ -2127,6 +2244,9 @@ async def _capture_snapshot(
     have no listener, so they carry the previous record forward (or adopt a
     cut-off capture's). Not both.
 
+    ``guard_file`` is the file under ``home/.claude`` the guard checks
+    (``_snapshot_guard_file``): the OAuth credentials, or the gateway marker.
+
     Returns True when a snapshot record was inserted, False when the
     credentials guard refused (nothing stored by this call). Raises on any
     other failure.
@@ -2134,21 +2254,21 @@ async def _capture_snapshot(
     if conversation is not None and conversation_blob_id is not None:
         raise ValueError("conversation and conversation_blob_id are exclusive")
     # 0. Credentials-present guard. Refuse to snapshot an unconfigured
-    # environment: without home/.claude/.credentials.json a restored snapshot
-    # drops the agent to /login (looking like a zero-config seed session).
+    # environment: without home/.claude/.credentials.json (gateway mode: the
+    # marker that its seed was loaded) a restored snapshot drops the agent to
+    # /login (looking like a zero-config seed session).
     # This MUST be first — the resume path (load_latest_snapshot) ignores
     # hasSavedState, so the degenerate snapshot must never be CREATED, not
     # merely have its flag skipped.
     workdir = host.workdir.rstrip("/")
+    guard_rel = f"home/.claude/{guard_file}"
+    guard_path = shlex.quote(f"{workdir}/{guard_rel}")
     async with _traced("capture: credentials guard"):
-        chk = await host.run_command(
-            f"test -s {shlex.quote(workdir)}/home/.claude/.credentials.json "
-            f"&& echo OK || true"
-        )
+        chk = await host.run_command(f"test -s {guard_path} && echo OK || true")
     if "OK" not in chk.stdout:
         _LOG.warning(
-            "snapshot capture skipped: home/.claude/.credentials.json "
-            "absent/empty; refusing to mark resumable",
+            "snapshot capture skipped: %s absent/empty; refusing to mark resumable",
+            guard_rel,
         )
         # A snapshot without credentials is refused, so a later Resurrect
         # could not save this workdir either: nothing resurrectable is left.

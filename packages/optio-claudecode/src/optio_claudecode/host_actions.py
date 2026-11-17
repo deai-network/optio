@@ -1345,8 +1345,11 @@ def with_stdin_secrets(command: str, names: Sequence[str]) -> str:
     and never a command line, which ``env=`` cannot promise:
     ``RemoteHost.launch_subprocess`` writes it into the command line sshd
     runs. Launch with ``stdin=True``, then ``write_stdin_secrets``; the child
-    reads whatever follows on stdin. ValueError for a name that is not a shell
-    variable name."""
+    reads whatever follows on stdin. TypeError for a bare str ``names`` (it
+    would be read one name per character); ValueError for a name that is not a
+    shell variable name."""
+    if isinstance(names, str):
+        raise TypeError("names must be a sequence of variable names, not a str")
     for name in names:
         if not _ENV_NAME_RE.fullmatch(name):
             raise ValueError(f"not an environment variable name: {name!r}")
@@ -1354,15 +1357,45 @@ def with_stdin_secrets(command: str, names: Sequence[str]) -> str:
     return f"{reads}exec {command}"
 
 
-async def write_stdin_secrets(handle: "ProcessHandle", values: Sequence[str]) -> None:
+def _utf8_or_none(value: str) -> bytes | None:
+    """``value`` as UTF-8, or None when it cannot be encoded. Never raises: a
+    UnicodeEncodeError's ``.object`` is the whole value, so the caller raises
+    its own error outside any except block."""
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+
+
+async def write_stdin_secrets(
+    handle: "ProcessHandle", values: Sequence[str], *, names: Sequence[str],
+) -> None:
     """Write ``values`` to ``handle``'s stdin, one line each, in the order of
-    the names given to ``with_stdin_secrets``, then drain. ValueError, before
-    anything is written, for a value holding a line break or a NUL, which
-    ``read`` would split or cut; the message does not include the value."""
-    if any(c in value for value in values for c in "\n\r\0"):
-        raise ValueError("a stdin secret must not contain a line break or a NUL character")
+    ``names``, the names given to ``with_stdin_secrets``, then drain. Every
+    check runs before anything is written, and no message includes a value:
+    TypeError for a bare str ``values`` or ``names`` or a value that is not a
+    str; ValueError when the counts differ, for a handle without stdin, and
+    for a value that cannot be encoded as UTF-8 or holds a line break or a
+    NUL, which ``read`` would split or cut."""
+    if isinstance(values, str) or isinstance(names, str):
+        raise TypeError("stdin secrets and their names must be sequences, not a str")
+    values, names = list(values), list(names)
+    if len(values) != len(names):
+        raise ValueError(f"{len(values)} stdin secret(s) for {len(names)} name(s)")
+    if getattr(handle, "stdin", None) is None:
+        raise ValueError("the process has no stdin writer; launch it with stdin=True")
+    lines = []
     for value in values:
-        handle.stdin.write(value.encode("utf-8") + b"\n")
+        if not isinstance(value, str):
+            raise TypeError(f"a stdin secret must be a str, not {type(value).__name__}")
+        data = _utf8_or_none(value)
+        if data is None:
+            raise ValueError("a stdin secret must be encodable as UTF-8")
+        if any(c in data for c in (b"\n", b"\r", b"\0")):
+            raise ValueError("a stdin secret must not contain a line break or a NUL character")
+        lines.append(data + b"\n")
+    for line in lines:
+        handle.stdin.write(line)
     await handle.stdin.drain()
 
 

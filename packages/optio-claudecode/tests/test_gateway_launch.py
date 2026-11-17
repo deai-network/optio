@@ -106,6 +106,9 @@ def test_with_stdin_secrets():
     for name in ("A B", "A\n", "1A"):
         with pytest.raises(ValueError):
             with_stdin_secrets("claude -p", [name])
+    # A bare str would be read as one name per character.
+    with pytest.raises(TypeError):
+        with_stdin_secrets("claude -p", "ANTHROPIC_AUTH_TOKEN")
 
 
 # Prints its SECRET_X, its own command line, then the next line on stdin. One
@@ -128,7 +131,7 @@ async def test_a_local_launch_gets_the_secret_in_its_env_only(tmp_path):
     command = with_stdin_secrets(shlex.join(["python3", "-c", _CHILD]), ["SECRET_X"])
     handle = await host.launch_subprocess(command, stdin=True)
     try:
-        await write_stdin_secrets(handle, ["s3cret"])
+        await write_stdin_secrets(handle, ["s3cret"], names=["SECRET_X"])
         handle.stdin.write(b"after\n")
         await handle.stdin.drain()
         handle.stdin.close()
@@ -189,7 +192,7 @@ async def test_a_remote_launch_carries_no_secret_on_its_command_line():
         env_remove=list(GATEWAY_ENV_REMOVE),
         stdin=True,
     )
-    await write_stdin_secrets(handle, [SEED.token])
+    await write_stdin_secrets(handle, [SEED.token], names=GATEWAY_SECRET_ENV)
     [full] = conn.commands
     assert "rq-" not in full and SEED.token not in full
     assert b"".join(conn.process.stdin.writes) == SEED.token.encode() + b"\n"
@@ -203,7 +206,53 @@ async def test_write_stdin_secrets_refuses_a_line_break():
         writer = _FakeWriter()
         handle = ProcessHandle(pid_like=None, stdout=_nothing(), stdin=writer)
         with pytest.raises(ValueError) as info:
-            await write_stdin_secrets(handle, ["fine", bad])
+            await write_stdin_secrets(handle, ["fine", bad], names=["A", "B"])
         message = str(info.value)
         assert bad not in message and repr(bad) not in message
         assert writer.writes == []
+
+
+def _handle(writer=None) -> ProcessHandle:
+    return ProcessHandle(pid_like=None, stdout=_nothing(), stdin=writer)
+
+
+async def test_write_stdin_secrets_checks_every_value_before_writing_any():
+    # A lone surrogate cannot be encoded: refused like a line break, before
+    # "fine" is written, and with no exception context (a UnicodeEncodeError's
+    # `.object` is the whole value).
+    writer = _FakeWriter()
+    with pytest.raises(ValueError) as info:
+        await write_stdin_secrets(_handle(writer), ["fine", "rq-" + chr(0xD800)], names=["A", "B"])
+    assert "rq-" not in str(info.value)
+    assert info.value.__context__ is None and info.value.__cause__ is None
+    assert writer.writes == []
+    # A value that is not a str.
+    with pytest.raises(TypeError) as info:
+        await write_stdin_secrets(_handle(writer), ["fine", b"rq-bytes"], names=["A", "B"])
+    assert "rq-" not in str(info.value)
+    assert writer.writes == []
+
+
+async def test_write_stdin_secrets_refuses_a_bare_str():
+    writer = _FakeWriter()
+    with pytest.raises(TypeError) as info:
+        await write_stdin_secrets(_handle(writer), "rq-token", names=["A"])
+    assert "rq-" not in str(info.value)
+    with pytest.raises(TypeError):
+        await write_stdin_secrets(_handle(writer), ["rq-token"], names="A")
+    assert writer.writes == []
+
+
+async def test_write_stdin_secrets_refuses_a_count_mismatch():
+    writer = _FakeWriter()
+    for values, names in ((["rq-a", "rq-b"], ["A"]), (["rq-a"], ["A", "B"]), ([], ["A"])):
+        with pytest.raises(ValueError) as info:
+            await write_stdin_secrets(_handle(writer), values, names=names)
+        assert "rq-" not in str(info.value)
+    assert writer.writes == []
+
+
+async def test_write_stdin_secrets_refuses_a_handle_without_stdin():
+    with pytest.raises(ValueError) as info:
+        await write_stdin_secrets(_handle(None), ["rq-token"], names=["A"])
+    assert "stdin=True" in str(info.value) and "rq-" not in str(info.value)

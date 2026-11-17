@@ -266,6 +266,9 @@ def run_stream_json_mode(argv: list[str]) -> int:
                                    (a relaunch answers normally).
       FAKE_CLAUDE_ARGV_LOG       — a file path: append this launch's argv
                                    (without argv[0]) as one JSON line.
+      FAKE_CLAUDE_ENV_LOG        — a file path: append this launch's
+                                   ANTHROPIC_* and CLAUDE_CODE_* environment
+                                   variables as one JSON object line.
       FAKE_CLAUDE_CONTROL_LOG    — a file path: append the ``request`` of
                                    every control_request read on stdin as
                                    one JSON line.
@@ -298,6 +301,11 @@ def run_stream_json_mode(argv: list[str]) -> int:
     if argv_log:
         with open(argv_log, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(argv[1:]) + "\n")
+    env_log = os.environ.get("FAKE_CLAUDE_ENV_LOG")
+    if env_log:
+        with open(env_log, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({k: v for k, v in os.environ.items()
+                                 if k.startswith(("ANTHROPIC_", "CLAUDE_CODE_"))}) + "\n")
     control_log = os.environ.get("FAKE_CLAUDE_CONTROL_LOG")
 
     reply_tpl = os.environ.get("FAKE_CLAUDE_REPLY", "reply-{n}")

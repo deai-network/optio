@@ -493,11 +493,43 @@ class ClaudeCodeRequestyTaskConfig(ClaudeCodeTaskConfig):
                 "gateway mode (gateway sessions capture no seed; the gateway "
                 "setup task saves seeds)."
             )
-        anthropic_keys = sorted(k for k in (self.env or {}) if k.startswith("ANTHROPIC_"))
-        if anthropic_keys:
+        env_keys = _gateway_owned_keys(self.env or {})
+        if env_keys:
             raise ValueError(
-                f"ClaudeCodeRequestyTaskConfig: env keys {anthropic_keys} are "
+                f"ClaudeCodeRequestyTaskConfig: env keys {env_keys} are "
                 "refused (in gateway mode the gateway seed sets the ANTHROPIC_* "
-                "environment)."
+                "environment and these Claude Code settings)."
+            )
+        settings_env = (self.claude_config or {}).get("env")
+        settings_keys = _gateway_owned_keys(settings_env) if isinstance(settings_env, dict) else []
+        if settings_keys:
+            raise ValueError(
+                f"ClaudeCodeRequestyTaskConfig: claude_config env keys "
+                f"{settings_keys} are refused (Claude Code applies settings env "
+                "itself, over the gateway's environment: ANTHROPIC_BASE_URL there "
+                "would send the token to another host)."
             )
         super().__post_init__()
+
+
+# The Claude Code variables gateway mode owns: those gateway.gateway_launch_env
+# sets, the OAuth token (another login), and CLAUDE_CODE_EFFORT_LEVEL (one
+# level for every model, where gateway mode sends none for a model without
+# levels). Neither `env` nor `claude_config`'s settings env may set them, nor
+# any ANTHROPIC_* key.
+_GATEWAY_CLAUDE_CODE_KEYS = frozenset({
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
+    "CLAUDE_CODE_AUTO_MODE_SERVER",
+    "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
+    "CLAUDE_CODE_EFFORT_LEVEL",
+})
+
+
+def _gateway_owned_keys(env: dict) -> list[str]:
+    """The keys of ``env`` gateway mode owns, sorted (names only, never a
+    value, so an error can name them)."""
+    return sorted(
+        k for k in env
+        if isinstance(k, str) and (k.startswith("ANTHROPIC_") or k in _GATEWAY_CLAUDE_CODE_KEYS)
+    )

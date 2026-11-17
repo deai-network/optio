@@ -534,8 +534,13 @@ when the hook returns, and when it raises `NothingToResurrect`.
   checks run: a mode other than `"conversation"` (iframe mode puts the launch
   environment on the tmux command line, where process listings show it), a
   callable `seed_id` (a `SeedProvider`; the gateway seed id is a plain
-  string), `credentials_json`, `on_seed_saved`, and `env` keys starting with
-  `ANTHROPIC_` (the message names the keys, never a value).
+  string), `credentials_json`, `on_seed_saved`, and the keys gateway mode
+  owns, in `env` and in `claude_config["env"]` alike (Claude Code applies
+  settings env itself, so `ANTHROPIC_BASE_URL` there would send the token to
+  another host): every `ANTHROPIC_*` key, `CLAUDE_CODE_OAUTH_TOKEN`,
+  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`, `CLAUDE_CODE_AUTO_MODE_SERVER`,
+  `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` and `CLAUDE_CODE_EFFORT_LEVEL` (the
+  message names the keys, never a value).
 
 ## Conversation mode
 
@@ -1004,6 +1009,61 @@ per provider). `PROVIDER = "requesty"`; `REGIONS` maps `global` to
 - `new_seed(*, token, region, models, default_model, presets=None) ->
   GatewaySeed`: `provider=PROVIDER`, `base_url=REGIONS[region]`, `models` as a
   tuple, for `write_gateway_seed`. An unknown region raises `ValueError`.
+
+### Gateway launch
+
+A `ClaudeCodeRequestyTaskConfig` (`config.gateway_provider` set) runs the
+conversation session in gateway mode. A `ClaudeCodeTaskConfig` session is
+unchanged.
+
+- **The seed.** `session._load_gateway_seed` reads it right after `seed_id`
+  is resolved, from `{ctx._prefix}{gateway_seed_suffix}` through
+  `seed_decrypt`. A `RuntimeError` naming the id only fails the launch:
+  `"Claude Code + Requesty: no gateway seed configured"` (no `seed_id`),
+  `"... unknown gateway seed <id>"`, `"... gateway seed <id> is still being
+  tested"` (pending), and `"... gateway seed <id> has no usable model (run Test
+  again)"` (dead, or no model with status `ok`). Nothing of the seed is
+  planted: no `merge_seed`, no credentials file (`claude_config` still goes
+  into `settings.json`). Then the marker `home/.claude/.optio-gateway` is
+  written, with the fixed content `gateway\n`.
+- **Model and effort.** `--model` is `gateway.launch_model(seed, preferred)`,
+  an exact id. `preferred` is the resume's saved pick, else the configured
+  model (or a custom control's default). When it is not usable, the effective
+  default runs, with the progress line `"Claude Code + Requesty runs <id>:
+  <preferred> is not usable in this gateway configuration"`. `--effort` is
+  `gateway.launch_effort(...)`, and a model without levels gets none.
+  `conversation.models_offered` is `gateway.gateway_catalog(seed)`,
+  `task_models` is empty and `effort_needs_levels` is True, so a live switch
+  is checked against the seed's usable models only. There is no model probe
+  and no `initialize` (gateway sessions need neither).
+- **Environment.** `conversation_launch_env` runs over `{**config.env,
+  **focus_env, **browser_env, **gateway_launch_env(seed)}`, so the gateway's
+  values go last, with `env_remove=[*scrub_env, *GATEWAY_ENV_REMOVE]`. Both
+  hosts apply `env` after `env_remove`, so no `scrub_env` pattern removes a
+  gateway variable. The token: the launch command is
+  `with_stdin_secrets(cmd, GATEWAY_SECRET_ENV)`, and `write_stdin_secrets(handle,
+  [seed.token], names=GATEWAY_SECRET_ENV)` writes it as the first stdin line,
+  before the conversation attaches (so before any stream-json line). When
+  that write fails, the launched shell is stopped and the run fails. The token
+  is never in argv, a command line, a file, a snapshot, the process record or
+  a log line.
+- **No OAuth path.** No credentials watcher, no save-back, no seed capture
+  and no account resolution.
+- **Snapshots.** The teardown capture passes
+  `guard_file=_snapshot_guard_file(config)` (`".optio-gateway"`, else
+  `".credentials.json"`), so the guard checks the marker instead of the
+  credentials file.
+
+`host_actions.with_stdin_secrets(command, names) -> str` gives `IFS= read -r N
+&& export N && ... exec <command>`. A bare str `names` raises `TypeError` (it
+would be read one name per character), and a name that is not a shell
+variable name raises `ValueError`. `async write_stdin_secrets(handle, values,
+*, names)` writes one line per value, then drains, and checks everything
+before it writes anything. It raises `TypeError` for a bare str or a value
+that is not a str. It raises `ValueError` when `values` and `names` differ in
+length, for a handle without stdin, and for a value that cannot be encoded as
+UTF-8 or holds `\n`, `\r` or NUL. No message includes a value, and none is
+raised inside an except block.
 
 ## Hooks
 
