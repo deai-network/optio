@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from dataclasses import replace
 
 import pytest
 
@@ -112,8 +113,43 @@ async def test_each_check_runs_its_model_alone_through_the_gateway(
         assert env["ANTHROPIC_AUTH_TOKEN"] == TOKEN
         assert env["ANTHROPIC_BASE_URL"] == SEED.base_url
         assert "ANTHROPIC_API_KEY" not in env
+        assert "CLAUDE_CODE_EFFORT_LEVEL" not in env
+    # As a session on this seed: the flag is process-wide, and "plain"'s
+    # siblings have levels, so "plain" is checked under it too.
     assert envs["m/pass"]["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] == "1"
-    assert "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT" not in envs["plain"]
+    assert envs["plain"]["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] == "1"
+
+
+async def test_a_model_without_levels_is_checked_under_the_effort_flag_its_seed_sets(
+        task_root, claude_cache_dir, monkeypatch, tmp_path):
+    """Important 1: a session on a seed where some model has levels runs with
+    CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 for every model, so Claude Code sends
+    its default effort to a model without levels as well; the check of that
+    model runs under the same flag. A seed where no model has levels sets it
+    for none."""
+    _fake(monkeypatch)
+    env_log = tmp_path / "env.jsonl"
+    argv_log = tmp_path / "argv.jsonl"
+    monkeypatch.setenv("FAKE_CLAUDE_ENV_LOG", str(env_log))
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_LOG", str(argv_log))
+    plain = next(m for m in SEED.models if m.id == "plain")
+    levelled = next(m for m in SEED.models if m.id == "m/pass")
+    mixed = replace(SEED, models=(plain, levelled), default_model="plain")
+    plain_only = replace(SEED, models=(plain,), default_model="plain")
+
+    assert await validate_gateway_models(mixed, ["plain"], install_dir=str(claude_cache_dir),
+                                         per_model_timeout=60) == {"plain": (True, None)}
+    assert await validate_gateway_models(plain_only, ["plain"], install_dir=str(claude_cache_dir),
+                                         per_model_timeout=60) == {"plain": (True, None)}
+
+    in_mixed, alone = [json.loads(line) for line in env_log.read_text().splitlines()]
+    assert in_mixed["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] == "1"
+    assert "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT" not in alone
+    # The aliases still point at the model under test, and no --effort is
+    # sent for it either way.
+    assert {in_mixed[f"ANTHROPIC_DEFAULT_{alias}_MODEL"] for alias in ALIASES} == {"plain"}
+    for argv in map(json.loads, argv_log.read_text().splitlines()):
+        assert "--effort" not in argv
 
 
 async def test_at_most_concurrency_checks_run_at_once(monkeypatch):

@@ -396,7 +396,7 @@ when the hook returns, and when it raises `NothingToResurrect`.
   `effort` is switched to with `{model}` alone, no `effortLevel` key, and
   `conversation.effort` becomes None; an effort for such a model raises
   `ValueError`. Claude Code then sends its own default effort, since no
-  form makes it send none (measured facts under Testing). A permission mode is
+  per-model form makes it send none (measured facts under Testing). A permission mode is
   `set_permission_mode`, sent first and switched back if claude then refuses
   the model/effort change. Claude takes an unknown model as given and drops
   an unknown level silently, so each value is checked first against the
@@ -1108,7 +1108,12 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
   default. A seed being set up has no usable model yet. This way the aliases
   (`ANTHROPIC_DEFAULT_*_MODEL`) point at the model under test, so each result
   depends on that model alone. `--effort` is `launch_effort`'s preselected
-  level, and a model without levels gets none.
+  level, and a model without levels gets none. `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT`
+  is the whole seed's, as a session sets it (`_check_env`): `1` when any model
+  of the seed has levels, for every check. The flag holds for the whole
+  process, and with it Claude Code sends its default effort to a model
+  without levels too (Testing, rows A and B), so such a model is checked under
+  the condition its sessions run in.
 - **The outcome.** `probe_turn` is raced against claude's exit. The `result`
   event decides whether the turn was an error: an `is_error` result also
   reaches `on_message`, so `probe_turn` alone would return its text as an

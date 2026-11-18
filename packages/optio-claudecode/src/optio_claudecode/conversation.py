@@ -549,8 +549,8 @@ class ClaudeCodeConversation:
         )
         if self.effort_needs_levels and not levels:
             # No published levels: no effortLevel key. Claude Code (2.1.319)
-            # then sends its own default; no form makes it send none (AGENTS.md,
-            # Testing).
+            # then sends its own default; no per-model form makes it send none
+            # (AGENTS.md, Testing).
             if effort is not None:
                 raise ValueError(f"reasoning effort {effort!r} is not offered for {target}")
             return {"model": target}

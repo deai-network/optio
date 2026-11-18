@@ -9,7 +9,10 @@ did not end in an error and the answer contains the word (case-insensitive).
 A check runs its model alone, as the seed's only usable model and its default:
 the seed being set up has no usable model yet, and Claude Code's aliases (its
 own background calls) then point at the model under test, so each result
-depends on that model only. No reason ever contains the token.
+depends on that model only. The effort flag is the whole seed's, though
+(`_check_env`): a session sets it for the process when any model of its seed
+has levels, and Claude Code then sends an effort to a model without levels
+too, so that model is checked under it. No reason ever contains the token.
 
 `create_gateway_setup_task` is the optio task around it. A setup tests a
 pending seed: the seed becomes alive with only the models that passed when its
@@ -101,6 +104,20 @@ def _check_seed(seed: GatewaySeed, model_id: str) -> GatewaySeed:
     )
 
 
+def _check_env(seed: GatewaySeed, check_seed: GatewaySeed) -> dict[str, str]:
+    """The non-secret gateway environment of a check: ``check_seed``'s (the
+    aliases on the model under test), with `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT`
+    as a session on the whole ``seed`` sets it: when any of its models has
+    levels. The flag holds for the whole process (`gateway_launch_env`), and
+    with it Claude Code sends its default effort to a model without levels as
+    well (AGENTS.md, Testing), so a model that rejects an effort fails here,
+    not in every session of a seed that also holds a model with levels."""
+    env = gateway_launch_env(check_seed)
+    if any(m.efforts for m in seed.models):
+        env["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] = "1"
+    return env
+
+
 def _result_error(event: dict) -> str | None:
     """A result event's error text; None for any other event, and for a
     result that is not an error."""
@@ -179,7 +196,7 @@ async def _check_model(
         # never a command line (RemoteHost writes `env=` into the one sshd runs).
         handle = await host.launch_subprocess(
             host_actions.with_stdin_secrets(shlex.join(argv), GATEWAY_SECRET_ENV),
-            env=host_actions.conversation_launch_env(host.workdir, gateway_launch_env(check_seed)),
+            env=host_actions.conversation_launch_env(host.workdir, _check_env(seed, check_seed)),
             env_remove=list(GATEWAY_ENV_REMOVE), cwd=host.workdir, stdin=True,
         )
         await host_actions.write_stdin_secrets(handle, [seed.token], names=GATEWAY_SECRET_ENV)
