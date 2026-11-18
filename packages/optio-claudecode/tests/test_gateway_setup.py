@@ -22,11 +22,12 @@ from bson import ObjectId
 
 from optio_core.exceptions import ResultNotPublished
 
-from optio_claudecode import REQUESTY_SEED_SUFFIX, oauth
+from optio_claudecode import REQUESTY_SEED_SUFFIX, gateway_setup, oauth
 from optio_claudecode.gateway import (
     GatewayModel,
     GatewayPreset,
     read_gateway_seed,
+    update_gateway_seed,
     write_gateway_seed,
 )
 from optio_claudecode.gateway_setup import create_gateway_setup_task
@@ -374,6 +375,60 @@ async def test_a_setup_that_fails_before_writing_removes_its_pending_seed(
     # The removal in the finally adds nothing to the error.
     assert [type(e) for e in caught] == [ValueError] and _without_context(caught[0])
     assert await _doc(mongo_db) is None
+
+
+async def test_after_a_retest_fails_the_default_the_summary_names_what_sessions_run(
+    task_root, claude_cache_dir, mongo_db, monkeypatch,
+):
+    """Minor 6: sessions then run the effective default; the summary and
+    metadata.gateway.defaultModel say so. The seed keeps the configured
+    default, so a Test again that revives it makes it the default again."""
+    _fake(monkeypatch, {KIMI.id: "error", GLM.id: "pass"})
+    sid = await _write(mongo_db, status="alive", models=TESTED)
+    saved = []
+    async with _engine(mongo_db) as optio:
+        result, _proc = await _run(optio, _task(
+            "gw-retest-default-failed", sid, claude_cache_dir, retest=True,
+            on_seed_saved=lambda *args: saved.append(args),
+        ))
+
+    assert result["status"] == "alive"
+    assert saved == [(sid, "requesty eu, default glm-flash, key …abcd")]
+    assert (await _doc(mongo_db))["metadata"]["gateway"]["defaultModel"] == GLM.id
+    assert (await _read(mongo_db, sid)).default_model == KIMI.id
+
+
+@pytest.mark.parametrize(
+    ("meanwhile", "outcome"),
+    [("alive", "default-fails"), ("alive", "raises"), ("dead", "default-fails")],
+    ids=["alive-default-fails", "alive-check-raises", "dead-default-fails"],
+)
+async def test_a_setup_never_removes_a_seed_written_meanwhile(
+    meanwhile, outcome, task_root, claude_cache_dir, mongo_db, monkeypatch,
+):
+    """Minor 4: two setups on one pending seed. The other one wrote it alive
+    (or dead) while this one ran; this one's failure path, and its cleanup
+    in the finally, remove only a seed that is still pending."""
+    sid = await _write(mongo_db)
+    written = TESTED if meanwhile == "alive" else tuple(
+        replace(m, status="failed", reason=ERROR) for m in (KIMI, GLM))
+
+    async def _validate(seed, model_ids, **kwargs):
+        await update_gateway_seed(mongo_db, prefix=PREFIX, suffix=REQUESTY_SEED_SUFFIX, seed_id=sid,
+                                  seed=replace(seed, models=written), encrypt=_cipher, status=meanwhile)
+        if outcome == "raises":
+            raise RuntimeError("the check broke")
+        return {KIMI.id: (False, ERROR), GLM.id: (True, None)}
+
+    monkeypatch.setattr(gateway_setup, "validate_gateway_models", _validate)
+    async with _engine(mongo_db) as optio:
+        proc = await _run_failing(optio, _task("gw-setup-raced", sid, claude_cache_dir))
+
+    assert proc["status"]["state"] == "failed"
+    doc = await _doc(mongo_db)
+    assert doc is not None and doc["status"] == meanwhile
+    assert await mongo_db["fs.files"].find_one({"_id": doc["blobId"]}) is not None
+    assert (await _read(mongo_db, sid)).models == written
 
 
 async def test_verify_and_refresh_seed_refuses_a_gateway_seed(mongo_db):

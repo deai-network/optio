@@ -199,6 +199,26 @@ async def test_list_models_refuses_an_unknown_region(requesty):
     assert requesty.auth == []
 
 
+async def test_an_unknown_region_is_never_echoed(requesty):                 # RF1
+    """A swapped call puts the token where the region goes: the error names
+    the allowed regions, never the value given."""
+    errors = []
+    with pytest.raises(ValueError) as info:
+        await list_models("eu", TOKEN, base_url=requesty.url)
+    errors.append(info.value)
+    with pytest.raises(ValueError) as info:
+        new_seed(token="eu", region=TOKEN, models=[GatewayModel("glm-5", "glm-5", "managed", None)],
+                 default_model="glm-5")
+    errors.append(info.value)
+    for exc in errors:
+        assert str(exc) == "unknown Requesty region; known: global, eu"
+        assert exc.__context__ is None and exc.__cause__ is None
+        shown = "".join(traceback.format_exception(exc))
+        for text in (str(exc), repr(exc), shown):
+            assert TOKEN not in text
+    assert requesty.auth == []
+
+
 def test_new_seed_takes_the_regions_url():
     models = [GatewayModel("glm-5", "glm-5", "managed", None)]
     seed = new_seed(token=TOKEN, region="global", models=models, default_model="glm-5")

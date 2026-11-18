@@ -71,9 +71,11 @@ _NOT_JSON = object()
 
 
 def _region_url(region: str) -> str:
+    """The region's base URL. The error never names the value given: a
+    swapped call (``list_models(region, token)``) would put the token there."""
     url = REGIONS.get(region)
     if url is None:
-        raise ValueError(f"unknown Requesty region {region!r}; known: {', '.join(REGIONS)}")
+        raise ValueError(f"unknown Requesty region; known: {', '.join(REGIONS)}")
     return url
 
 

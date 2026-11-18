@@ -264,3 +264,53 @@ async def test_write_refuses_a_default_outside_the_models(mongo_db, seed):
 
 def test_seed_summary():
     assert seed_summary(SEED) == "requesty eu, default prov-a/kimi-k3.1-pro, key …abcd"
+
+
+# The default failed its last test; sessions run glm-flash.
+DEFAULT_FAILED = replace(SEED, models=(replace(KIMI, status="failed", reason="x"), replace(GLM, status="ok")))
+
+
+def test_the_summary_names_the_model_sessions_run():
+    """Minor 6: the effective default; the configured one while no model is
+    usable (a pending seed, a dead one), so the label always names a model."""
+    assert seed_summary(DEFAULT_FAILED) == "requesty eu, default glm-flash, key …abcd"
+    dead = replace(SEED, models=(replace(KIMI, status="failed"), replace(GLM, status="failed")))
+    assert seed_summary(dead) == "requesty eu, default prov-a/kimi-k3.1-pro, key …abcd"
+
+
+async def test_the_documents_default_model_is_the_one_sessions_run(mongo_db):
+    """Minor 6: metadata.gateway.defaultModel as the summary; the blob keeps
+    the configured default."""
+    sid = await _write(mongo_db, DEFAULT_FAILED, status="alive")
+    gw = (await mongo_db[COLL].find_one({"_id": ObjectId(sid)}))["metadata"]["gateway"]
+    assert gw["defaultModel"] == "glm-flash"
+    assert (await _read(mongo_db, sid)).default_model == "prov-a/kimi-k3.1-pro"
+    await _update(mongo_db, sid, SEED)                    # untested again: the configured one
+    gw = (await mongo_db[COLL].find_one({"_id": ObjectId(sid)}))["metadata"]["gateway"]
+    assert gw["defaultModel"] == "prov-a/kimi-k3.1-pro"
+
+
+async def test_write_refuses_an_empty_token(mongo_db):
+    """Minor 7: refused with a message that names no value; nothing stored."""
+    with pytest.raises(ValueError) as info:
+        await _write(mongo_db, replace(SEED, token=""))
+    assert str(info.value) == "the gateway seed has no token"
+    assert await mongo_db[COLL].count_documents({}) == 0
+    assert await mongo_db["fs.files"].count_documents({}) == 0
+
+
+@pytest.mark.parametrize(("token", "hint"), [
+    ("rq-abcd", None),            # 7 characters
+    ("rq-12345678", None),        # 11
+    ("rq-123456789", "6789"),     # 12: the last four
+])
+async def test_a_short_token_shows_no_key_hint(mongo_db, token, hint):
+    """Minor 7: a token shorter than 12 characters would show too much of
+    itself in its last four: no keyHint, no "key …" in the summary."""
+    seed = replace(SEED, token=token)
+    sid = await _write(mongo_db, seed)
+    assert (await mongo_db[COLL].find_one({"_id": ObjectId(sid)}))["metadata"]["gateway"]["keyHint"] == hint
+    if hint is None:
+        assert seed_summary(seed) == "requesty eu, default prov-a/kimi-k3.1-pro"
+    else:
+        assert seed_summary(seed) == f"requesty eu, default prov-a/kimi-k3.1-pro, key …{hint}"

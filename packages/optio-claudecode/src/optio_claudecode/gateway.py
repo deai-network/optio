@@ -15,10 +15,14 @@ The document holds the non-secret part, so a consumer lists and labels the
 seed without decrypting anything:
 
     {_id, createdAt, blobId, status: "pending" | "alive" | "dead", updatedAt?,
-     metadata: {gateway: {"provider", "region", "keyHint": token[-4:],
-                          "defaultModel",
+     metadata: {gateway: {"provider", "region",
+                          "keyHint": token[-4:] | None (a token under 12 chars),
+                          "defaultModel": the model sessions run,
                           "models": [{"id", "label", "status", "reason"}],
                           "presets": {...} | None, "testedAt": datetime | None}}}
+
+`defaultModel` is `effective_default_model()`, or the configured default while
+no model is usable (pending, dead); the blob keeps the configured one.
 
 `write_gateway_seed` sets `status` in the insert itself, so the document never
 exists without one; `seeds.acquire` skips "pending" and "dead". A gateway seed
@@ -123,15 +127,39 @@ class GatewaySeed:
         return usable[0] if usable else None
 
 
+# A token shorter than this shows no hint: its last four would give away too
+# much of it.
+_KEY_HINT_MIN_LENGTH = 12
+
+
+def _key_hint(token: str) -> str | None:
+    """The token's last four characters; None for a token shorter than
+    `_KEY_HINT_MIN_LENGTH`."""
+    return token[-4:] if len(token) >= _KEY_HINT_MIN_LENGTH else None
+
+
+def _shown_default(seed: GatewaySeed) -> str:
+    """The default model a label names: the one sessions run
+    (`effective_default_model()`), else, while no model is usable (a pending
+    or a dead seed), the configured one."""
+    return seed.effective_default_model() or seed.default_model
+
+
 def seed_summary(seed: GatewaySeed) -> str:
-    """A one-line, non-secret label (the key appears only as its last four)."""
-    return f"{seed.provider} {seed.region}, default {seed.default_model}, key …{seed.token[-4:]}"
+    """A one-line, non-secret label: ``"<provider> <region>, default <model>,
+    key …<last 4>"``, the model being the one sessions run (`_shown_default`).
+    The key part is left out for a token shorter than 12 characters."""
+    hint = _key_hint(seed.token)
+    key = f", key …{hint}" if hint is not None else ""
+    return f"{seed.provider} {seed.region}, default {_shown_default(seed)}{key}"
 
 
 # --- encoding ---------------------------------------------------------------
 
 
 def _check(seed: GatewaySeed) -> None:
+    if not isinstance(seed.token, str) or not seed.token:
+        raise ValueError("the gateway seed has no token")
     ids = {m.id for m in seed.models}
     if seed.default_model not in ids:
         raise ValueError(f"default model {seed.default_model!r} is not one of the seed's models")
@@ -227,8 +255,8 @@ def _metadata(seed: GatewaySeed) -> dict:
     return {
         "provider": seed.provider,
         "region": seed.region,
-        "keyHint": seed.token[-4:],
-        "defaultModel": seed.default_model,
+        "keyHint": _key_hint(seed.token),
+        "defaultModel": _shown_default(seed),
         "models": [
             {"id": m.id, "label": m.label, "status": m.status, "reason": m.reason}
             for m in seed.models
@@ -260,9 +288,9 @@ async def write_gateway_seed(
     encrypt: Callable[[bytes], bytes] | None,
     status: SeedStatus = "pending",
 ) -> str:
-    """Store a new gateway seed; return its id. Raises ValueError when the
-    default model or a preset's model is not one of the seed's models, or a
-    preset key is not "fast" / "extensive"."""
+    """Store a new gateway seed; return its id. Raises ValueError for an
+    empty token, when the default model or a preset's model is not one of
+    the seed's models, or a preset key is not "fast" / "extensive"."""
     _check(seed)
     blob_id = await _upload(db, seed, encrypt)
     result = await _collection(db, prefix, suffix).insert_one({

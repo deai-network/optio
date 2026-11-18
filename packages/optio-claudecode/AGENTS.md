@@ -941,14 +941,19 @@ seeds without decrypting:
 
 ```
 {_id, createdAt, blobId, status: "pending" | "alive" | "dead", updatedAt?,
- metadata: {gateway: {"provider", "region", "keyHint": <token's last 4>,
+ metadata: {gateway: {"provider", "region", "keyHint": <token's last 4> | None,
    "defaultModel", "models": [{"id", "label", "status", "reason"}],
    "presets": {"fast" | "extensive": {"model", "effort"}} | None,
    "testedAt": datetime | None}}}
 ```
 
 `metadata.gateway.presets` is the only home of the data-chat presets besides
-the blob; consumers read them there.
+the blob; consumers read them there. `defaultModel` is the model sessions run,
+`effective_default_model()`; while no model is usable (a pending or a dead
+seed) it is the configured default. The blob keeps the configured default, so
+a Test again that revives it makes it the default again. `keyHint` is None for
+a token shorter than 12 characters, whose last four would give too much of it
+away.
 
 - `GatewaySeed(provider, region, base_url, token, models, default_model,
   presets=None, tested_at=None)` with `GatewayModel(id, label, group, efforts,
@@ -957,7 +962,8 @@ the blob; consumers read them there.
   with status `"ok"`; `effective_default_model()` is the default if usable,
   else the first usable model, else None.
 - `write_gateway_seed(db, *, prefix, suffix, seed, encrypt, status="pending")`
-  checks that the default and every preset's model are among the models and
+  checks that the token is not empty (`ValueError("the gateway seed has no
+  token")`), that the default and every preset's model are among the models and
   that preset keys are `fast` / `extensive` (`ValueError`), uploads the blob,
   then writes the document in ONE `insert_one`, status included: there is no
   moment where it exists without a status. `seeds.acquire` skips `pending` and
@@ -975,7 +981,9 @@ the blob; consumers read them there.
   the seed; the setup task keeps the default and the presets among the
   models (see Setup task).
 - `gateway_seed_status(...)` is the document's status, None for an unknown id;
-  `seed_summary(seed)` is `"<provider> <region>, default <model>, key …<last 4>"`.
+  `seed_summary(seed)` is `"<provider> <region>, default <model>, key …<last 4>"`,
+  `<model>` being `defaultModel`'s (the one sessions run), and without the
+  `", key …"` part for a token shorter than 12 characters.
 - `seeds.purge_seed(db, prefix=..., suffix=REQUESTY_SEED_SUFFIX, seed_id=...)`
   removes a gateway seed like any other. A gateway seed is never leased.
 - Errors of gateway calls: `GatewayError`, with `GatewayAuthError`,
@@ -1019,6 +1027,10 @@ per provider). `PROVIDER = "requesty"`; `REGIONS` maps `global` to
 - `new_seed(*, token, region, models, default_model, presets=None) ->
   GatewaySeed`: `provider=PROVIDER`, `base_url=REGIONS[region]`, `models` as a
   tuple, for `write_gateway_seed`. An unknown region raises `ValueError`.
+- The unknown-region `ValueError` (of `list_models` and `new_seed`) is
+  `"unknown Requesty region; known: global, eu"`: it never names the value
+  given, since a swapped call (`list_models(region, token)`) would put the
+  token there.
 
 ### Gateway launch
 
@@ -1118,11 +1130,17 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
 
 - **One model** (`_check_model`, the seam tests patch). It gets its own task
   directory, `task_dir(ssh=ssh, process_id="gateway-check-<12 hex>",
-  consumer_name="optio-claudecode")`, then `connect` and `setup_workdir`.
-  claude is installed under the batch's install lock, so one install runs at a
-  time: the first also checks upstream for a newer claude, and the others link
-  the cached one. The workdir gets `CHECK_FILE` (`optio-check.txt`), holding a
-  random word with four digits. claude launches with `--permission-mode
+  consumer_name="optio-claudecode")`, then `connect` and `setup_workdir`, and
+  the workdir gets `CHECK_FILE` (`optio-check.txt`), holding a random word
+  with four digits. Those three host steps share `per_model_timeout`, so an
+  unreachable host fails the model instead of hanging the setup. claude is
+  then installed under the batch's install lock, so one install runs at a
+  time: the first also checks upstream for a newer claude (once per batch,
+  whatever it did), and the others link the cached one. The install has its
+  own bound, `_INSTALL_TIMEOUT_S` (600 s, for a first download). A step past
+  its bound fails the model with `"<step> did not finish within <t> s"`
+  (`connecting to the session host`, `setting up the task directory`,
+  `writing the check file`, `installing claude`). claude launches with `--permission-mode
   dontAsk --allowed-tools Read --tools Read --model <id>`. The prompt
   (`CHECK_PROMPT`) asks it to read the file with the Read tool and reply with
   only the word.
@@ -1188,7 +1206,7 @@ result lives in memory only.
 | Flow | Condition | Effect | Published |
 |---|---|---|---|
 | setup (`retest=False`, a `pending` seed) | the default model passed | written `alive` with only the models that passed; a preset naming a dropped model is cleared (`presets` None when none is left); `on_seed_saved` | `alive` |
-| setup | the default model failed | `seeds.purge_seed` (document and blob); the run fails with `RuntimeError("default model <id>: <reason>")` | nothing |
+| setup | the default model failed | removed (document and blob) while still pending; the run fails with `RuntimeError("default model <id>: <reason>")` | nothing |
 | Test again (`retest=True`, an `alive` or `dead` seed) | some model passed | every model written with its outcome (a failing one stays as `failed`, unusable); presets unchanged; `alive`; `on_seed_saved` | `alive` |
 | Test again | every model failed | the same, but `dead`; `on_seed_saved` | `dead` |
 
@@ -1206,6 +1224,11 @@ result lives in memory only.
   written removes the pending seed in a `finally`. That removal tolerates a
   seed already gone and logs any other failure, so the run's own error stands.
   Test again leaves the seed as it was.
+- A setup removes a seed only while it is still pending (`_purge_pending`, one
+  `find_one_and_delete` on the id and `status: "pending"`, then the blob): a
+  second setup on the same pending seed may have written it alive (or a Test
+  again dead) meanwhile, and that seed stays, in the failing default's path
+  and in the `finally` alike.
 - No error or progress line carries the token: the reasons are redacted (see
   Validation).
 - `oauth.verify_and_refresh_seed` refuses a gateway seed (`suffix ==

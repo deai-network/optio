@@ -33,7 +33,10 @@ import shlex
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timezone
 
-from optio_agents import seeds
+from bson import ObjectId
+from gridfs.errors import NoFile
+from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+
 from optio_agents.context import HookContext
 from optio_agents.model_probe import probe_turn
 from optio_core.context import ProcessContext
@@ -147,6 +150,37 @@ async def _cleanup(steps: Sequence[tuple[str, Callable[[], Awaitable[object]]]])
         raise cancelled
 
 
+# A check's claude install, under the batch's install lock, has its own bound
+# above the per-model one: a first install downloads the binary.
+_INSTALL_TIMEOUT_S = 600.0
+
+
+class _TooSlow(Exception):
+    """A step before a check's turn ran past its bound. The message is the
+    model's reason."""
+
+
+async def _bounded(
+    seconds: float, steps: Sequence[tuple[str, Callable[[], Awaitable[object]]]],
+) -> list[object]:
+    """Run ``steps`` in order, within ``seconds`` in all; their results.
+    `_TooSlow` names the step that was running when the time ran out (raised
+    outside the except block, so nothing travels with it). Any other error,
+    a TimeoutError a step raised itself included, passes through."""
+    results: list[object] = []
+    running = steps[0][0]
+    timeout = asyncio.timeout(seconds)
+    try:
+        async with timeout:
+            for running, step in steps:
+                results.append(await step())
+        return results
+    except TimeoutError:
+        if not timeout.expired():
+            raise
+    raise _TooSlow(f"{running} did not finish within {seconds:g} s")
+
+
 async def _stop_reader(reader: asyncio.Task) -> None:
     """Cancel the conversation's reader and wait until it has ended. An error
     it ended with (asyncssh's when the connection is lost) is raised, for the
@@ -168,26 +202,37 @@ async def _check_model(
 ) -> tuple[bool, str | None]:
     """One model's check: ``(True, None)`` or ``(False, reason)``. Raises for
     a host, install or launch failure, which the batch makes the model's
-    reason. Whatever happens, claude is killed and the task directory
-    removed. The batch removes the token from every reason; an answer is
-    cleaned here as well, before it is cut short."""
+    reason; `_TooSlow` when the host steps (connect, task directory, check
+    file) take longer than ``per_model_timeout`` together, or the install
+    longer than `_INSTALL_TIMEOUT_S`. Whatever happens, claude is killed and
+    the task directory removed. The batch removes the token from every
+    reason; an answer is cleaned here as well, before it is cut short."""
     check_seed = _check_seed(seed, model_id)
     host = make_host(ssh=ssh, taskdir=task_dir(
         ssh=ssh, process_id=f"gateway-check-{secrets.token_hex(6)}", consumer_name="optio-claudecode",
     ))
+    word = secrets.choice(_WORDS) + str(1000 + secrets.randbelow(9000))
     handle = None
     reader = None
     try:
-        await host.connect()
-        await host.setup_workdir()
+        # Bounded like the turn, so an unreachable host fails its model
+        # rather than hanging the setup.
+        await _bounded(per_model_timeout, (
+            ("connecting to the session host", host.connect),
+            ("setting up the task directory", host.setup_workdir),
+            ("writing the check file", lambda: host.write_text(CHECK_FILE, f"{word}\n")),
+        ))
         async with install_lock.lock:
-            claude_path = await host_actions.ensure_claude_installed(
-                HookContext(_Quiet(), host), install_dir=install_dir,
-                check_update=not install_lock.update_checked,
-            )
-            install_lock.update_checked = True
-        word = secrets.choice(_WORDS) + str(1000 + secrets.randbelow(9000))
-        await host.write_text(CHECK_FILE, f"{word}\n")
+            try:
+                [claude_path] = await _bounded(_INSTALL_TIMEOUT_S, ((
+                    "installing claude", lambda: host_actions.ensure_claude_installed(
+                        HookContext(_Quiet(), host), install_dir=install_dir,
+                        check_update=not install_lock.update_checked,
+                    ),
+                ),))
+            finally:
+                # Asked once per batch, whatever that first install did.
+                install_lock.update_checked = True
         gateway_env = _check_env(seed, check_seed)
         flags = host_actions.build_claude_flags(
             permission_mode="dontAsk", allowed_tools=["Read"], disallowed_tools=None, tools=["Read"],
@@ -264,9 +309,12 @@ async def validate_gateway_models(
     in the order given. ``report(done, total, model_id, ok, reason)`` is
     called after each model; an error it raises is logged, and the outcomes
     stand. A check that raises fails its model only, with ``"check failed:
-    <type>: <message>"``. ``install_dir`` is the claude cache override (as
-    ``ClaudeCodeTaskConfig.install_dir``). ValueError for a ``concurrency``
-    below 1."""
+    <type>: <message>"``. The host steps before the turn (connect, task
+    directory, check file) share ``per_model_timeout`` too, and the claude
+    install has its own `_INSTALL_TIMEOUT_S`: past it the model fails with
+    ``"<step> did not finish within <t> s"``. ``install_dir`` is the claude
+    cache override (as ``ClaudeCodeTaskConfig.install_dir``). ValueError for a
+    ``concurrency`` below 1."""
     if concurrency < 1:
         raise ValueError(f"concurrency must be at least 1, not {concurrency!r}")
     gate = asyncio.Semaphore(concurrency)
@@ -282,6 +330,8 @@ async def validate_gateway_models(
                     seed, model_id, ssh=ssh, install_dir=install_dir,
                     per_model_timeout=per_model_timeout, install_lock=install_lock,
                 )
+            except _TooSlow as e:
+                ok, reason = False, str(e)
             except Exception as e:  # noqa: BLE001 — one failing check fails its model only
                 ok, reason = False, f"check failed: {type(e).__name__}: {_redact(str(e), seed.token)[:200]}"
         if reason is not None:
@@ -375,11 +425,20 @@ def _passed_only(seed: GatewaySeed) -> GatewaySeed:
     return dataclasses.replace(seed, models=kept, presets=presets or None)
 
 
-async def _purge(db, *, prefix: str, suffix: str, seed_id: str) -> None:
-    """Remove a pending seed (document and blob); one already gone is fine."""
+async def _purge_pending(db, *, prefix: str, suffix: str, seed_id: str) -> None:
+    """Remove the seed (document and blob) only while it is still pending.
+    Another setup on the same seed may have written it alive (or a Test
+    again dead) meanwhile: that seed, and one already gone, are left alone.
+    One find_one_and_delete matches the status with the id, so no write can
+    land between the check and the removal."""
+    doc = await db[f"{prefix}{suffix}"].find_one_and_delete(
+        {"_id": ObjectId(seed_id), "status": "pending"},
+    )
+    if doc is None:
+        return
     try:
-        await seeds.purge_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
-    except KeyError:
+        await AsyncIOMotorGridFSBucket(db).delete(doc["blobId"])
+    except NoFile:
         pass
 
 
@@ -390,7 +449,8 @@ async def _first_setup(
     with only the models that passed, and return the tested seed (every
     model, with its outcome). It failed: remove the seed and raise
     RuntimeError. None when the run was cancelled. A cancellation, or an
-    exception before the seed is written, removes the seed."""
+    exception before the seed is written, removes the seed. Each removal
+    takes the seed only while it is still pending (`_purge_pending`)."""
     db = ctx._db
     written = purged = False
     try:
@@ -401,7 +461,7 @@ async def _first_setup(
         tested = _with_outcomes(seed, outcomes)
         ok, reason = outcomes[seed.default_model]
         if not ok:
-            await _purge(db, **where)
+            await _purge_pending(db, **where)
             purged = True
             raise RuntimeError(f"default model {seed.default_model}: {reason}")
         await update_gateway_seed(db, **where, seed=_passed_only(tested), encrypt=encrypt, status="alive")
@@ -410,7 +470,7 @@ async def _first_setup(
     finally:
         if not written and not purged:
             try:
-                await _purge(db, **where)
+                await _purge_pending(db, **where)
             except Exception:  # noqa: BLE001 — the run's own outcome stands
                 _LOG.warning("gateway setup: removing pending seed %s failed", where["seed_id"], exc_info=True)
 

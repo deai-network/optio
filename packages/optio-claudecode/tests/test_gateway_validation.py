@@ -267,6 +267,75 @@ async def test_a_reader_that_fails_leaves_the_outcome_and_the_cleanup(
     assert any("stopping the reader failed" in r.getMessage() for r in caplog.records)
 
 
+class _HangsOnConnect:
+    """A session host that never answers the connect (an unreachable SSH
+    host); records what is asked of it."""
+
+    def __init__(self) -> None:
+        self.workdir = "/nonexistent/gateway-check/workdir"
+        self.calls: list[str] = []
+
+    async def connect(self) -> None:
+        self.calls.append("connect")
+        await asyncio.Event().wait()
+
+    async def setup_workdir(self) -> None:
+        self.calls.append("setup_workdir")
+
+    async def write_text(self, relpath: str, content: str) -> None:
+        self.calls.append("write_text")
+
+    async def cleanup_taskdir(self, aggressive: bool) -> None:
+        self.calls.append("cleanup_taskdir")
+
+    async def disconnect(self) -> None:
+        self.calls.append("disconnect")
+
+
+async def test_a_host_that_hangs_on_connect_fails_each_model_within_the_ceiling(task_root, monkeypatch):
+    """Minor 2: the steps before the turn are bounded by the per-model
+    ceiling too; the model fails with a reason saying which step hung."""
+    hosts: list[_HangsOnConnect] = []
+
+    def _make_host(*, ssh, taskdir):
+        hosts.append(_HangsOnConnect())
+        return hosts[-1]
+
+    monkeypatch.setattr(gateway_setup, "make_host", _make_host)
+    out = await asyncio.wait_for(
+        validate_gateway_models(SEED, ["m/pass", "plain"], per_model_timeout=0.2), 60,
+    )
+    reason = "connecting to the session host did not finish within 0.2 s"
+    assert out == {"m/pass": (False, reason), "plain": (False, reason)}
+    assert [h.calls for h in hosts] == [["connect", "cleanup_taskdir", "disconnect"]] * 2
+
+
+async def test_an_install_that_hangs_fails_each_model_within_its_own_bound(
+        task_root, claude_cache_dir, monkeypatch):
+    """Minor 2: the install under the batch's lock has its own (generous)
+    bound; each check waits its turn at the lock, and the lock is let go."""
+    asked = []
+
+    async def _hangs(hook_ctx, **kwargs):
+        asked.append(kwargs["check_update"])
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gateway_setup.host_actions, "ensure_claude_installed", _hangs)
+    monkeypatch.setattr(gateway_setup, "_INSTALL_TIMEOUT_S", 0.2)
+    out = await asyncio.wait_for(validate_gateway_models(
+        SEED, ["m/pass", "plain"], install_dir=str(claude_cache_dir), per_model_timeout=60,
+    ), 60)
+    reason = "installing claude did not finish within 0.2 s"
+    assert out == {"m/pass": (False, reason), "plain": (False, reason)}
+    # The first check asked for an update check; the next one did not repeat it.
+    assert asked == [True, False]
+    assert os.listdir(task_root) == []
+
+
+def test_the_install_bound_is_generous():
+    assert gateway_setup._INSTALL_TIMEOUT_S >= 300
+
+
 async def test_the_cleanup_runs_every_step_through_a_failure_and_a_cancellation():
     ran = []
     blocked = asyncio.Event()
