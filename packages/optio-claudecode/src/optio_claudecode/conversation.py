@@ -34,6 +34,10 @@ _LOG = logging.getLogger(__name__)
 # claude's answer: it answers at once, this only bounds a hung process.
 SETTINGS_READBACK_TIMEOUT_S = 10.0
 
+# The message.model of the assistant message the CLI writes itself after an
+# API error (no model answered it).
+SYNTHETIC_MODEL = "<synthetic>"
+
 
 class ControlRejected(Exception):
     """Claude Code answered a session-control change with an error (e.g. a
@@ -148,7 +152,8 @@ class ClaudeCodeConversation:
         # metadata names them): system/init's session_id and
         # claude_code_version; the model of the last main-thread assistant
         # message (message.model; a subagent's message, parent_tool_use_id
-        # set, is not the turn's); and the turn's model, the latest of
+        # set, is not the turn's, nor is the CLI's own after an API error,
+        # SYNTHETIC_MODEL); and the turn's model, the latest of
         # system/init.model and that message.model. Only a non-empty string
         # updates one. Unlike runtime_model, neither attach() nor a switch
         # clears them: a switch applies from the next turn, whose system/init
@@ -321,10 +326,12 @@ class ClaudeCodeConversation:
                 self._pending = max(self._pending, 1)
         elif t == "assistant" and obj.get("parent_tool_use_id") is None:
             # A main-thread message names the model that answered it; a
-            # subagent's (parent_tool_use_id set) does not speak for the turn.
+            # subagent's (parent_tool_use_id set) does not speak for the turn,
+            # nor does the CLI's own message after an API error (model
+            # SYNTHETIC_MODEL: no model answered; the widget skips it too).
             message = obj.get("message")
             model = _reported(message.get("model")) if isinstance(message, dict) else None
-            if model is not None:
+            if model is not None and model != SYNTHETIC_MODEL:
                 self.message_model = self.turn_model = model
         self._event_queue.put_nowait(obj)
 

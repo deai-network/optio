@@ -375,6 +375,22 @@ async def test_a_subagents_message_leaves_the_turn_model():
     await _done(handle, reader)
 
 
+async def test_a_synthetic_message_leaves_the_turn_model():
+    # After an API error the CLI sends its own assistant message, model
+    # "<synthetic>", on the main thread: no model answered it.
+    conv, handle, reader = _conv(model="sonnet")
+    conv._route({"type": "system", "subtype": "init", "model": "claude-sonnet-5",
+                 "session_id": "s-1", "claude_code_version": "2.1.326"})
+    conv._route({"type": "assistant", "parent_tool_use_id": None,
+                 "message": {"model": "claude-sonnet-5-0915", "content": []}})
+    conv._route({"type": "assistant", "parent_tool_use_id": None, "error": "unknown",
+                 "message": {"model": "<synthetic>", "content": [
+                     {"type": "text", "text": "API Error: Can't reach the API server"}]}})
+    assert (conv.cli_session_id, conv.cli_version, conv.message_model, conv.turn_model) == (
+        "s-1", "2.1.326", "claude-sonnet-5-0915", "claude-sonnet-5-0915")
+    await _done(handle, reader)
+
+
 async def test_only_a_named_value_updates_what_the_cli_reported():
     conv, handle, reader = _conv(model="sonnet")
     conv._route({"type": "system", "subtype": "init", "model": "claude-sonnet-5",
