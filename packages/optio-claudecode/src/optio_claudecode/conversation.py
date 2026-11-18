@@ -65,6 +65,11 @@ def _refuse_if_busy(busy: Callable[[], bool] | None) -> None:
         raise SwitchBusy("a turn is running")
 
 
+def _reported(value) -> str | None:
+    """``value`` when the stream named it (a non-empty string), else None."""
+    return value if isinstance(value, str) and value else None
+
+
 class ClaudeCodeConversation:
     """Implements optio_agents.conversation.Conversation for Claude Code."""
 
@@ -139,6 +144,19 @@ class ClaudeCodeConversation:
         # the reader for it.
         self.runtime_model: str | None = None
         self.runtime_model_observed: asyncio.Event = asyncio.Event()
+        # What the running claude last reported about itself (the deliverable
+        # metadata names them): system/init's session_id and
+        # claude_code_version; the model of the last main-thread assistant
+        # message (message.model; a subagent's message, parent_tool_use_id
+        # set, is not the turn's); and the turn's model, the latest of
+        # system/init.model and that message.model. Only a non-empty string
+        # updates one. Unlike runtime_model, neither attach() nor a switch
+        # clears them: a switch applies from the next turn, whose system/init
+        # names the new model.
+        self.cli_session_id: str | None = None
+        self.cli_version: str | None = None
+        self.message_model: str | None = None
+        self.turn_model: str | None = None
         # The running permission mode, as the stream reports it (system/init,
         # and system/status on every switch, ours or Claude's own, e.g. on
         # leaving plan mode). The Event wakes the owning body to re-emit the
@@ -267,10 +285,12 @@ class ClaudeCodeConversation:
             # The stream announces the REAL running model here; capture it (raw,
             # incl. any [variant] suffix) so the body can fold it into the
             # effort control's presence. Set on every launch (incl. relaunch).
-            model = obj.get("model")
-            if isinstance(model, str) and model:
-                self.runtime_model = model
+            model = _reported(obj.get("model"))
+            if model is not None:
+                self.runtime_model = self.turn_model = model
                 self.runtime_model_observed.set()
+            self.cli_session_id = _reported(obj.get("session_id")) or self.cli_session_id
+            self.cli_version = _reported(obj.get("claude_code_version")) or self.cli_version
             self._observe_permission_mode(obj)
         elif t == "system" and obj.get("subtype") == "status":
             self._observe_permission_mode(obj)
@@ -299,6 +319,13 @@ class ClaudeCodeConversation:
                 self._pending = self._sends_since_result
             elif state == "running":
                 self._pending = max(self._pending, 1)
+        elif t == "assistant" and obj.get("parent_tool_use_id") is None:
+            # A main-thread message names the model that answered it; a
+            # subagent's (parent_tool_use_id set) does not speak for the turn.
+            message = obj.get("message")
+            model = _reported(message.get("model")) if isinstance(message, dict) else None
+            if model is not None:
+                self.message_model = self.turn_model = model
         self._event_queue.put_nowait(obj)
 
     # -- event fan-out -----------------------------------------------------
@@ -468,7 +495,8 @@ class ClaudeCodeConversation:
 
         On success ``model`` / ``effort`` hold the new values, and after a
         model change ``runtime_model`` is unknown again until the next turn's
-        system/init names it. Claude answers a model change asked for while a
+        system/init names it (``turn_model`` keeps the last model reported
+        until then). Claude answers a model change asked for while a
         turn runs after that turn; it applies from the next turn. After an
         applied model/effort change claude is asked what it now runs
         (``check_settings``): a mismatch is logged and reported, the values

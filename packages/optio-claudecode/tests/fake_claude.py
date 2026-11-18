@@ -353,7 +353,10 @@ def run_stream_json_mode(argv: list[str]) -> int:
     a full id) and ``{effort}`` (its effort level, ``default`` when none was
     set). Like the real CLI (2.1.296), every turn starts with a system/init
     naming the model it runs on, and apply_flag_settings switches model and
-    effort from the next turn on, without a restart. The control request
+    effort from the next turn on, without a restart. As the real CLI
+    (2.1.326) does, system/init also names the ``session_id`` and the
+    ``claude_code_version`` (``2.1.326``), and the reply's assistant event
+    names the model it runs on in ``message.model``. The control request
     get_settings answers as the real CLI does (task-1 spike, 2.1.296):
     ``effective`` / ``sources`` hold the apply_flag_settings layer (launch
     flags are not a settings source), ``applied`` the model the next turn
@@ -411,7 +414,8 @@ def run_stream_json_mode(argv: list[str]) -> int:
 
     def init_event():
         return {"type": "system", "subtype": "init", "session_id": session_id,
-                "model": running_model, "cwd": os.getcwd(), "permissionMode": mode}
+                "model": running_model, "cwd": os.getcwd(), "permissionMode": mode,
+                "claude_code_version": "2.1.326"}
 
     emit(init_event())
     n = 0
@@ -563,7 +567,8 @@ def run_stream_json_mode(argv: list[str]) -> int:
             return 0
         text = reply_tpl.format(n=n, model=running_model, effort=effort) + decision_note
         emit({"type": "assistant", "message": {
-            "role": "assistant", "content": [{"type": "text", "text": text}],
+            "role": "assistant", "model": running_model,
+            "content": [{"type": "text", "text": text}],
         }, "session_id": session_id})
         emit({"type": "result", "subtype": "success", "result": text,
               "session_id": session_id, "is_error": False,

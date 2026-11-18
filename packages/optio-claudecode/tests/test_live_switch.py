@@ -341,6 +341,65 @@ async def test_a_model_switch_forgets_the_old_runtime_model_until_the_next_turn_
     await _done(handle, reader)
 
 
+async def test_the_stream_names_the_session_version_and_the_turns_model():
+    conv, handle, reader = _conv(model="sonnet")
+    conv._route({"type": "system", "subtype": "init", "model": "lyceum/kimi-k3.1-pro",
+                 "session_id": "s-1", "claude_code_version": "2.1.326"})
+    assert (conv.cli_session_id, conv.cli_version, conv.turn_model) == ("s-1", "2.1.326", "lyceum/kimi-k3.1-pro")
+    conv._route({"type": "assistant", "parent_tool_use_id": None,
+                 "message": {"model": "lyceum/kimi-k3.1-pro-0915", "content": []}})
+    assert (conv.message_model, conv.turn_model) == ("lyceum/kimi-k3.1-pro-0915",) * 2
+    await _done(handle, reader)
+
+
+async def test_a_switch_keeps_the_turn_model_until_the_next_turn_names_one():   # RF4
+    conv, handle, reader = _conv(model="opus[1m]", effort="high")
+    conv._route({"type": "system", "subtype": "init", "model": "claude-opus-5[1m]"})
+    switch = asyncio.create_task(conv.apply_settings(model="sonnet"))
+    _answer(handle, await _next_request(handle)); await _answer_readback(handle)
+    await asyncio.wait_for(switch, 60)
+    assert conv.runtime_model is None and conv.turn_model == "claude-opus-5[1m]"
+    conv._route({"type": "system", "subtype": "init", "model": "claude-sonnet-5"})
+    assert conv.turn_model == "claude-sonnet-5"
+    await _done(handle, reader)
+
+
+async def test_a_subagents_message_leaves_the_turn_model():
+    conv, handle, reader = _conv(model="sonnet")
+    conv._route({"type": "system", "subtype": "init", "model": "claude-sonnet-5"})
+    conv._route({"type": "assistant", "parent_tool_use_id": None,
+                 "message": {"model": "claude-sonnet-5-0915", "content": []}})
+    conv._route({"type": "assistant", "parent_tool_use_id": "toolu_1",
+                 "message": {"model": "claude-haiku-4-5", "content": []}})
+    assert (conv.message_model, conv.turn_model) == ("claude-sonnet-5-0915",) * 2
+    await _done(handle, reader)
+
+
+async def test_only_a_named_value_updates_what_the_cli_reported():
+    conv, handle, reader = _conv(model="sonnet")
+    conv._route({"type": "system", "subtype": "init", "model": "claude-sonnet-5",
+                 "session_id": "s-1", "claude_code_version": "2.1.326"})
+    conv._route({"type": "assistant", "message": {"model": "claude-sonnet-5-0915", "content": []}})
+    conv._route({"type": "system", "subtype": "init", "model": "",
+                 "session_id": None, "claude_code_version": 2})
+    conv._route({"type": "assistant", "parent_tool_use_id": None, "message": {"model": ""}})
+    conv._route({"type": "assistant", "parent_tool_use_id": None, "message": "not an object"})
+    assert (conv.cli_session_id, conv.cli_version, conv.message_model, conv.turn_model) == (
+        "s-1", "2.1.326", "claude-sonnet-5-0915", "claude-sonnet-5-0915")
+    await _done(handle, reader)
+
+
+async def test_a_new_process_keeps_the_cli_facts():
+    conv = ClaudeCodeConversation()
+    conv.attach(_FakeHandle())
+    conv._route({"type": "system", "subtype": "init", "model": "claude-opus-5[1m]",
+                 "session_id": "s-1", "claude_code_version": "2.1.326"})
+    conv.attach(_FakeHandle())
+    assert (conv.cli_session_id, conv.cli_version, conv.turn_model) == (
+        "s-1", "2.1.326", "claude-opus-5[1m]")
+    assert conv.runtime_model is None
+
+
 async def test_without_a_model_list_the_first_switch_asks_claude_for_one():
     conv, handle, reader = _conv(model=None, effort=None)
     conv.models_offered = None
