@@ -1315,7 +1315,8 @@ consumer shows: a published result lives in memory only.
 ## Hooks
 
 `before_execute(hook_ctx)`, `after_execute(hook_ctx)`,
-`on_deliverable(hook_ctx, relative_path, decoded_text)`. Identical
+`on_deliverable(hook_ctx, relative_path, decoded_text)`, optionally with
+a fourth argument, the metadata (see Deliverable metadata). Identical
 signatures and failure semantics to optio-opencode.
 
 `before_execute` fires **after** AGENTS.md and HOME files are planted
@@ -1323,6 +1324,57 @@ and **before** ttyd launches.
 
 `after_execute` fires after claude exits (or after cancellation), on
 both success and ERROR paths.
+
+## Deliverable metadata
+
+The driver snapshots a deliverable's metadata when it accepts the
+`DELIVERABLE:` line (`optio_agents.deliverable_meta`; design
+`docs/2026-11-18-deliverable-metadata-design.md`). Its own `origin`,
+`delivered_at` and `resumed` (source `optio`) come first. Then come the
+entries of this package's provider, `deliverable_facts.deliverable_metadata(config,
+conversation, gateway)`, in this order:
+
+| Entry | Source | When |
+|---|---|---|
+| `agent.type`, `agent.name` | `config` | always: `claudecode` / `Claude Code`, or `claudecode_requesty` / `Claude Code + Requesty` |
+| `model` = `config.model` | `config` | iframe mode only, when set; iframe mode reports nothing more |
+| `agent.version`, `agent.session` | `agent` | conversation mode, each once system/init has named it |
+| `model` = `conversation.model` | `optio` | conversation mode, when set: what optio launched or switched to |
+| `model` = `conversation.turn_model` | `agent` | conversation mode, when set: what the CLI reports for the turn |
+| `model.label` | `seed` under a gateway, else `agent` | conversation mode, when the catalog has a label |
+| `effort` = `conversation.effort` | `optio` | conversation mode, always; None means no explicit level |
+| `provider`, `gateway.region` | `seed` | gateway mode |
+
+- The callback gets the list only when it takes it
+  (`invoke_on_deliverable`): as a fourth positional argument (4 or more
+  positional parameters, or `*args`), else as `metadata=` (a keyword-only
+  `metadata`, or `**kwargs`). Any other callback gets three arguments, as
+  before.
+- The label rule (`models.catalog_label`): it is the label of the catalog
+  entry (`conversation.models_offered`: the seed's usable models under a
+  gateway, the CLI's own list natively) whose id is the model, or which
+  resolves to it. The model is `turn_model` once the CLI has named one.
+  Before that it is `conversation.model`, or `default` when that is None.
+- What the provider reads from the conversation are four attributes kept by
+  `ClaudeCodeConversation._route`, plus `model`, `effort` and
+  `models_offered`. None of the four is cleared by a switch or a relaunch:
+  - `cli_session_id` and `cli_version`: system/init's `session_id` and
+    `claude_code_version`;
+  - `message_model`: the last main-thread assistant `message.model`;
+  - `turn_model`: the latest of system/init's `model` and that
+    `message.model`.
+  A subagent's message (`parent_tool_use_id` set) and the CLI's own message
+  after an API error (`message.model` `<synthetic>`) move neither model.
+- What is never read: the gateway seed object (the session keeps only
+  `gateway_facts`, the plain tuple `(seed.provider, seed.region)`, and hands
+  the provider that), so never its token, `base_url` or key hint. Also never
+  the config's `env`, any settings (`claude_config`, `--settings`), or
+  account and OAuth seed details.
+- The provider is a plain function: synchronous, in-memory reads only. The
+  driver calls it inline, and an awaitable answer counts as a failure.
+- Tests: `tests/test_deliverable_facts.py` (the provider, `catalog_label`)
+  and `tests/test_deliverable_metadata_session.py` (a live native and gateway
+  session; no secret in the metadata).
 
 ## Log-file contract
 

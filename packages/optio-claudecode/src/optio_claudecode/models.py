@@ -109,6 +109,18 @@ def offers(catalog: list[dict], value: str) -> bool:
     return _by_id(catalog, value) is not None or _resolving_to(catalog, value) is not None
 
 
+def catalog_label(catalog: list[dict] | None, value: str | None) -> str | None:
+    """The label of ``value``'s catalog entry: the entry of that id, else the
+    one resolving to it (a full id an alias stands for, its own alias before
+    ``default``). None when the catalog or the value is unknown, or lists no
+    such entry."""
+    if not catalog or not value:
+        return None
+    found = _by_id(catalog, value) or _resolving_to(catalog, value)
+    label = (found or {}).get("label")
+    return label if isinstance(label, str) and label else None
+
+
 def shown_model(catalog: list[dict], *, picked: str | None, runtime: str | None) -> str:
     """The value the model select shows.
 

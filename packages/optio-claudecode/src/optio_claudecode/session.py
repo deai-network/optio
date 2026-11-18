@@ -49,6 +49,7 @@ from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 
 from optio_claudecode import cred_watcher
+from optio_claudecode import deliverable_facts
 from optio_claudecode import gateway as cc_gateway
 from optio_claudecode import host_actions
 from optio_claudecode import models as cc_models
@@ -236,6 +237,10 @@ async def run_claudecode_session(
     cred_baseline: str | None = None
     cred_watch_task: "asyncio.Task | None" = None
     resolved_seed_id: str | None = None
+    # Gateway mode: the seed's non-secret (provider, region), set by the
+    # conversation body after the seed load; all the deliverable metadata
+    # provider ever sees of the seed (never the token, base_url or key hint).
+    gateway_facts: tuple[str, str] | None = None
     lease_holder: str | None = None
 
     await host.connect()
@@ -514,7 +519,7 @@ async def run_claudecode_session(
 
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, cred_baseline, cred_watch_task
-        nonlocal resolved_seed_id, lease_holder, todo_tracker
+        nonlocal resolved_seed_id, lease_holder, todo_tracker, gateway_facts
 
         if callable(config.seed_id):
             resolved_seed_id = await config.seed_id(ctx.process_id)  # may raise SeedUnavailableError
@@ -528,6 +533,8 @@ async def run_claudecode_session(
         # credentials file.
         gateway_seed = (await _load_gateway_seed(ctx, config, resolved_seed_id)
                         if config.gateway_provider else None)
+        if gateway_seed is not None:
+            gateway_facts = (gateway_seed.provider, gateway_seed.region)
         cred_baseline_out, focus_env = await _plant_session_content(
             ctx, host, hook_ctx, config, protocol,
             resuming=resuming,
@@ -1229,6 +1236,10 @@ async def run_claudecode_session(
             browser_url_rewrite=rewrite_oauth_redirect,
             agent_sender=_agent_sender,
             keywords=config.host_protocol,
+            # Called inline when the tail accepts a DELIVERABLE line: the
+            # conversation's state as it is then, and the seed's facts only.
+            deliverable_metadata=lambda: deliverable_facts.deliverable_metadata(
+                config, conversation, gateway_facts),
         )
     except _SessionFailed as fail:
         raise RuntimeError(str(fail)) from None
