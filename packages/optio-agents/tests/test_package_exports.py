@@ -24,3 +24,10 @@ def test_top_level_exports_protocol_variation():
     for name in ("get_protocol", "Protocol", "BrowserMode",
                  "build_log_channel_prompt", "browser_shims", "seeds"):
         assert hasattr(optio_agents, name), name
+
+
+def test_top_level_exports_deliverable_metadata():
+    import optio_agents
+    for name in ("meta_get", "clamp", "agent_entries", "DeliverableMetadata",
+                 "KEY_MODEL", "SOURCE_AGENT", "ORIGIN_HARNESS"):
+        assert hasattr(optio_agents, name), name

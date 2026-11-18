@@ -435,6 +435,45 @@ the workdir capture cap design (`docs/2026-10-13-workdir-capture-cap-design.md`)
 
 Agent sessions never inherit the engine's virtualenv: every session PATH is built with `session_base_path` (the engine's venv bin dirs removed) and every agent launch's `env_remove` is `session_env_remove(scrub_env)` (adds `VIRTUAL_ENV`, `PYTHONHOME`, `PYTHONPATH`), because claustrum cannot and should not grant the engine's venv, so the session's `python3` would die reading its `pyvenv.cfg`.
 
+## Deliverable metadata (`optio_agents.deliverable_meta`)
+
+Design: `docs/2026-11-18-deliverable-metadata-design.md`. The list of facts
+that says which agent and model delivered a file.
+
+* Shape: `DeliverableMetadata = list[DeliverableMeta]`, each entry
+  `{"key": str, "value": str | int | float | bool | None, "source": str}`
+  (`MetaValue` is the value type). `entry(key, value, source)` builds one.
+* Sources (`SOURCE_*`): `config` (the task config), `optio` (what optio
+  launched or switched to), `agent` (what the agent's CLI reports), `seed`
+  (the gateway seed's non-secret fields), `harness` (optio itself, without an
+  agent).
+* Keys (`KEY_*`); a wrapper adds only what it knows:
+  `origin` (`ORIGIN_AGENT` = `agent` or `ORIGIN_HARNESS` = `harness`),
+  `agent.type`, `agent.name`, `agent.version`, `agent.session`, `provider`,
+  `gateway.region`, `model` (source `optio`: launched or switched to; source
+  `agent`: reported by the CLI), `model.label`, `effort`, `delivered_at`
+  (ISO-8601 UTC, milliseconds), `resumed`.
+* Never included: the gateway token, `base_url`, the key hint, any
+  environment or `--settings` content, account or personal details.
+* `meta_get(md, key, prefer=DEFAULT_PREFER)` — the value of the first entry
+  with that key whose source comes earliest in `prefer`; sources outside
+  `prefer` are ignored; None when there is none (also for `md` None or
+  empty). `DEFAULT_PREFER` is `agent`, `optio`, `seed`, `config`, `harness`.
+  Consumers never spell a key or a source: they use the constants, which
+  are exported from `optio_agents` with `meta_get`, `clamp`,
+  `agent_entries` and the two types.
+* `clamp(md)` — new dicts with only `key`, `value` and `source`; drops
+  non-dict entries, a `key` or `source` that is not a str, a missing or
+  non-scalar `value`; cuts a string value to `MAX_VALUE_CHARS` (256); keeps
+  the first `MAX_ENTRIES` (32) in order. Never changes its input.
+* Builders: `agent_entries(config, info)` gives `agent.type`
+  (`config.agent_type`) and `agent.name` (`info.name`), source `config`.
+  `delivery_entries(*, origin, source, resumed, now=None)` gives `origin`,
+  `delivered_at` and, unless `resumed` is None, `resumed`, all with `source`.
+* Leaf module: it imports only `optio_agents` submodules
+  (`optio_agents.agent_info`), never the package, so that
+  `optio_agents.protocol` can import it while the package initialises.
+
 ## Dependency direction
 
 Depends on `optio-host` and `optio-core`; consumed by every engine wrapper
