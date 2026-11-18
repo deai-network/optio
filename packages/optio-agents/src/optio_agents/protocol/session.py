@@ -25,7 +25,12 @@ import time as _time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from optio_agents.context import HookContext
-from optio_agents.deliverable_meta import DeliverableMetadata
+from optio_agents.deliverable_meta import (
+    DeliverableMetadata,
+    MetadataProvider,
+    invoke_on_deliverable,
+    snapshot_metadata,
+)
 from optio_host.host import Host, unwind_tracing
 from optio_agents.protocol.parser import (
     AttentionEvent,
@@ -210,6 +215,10 @@ async def run_log_protocol_session(
     # Keyword-channel opt-out. True (default) keeps today's behavior for every
     # existing caller. False runs scaffolding only — see the docstring.
     keywords: bool = True,
+    # The wrapper's deliverable metadata provider (agent, model, ...); called
+    # when the tail accepts a DELIVERABLE line. None sends the driver's own
+    # entries only — see the docstring.
+    deliverable_metadata: "MetadataProvider | None" = None,
 ) -> None:
     """Run ``body`` against ``host`` while the log/deliverables protocol
     cooperates with it.
@@ -248,6 +257,21 @@ async def run_log_protocol_session(
     watcher — but no optio.log tail, no deliverable fetch loop, no
     DONE/ERROR semantics, and no premature-exit-without-DONE rule (the
     body's own return governs: normal return = clean completion).
+
+    Deliverable metadata: when the tail accepts a ``DELIVERABLE:`` line
+    (after the ``Deliverable: <path>`` progress message; a rejected line
+    takes none), it takes the snapshot
+    ``snapshot_metadata(deliverable_metadata, resumed=ctx.resume)``: the
+    driver's ``origin`` (``agent``), ``delivered_at`` and ``resumed``,
+    source ``optio``, then the provider's entries, clamped. It is taken
+    then, not when the callback runs, because the agent ends its turn
+    right after the line and a live model switch can land in between. The
+    snapshot is queued with the deliverable and handed to
+    ``on_deliverable`` through ``invoke_on_deliverable`` (a callback that
+    does not take it gets three arguments). A provider that raises, times
+    out (``PROVIDER_TIMEOUT_S`` for an awaitable answer) or answers
+    something that is not a list never fails the delivery: the driver's
+    entries are sent alone and the failure is logged.
 
     What this driver does NOT do:
       * Workdir teardown / ``host.cleanup_taskdir`` — caller's
@@ -309,7 +333,7 @@ async def run_log_protocol_session(
         if before_execute is not None:
             await before_execute(hook_ctx)
 
-        deliverable_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(
+        deliverable_queue: asyncio.Queue[tuple[str, str, DeliverableMetadata]] = asyncio.Queue(
             maxsize=DELIVERABLE_QUEUE_BOUND,
         )
         caller_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue(
@@ -330,6 +354,7 @@ async def run_log_protocol_session(
                     host, ctx, deliverable_queue, caller_queue, done_flag,
                     error_flag, protocol.parse_log_line, hook_ctx,
                     browser_url_rewrite,
+                    deliverable_metadata=deliverable_metadata,
                 ),
             )
         body_task = asyncio.create_task(body(host, hook_ctx))
@@ -433,15 +458,21 @@ async def _reply_to_agent(hook_ctx: HookContext, display: str, reply: str) -> No
 async def _tail_and_dispatch(
     host: Host,
     ctx: "ProcessContext",
-    deliverable_queue: asyncio.Queue[tuple[str, str]],
+    deliverable_queue: asyncio.Queue[tuple[str, str, DeliverableMetadata]],
     caller_queue: asyncio.Queue[tuple[str, object]],
     done_flag: asyncio.Event,
     error_flag: list,
     parse_line: "Callable[[str], LogEvent]",
     hook_ctx: HookContext,
     browser_url_rewrite: "Callable[[str], str] | None" = None,
+    deliverable_metadata: "MetadataProvider | None" = None,
 ) -> None:
-    """Consume tail_file(optio.log), parse each line, dispatch by keyword."""
+    """Consume tail_file(optio.log), parse each line, dispatch by keyword.
+
+    An accepted DELIVERABLE line is queued as ``(absolute, display,
+    metadata)``, with the metadata snapshot taken here, at acceptance,
+    rather than when the callback runs. A rejected line takes no snapshot.
+    """
     async for line in host.tail_file(f"{host.workdir}/optio.log"):
         ev: LogEvent = parse_line(line)
         if isinstance(ev, StatusEvent):
@@ -476,7 +507,10 @@ async def _tail_and_dispatch(
                 )
                 continue
             ctx.report_progress(None, f"Deliverable: {display}")
-            item = (absolute, display)
+            metadata = await snapshot_metadata(
+                deliverable_metadata, resumed=bool(getattr(ctx, "resume", False)),
+            )
+            item = (absolute, display, metadata)
             try:
                 deliverable_queue.put_nowait(item)
             except asyncio.QueueFull:
@@ -511,14 +545,15 @@ async def _tail_and_dispatch(
 async def _deliverable_fetch_loop(
     host: Host,
     callback: DeliverableCallback | None,
-    queue: asyncio.Queue[tuple[str, str]],
+    queue: asyncio.Queue[tuple[str, str, DeliverableMetadata]],
     ctx: "ProcessContext",
     hook_ctx: HookContext,
 ) -> None:
     """Drain the deliverable queue: fetch each file, decode UTF-8,
-    invoke the consumer callback."""
+    invoke the consumer callback through ``invoke_on_deliverable`` with the
+    metadata snapshot queued with it."""
     while True:
-        absolute, display = await queue.get()
+        absolute, display, metadata = await queue.get()
         try:
             try:
                 text = await fetch_deliverable_text(host, absolute)
@@ -563,7 +598,9 @@ async def _deliverable_fetch_loop(
                 reply = "accepted. thanks for the good work."
             else:
                 try:
-                    feedback = await callback(hook_ctx, display, text)
+                    feedback = await invoke_on_deliverable(
+                        callback, hook_ctx, display, text, metadata,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     ctx.report_progress(
                         None, f"on_deliverable callback raised: {exc!r}",

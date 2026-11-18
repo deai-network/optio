@@ -486,6 +486,30 @@ that says which agent and model delivered a file.
   of the three- and the four-argument form. The claustrum update notice
   (`emit_claustrum_update_notice`) is sent this way with `origin` `harness`
   and `delivered_at`, both source `harness`, and no agent or model entries.
+* Snapshot time: `run_log_protocol_session(..., deliverable_metadata=provider)`
+  takes the snapshot when the tail accepts a `DELIVERABLE:` line, right
+  after the `Deliverable: <path>` progress message, not when the callback
+  runs: the agent ends its turn right after the line, and a live model
+  switch can land before the callback. A rejected line takes none. The
+  snapshot is `snapshot_metadata(provider, resumed=ctx.resume)`: the
+  driver's `origin` (`agent`), `delivered_at` and `resumed`, source
+  `optio`, first, then the provider's entries, all through `clamp` (so a
+  provider cannot push the driver's entries out). It is queued with the
+  deliverable as `(absolute, display, metadata)` and handed to the
+  callback through `invoke_on_deliverable`.
+* Provider contract (`MetadataProvider`): a zero-argument callable that
+  returns the list, or an awaitable of it. It reads in-memory state only
+  and must not reach a secret (the gateway token, `base_url`, the key
+  hint) or account details: what it returns is what is sent. An awaitable
+  answer is awaited under `asyncio.wait_for(..., PROVIDER_TIMEOUT_S)`
+  (2.0 s); a synchronous provider cannot be timed out, so it must not
+  block. Without a provider the driver's entries are sent alone.
+* Failure rule: a provider failure never fails a delivery. An `Exception`
+  (a timeout included) or an answer that is not a `list` leaves the
+  provider's part empty: the driver's entries are sent, the reply to the
+  agent is unchanged, and one WARNING names the exception's type (or the
+  answer's type) and the keys sent, never the exception's text or a
+  value. `CancelledError` propagates.
 * Leaf module: it imports only `optio_agents` submodules
   (`optio_agents.agent_info`), never the package, so that
   `optio_agents.protocol` can import it while the package initialises.

@@ -4,8 +4,9 @@ A deliverable's metadata is a list of ``{key, value, source}`` entries that says
 which agent and model delivered the file. The same fact may come from several
 sources (the model optio launched and the model the CLI reports), so consumers
 pick one with ``meta_get(md, key, prefer=(...))`` and spell keys and sources only
-through the constants here. ``invoke_on_deliverable`` is the one way optio hands
-a deliverable and its metadata to a consumer's ``on_deliverable`` callback.
+through the constants here. ``snapshot_metadata`` takes the list when the driver
+accepts a ``DELIVERABLE:`` line, and ``invoke_on_deliverable`` is the one way optio
+hands a deliverable and its metadata to a consumer's ``on_deliverable`` callback.
 
 Design: ``docs/2026-11-18-deliverable-metadata-design.md``.
 
@@ -14,13 +15,17 @@ package itself, so that ``optio_agents.protocol`` can import it while the
 package is still being initialised.
 """
 
+import asyncio
 import inspect
+import logging
 import math
 import weakref
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Literal, TypedDict
 
 from optio_agents.agent_info import AgentInfo
+
+_LOG = logging.getLogger(__name__)
 
 MetaValue = str | int | float | bool | None
 DeliverableMeta = TypedDict("DeliverableMeta", {"key": str, "value": MetaValue, "source": str})
@@ -51,6 +56,15 @@ ORIGIN_HARNESS = "harness"
 MAX_ENTRIES = 32
 MAX_VALUE_CHARS = 256
 DEFAULT_PREFER = (SOURCE_AGENT, SOURCE_OPTIO, SOURCE_SEED, SOURCE_CONFIG, SOURCE_HARNESS)
+PROVIDER_TIMEOUT_S = 2.0
+
+MetadataProvider = Callable[[], Awaitable[DeliverableMetadata] | DeliverableMetadata]
+"""A wrapper's entries for one deliverable.
+
+Called with no arguments when the driver accepts a ``DELIVERABLE:`` line; returns the
+list, or an awaitable of it. It reads in-memory state only: an awaitable answer is
+bounded by ``PROVIDER_TIMEOUT_S``, a synchronous one cannot be timed out.
+"""
 
 _SCALARS = (str, int, float, bool)
 # BSON (excavator stores the list in MongoDB) has no int wider than 64 bits.
@@ -126,6 +140,50 @@ def delivery_entries(
     if resumed is not None:
         md.append(entry(KEY_RESUMED, resumed, source))
     return md
+
+
+async def snapshot_metadata(
+    provider: MetadataProvider | None,
+    *,
+    resumed: bool,
+    timeout: float = PROVIDER_TIMEOUT_S,
+    now: datetime | None = None,
+) -> DeliverableMetadata:
+    """The metadata of one agent deliverable, taken when the driver accepts its line.
+
+    The driver's own ``origin`` (``agent``), ``delivered_at`` and ``resumed``, source
+    ``optio``, come first and the provider's entries follow; the whole list is clamped.
+    An awaitable answer is awaited under ``asyncio.wait_for(..., timeout)``.
+
+    A provider failure never fails the delivery: an ``Exception`` (a timeout included)
+    or an answer that is not a list leaves the provider's part empty, and is logged at
+    WARNING with the exception's type name and the keys sent, never the exception's
+    text or any value. ``CancelledError`` propagates.
+    """
+    own = delivery_entries(origin=ORIGIN_AGENT, source=SOURCE_OPTIO, resumed=resumed, now=now)
+    provided: Any = []
+    if provider is not None:
+        try:
+            provided = provider()
+            if inspect.isawaitable(provided):
+                provided = await asyncio.wait_for(provided, timeout)
+        except Exception as exc:  # noqa: BLE001 - a provider failure never fails a delivery
+            _log_provider_failure(type(exc).__name__, own)
+            provided = []
+        else:
+            if not isinstance(provided, list):
+                _log_provider_failure(f"answered a {type(provided).__name__}, not a list", own)
+                provided = []
+    return clamp(own + provided)
+
+
+def _log_provider_failure(what: str, sent: DeliverableMetadata) -> None:
+    """Log a provider failure by type and the keys sent; never a value or an exception's text."""
+    _LOG.warning(
+        "deliverable metadata provider failed (%s); sending the driver's entries only, keys: %s",
+        what,
+        ", ".join(item["key"] for item in sent),
+    )
 
 
 _MetadataMode = Literal["positional", "keyword", "none"]

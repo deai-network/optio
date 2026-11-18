@@ -259,7 +259,7 @@ async def test_on_deliverable_receives_hook_ctx_and_can_use_host_primitives(tmp_
     from optio_agents import HookContext
 
     queue = asyncio.Queue()
-    await queue.put(("/wd/deliverables/x.txt", "x.txt"))
+    await queue.put(("/wd/deliverables/x.txt", "x.txt", []))
 
     # Patch host.fetch_bytes_from_host to return canned content; the
     # free fetch_deliverable_text helper used by _deliverable_fetch_loop

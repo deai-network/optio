@@ -28,7 +28,7 @@ async def _drive(callback):
 
     hc.send_to_agent = spy  # shadow the bound method with a spy
     q: asyncio.Queue = asyncio.Queue()
-    await q.put(("/abs/x.md", "x.md"))
+    await q.put(("/abs/x.md", "x.md", []))
     task = asyncio.create_task(
         S._deliverable_fetch_loop(_Host(), callback, q, _Ctx(), hc)
     )
