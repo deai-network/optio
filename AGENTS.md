@@ -915,6 +915,88 @@ Design: `docs/2026-09-13-conversation-steering-design.md` and
 
 ---
 
+## Python: engine wrappers — deliverable callbacks and metadata
+
+Every engine's `on_deliverable` callback (`DeliverableCallback`, exported from
+`optio_agents`) can take, as an optional fourth argument, the deliverable's
+metadata: a clamped list of entries that says which agent and model delivered
+the file. Use it instead of anything the agent writes about itself: a model's
+account of its own identity is unreliable.
+Design: `docs/2026-11-18-deliverable-metadata-design.md`.
+
+- **Two forms.** `async def cb(hook_ctx, path, text)` works as before;
+  `async def cb(hook_ctx, path, text, metadata=None)` also gets the list.
+  optio calls every callback through `invoke_on_deliverable`, which reads the
+  callback's signature once: 4 or more positional parameters or `*args` get
+  the list as the fourth positional argument; else a keyword-only `metadata`
+  or `**kwargs` gets `metadata=`; else, and when the signature cannot be read,
+  the callback gets three arguments. The rule reads `inspect.signature`, which
+  follows `__wrapped__`, so a decorator around an `on_deliverable` callback
+  must keep (forward) the signature of what it calls. The default `None` lets
+  the same callback be called with three arguments, as tests do.
+- **Entries.** Each is `{"key": str, "value": str | int | float | bool | None,
+  "source": str}` (`DeliverableMeta`; the list is `DeliverableMetadata`). The
+  same key may come from several sources:
+
+  | Key | Source | Value |
+  |---|---|---|
+  | `origin` | `optio`, or `harness` | `ORIGIN_AGENT` (`agent`) or `ORIGIN_HARNESS` (`harness`) |
+  | `delivered_at` | `optio`, or `harness` | ISO-8601 UTC, milliseconds |
+  | `resumed` | `optio` | whether this run resumed an earlier session |
+  | `agent.type`, `agent.name` | `config` | `config.agent_type`, the agent's display name |
+  | `agent.version`, `agent.session` | `agent` | the CLI's version and session id |
+  | `model` | `optio` | what optio launched or switched to |
+  | `model` | `agent` | what the CLI reports |
+  | `model` | `config` | Claude Code iframe mode: `config.model` |
+  | `model.label` | `seed` under a gateway, else `agent` | the catalog's label of the model |
+  | `effort` | `optio` | the effort level; None means no explicit level |
+  | `provider`, `gateway.region` | `seed` | the gateway seed's provider and region |
+
+- **Reading it.** `meta_get(md, KEY_MODEL, prefer=(SOURCE_AGENT, SOURCE_OPTIO))`
+  gives the value from the earliest source in `prefer` (default
+  `DEFAULT_PREFER`: `agent`, `optio`, `seed`, `config`, `harness`), or None
+  (also for `md` None or empty). Consumers never spell a key or a source: they
+  use `KEY_*`, `SOURCE_*` and `ORIGIN_*`, exported from `optio_agents` with
+  `meta_get`.
+- **Clamp.** At most 32 entries (`MAX_ENTRIES`), string values cut to 256
+  characters (`MAX_VALUE_CHARS`), scalar values only; `clamp` drops malformed
+  entries and any field but the three.
+- **Snapshot time.** The shared driver `run_log_protocol_session` takes the
+  snapshot when it accepts the `DELIVERABLE:` line, not when the callback
+  runs: a live model switch between the two does not change it. Its own
+  `origin`, `delivered_at` and `resumed` come first, then the wrapper's
+  entries. A rejected line takes none.
+- **The claustrum notice** ("a newer claustrum release is available"), sent
+  through the same callback, carries only `origin` `harness` and
+  `delivered_at`, both with source `harness`: no agent sent it, so it has no
+  agent or model entries.
+- **Never included:** the gateway token, `base_url`, the key hint, any
+  environment or `--settings` content, account or personal details (codex
+  account, OAuth seed info).
+- **Failures.** A wrapper's provider failure never fails a delivery: the
+  driver's own entries are sent, the reply to the agent is unchanged, and one
+  WARNING names the failure's type and the keys sent, never a value or an
+  exception's text.
+- **What each wrapper reports.** Claude Code (`claudecode` and
+  `claudecode_requesty`) reports the full set: system/init's version and
+  session id; the model optio set and the turn's model the CLI reports (from
+  system/init or the last main-thread assistant `message.model`; a
+  subagent's message, or a synthetic one with `message.model` `<synthetic>`,
+  names no model); the catalog label (the gateway's catalog under Requesty,
+  the CLI's own model list natively); `effort`; and, under a gateway, the
+  seed's `provider` and `gateway.region`. Its iframe mode adds only `model`
+  = `config.model`, when set. The other six wrappers (opencode, codex, cursor,
+  grok, kimicode, antigravity) report the base entries: `agent.type` and
+  `agent.name` (`agent_entries(config, AGENT_INFO)`) after the driver's
+  `origin`, `delivered_at` and `resumed`. Their model entries are a later
+  step.
+
+Details: `packages/optio-agents/AGENTS.md` and
+`packages/optio-claudecode/AGENTS.md` (each "Deliverable metadata"); writing a
+provider: `docs/writing-agent-wrappers.md`.
+
+---
+
 ## TypeScript: optio-contracts
 
 Package: `optio-contracts`

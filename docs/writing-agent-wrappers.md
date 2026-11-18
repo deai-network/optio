@@ -179,6 +179,20 @@ supply the backend-specific callbacks:
 - `prepare(host, hook_ctx)` — install the runtime and restore resume state (runs
   after the workdir wipe, before the log tail).
 - `_agent_sender(text)` — push one message into the live session (engine→agent).
+- `deliverable_metadata` — the provider of the deliverable metadata
+  (`MetadataProvider`, `optio_agents.deliverable_meta`): a zero-argument callable
+  that returns this wrapper's entries. The driver calls it when it accepts a
+  `DELIVERABLE:` line, puts its own `origin`, `delivered_at` and `resumed` first
+  and clamps the list. Start from `agent_entries(config, AGENT_INFO)` and append
+  `entry(KEY_..., value, SOURCE_...)` for what the wrapper knows; a wrapper that
+  knows nothing more passes `lambda: agent_entries(config, AGENT_INFO)`. Read only
+  the listed in-memory fields (the config's own fields, the conversation's state),
+  never env, settings, seed objects or account info: what it returns is what is
+  sent. It is synchronous, with in-memory reads only, and nothing can time it out;
+  an awaitable answer is treated as a failure (the driver's entries go alone). Keep
+  body-owned state in a holder the body fills, as claudecode's `gateway_facts`: the
+  body sets it to the seed's `(provider, region)` after the seed load, and the
+  provider reads it when called. Reference: `optio-claudecode/…/deliverable_facts.py`.
 
 The driver owns everything else: `host.setup_workdir()`, the `optio.log`
 tail/parse/dispatch loop, deliverable and caller-message queues, browser shims, the
@@ -1099,9 +1113,10 @@ enums, and cross-field constraints — e.g. `conversation_ui` requires
 | `scrub_env` | Env vars to strip from the launch. |
 | install-dir overrides / `install_if_missing` | Binary-cache location + auto-install toggle (Stage 5). |
 
-**Hooks** — `before_execute` / `after_execute`, `on_deliverable`, `on_seed_saved`,
-and the readiness/teardown callbacks; see `HookContext` and the config fields in
-either reference `types.py`.
+**Hooks** — `before_execute` / `after_execute`, `on_deliverable` (with an optional
+fourth argument, the deliverable metadata, passed only to a callback that takes
+it; see `invoke_on_deliverable`), `on_seed_saved`, and the readiness/teardown
+callbacks; see `HookContext` and the config fields in either reference `types.py`.
 
 New rendering options (like `thinking_verbosity`) are a four-touch change: the
 config field (+ validation), forward it in `set_widget_data(...)` as

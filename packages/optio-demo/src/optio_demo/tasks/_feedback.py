@@ -24,10 +24,18 @@ _nudges: dict[str, int] = {}  # process_id -> count
 def make_feedback_on_deliverable(tag: str):
     """Build an on_deliverable callback that rejects deliveries missing the
     marker (returning a nudge for the loop to send), accepts those that have
-    it, and gives up after _CAP nudges per process."""
+    it, and gives up after _CAP nudges per process.
 
-    async def _on_deliverable(hook_ctx, path, text) -> "str | None":
+    It takes the deliverable metadata as its optional fourth argument and
+    prints it after the body, one ``key=value (source)`` line per entry."""
+
+    async def _on_deliverable(hook_ctx, path, text, metadata=None) -> "str | None":
         print(f"[{tag}] deliverable {path}:\n{text}")
+        if metadata:
+            for item in metadata:
+                print(f"[{tag}] metadata: {item['key']}={item['value']} ({item['source']})")
+        else:
+            print(f"[{tag}] metadata: none")
         if text.strip().rstrip(".").lower().endswith(_MARKER):
             return None  # accept
         pid = hook_ctx.process_id

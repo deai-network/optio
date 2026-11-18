@@ -1,5 +1,6 @@
 import pytest
 
+from optio_agents.deliverable_meta import entry
 from optio_demo.tasks._feedback import make_feedback_on_deliverable
 
 
@@ -29,3 +30,18 @@ async def test_nudges_then_caps():
     r3 = await cb(ctx, "x.md", "still missing")  # 3rd: past cap=2
     assert r3 is None
     assert any("cap" in (m or "") for m in ctx.msgs)
+
+
+@pytest.mark.asyncio
+async def test_prints_the_metadata(capsys):
+    cb = make_feedback_on_deliverable("t")
+    await cb(_Ctx("p-md"), "x.md", "done. Over and out.", [entry("model", "lyceum/kimi-k3.1-pro", "agent")])
+    assert "[t] metadata: model=lyceum/kimi-k3.1-pro (agent)" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_prints_no_metadata_when_there_is_none(capsys):
+    cb = make_feedback_on_deliverable("t")
+    await cb(_Ctx("p-md-none"), "x.md", "done. Over and out.")
+    await cb(_Ctx("p-md-empty"), "x.md", "done. Over and out.", [])
+    assert capsys.readouterr().out.count("[t] metadata: none\n") == 2
