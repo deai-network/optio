@@ -927,13 +927,17 @@ Design: `docs/2026-11-18-deliverable-metadata-design.md`.
 - **Two forms.** `async def cb(hook_ctx, path, text)` works as before;
   `async def cb(hook_ctx, path, text, metadata=None)` also gets the list.
   optio calls every callback through `invoke_on_deliverable`, which reads the
-  callback's signature once: 4 or more positional parameters or `*args` get
-  the list as the fourth positional argument; else a keyword-only `metadata`
-  or `**kwargs` gets `metadata=`; else, and when the signature cannot be read,
-  the callback gets three arguments. The rule reads `inspect.signature`, which
-  follows `__wrapped__`, so a decorator around an `on_deliverable` callback
-  must keep (forward) the signature of what it calls. The default `None` lets
-  the same callback be called with three arguments, as tests do.
+  callback's signature once: a parameter named `metadata` that can be passed
+  by keyword always gets the list as `metadata=`, wherever it stands; else 4
+  or more positional parameters or `*args` get it as the fourth positional
+  argument; else `**kwargs` gets `metadata=`; else, and when the signature
+  cannot be read, the callback gets three arguments. The rule reads
+  `inspect.signature`, which follows `__wrapped__`, so a decorator around an
+  `on_deliverable` callback must keep (forward) the signature of what it
+  calls. The reverse holds too: a pass-through wrapper written as
+  `(*args, **kwargs)` without `functools.wraps` receives the metadata as a
+  fourth argument and must forward or drop it. The default `None` lets the
+  same callback be called with three arguments, as tests do.
 - **Entries.** Each is `{"key": str, "value": str | int | float | bool | None,
   "source": str}` (`DeliverableMeta`; the list is `DeliverableMetadata`). The
   same key may come from several sources:
@@ -942,7 +946,7 @@ Design: `docs/2026-11-18-deliverable-metadata-design.md`.
   |---|---|---|
   | `origin` | `optio`, or `harness` | `ORIGIN_AGENT` (`agent`) or `ORIGIN_HARNESS` (`harness`) |
   | `delivered_at` | `optio`, or `harness` | ISO-8601 UTC, milliseconds |
-  | `resumed` | `optio` | whether this run resumed an earlier session |
+  | `resumed` | `optio` | `ctx.resume`: the run was launched as a resume, which may have had no saved state to restore |
   | `agent.type`, `agent.name` | `config` | `config.agent_type`, the agent's display name |
   | `agent.version`, `agent.session` | `agent` | the CLI's version and session id |
   | `model` | `optio` | what optio launched or switched to |
@@ -956,11 +960,16 @@ Design: `docs/2026-11-18-deliverable-metadata-design.md`.
   gives the value from the earliest source in `prefer` (default
   `DEFAULT_PREFER`: `agent`, `optio`, `seed`, `config`, `harness`), or None
   (also for `md` None or empty). Consumers never spell a key or a source: they
-  use `KEY_*`, `SOURCE_*` and `ORIGIN_*`, exported from `optio_agents` with
-  `meta_get`.
+  use `KEY_*`, `SOURCE_*` and `ORIGIN_*`.
+- **Where the names live.** From `optio_agents`: `meta_get`, `clamp`,
+  `agent_entries`, the `KEY_*`, `SOURCE_*` and `ORIGIN_*` constants,
+  `invoke_on_deliverable`, `DeliverableMeta` and `DeliverableMetadata`. From
+  `optio_agents.deliverable_meta` only: `entry`, `MetadataProvider` and
+  `DEFAULT_PREFER`.
 - **Clamp.** At most 32 entries (`MAX_ENTRIES`), string values cut to 256
   characters (`MAX_VALUE_CHARS`), scalar values only; `clamp` drops malformed
-  entries and any field but the three.
+  entries, any field but the three, and values BSON cannot store (ints
+  outside the signed 64-bit range, non-finite floats).
 - **Snapshot time.** The shared driver `run_log_protocol_session` takes the
   snapshot when it accepts the `DELIVERABLE:` line, not when the callback
   runs: a live model switch between the two does not change it. Its own
@@ -973,10 +982,12 @@ Design: `docs/2026-11-18-deliverable-metadata-design.md`.
 - **Never included:** the gateway token, `base_url`, the key hint, any
   environment or `--settings` content, account or personal details (codex
   account, OAuth seed info).
-- **Failures.** A wrapper's provider failure never fails a delivery: the
-  driver's own entries are sent, the reply to the agent is unchanged, and one
-  WARNING names the failure's type and the keys sent, never a value or an
-  exception's text.
+- **Failures.** A wrapper's provider failure never fails a delivery. A
+  failure is: the provider raises, answers something that is not a list, or
+  answers an awaitable (an `async def` provider); an unexpected error while
+  clamping its answer counts the same. Then the driver's own entries are
+  sent, the reply to the agent is unchanged, and one WARNING names the
+  failure's type and the keys sent, never a value or an exception's text.
 - **What each wrapper reports.** Claude Code (`claudecode` and
   `claudecode_requesty`) reports the full set: system/init's version and
   session id; the model optio set and the turn's model the CLI reports (from

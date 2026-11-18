@@ -184,11 +184,13 @@ supply the backend-specific callbacks:
   that returns this wrapper's entries. The driver calls it when it accepts a
   `DELIVERABLE:` line, puts its own `origin`, `delivered_at` and `resumed` first
   and clamps the list. Start from `agent_entries(config, AGENT_INFO)` and append
-  `entry(KEY_..., value, SOURCE_...)` for what the wrapper knows; a wrapper that
-  knows nothing more passes `lambda: agent_entries(config, AGENT_INFO)`. Read only
-  the listed in-memory fields (the config's own fields, the conversation's state),
-  never env, settings, seed objects or account info: what it returns is what is
-  sent. It is synchronous, with in-memory reads only, and nothing can time it out;
+  `entry(KEY_..., value, SOURCE_...)` for what the wrapper knows (`entry` comes
+  from `optio_agents.deliverable_meta`; `agent_entries` and the constants from
+  `optio_agents`); a wrapper that knows nothing more passes
+  `lambda: agent_entries(config, AGENT_INFO)`. Read only these in-memory fields:
+  the config's `agent_type` and `model`, the conversation's state, and non-secret
+  holders like claudecode's `gateway_facts`; never `config.env`, `claude_config`
+  or any settings, seed or account object: what it returns is what is sent. It is synchronous, with in-memory reads only, and nothing can time it out;
   an awaitable answer is treated as a failure (the driver's entries go alone). Keep
   body-owned state in a holder the body fills, as claudecode's `gateway_facts`: the
   body sets it to the seed's `(provider, region)` after the seed load, and the

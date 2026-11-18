@@ -1346,9 +1346,10 @@ conversation, gateway)`, in this order:
 | `provider`, `gateway.region` | `seed` | gateway mode |
 
 - The callback gets the list only when it takes it
-  (`invoke_on_deliverable`): as a fourth positional argument (4 or more
-  positional parameters, or `*args`), else as `metadata=` (a keyword-only
-  `metadata`, or `**kwargs`). Any other callback gets three arguments, as
+  (`invoke_on_deliverable`): as `metadata=` when it has a parameter named
+  `metadata` that can be passed by keyword, else as a fourth positional
+  argument (4 or more positional parameters, or `*args`), else as
+  `metadata=` (`**kwargs`). Any other callback gets three arguments, as
   before.
 - The label rule (`models.catalog_label`): it is the label of the catalog
   entry (`conversation.models_offered`: the seed's usable models under a

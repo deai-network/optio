@@ -1,5 +1,7 @@
 # Deliverable metadata push: optio implementation plan
 
+> **Superseded in part:** the provider became synchronous-only with no timeout during execution (see the SDD ledger rulings; the contract as built is in `packages/optio-agents/AGENTS.md`); text below about `PROVIDER_TIMEOUT_S`, async or hanging providers is superseded.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every `on_deliverable` callback can take, as an optional fourth argument, a clamped list of `{key, value, source}` entries that says which agent and model delivered the file. The list is snapshotted when optio accepts the `DELIVERABLE:` line.
