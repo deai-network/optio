@@ -5,7 +5,8 @@ alive and keeps only the models that passed; when the default fails, the seed
 is removed and the run fails. Test again (``retest=True``) tests an alive or
 dead seed again: a failing model stays in it as failed, and when every model
 fails the seed is dead. A setup that is cancelled or fails before it writes
-removes its pending seed.
+removes its pending seed. Claude is installed once, in a child of the run,
+before the checks; the log names every step.
 """
 
 from __future__ import annotations
@@ -14,13 +15,15 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 from dataclasses import replace
 from datetime import datetime
 
 import pytest
 from bson import ObjectId
 
-from optio_core.exceptions import ResultNotPublished
+from optio_core.exceptions import ChildProcessFailed, ResultNotPublished
+from optio_core.models import ChildOutcome
 
 from optio_claudecode import REQUESTY_SEED_SUFFIX, gateway_setup, oauth
 from optio_claudecode.gateway import (
@@ -125,6 +128,46 @@ def _messages(proc: dict) -> set[str]:
     return {e.get("message") for e in proc.get("log", [])}
 
 
+def _timeless(messages) -> set[str]:
+    """``messages`` with every duration as ``<t> s``."""
+    return {re.sub(r"\b\d+ s\b", "<t> s", m) for m in messages if m}
+
+
+class _Context:
+    """A run's process context as the setup uses it: records each
+    report_progress call, and runs a child task in place, raising
+    ChildProcessFailed for a failed child as the engine's run_child_task
+    does."""
+
+    def __init__(self, db, process_id: str) -> None:
+        self._db = db
+        self.process_id = process_id
+        self._child_counter = {"next": 0}
+        self.cancellation_flag = asyncio.Event()
+        self.progress: list[tuple[float | None, str | None]] = []
+        self.children: list[tuple[str, str, _Context]] = []
+        self.published: list[dict] = []
+
+    def report_progress(self, percent, message=None, *, level="info") -> None:
+        self.progress.append((percent, message))
+
+    def should_continue(self) -> bool:
+        return not self.cancellation_flag.is_set()
+
+    def publish_result(self, obj) -> None:
+        self.published.append(obj)
+
+    async def run_child_task(self, task) -> ChildOutcome:
+        child = _Context(self._db, task.process_id)
+        self._child_counter["next"] += 1
+        self.children.append((task.process_id, task.name, child))
+        try:
+            await task.execute(child)
+        except Exception as e:
+            raise ChildProcessFailed(task.name, task.process_id, e) from e
+        return ChildOutcome(state="done")
+
+
 async def _until(predicate, timeout: float = 60.0) -> None:
     loop = asyncio.get_running_loop()
     end = loop.time() + timeout
@@ -152,7 +195,8 @@ async def test_a_pending_seed_whose_default_passes_becomes_alive(
     assert saved == [(sid, SUMMARY)]
     assert proc["status"]["state"] == "done"
     # The per-model progress lines are what the consumer shows.
-    assert {f"{KIMI.id}: passed", f"{GLM.id}: failed ({ERROR})"} <= _messages(proc)
+    assert {f"{KIMI.id} (1 of 2): passed (<t> s)",
+            f"{GLM.id} (2 of 2): failed after <t> s ({ERROR})"} <= _timeless(_messages(proc))
     doc = await _doc(mongo_db)
     assert doc["status"] == "alive" and isinstance(doc["metadata"]["gateway"]["testedAt"], datetime)
     # The alive seed holds only the models that passed.
@@ -204,7 +248,9 @@ async def test_a_pending_seed_whose_default_fails_is_removed(
     assert proc["status"]["state"] == "failed"
     assert proc["status"]["error"] == f"default model {KIMI.id}: {ERROR} ***"
     assert [type(e) for e in caught] == [RuntimeError] and _without_context(caught[0])
-    assert f"{GLM.id}: passed" in _messages(proc)
+    assert f"{GLM.id} (2 of 2): passed (<t> s)" in _timeless(_messages(proc))
+    # No saving line: the setup saves nothing.
+    assert not any(m.startswith("Saving:") for m in _messages(proc) if m)
     assert TOKEN not in json.dumps(proc, default=str)
     assert await _doc(mongo_db) is None
     assert await mongo_db["fs.files"].find_one({"_id": blob_id}) is None
@@ -439,3 +485,115 @@ async def test_verify_and_refresh_seed_refuses_a_gateway_seed(mongo_db):
             encrypt=_cipher, decrypt=_cipher,
         )
     assert (await _doc(mongo_db))["status"] == "alive"
+
+
+THREE = GatewayModel("prov-b/three", "Model Three", "managed", None)
+FOUR = GatewayModel("prov-b/four", "Model Four", "managed", None)
+STEPS = ["connecting to the session host", "starting Claude Code", "waiting for the test answer"]
+
+
+async def test_the_setup_logs_every_step(task_root, claude_cache_dir, mongo_db, monkeypatch):
+    """What is tested, claude ready (its install in a child of its own), each
+    model's slow steps and its timed result, then the save; the bar is
+    indeterminate until the install ended and only moves forward after; no
+    line holds the token."""
+    _fake(monkeypatch, {KIMI.id: "pass", GLM.id: "error-with-token", THREE.id: "split", FOUR.id: "wrong"})
+    sid = await _write(mongo_db, models=(KIMI, GLM, THREE, FOUR))
+    ctx = _Context(mongo_db, "gw-setup-log")
+    await _task(ctx.process_id, sid, claude_cache_dir).execute(ctx)
+
+    lines = [message for _, message in ctx.progress]
+    assert lines[:2] == [
+        "Testing 4 models with Claude Code + Requesty (EU), up to 3 at a time.",
+        "Claude Code 9.9.9 ready.",
+    ]
+    outcomes = (
+        (KIMI, r"passed \(\d+ s\)"),
+        (GLM, rf"failed after \d+ s \({re.escape(ERROR)} \*\*\*\)"),
+        (THREE, r"passed \(\d+ s\)"),
+        (FOUR, r"failed after \d+ s \(did not answer with the word \(answered 'I could not read it'\)\)"),
+    )
+    for i, (model, outcome) in enumerate(outcomes, 1):
+        prefix = f"{model.label} ({i} of 4): "
+        own = [line[len(prefix):] for line in lines if line.startswith(prefix)]
+        assert own[:-1] == STEPS and re.fullmatch(outcome, own[-1]), own
+    assert lines[-1] == "Saving: 2 of 4 models passed."
+    assert len(lines) == 2 + 4 * (len(STEPS) + 1) + 1
+
+    # The install ran once, in a child with its own log; the checks only
+    # linked what it cached, and said nothing about it.
+    [(child_id, child_name, child)] = ctx.children
+    assert (child_id, child_name) == ("gw-setup-log.install-claude-0", "Install Claude Code")
+    child_lines = [message for _, message in child.progress]
+    assert "Preparing Claude Code…" in child_lines and "Preparing Claude Code…" not in lines
+
+    percents = [percent for percent, _ in ctx.progress]
+    assert percents[0] is None and percents[1] == 20
+    assert None not in percents[1:] and percents[1:] == sorted(percents[1:]) and percents[-1] == 100
+
+    # GLM's reason held the token, redacted before it reached the log.
+    assert any("***" in line for line in lines)
+    assert all(TOKEN not in line for line in lines + child_lines if line)
+    assert [p["status"] for p in ctx.published] == ["alive"]
+
+
+async def test_claude_is_installed_once_in_a_child_and_the_checks_only_link_it(
+    task_root, claude_cache_dir, mongo_db, monkeypatch,
+):
+    _fake(monkeypatch, {KIMI.id: "pass", GLM.id: "pass"})
+    asked = []
+    install = gateway_setup.host_actions.ensure_claude_installed
+
+    async def _recorded(hook_ctx, **kwargs):
+        asked.append(kwargs["check_update"])
+        return await install(hook_ctx, **kwargs)
+
+    monkeypatch.setattr(gateway_setup.host_actions, "ensure_claude_installed", _recorded)
+    sid = await _write(mongo_db)
+    pid = "gw-setup-install"
+    async with _engine(mongo_db) as optio:
+        result, proc = await _run(optio, _task(pid, sid, claude_cache_dir))
+        child = await optio.get_process(f"{pid}.install-claude-0")
+
+    assert result["status"] == "alive"
+    # The child asked upstream for a newer claude; the checks did not.
+    assert asked == [True, False, False]
+    assert child["name"] == "Install Claude Code" and child["status"]["state"] == "done"
+    assert "Preparing Claude Code…" in _messages(child)
+    assert "Preparing Claude Code…" not in _messages(proc)
+    assert {"Claude Code 9.9.9 ready.", "Saving: 2 of 2 models passed."} <= _messages(proc)
+    assert os.listdir(task_root) == []
+
+
+async def test_a_failing_install_fails_the_setup_before_any_check(
+    task_root, claude_cache_dir, mongo_db, monkeypatch, tmp_path,
+):
+    _fake(monkeypatch, {KIMI.id: "pass", GLM.id: "pass"})
+    started = tmp_path / "started"
+    started.mkdir()
+    monkeypatch.setenv("FAKE_CLAUDE_STARTED_DIR", str(started))
+
+    async def _fails(hook_ctx, **kwargs):
+        hook_ctx.report_progress(None, "Installing Claude Code…")
+        raise RuntimeError("claude install failed on host (exit 22: curl: (22) 404)")
+
+    monkeypatch.setattr(gateway_setup.host_actions, "ensure_claude_installed", _fails)
+    sid = await _write(mongo_db)
+    pid = "gw-setup-install-fails"
+    caught = []
+    async with _engine(mongo_db) as optio:
+        proc = await _run_failing(optio, _catching(_task(pid, sid, claude_cache_dir), caught))
+        child = await optio.get_process(f"{pid}.install-claude-0")
+
+    assert proc["status"]["state"] == "failed"
+    assert proc["status"]["error"] == (
+        "Claude Code install failed: claude install failed on host (exit 22: curl: (22) 404)"
+    )
+    assert [type(e) for e in caught] == [RuntimeError] and _without_context(caught[0])
+    assert child["status"]["state"] == "failed" and "Installing Claude Code…" in _messages(child)
+    # No model was checked, the pending seed is gone, and so is the
+    # child's task directory.
+    assert os.listdir(started) == []
+    assert await _doc(mongo_db) is None
+    assert os.listdir(task_root) == []
+    assert TOKEN not in json.dumps([proc, child], default=str)

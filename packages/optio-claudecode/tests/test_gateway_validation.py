@@ -175,7 +175,7 @@ async def test_a_model_without_levels_is_checked_under_the_effort_flag_its_seed_
 async def test_at_most_concurrency_checks_run_at_once(monkeypatch):
     running = peak = 0
 
-    async def _check(seed, model_id, *, ssh, install_dir, per_model_timeout, install_lock):
+    async def _check(seed, model_id, *, ssh, install_dir, per_model_timeout, install_lock, on_step):
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
@@ -223,22 +223,62 @@ async def test_report_follows_each_model(task_root, claude_cache_dir, monkeypatc
     assert {model: (ok, reason) for _, _, model, ok, reason in calls} == out
 
 
-async def _passes(seed, model_id, *, ssh, install_dir, per_model_timeout, install_lock):
+async def _passes(seed, model_id, *, ssh, install_dir, per_model_timeout, install_lock, on_step):
+    on_step(gateway_setup._CONNECTING)
     return True, None
 
 
 async def test_a_report_that_raises_leaves_every_outcome(monkeypatch):
     monkeypatch.setattr(gateway_setup, "_check_model", _passes)
-    reported = []
+    reported, stepped = [], []
 
     def _report(done, total, model_id, ok, reason):
         reported.append(model_id)
         raise RuntimeError("report broke")
 
+    def _on_step(model_id, step):
+        stepped.append(model_id)
+        raise RuntimeError("step report broke")
+
     ids = [f"m/{i}" for i in range(4)]
-    out = await validate_gateway_models(SEED, ids, report=_report)
+    out = await validate_gateway_models(SEED, ids, report=_report, on_step=_on_step)
     assert out == {mid: (True, None) for mid in ids}
-    assert sorted(reported) == ids
+    assert sorted(reported) == ids and sorted(stepped) == ids
+
+
+async def test_each_check_reports_its_slow_steps_in_order(task_root, claude_cache_dir, monkeypatch):
+    _fake(monkeypatch)
+    steps = []
+    await validate_gateway_models(SEED, ["m/pass", "m/error"], install_dir=str(claude_cache_dir),
+                                  per_model_timeout=60, on_step=lambda *args: steps.append(args))
+    for model in ("m/pass", "m/error"):
+        assert [step for m, step in steps if m == model] == [
+            "connecting to the session host", "starting Claude Code", "waiting for the test answer",
+        ]
+
+
+@pytest.mark.parametrize(
+    ("behaviour", "outcome"),
+    [
+        ("pass", (True, None)),
+        # Text "<word minus its last four>", thinking, text "<last four>";
+        # the result event holds only the last four.
+        ("split", (True, None)),
+        ("split-wrong", (False, "did not answer with the word (answered 'I could not read it')")),
+        ("error", (False, "API Error: 404 model not available")),
+    ],
+)
+async def test_the_answer_is_every_text_block_of_the_turn(
+        behaviour, outcome, task_root, claude_cache_dir, monkeypatch):
+    """A model may split its reply around a thinking block, and the result
+    event then holds only the last text block: the word test runs on every
+    text block of the turn, joined, and the result event still decides an
+    error."""
+    monkeypatch.setenv("FAKE_CLAUDE_GATEWAY_MODELS", json.dumps({"m/x": behaviour}))
+    seed = replace(SEED, models=(GatewayModel("m/x", "m/x", "managed", None),), default_model="m/x")
+    out = await validate_gateway_models(seed, ["m/x"], install_dir=str(claude_cache_dir), per_model_timeout=60)
+    assert out == {"m/x": outcome}
+    assert os.listdir(task_root) == []
 
 
 async def test_concurrency_must_be_at_least_one(monkeypatch):
@@ -313,18 +353,24 @@ async def test_a_host_that_hangs_on_connect_fails_each_model_within_the_ceiling(
         return hosts[-1]
 
     monkeypatch.setattr(gateway_setup, "make_host", _make_host)
+    steps = []
     out = await asyncio.wait_for(
-        validate_gateway_models(SEED, ["m/pass", "plain"], per_model_timeout=0.2), 60,
+        validate_gateway_models(SEED, ["m/pass", "plain"], per_model_timeout=0.2,
+                                on_step=lambda *args: steps.append(args)), 60,
     )
     reason = "connecting to the session host did not finish within 0.2 s"
     assert out == {"m/pass": (False, reason), "plain": (False, reason)}
     assert [h.calls for h in hosts] == [["connect", "cleanup_taskdir", "disconnect"]] * 2
+    # Each check reported the connect it hung in, and nothing after it.
+    assert sorted(steps) == [("m/pass", "connecting to the session host"), ("plain", "connecting to the session host")]
 
 
 async def test_an_install_that_hangs_fails_each_model_within_its_own_bound(
         task_root, claude_cache_dir, monkeypatch):
     """Minor 2: the install under the batch's lock has its own (generous)
-    bound; each check waits its turn at the lock, and the lock is let go."""
+    bound; each check waits its turn at the lock, and the lock is let go.
+    No check asks upstream for a newer claude: the setup's install child
+    does, before the checks."""
     asked = []
 
     async def _hangs(hook_ctx, **kwargs):
@@ -338,8 +384,7 @@ async def test_an_install_that_hangs_fails_each_model_within_its_own_bound(
     ), 60)
     reason = "installing claude did not finish within 0.2 s"
     assert out == {"m/pass": (False, reason), "plain": (False, reason)}
-    # The first check asked for an update check; the next one did not repeat it.
-    assert asked == [True, False]
+    assert asked == [False, False]
     assert os.listdir(task_root) == []
 
 

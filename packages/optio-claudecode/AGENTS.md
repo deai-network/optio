@@ -1147,7 +1147,7 @@ raised inside an except block.
 
 `optio_claudecode.gateway_setup.validate_gateway_models(seed, model_ids, *,
 ssh=None, concurrency=3, per_model_timeout=90.0, report=None,
-install_dir=None) -> dict[str, tuple[bool, str | None]]` checks each model
+install_dir=None, on_step=None) -> dict[str, tuple[bool, str | None]]` checks each model
 with one short real gateway-mode conversation on the session host (`ssh`, None
 for this machine), and returns `{model_id: (ok, reason)}` in the order given.
 `install_dir` is the claude cache override, as in `ClaudeCodeTaskConfig`.
@@ -1160,9 +1160,10 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
   (`child_env_values`, for the `--settings` pin). Those four host steps share
   `per_model_timeout`, so an
   unreachable host fails the model instead of hanging the setup. claude is
-  then installed under the batch's install lock, so one install runs at a
-  time: the first also checks upstream for a newer claude (once per batch,
-  whatever it did), and the others link the cached one. The install has its
+  then linked from the cache under the batch's install lock, without asking
+  upstream for a newer one (`check_update=False`): the setup task installs
+  or updates it first, in its install child. On a cold cache the first check
+  installs it, one install at a time. The install has its
   own bound, `_INSTALL_TIMEOUT_S` (600 s, for a first download). A step past
   its bound fails the model with `"<step> did not finish within <t> s"`
   (`connecting to the session host`, `setting up the task directory`,
@@ -1186,10 +1187,12 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
   process, and with it Claude Code sends its default effort to a model
   without levels too (Testing, rows A and B), so such a model is checked under
   the condition its sessions run in.
-- **The outcome.** `probe_turn` is raced against claude's exit. The `result`
-  event decides whether the turn was an error: an `is_error` result also
-  reaches `on_message`, so `probe_turn` alone would return its text as an
-  answer.
+- **The outcome.** `_ask` sends the prompt and waits for the turn's `result`
+  event, which ends the turn; it is raced against claude's exit. The answer
+  is every assistant text block of the turn, joined with no separator: a
+  model may split its reply around a thinking block, and the result event
+  then holds only the last text block (seen live through Requesty,
+  2026-11-18). The `result` event decides whether the turn was an error.
 
   | Outcome | Result |
   |---|---|
@@ -1208,13 +1211,16 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
 - **The batch.** `asyncio.Semaphore(concurrency)` and `gather`; a
   `concurrency` below 1 raises `ValueError` before anything runs. A check that
   raises fails its model only, with `"check failed: <type>: <message, first
-  200>"`. `report(done, total, model_id, ok, reason)` runs after each model;
-  an error it raises is logged, and the outcomes stand.
+  200>"`. `report(done, total, model_id, ok, reason)` runs after each model,
+  and `on_step(model_id, step)` as each step of a check that can take time
+  begins: `connecting to the session host`, `starting Claude Code`,
+  `waiting for the test answer`. An error either raises is logged, and the
+  outcomes stand.
   The token never reaches a reason: it is replaced by `***` in every reason,
   and in an answer or a message before it is cut short.
 - Tests: `tests/test_gateway_validation.py`, using fake_claude's
   `FAKE_CLAUDE_GATEWAY_MODELS` (model id to `pass`, `wrong`, `error`,
-  `error-with-token`, `hang` or `exit`).
+  `error-with-token`, `split`, `split-wrong`, `hang` or `exit`).
 
 ### Setup task
 
@@ -1224,11 +1230,30 @@ retest=False, description=None, metadata=None, install_dir=None,
 per_model_timeout=90.0) -> TaskInstance` (`cancellable=True`,
 `supports_resume=False`) tests the gateway seed `seed_id` in `{prefix}{suffix}`
 through `ctx._db`. The consumer passes its optio prefix, `REQUESTY_SEED_SUFFIX`
-and its seed cipher pair. Every model of the seed is checked with
-`validate_gateway_models` (`ssh`, `install_dir` and `per_model_timeout` as
-there), and each one reports a progress line, `"<id>: passed"` or `"<id>:
-failed (<reason>)"`. Those lines are what the consumer shows: a published
-result lives in memory only.
+and its seed cipher pair. claude is installed or updated first, once, by a
+child process of the run (`_install_claude`: process id
+`<process_id>.install-claude-<n>`, name `Install Claude Code`, its own task
+directory, `ensure_claude_installed` with the update check), so the
+install's own messages land in the child's log and its status shows
+separately. A failed child fails the run with `RuntimeError("Claude Code
+install failed: <reason>")`, before any check. Then every model of the seed
+is checked with `validate_gateway_models` (`ssh`, `install_dir` and
+`per_model_timeout` as there). The run's log names every step (`_validate`),
+each line through the token redaction:
+
+- `Testing <n> models with Claude Code + Requesty (<region>), up to 3 at a
+  time.` (the last part only when there are more models than that);
+- `Claude Code <version> ready.` (`Claude Code ready.` when the link names
+  no version);
+- per model, `<label> (<i> of <n>): <step>` as each `on_step` step begins,
+  then `<label> (<i> of <n>): passed (<t> s)` or `…: failed after <t> s
+  (<reason>)`, timed from its first step;
+- `Saving: <passed> of <n> models passed.` before the seed is written (not
+  when a setup's default model failed).
+
+The bar is indeterminate until the install has ended, the first of n + 1
+shares, and then advances a share per model. Those lines are what the
+consumer shows: a published result lives in memory only.
 
 | Flow | Condition | Effect | Published |
 |---|---|---|---|
@@ -1246,9 +1271,10 @@ result lives in memory only.
   the seed as it is: `"unknown gateway seed <id>"`, `"gateway seed <id> is
   pending: Test again needs an alive or dead seed"`, or `"gateway seed <id> is
   <status>: the setup needs a pending seed (Test again is retest=True)"`.
-- A cancellation stops the checks, lets their cleanup end, and the run ends
-  `cancelled`. In a setup, a cancellation or an exception before the seed is
-  written removes the pending seed in a `finally`. That removal tolerates a
+- A cancellation stops the install child or the checks, lets their cleanup
+  end, and the run ends `cancelled`. In a setup, a cancellation or an
+  exception before the seed is written (a failed install too) removes the
+  pending seed in a `finally`. That removal tolerates a
   seed already gone and logs any other failure, so the run's own error stands.
   Test again leaves the seed as it was.
 - A setup removes a seed only while it is still pending (`_purge_pending`, one
@@ -1263,7 +1289,8 @@ result lives in memory only.
   setup task (create_gateway_setup_task)")`.
 - Tests: `tests/test_gateway_setup.py`, on the engine, with fake_claude's
   `FAKE_CLAUDE_GATEWAY_MODELS` and `FAKE_CLAUDE_STARTED_DIR` (touches
-  `<dir>/<pid>` when claude starts).
+  `<dir>/<pid>` when claude starts); the whole log on a recording context
+  (`_Context`) that runs the install child in place.
 
 ## Hooks
 

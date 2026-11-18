@@ -243,6 +243,23 @@ def _gateway_turn(behaviour: str, emit, session_id: str) -> "int | None":
         return 0
     if behaviour == "exit":
         return 3
+    if behaviour in ("split", "split-wrong"):
+        # As some models do through a gateway: the reply split around a
+        # thinking block, each block its own assistant event; the result
+        # holds only the last text block.
+        if behaviour == "split":
+            word = Path("optio-check.txt").read_text(encoding="utf-8").strip()
+            first, last = word[:-4], word[-4:]
+        else:
+            first, last = "I could", " not read it"
+        for block in ({"type": "text", "text": first},
+                      {"type": "thinking", "thinking": " it contains.", "signature": "fake"},
+                      {"type": "text", "text": last}):
+            emit({"type": "assistant", "message": {"role": "assistant", "content": [block]},
+                  "session_id": session_id})
+        emit({"type": "result", "subtype": "success", "result": last,
+              "session_id": session_id, "is_error": False, "total_cost_usd": 0.0})
+        return None
     if behaviour == "pass":
         text, is_error = Path("optio-check.txt").read_text(encoding="utf-8").strip(), False
     elif behaviour == "wrong":
@@ -320,9 +337,15 @@ def run_stream_json_mode(argv: list[str]) -> int:
                                    in an is_error result 'API Error: 404
                                    model not available'; 'error-with-token'
                                    the same with $ANTHROPIC_AUTH_TOKEN
-                                   appended; 'hang' reads stdin until EOF
-                                   and never answers; 'exit' exits with 3. A
-                                   model it does not name replies as usual.
+                                   appended; 'split' answers as 'pass' but
+                                   split around a thinking block (text all
+                                   but the last four characters, thinking,
+                                   text the last four; the result holds only
+                                   those four), 'split-wrong' the same with
+                                   'I could' / ' not read it'; 'hang' reads
+                                   stdin until EOF and never answers; 'exit'
+                                   exits with 3. A model it does not name
+                                   replies as usual.
       FAKE_CLAUDE_STARTED_DIR    — a directory: touch ``<dir>/<pid>`` at
                                    start (a test waits until claude runs).
 
