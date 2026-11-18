@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -47,6 +48,22 @@ async def test_suppress_writes_silent_stubs_and_env(tmp_path):
                     "https://example.com"], check=True)
     log = open(os.path.join(host.workdir, "optio.log")).read()
     assert "BROWSER:" not in log
+
+
+@pytest.mark.parametrize("mode", ["suppress", "redirect"])
+@pytest.mark.asyncio
+async def test_the_shim_path_leaves_out_the_engine_venv(tmp_path, monkeypatch, mode):
+    """The shim PATH is the engine's PATH without the engine's own venv."""
+    venv = tmp_path / "engine-venv"
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "base_prefix", "/opt/base-python")
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv))
+    monkeypatch.setenv("PATH", f"{venv}/bin:/usr/local/bin:/usr/bin:/bin")
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    await host.setup_workdir()
+    await host.write_text("optio.log", "")
+    env_add = await prepare_browser_shims(host, mode)
+    assert env_add["PATH"] == f"{host.workdir}/bin:/usr/local/bin:/usr/bin:/bin"
 
 
 @pytest.mark.asyncio

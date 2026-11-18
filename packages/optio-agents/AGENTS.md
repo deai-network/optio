@@ -431,6 +431,10 @@ the workdir capture cap design (`docs/2026-10-13-workdir-capture-cap-design.md`)
   error)`. It is public so engines reuse it for their own one-turn checks
   instead of copying it. `_probe_turn` stays as an alias of it.
 
+## Session environment (`optio_agents.session_env`)
+
+Agent sessions never inherit the engine's virtualenv: every session PATH is built with `session_base_path` (the engine's venv bin dirs removed) and every agent launch's `env_remove` is `session_env_remove(scrub_env)` (adds `VIRTUAL_ENV`, `PYTHONHOME`, `PYTHONPATH`), because claustrum cannot and should not grant the engine's venv, so the session's `python3` would die reading its `pyvenv.cfg`.
+
 ## Dependency direction
 
 Depends on `optio-host` and `optio-core`; consumed by every engine wrapper

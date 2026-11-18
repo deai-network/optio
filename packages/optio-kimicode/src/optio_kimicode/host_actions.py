@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from optio_agents import claustrum
+from optio_agents.session_env import session_base_path
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -186,9 +187,7 @@ def build_launch_env(
     iso = _isolation_env(workdir)
     home_local_bin = f"{iso['HOME']}/.local/bin"
     extra = dict(extra_env or {})
-    base_path = extra.pop("PATH", None) or os.environ.get(
-        "PATH", "/usr/local/bin:/usr/bin:/bin",
-    )
+    base_path = session_base_path(extra.pop("PATH", None))
     return {
         **iso,
         "KIMI_CODE_NO_AUTO_UPDATE": "1",

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
 from optio_agents import pane_surfacing
 from optio_agents import tmux_input as _tmux_input
+from optio_agents.session_env import session_base_path
 from optio_host.host import proc_wait
 
 from optio_grok.info import AGENT_INFO
@@ -737,9 +738,7 @@ def _build_grok_shell_command(
     home_local_bin = f"{home_dir}/.local/bin"
 
     extra = dict(extra_env or {})
-    base_path = extra.pop("PATH", None) or os.environ.get(
-        "PATH", "/usr/local/bin:/usr/bin:/bin",
-    )
+    base_path = session_base_path(extra.pop("PATH", None))
     # HOME + PATH first (PATH prepends the per-task .local/bin), then the rest of
     # the isolation identity (GROK_HOME, XDG_*, CLAUDE_CONFIG_DIR) from the SSOT.
     env_map = {

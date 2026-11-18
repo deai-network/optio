@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
 from optio_agents import pane_surfacing
 from optio_agents import tmux_input as _tmux_input
+from optio_agents.session_env import session_base_path
 from optio_host.host import proc_wait
 
 from optio_claudecode.info import AGENT_INFO
@@ -886,9 +887,7 @@ def _build_claude_shell_command(
     home_local_bin = f"{home_dir}/.local/bin"
 
     extra = dict(extra_env or {})
-    base_path = extra.pop("PATH", None) or os.environ.get(
-        "PATH", "/usr/local/bin:/usr/bin:/bin",
-    )
+    base_path = session_base_path(extra.pop("PATH", None))
     env_assignments: list[str] = [
         f"HOME={home_dir}",
         f"PATH={home_local_bin}:{base_path}",
@@ -1464,9 +1463,7 @@ def conversation_launch_env(
     home_dir = f"{workdir_clean}/home"
     home_local_bin = f"{home_dir}/.local/bin"
     extra = dict(extra_env or {})
-    base_path = extra.pop("PATH", None) or os.environ.get(
-        "PATH", "/usr/local/bin:/usr/bin:/bin",
-    )
+    base_path = session_base_path(extra.pop("PATH", None))
     return {
         "HOME": home_dir,
         "PATH": f"{home_local_bin}:{base_path}",

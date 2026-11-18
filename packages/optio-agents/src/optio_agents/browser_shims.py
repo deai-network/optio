@@ -28,6 +28,8 @@ from typing import Literal
 
 from optio_host.host import Host
 
+from optio_agents.session_env import session_base_path
+
 
 BrowserMode = Literal["ignore", "suppress", "redirect"]
 
@@ -62,9 +64,8 @@ async def _write_shims(host: Host, body: str) -> dict[str, str]:
         await host.write_text(f"bin/{name}", body)
     await host.run_command(f"chmod +x {host.workdir}/bin/*")
     workdir_bin = f"{host.workdir}/bin"
-    extra_path = workdir_bin + ":" + os.environ.get(
-        "PATH", "/usr/local/bin:/usr/bin:/bin",
-    )
+    # The engine's PATH without its own virtualenv (optio_agents.session_env).
+    extra_path = workdir_bin + ":" + session_base_path()
     return {
         "BROWSER": f"{workdir_bin}/xdg-open",
         "PATH": extra_path,

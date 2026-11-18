@@ -36,6 +36,7 @@ from optio_agents.conversation import ConversationClosed
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.mcp import resolve_mcp_servers
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents.session_env import session_env_remove
 from optio_host.host import (
     Host, LocalHost, ProcessHandle, RemoteHost, proc_wait, unwind_tracing,
 )
@@ -448,7 +449,7 @@ async def run_claudecode_session(
             extra_env=launch_env,
             claude_flags=claude_flags,
             ready_timeout_s=READY_TIMEOUT_S,
-            env_remove=config.scrub_env,
+            env_remove=session_env_remove(config.scrub_env),
             claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
@@ -751,8 +752,9 @@ async def run_claudecode_session(
             {**(config.env or {}), **focus_env, **(hook_ctx.browser_launch_env or {}),
              **(cc_gateway.gateway_launch_env(gateway_seed) if gateway_seed is not None else {})},
         )
-        env_remove = (config.scrub_env if gateway_seed is None
-                      else [*(config.scrub_env or []), *cc_gateway.GATEWAY_ENV_REMOVE])
+        env_remove = session_env_remove(
+            config.scrub_env if gateway_seed is None
+            else [*(config.scrub_env or []), *cc_gateway.GATEWAY_ENV_REMOVE])
         # Gateway mode's `--settings` (_spawn): the gateway's non-secret
         # environment, and the transport variables at the values this launch
         # gives the child ("" when none) with the provider switches off, so
@@ -786,7 +788,7 @@ async def run_claudecode_session(
             try:
                 probe = await host.launch_subprocess(
                     " ".join(shlex.quote(a) for a in argv), env=env, cwd=host.workdir,
-                    env_remove=config.scrub_env, stdin=True,
+                    env_remove=session_env_remove(config.scrub_env), stdin=True,
                 )
                 probe.stdin.write((json.dumps({
                     "type": "control_request", "request_id": "optio-probe",

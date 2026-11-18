@@ -69,6 +69,7 @@ from optio_agents import claustrum
 from optio_agents import model_probe
 from optio_agents import seeds
 from optio_agents import session_controls
+from optio_agents import session_env
 from optio_agents import steering
 from optio_agents.steering import (
     BUSY_SEND_VALUES,
@@ -129,6 +130,7 @@ __all__ = [
     "model_probe",
     "seeds",
     "session_controls",
+    "session_env",
     "steering",
     "Steering",
     "SendOutcome",

@@ -27,6 +27,7 @@ from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents import claustrum
 from optio_agents import pane_surfacing
 from optio_agents import tmux_input as _tmux_input
+from optio_agents.session_env import session_base_path
 from optio_host.host import proc_wait
 
 from optio_antigravity.info import AGENT_INFO
@@ -764,9 +765,7 @@ def build_launch_env(
     iso = _isolation_env(workdir.rstrip("/"))
     home_local_bin = f"{iso['HOME']}/.local/bin"
     extra = dict(extra_env or {})
-    base_path = extra.pop("PATH", None) or os.environ.get(
-        "PATH", "/usr/local/bin:/usr/bin:/bin",
-    )
+    base_path = session_base_path(extra.pop("PATH", None))
     return {
         **iso,
         "PATH": f"{home_local_bin}:{base_path}",

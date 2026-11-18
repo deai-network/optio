@@ -16,6 +16,7 @@ from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents import claustrum
 from optio_agents import pane_surfacing
 from optio_agents import tmux_input as _tmux_input
+from optio_agents.session_env import session_base_path
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -593,7 +594,7 @@ def _codex_isolation_env(host: "Host") -> dict[str, str]:
     explicitly (the worker's PATH plus the per-task ``.local/bin``) or a
     missing interpreter/bash would break the probe."""
     iso = _isolation_env(host.workdir)
-    base_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    base_path = session_base_path()
     return {**iso, "PATH": f"{iso['HOME']}/.local/bin:{base_path}"}
 
 

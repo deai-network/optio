@@ -20,6 +20,7 @@ from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_controls import filter_controls
+from optio_agents.session_env import session_env_remove
 from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
@@ -387,7 +388,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             codex_flags=codex_flags,
             claustrum_wrap=claustrum_wrap,
             ready_timeout_s=READY_TIMEOUT_S,
-            env_remove=config.scrub_env,
+            env_remove=session_env_remove(config.scrub_env),
         )
         launched_handle = handle
         tmux_path = tmux_path_local
@@ -480,7 +481,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         ctx.report_progress(None, f"Launching {AGENT_INFO.name} (conversation)…")
         handle = await host.launch_subprocess(
             cmd, env=env, cwd=host.workdir,
-            env_remove=config.scrub_env, stdin=True, merge_stderr=False,
+            env_remove=session_env_remove(config.scrub_env), stdin=True, merge_stderr=False,
         )
         launched_handle = handle
         conversation.attach(handle)

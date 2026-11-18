@@ -133,6 +133,7 @@ class AntigravityConversation:
         cwd: str,
         home: str,
         env: dict[str, str] | None = None,
+        env_remove: list[str] | None = None,
         model: str | None = None,
         skip_permissions: bool = True,
         pty: bool = True,
@@ -149,6 +150,8 @@ class AntigravityConversation:
         # after turn 1 — hence a home root, not a fixed transcript path).
         self._home = home
         self._env = dict(env or {})
+        # Inherited variables each turn's process drops (the hosts' env_remove).
+        self._env_remove = list(env_remove) if env_remove else None
         self._model = model
         # Stage 8 fs-isolation: claustrum argv prefix prepended to each turn so
         # ``agy -p`` runs Landlock-confined (None → unconfined). Set once at
@@ -197,7 +200,8 @@ class AntigravityConversation:
 
         self._interrupted = False
         handle = await self._host.launch_subprocess(
-            command, env=self._env, cwd=self._cwd, merge_stderr=True,
+            command, env=self._env, env_remove=self._env_remove, cwd=self._cwd,
+            merge_stderr=True,
         )
         self._current_handle = handle
         self._pending += 1

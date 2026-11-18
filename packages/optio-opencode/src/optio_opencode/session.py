@@ -36,6 +36,7 @@ from optio_agents.fs_grants import fs_isolation_dirs
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents.session_env import session_env_remove
 from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 from optio_agents import seeds as _seeds
@@ -478,7 +479,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             opencode_executable=opencode_exec,
             hostname=opencode_hostname,
             extra_env={**(config.env or {}), **hook_ctx.browser_launch_env},
-            env_remove=config.scrub_env,
+            env_remove=session_env_remove(config.scrub_env),
             claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle

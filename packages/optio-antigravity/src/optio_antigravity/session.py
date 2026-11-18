@@ -30,6 +30,7 @@ from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_controls import filter_controls, model_control
+from optio_agents.session_env import session_env_remove
 from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle
@@ -357,7 +358,7 @@ async def run_antigravity_session(
             extra_env=launch_env,
             agy_flags=agy_flags,
             ready_timeout_s=READY_TIMEOUT_S,
-            env_remove=config.scrub_env,
+            env_remove=session_env_remove(config.scrub_env),
             claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
@@ -469,6 +470,9 @@ async def run_antigravity_session(
             cwd=host.workdir,
             home=agy_home,
             env=launch_env,
+            # The engine's Python setup only: this mode has never applied
+            # config.scrub_env, and still does not.
+            env_remove=session_env_remove(None),
             model=config.model,
             claustrum_wrap=claustrum_wrap,
         )
