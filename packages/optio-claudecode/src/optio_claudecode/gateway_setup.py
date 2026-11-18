@@ -51,6 +51,7 @@ from optio_claudecode.gateway import (
     SeedStatus,
     gateway_launch_env,
     gateway_seed_status,
+    gateway_settings_json,
     launch_effort,
     read_gateway_seed,
     seed_summary,
@@ -187,16 +188,19 @@ async def _check_model(
             install_lock.update_checked = True
         word = secrets.choice(_WORDS) + str(1000 + secrets.randbelow(9000))
         await host.write_text(CHECK_FILE, f"{word}\n")
+        gateway_env = _check_env(seed, check_seed)
         flags = host_actions.build_claude_flags(
             permission_mode="dontAsk", allowed_tools=["Read"], disallowed_tools=None, tools=["Read"],
             model=model_id, effort=launch_effort(check_seed, model_id, None),
+            # Pinned as in a session (gateway_settings_json).
+            settings=gateway_settings_json(gateway_env),
         )
         argv = host_actions.build_conversation_argv(claude_path, claude_flags=flags, permission_gate=False)
         # The token reaches claude's environment over its first stdin line,
         # never a command line (RemoteHost writes `env=` into the one sshd runs).
         handle = await host.launch_subprocess(
             host_actions.with_stdin_secrets(shlex.join(argv), GATEWAY_SECRET_ENV),
-            env=host_actions.conversation_launch_env(host.workdir, _check_env(seed, check_seed)),
+            env=host_actions.conversation_launch_env(host.workdir, gateway_env),
             env_remove=list(GATEWAY_ENV_REMOVE), cwd=host.workdir, stdin=True,
         )
         await host_actions.write_stdin_secrets(handle, [seed.token], names=GATEWAY_SECRET_ENV)

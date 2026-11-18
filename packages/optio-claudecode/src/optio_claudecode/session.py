@@ -84,7 +84,11 @@ from optio_claudecode.snapshots import (
     prune_snapshots,
 )
 from optio_claudecode.transcript import rebase_session_blob
-from optio_claudecode.types import ClaudeCodeRequestyTaskConfig, ClaudeCodeTaskConfig
+from optio_claudecode.types import (
+    ClaudeCodeRequestyTaskConfig,
+    ClaudeCodeTaskConfig,
+    _gateway_owned_keys,
+)
 
 
 _LOG = logging.getLogger(__name__)
@@ -531,6 +535,13 @@ async def run_claudecode_session(
         cred_baseline = cred_baseline_out
         if gateway_seed is not None:
             await host.write_text(_GATEWAY_MARKER, _GATEWAY_MARKER_CONTENT)
+            # The settings files the agent can write (a block written in an
+            # earlier run comes back with the snapshot, here after the
+            # restore and claude_config): Claude Code applies their env over
+            # the gateway's, so ANTHROPIC_BASE_URL there would send the token
+            # elsewhere. Their gateway keys go; `--settings` (_spawn) pins
+            # the gateway's values above them, a mid-session reload included.
+            await host_actions.strip_settings_env(host, owned=_gateway_owned_keys)
         # Resolved once per launch (_spawn); the model probe gets neither the
         # file nor its flags.
         mcp_config_path = await _plant_mcp_servers(ctx, host, config)
@@ -701,6 +712,8 @@ async def run_claudecode_session(
                 resuming=do_continue,
                 effort=current_effort,
                 show_thinking=config.thinking_verbosity == "visible",
+                settings=(cc_gateway.gateway_settings_json(cc_gateway.gateway_launch_env(gateway_seed))
+                          if gateway_seed is not None else None),
             )
             argv = host_actions.build_conversation_argv(
                 claude_path, claude_flags=claude_flags,

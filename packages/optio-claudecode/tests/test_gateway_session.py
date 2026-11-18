@@ -31,6 +31,7 @@ from optio_claudecode import (
     ClaudeCodeRequestyTaskConfig,
     create_claudecode_requesty_task,
 )
+from optio_claudecode import host_actions
 from optio_claudecode import picks as cc_picks
 from optio_claudecode import resurrect
 from optio_claudecode import session as session_mod
@@ -178,6 +179,8 @@ async def test_a_gateway_session_gets_the_seed_in_its_environment_only(
         assert "CLAUDE_CODE_EFFORT_LEVEL" not in env
         assert argv[argv.index("--model") + 1] == KIMI.id
         assert argv[argv.index("--effort") + 1] == "high"
+        # The non-secret gateway values, pinned above every settings file.
+        assert json.loads(argv[argv.index("--settings") + 1]) == {"env": gateway_launch_env(_seed())}
         assert TOKEN not in json.dumps(argv)
 
         workdir = pathlib.Path(seen["workdir"])
@@ -613,6 +616,65 @@ async def test_a_fallback_from_an_unusable_pick_becomes_the_saved_pick(
     for argv in (fallback, later):
         assert "--continue" in argv
         assert (_flag(argv, "--model"), _flag(argv, "--effort")) == (KIMI.id, "high")
+
+
+@pytest.mark.asyncio
+async def test_a_resume_strips_gateway_keys_from_the_restored_settings_files(
+    shim_install_dir, claude_cache_dir, task_root, mongo_db, tmp_path,
+):
+    """Important 2 (a): the agent can write the settings files Claude Code
+    reads (HOME is <workdir>/home, the cwd is the workdir), and their env is
+    applied over the process's. A block written during an earlier run comes
+    back with the snapshot; the resume removes the gateway's keys from it
+    after the restore and after claude_config, leaving every other key, and
+    the launch pins the gateway's values with --settings."""
+    argv_log = tmp_path / "argv.jsonl"
+    seen: dict = {}
+    pid = "gw-settings-strip"
+    optio = await _make_optio(mongo_db, "gwstrip")
+    planted = {"cleanupPeriodDays": 7, "env": {
+        "FOO": "bar",
+        "ANTHROPIC_BASE_URL": "https://elsewhere.invalid",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
+    }}
+    try:
+        task = await _gw_task(
+            mongo_db, "gwstrip", pid, shim_install_dir, claude_cache_dir,
+            supports_resume=True, before_execute=_plant_and_remember(seen),
+            claude_config={"theme": "light"},
+            env={"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(pid, session_id=None, timeout=60)
+        await _wait_widget_data(optio, pid)
+        # What a prompt-injected agent could write during the session.
+        workdir = pathlib.Path(seen["workdir"])
+        for rel in host_actions.AGENT_SETTINGS_FILES:
+            (workdir / rel).parent.mkdir(parents=True, exist_ok=True)
+            (workdir / rel).write_text(json.dumps(planted))
+        await conv.close()
+        proc = await _wait_terminal(optio, pid)
+        assert proc["status"]["state"] == "done" and proc["hasSavedState"] is True
+
+        conv = await optio.launch_and_await_result(pid, resume=True, session_id=None, timeout=60)
+        await _wait_widget_data(optio, pid)
+        workdir = pathlib.Path(seen["workdir"])
+        restored = {rel: json.loads((workdir / rel).read_text())
+                    for rel in host_actions.AGENT_SETTINGS_FILES}
+        await conv.close()
+        await _wait_terminal(optio, pid)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    kept = {"cleanupPeriodDays": 7, "env": {"FOO": "bar"}}
+    assert restored == {
+        "home/.claude/settings.json": {**kept, "theme": "light"},    # claude_config applied too
+        ".claude/settings.json": kept,
+        ".claude/settings.local.json": kept,
+    }
+    for argv in _log_lines(argv_log):
+        assert json.loads(_flag(argv, "--settings")) == {"env": gateway_launch_env(_seed())}
 
 
 @pytest.mark.asyncio

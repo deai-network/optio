@@ -406,6 +406,21 @@ def gateway_launch_env(seed: GatewaySeed) -> dict[str, str]:
     return env
 
 
+def gateway_settings_json(env: dict[str, str]) -> str:
+    """`--settings` for a gateway launch: ``{"env": env}`` as JSON, ``env``
+    being the launch's non-secret gateway environment (`gateway_launch_env`).
+    Claude Code applies a settings file's `env` over the process environment,
+    and the agent can write the user, project and local settings files; the
+    command-line layer outranks all three, at launch and after a settings
+    reload (measured, AGENTS.md Testing), so `ANTHROPIC_BASE_URL` and the
+    aliases stay the gateway's. ValueError, naming the key only, for a
+    `GATEWAY_SECRET_ENV` key: the token never goes on a command line."""
+    secret = sorted(k for k in env if k in GATEWAY_SECRET_ENV)
+    if secret:
+        raise ValueError(f"{', '.join(secret)} never goes into --settings")
+    return json.dumps({"env": env}, separators=(",", ":"))
+
+
 def launch_model(seed: GatewaySeed, preferred: str | None) -> str:
     """`--model` for a launch, an exact id: `preferred` when it is usable, else
     the effective default model (never the `default` alias). GatewayError when

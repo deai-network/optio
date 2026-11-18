@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import shlex
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
@@ -653,6 +653,75 @@ async def apply_claude_settings(
     await host.write_text(settings_rel, json.dumps(merged, indent=2))
 
 
+# The settings files Claude Code reads that the agent can write, relative to
+# the workdir: the user's (HOME is <workdir>/home) and the project's shared
+# and local ones (the cwd is the workdir). Claude Code applies each one's
+# "env" over the process environment, at launch and again when a file is
+# rewritten mid-session; home/.claude/settings.local.json is not read
+# (measured with 2.1.319, AGENTS.md Testing).
+AGENT_SETTINGS_FILES = (
+    "home/.claude/settings.json",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+)
+
+
+def _settings_object(text: str) -> dict | None:
+    """The settings object ``text`` holds (a leading byte-order mark
+    ignored); None when it is not a JSON object."""
+    try:
+        data = json.loads(text.removeprefix("\ufeff"))
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def strip_settings_env(
+    host: "Host", *, owned: Callable[[dict], list[str]],
+) -> None:
+    """Remove from the ``env`` block of each of ``AGENT_SETTINGS_FILES`` (in
+    ``host.workdir``) the keys ``owned(env)`` names, leaving every other key
+    as it is; a file holding none of them is not rewritten. A rewritten file
+    replaces what was there, so a symlink in its place is not written
+    through. A file that is not a JSON object, or cannot be read, is removed:
+    its keys cannot be checked. A missing file, an empty one and a directory
+    are left alone (none of them has an env to apply). Logs paths and key
+    names, never a value; RuntimeError when a file cannot be removed."""
+    workdir = host.workdir.rstrip("/")
+    for rel in AGENT_SETTINGS_FILES:
+        q = shlex.quote(f"{workdir}/{rel}")
+        r = await host.run_command(
+            f"if [ -d {q} ] && [ ! -L {q} ]; then echo dir; "
+            f"elif [ -e {q} ] || [ -L {q} ]; then echo file; else echo none; fi"
+        )
+        if r.stdout.strip() != "file":
+            continue
+        r = await host.run_command(f"cat {q}")
+        if r.exit_code == 0 and not r.stdout.strip():
+            continue
+        data = _settings_object(r.stdout) if r.exit_code == 0 else None
+        if data is None:
+            await _remove_settings_file(host, rel, q)
+            _LOG.warning("gateway launch: removed %s, which is not a settings object it can check", rel)
+            continue
+        env = data.get("env")
+        keys = owned(env) if isinstance(env, dict) else []
+        if not keys:
+            continue
+        data["env"] = {k: v for k, v in env.items() if k not in keys}
+        await _remove_settings_file(host, rel, q)
+        await host.write_text(rel, json.dumps(data, indent=2))
+        _LOG.warning("gateway launch: removed %s from the env of %s", ", ".join(keys), rel)
+
+
+async def _remove_settings_file(host: "Host", rel: str, quoted: str) -> None:
+    r = await host.run_command(f"rm -f {quoted}")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"removing {rel!r} failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
+        )
+
+
 # The task's MCP servers for claude (`--mcp-config`). Its header values are
 # credentials, and it is rewritten at every launch, so it enters no snapshot:
 # the session capture leaves it out (session._archive_home_claude), and it is
@@ -1202,6 +1271,7 @@ def build_claude_flags(
     tools: list[str] | None = None,
     mcp_config_path: str | None = None,
     show_thinking: bool = False,
+    settings: str | None = None,
 ) -> list[str]:
     """Translate ClaudeCodeTaskConfig permission knobs to an argv list.
 
@@ -1227,6 +1297,9 @@ def build_claude_flags(
     ``show_thinking`` emits ``--thinking-display summarized``: in -p mode the
     CLI omits the thinking text unless the display is set explicitly, so the
     model's reasoning reaches the stream only with it (CLI 2.1.296).
+    ``settings`` emits ``--settings <value>`` (a JSON string): gateway mode
+    pins its non-secret environment there (``gateway.gateway_settings_json``);
+    None, as every other session, emits nothing.
     Validation of ``permission_mode`` values lives in
     ``ClaudeCodeTaskConfig.__post_init__``.
     """
@@ -1251,6 +1324,8 @@ def build_claude_flags(
         out += ["--allow-dangerously-skip-permissions"]
     if show_thinking:
         out += ["--thinking-display", "summarized"]
+    if settings is not None:
+        out += ["--settings", settings]
     return out
 
 

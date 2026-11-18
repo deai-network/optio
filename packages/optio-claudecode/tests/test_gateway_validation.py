@@ -118,6 +118,15 @@ async def test_each_check_runs_its_model_alone_through_the_gateway(
     # siblings have levels, so "plain" is checked under it too.
     assert envs["m/pass"]["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] == "1"
     assert envs["plain"]["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] == "1"
+    # The non-secret gateway values are pinned at the --settings layer too,
+    # as in a session.
+    for model, argv in argvs.items():
+        pinned = json.loads(_flag(argv, "--settings"))
+        assert set(pinned) == {"env"}
+        assert pinned["env"] == {k: envs[model][k] for k in pinned["env"]}
+        assert pinned["env"]["ANTHROPIC_BASE_URL"] == SEED.base_url
+        assert pinned["env"]["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] == "1"
+        assert "ANTHROPIC_AUTH_TOKEN" not in pinned["env"]
 
 
 async def test_a_model_without_levels_is_checked_under_the_effort_flag_its_seed_sets(

@@ -1063,6 +1063,31 @@ unchanged.
   that write fails, the launched shell is stopped and the run fails. The token
   is never in argv, a command line, a file, a snapshot, the process record or
   a log line.
+- **Settings the agent can write.** Claude Code applies the `env` of its
+  settings files over the process environment, and the agent can write three
+  of them (`host_actions.AGENT_SETTINGS_FILES`: `home/.claude/settings.json`,
+  since HOME is `<workdir>/home`, and `.claude/settings.json` and
+  `.claude/settings.local.json` in the workdir, the cwd). An
+  `ANTHROPIC_BASE_URL` there sends the requests, token included, to another
+  host, and a file rewritten mid-session redirects the next turn (Testing,
+  the settings probe). Two defences, so either one holds alone:
+  - every gateway launch, fresh or resumed (a resume after crash-orphan rescue
+    or Resurrect too, since both only save a snapshot for it), runs
+    `host_actions.strip_settings_env(host, owned=_gateway_owned_keys)` after the
+    restore, after `claude_config` and after `before_execute`: the keys
+    gateway mode owns (as for `claude_config["env"]`) leave each file's `env`,
+    every other key stays, and a file without one is not rewritten. A file that
+    is not a JSON object or cannot be read is removed (its keys cannot be
+    checked); a symlink is replaced, never written through. Key names and
+    paths are logged, never a value.
+  - `--settings <json>` (`build_claude_flags(settings=...)`,
+    `gateway.gateway_settings_json(gateway_launch_env(seed))`) pins the
+    gateway's non-secret environment at the command-line settings layer,
+    which outranks the three files at launch, after a live
+    `apply_flag_settings` switch and after a mid-session rewrite (measured).
+    `gateway_settings_json` refuses a `GATEWAY_SECRET_ENV` key (`ValueError`
+    naming it): the token never goes into it. A session that is not a gateway
+    session passes no `--settings` and strips nothing.
 - **No OAuth path.** No credentials watcher, no save-back, no seed capture
   and no account resolution.
 - **Snapshots.** The teardown capture, crash-orphan rescue and Resurrect pass
@@ -1103,7 +1128,9 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
   only the word.
 - **Gateway mode, the model alone.** The launch is a gateway launch (see
   Gateway launch: `gateway_launch_env`, `GATEWAY_ENV_REMOVE`, the token as the
-  first stdin line through `with_stdin_secrets` / `write_stdin_secrets`). It
+  first stdin line through `with_stdin_secrets` / `write_stdin_secrets`, and
+  the same environment pinned with `--settings`; the fresh task directory has
+  no settings file to strip). It
   uses the seed as it would be with that model as its only usable model and its
   default. A seed being set up has no usable model yet. This way the aliases
   (`ANTHROPIC_DEFAULT_*_MODEL`) point at the model under test, so each result
@@ -1333,3 +1360,58 @@ What the table shows:
 So gateway mode leaves `effortLevel` out for a model without levels, and the
 CLI sends its default effort for it. Whether a gateway accepts that is
 checked in the live test.
+
+### Live probe: settings files against the gateway's base URL
+
+`tests/live/probe_gateway_settings_env.py` is not collected by pytest. Run it
+like the effort probe (`python
+packages/optio-claudecode/tests/live/probe_gateway_settings_env.py`; exit 2
+and `no cached claude binary` without one). It uses only the loopback: two
+aiohttp servers, A (the gateway, the process's `ANTHROPIC_BASE_URL`) and B
+(another host), record each POST and whether the token came with it, and
+answer `/v1/messages*` with a 400. Each scenario runs the newest cached claude
+in conversation mode laid out as a gateway session: cwd `<root>/work`,
+`HOME=<root>/work/home`, a fresh `TMPDIR`, the gateway environment (base URL,
+token, aliases, `CLAUDE_CODE_AUTO_MODE_SERVER=0`). Settings files carry
+`{"env": {"ANTHROPIC_BASE_URL": B}}` at launch, or are written between two
+turns (then 8 s pass before the next turn). "pin" adds `--settings` holding
+the gateway's non-secret environment, as gateway mode does.
+
+Measured with Claude Code 2.1.319 on 2026-11-18, on a host without
+bubblewrap. Every turn sent its `/v1/messages` POSTs (six per turn) to one
+server only, with the token.
+
+| | at launch | pin | steps | turns went to |
+|---|---|---|---|---|
+| S0 | `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` | | | claude does not start (below) |
+| S1 | | | | A |
+| S2 | `home/.claude/settings.json` = B | | | B |
+| S3 | `.claude/settings.json` = B | | | B |
+| S4 | `.claude/settings.local.json` = B | | | B |
+| S5 | `home/.claude/settings.local.json` = B | | | A |
+| S6 | the three files of S2-S4 = B | yes | | A |
+| S7 | as S6 | yes | `apply_flag_settings {model}`, then a turn | A |
+| S8 | the three files, `{}` | | turn, rewrite to B, turn | A, then B |
+| S9 | as S8 | yes | as S8 | A, then A |
+| S10 | none | | turn, create the three = B, turn | A, then B |
+| S11 | none | yes | as S10 | A, then A |
+| S12 | as S8 | yes | turn, `apply_flag_settings {model}`, rewrite to B, turn | A, then A |
+
+What the table shows:
+
+- Each settings file the agent can write sends the requests, token included,
+  to the host its `env` names, at launch (S2-S4) and after a mid-session
+  rewrite or creation (S8, S10). `home/.claude/settings.local.json` is not
+  read (S5).
+- The `--settings` layer outranks all three, at launch, after a live switch
+  and after a mid-session rewrite (S6, S7, S9, S11, S12).
+- No file under the scenario's root, `TMPDIR` included, held the token, the
+  `--settings` JSON or A's URL after any run: the CLI writes the pin nowhere
+  the agent could edit it.
+- With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, 2.1.319 refuses to start on a
+  host without bubblewrap: `Claude Code could not start: bubblewrap is
+  required for subprocess env scrubbing and isolation. Install with: sudo
+  apt-get install -y bubblewrap, set sandbox.bwrapPath in managed settings,
+  or set CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to disable (loses subprocess
+  isolation).` (S0). Gateway mode sets it, so a gateway session host needs
+  bubblewrap; S1-S12 leave it out to measure the settings layers.

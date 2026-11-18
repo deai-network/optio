@@ -1,7 +1,10 @@
-"""Gateway launch values from the seed; secrets reach the child over stdin."""
+"""Gateway launch values from the seed; secrets reach the child over stdin;
+the settings files the agent can write cannot move the gateway."""
 
 import asyncio
+import json
 import os
+import pathlib
 import shlex
 from dataclasses import replace
 
@@ -15,10 +18,18 @@ from optio_claudecode.gateway import (
     GatewaySeed,
     gateway_catalog,
     gateway_launch_env,
+    gateway_settings_json,
     launch_effort,
     launch_model,
 )
-from optio_claudecode.host_actions import with_stdin_secrets, write_stdin_secrets
+from optio_claudecode.host_actions import (
+    AGENT_SETTINGS_FILES,
+    build_claude_flags,
+    strip_settings_env,
+    with_stdin_secrets,
+    write_stdin_secrets,
+)
+from optio_claudecode.types import _gateway_owned_keys
 from optio_host import LocalHost, ProcessHandle, RemoteHost, SSHConfig
 from optio_host.host import proc_wait
 
@@ -256,3 +267,107 @@ async def test_write_stdin_secrets_refuses_a_handle_without_stdin():
     with pytest.raises(ValueError) as info:
         await write_stdin_secrets(_handle(None), ["rq-token"], names=["A"])
     assert "stdin=True" in str(info.value) and "rq-" not in str(info.value)
+
+
+# --- settings the agent can write (Important 2) ------------------------------
+
+
+def test_the_settings_pin_is_the_non_secret_environment():
+    env = gateway_launch_env(SEED)
+    pinned = gateway_settings_json(env)
+    assert json.loads(pinned) == {"env": env}
+    assert SEED.token not in pinned
+    # The token never goes into it: a secret name is refused, by name only.
+    with pytest.raises(ValueError) as info:
+        gateway_settings_json({**env, "ANTHROPIC_AUTH_TOKEN": SEED.token})
+    assert "ANTHROPIC_AUTH_TOKEN" in str(info.value) and SEED.token not in str(info.value)
+    assert info.value.__context__ is None and info.value.__cause__ is None
+
+
+def test_build_claude_flags_pins_settings_only_when_asked():
+    base = dict(permission_mode=None, allowed_tools=None, disallowed_tools=None, model="m")
+    assert "--settings" not in build_claude_flags(**base)        # an ordinary session
+    flags = build_claude_flags(**base, tools=["Read"], settings='{"env":{}}')
+    assert flags[flags.index("--settings") + 1] == '{"env":{}}'
+
+
+_OWNED = {
+    "ANTHROPIC_BASE_URL": "https://elsewhere.invalid",
+    "ANTHROPIC_API_KEY": "sk-other",
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
+    "CLAUDE_CODE_EFFORT_LEVEL": "unset",
+}
+
+
+def _settings_host(tmp_path) -> tuple[LocalHost, pathlib.Path]:
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    work = pathlib.Path(host.workdir)
+    (work / "home/.claude").mkdir(parents=True)
+    (work / ".claude").mkdir()
+    return host, work
+
+
+async def test_the_strip_removes_gateway_keys_from_each_settings_file_the_agent_can_write(tmp_path):
+    host, work = _settings_host(tmp_path)
+    planted = {"cleanupPeriodDays": 7, "env": {"FOO": "bar", **_OWNED},
+               "permissions": {"allow": ["Read"]}}
+    for rel in AGENT_SETTINGS_FILES:
+        (work / rel).write_text(json.dumps(planted))
+    # Claude Code does not read this one (measured, 2.1.319): left as it is.
+    unread = work / "home/.claude/settings.local.json"
+    unread.write_text(json.dumps(planted))
+
+    await strip_settings_env(host, owned=_gateway_owned_keys)
+
+    assert sorted(AGENT_SETTINGS_FILES) == [
+        ".claude/settings.json", ".claude/settings.local.json", "home/.claude/settings.json",
+    ]
+    for rel in AGENT_SETTINGS_FILES:
+        assert json.loads((work / rel).read_text()) == {
+            "cleanupPeriodDays": 7, "env": {"FOO": "bar"}, "permissions": {"allow": ["Read"]},
+        }
+    assert json.loads(unread.read_text()) == planted
+
+
+async def test_the_strip_leaves_what_it_need_not_touch_and_removes_what_it_cannot_check(tmp_path):
+    host, work = _settings_host(tmp_path)
+    home, project, local = (work / rel for rel in (
+        "home/.claude/settings.json", ".claude/settings.json", ".claude/settings.local.json",
+    ))
+    # No gateway key: not rewritten (byte for byte).
+    clean = '{ "env": {"FOO": "bar"},\n  "cleanupPeriodDays": 7 }\n'
+    home.write_text(clean)
+    # Not a JSON object Python can read: its keys cannot be checked.
+    project.write_text('{"env": {"ANTHROPIC_BASE_URL": "https://elsewhere.invalid"}, // a comment\n}')
+    # A byte-order mark in front of the JSON.
+    local.write_text(chr(0xFEFF) + json.dumps({"env": dict(_OWNED)}), encoding="utf-8")
+
+    await strip_settings_env(host, owned=_gateway_owned_keys)
+
+    assert home.read_text() == clean
+    assert not project.exists()
+    assert json.loads(local.read_text()) == {"env": {}}
+
+    # An env block that is not an object, and a list: left (no env to apply)
+    # and removed (not an object) respectively; missing files are fine.
+    home.write_text('{"env": "ANTHROPIC_BASE_URL=x"}')
+    project.write_text('["env"]')
+    local.unlink()
+    await strip_settings_env(host, owned=_gateway_owned_keys)
+    assert home.read_text() == '{"env": "ANTHROPIC_BASE_URL=x"}'
+    assert not project.exists() and not local.exists()
+
+
+async def test_the_strip_replaces_a_symlinked_settings_file(tmp_path):
+    host, work = _settings_host(tmp_path)
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"env": {"FOO": "bar", **_OWNED}}))
+    link = work / ".claude/settings.local.json"
+    link.symlink_to(outside)
+
+    await strip_settings_env(host, owned=_gateway_owned_keys)
+
+    assert not link.is_symlink()
+    assert json.loads(link.read_text()) == {"env": {"FOO": "bar"}}
+    # The link's target, outside the workdir, is not written to.
+    assert json.loads(outside.read_text()) == {"env": {"FOO": "bar", **_OWNED}}
