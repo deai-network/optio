@@ -28,6 +28,7 @@ from optio_agents import (
     HookContext,
     RESUME_NOTICE,
     SYSTEM_MESSAGE_PREFIX,
+    agent_entries,
     claustrum,
     get_protocol,
 )
@@ -870,6 +871,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             protocol=protocol,
             agent_sender=_agent_sender,
             keywords=config.host_protocol,
+            deliverable_metadata=lambda: agent_entries(config, AGENT_INFO),
         )
     except _SessionFailed as fail:
         raise RuntimeError(str(fail)) from None

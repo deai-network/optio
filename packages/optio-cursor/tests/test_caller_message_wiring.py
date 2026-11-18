@@ -11,8 +11,11 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from optio_agents import KEY_AGENT_NAME, KEY_AGENT_TYPE, SOURCE_CONFIG
+from optio_agents.deliverable_meta import entry
 from optio_cursor import CursorTaskConfig
 from optio_cursor import session as cursor_session
+from optio_cursor.info import AGENT_INFO
 
 
 class _FakeHost:
@@ -84,3 +87,13 @@ async def test_caller_message_defaults_off():
     assert proto["client_messages"] is False
     assert proto["caller_messages"] is False
     assert run["on_caller_message"] is None
+
+
+async def test_the_driver_gets_the_base_deliverable_entries():                   # RF5
+    config = CursorTaskConfig(consumer_instructions="x", delivery_type="audit")
+    _proto, run = await _capture_wiring(config)
+    assert run["deliverable_metadata"]() == [
+        entry(KEY_AGENT_TYPE, config.agent_type, SOURCE_CONFIG),
+        entry(KEY_AGENT_NAME, AGENT_INFO.name, SOURCE_CONFIG),
+    ]
+    assert config.agent_type == AGENT_INFO.slug

@@ -21,10 +21,19 @@ import contextlib
 
 import pytest
 
-from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
+from optio_agents import (
+    KEY_AGENT_NAME,
+    KEY_AGENT_TYPE,
+    RESUME_NOTICE,
+    SOURCE_CONFIG,
+    SYSTEM_MESSAGE_PREFIX,
+    get_protocol,
+)
+from optio_agents.deliverable_meta import entry
 from optio_agents.fs_grants import fs_isolation_dirs
 
 from optio_antigravity import session as agy_session
+from optio_antigravity.info import AGENT_INFO
 from optio_antigravity.prompt import compose_agents_md
 from optio_antigravity.types import AntigravityTaskConfig
 
@@ -283,3 +292,23 @@ async def test_caller_message_flags_flow_to_protocol(monkeypatch, use_client, ha
     assert captured["protocol"]["client_messages"] is use_client
     assert captured["protocol"]["caller_messages"] is has_cb
     assert captured["run"]["on_caller_message"] is cb
+
+
+async def test_the_driver_gets_the_base_deliverable_entries(monkeypatch):        # RF5
+    captured: dict = {}
+
+    async def fake_run(host, ctx, **kw):
+        captured["run"] = kw
+
+    monkeypatch.setattr(agy_session, "get_protocol", lambda **kw: object())
+    monkeypatch.setattr(agy_session, "run_log_protocol_session", fake_run)
+    monkeypatch.setattr(agy_session, "_build_host", lambda config, pid: _ProtoHost())
+
+    config = _cfg()
+    await agy_session.run_antigravity_session(_ProtoCtx(), config)
+
+    assert captured["run"]["deliverable_metadata"]() == [
+        entry(KEY_AGENT_TYPE, config.agent_type, SOURCE_CONFIG),
+        entry(KEY_AGENT_NAME, AGENT_INFO.name, SOURCE_CONFIG),
+    ]
+    assert config.agent_type == AGENT_INFO.slug

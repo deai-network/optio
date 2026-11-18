@@ -30,7 +30,7 @@ from typing import AsyncIterator, Callable
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
-from optio_agents import HookContext
+from optio_agents import HookContext, agent_entries
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_host.host import Host, LocalHost, ProcessHandle
@@ -721,6 +721,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             protocol=protocol,
             agent_sender=_agent_sender,
             keywords=config.host_protocol,
+            deliverable_metadata=lambda: agent_entries(config, AGENT_INFO),
         )
     except _SessionFailed as fail:
         session_error = fail

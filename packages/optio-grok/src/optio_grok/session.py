@@ -24,7 +24,9 @@ from typing import AsyncIterator, Callable
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
-from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
+from optio_agents import (
+    HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, agent_entries, claustrum, get_protocol,
+)
 from optio_agents import seeds as _seeds
 from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.fs_grants import fs_isolation_dirs
@@ -821,6 +823,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             protocol=protocol,
             agent_sender=_agent_sender,
             keywords=config.host_protocol,
+            deliverable_metadata=lambda: agent_entries(config, AGENT_INFO),
         )
     except _SessionFailed as fail:
         raise RuntimeError(str(fail)) from None
