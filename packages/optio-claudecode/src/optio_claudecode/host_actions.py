@@ -7,6 +7,7 @@ primitives (run_command, resolve_host_home, etc.). No isinstance branches.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import logging
@@ -676,26 +677,73 @@ def _settings_object(text: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _settings_path_command(workdir: str, rel: str) -> str:
+    """A shell command classifying ``<workdir>/<rel>`` without following a
+    link: ``link <component>`` for the first component (a parent inside the
+    workdir, or the file) that is a symlink, ``none`` when one is missing,
+    ``other`` for what is not a regular file (a directory, a named pipe),
+    else ``file`` and the real paths of the workdir and the file."""
+    parts = rel.split("/")
+    checks = []
+    for i in range(1, len(parts) + 1):
+        component = "/".join(parts[:i])
+        q = shlex.quote(f"{workdir}/{component}")
+        checks.append(f"if [ -L {q} ]; then echo link {shlex.quote(component)}; exit 0; fi; "
+                      f"if [ ! -e {q} ]; then echo none; exit 0; fi; ")
+    q = shlex.quote(f"{workdir}/{rel}")
+    return ("".join(checks) + f"if [ ! -f {q} ]; then echo other; exit 0; fi; "
+            f"echo file; readlink -f -- {shlex.quote(workdir)}; readlink -f -- {q}")
+
+
+async def _settings_path(host: "Host", workdir: str, rel: str) -> tuple[str, str | None]:
+    """``("link", component)``, ``("file", None)`` for a regular file whose
+    real path is inside the workdir, or ``("skip", None)`` (missing, not a
+    regular file, or resolving outside the workdir). RuntimeError when the
+    host cannot tell."""
+    r = await host.run_command(_settings_path_command(workdir, rel))
+    lines = r.stdout.splitlines()
+    head = lines[0].split(" ", 1) if lines else []
+    if r.exit_code != 0 or not head:
+        raise RuntimeError(f"checking {rel!r} failed (exit {r.exit_code}): {r.stderr.strip()[:200]}")
+    if head[0] == "link" and len(head) == 2:
+        return "link", head[1]
+    if head[0] == "file" and len(lines) == 3:
+        real_workdir, real_path = lines[1].rstrip("/"), lines[2]
+        if real_workdir and real_path.startswith(real_workdir + "/"):
+            return "file", None
+        _LOG.warning("gateway launch: %s resolves outside the workdir; left alone", rel)
+    return "skip", None
+
+
 async def strip_settings_env(
     host: "Host", *, owned: Callable[[dict], list[str]],
 ) -> None:
     """Remove from the ``env`` block of each of ``AGENT_SETTINGS_FILES`` (in
     ``host.workdir``) the keys ``owned(env)`` names, leaving every other key
-    as it is; a file holding none of them is not rewritten. A rewritten file
-    replaces what was there, so a symlink in its place is not written
-    through. A file that is not a JSON object, or cannot be read, is removed:
-    its keys cannot be checked. A missing file, an empty one and a directory
-    are left alone (none of them has an env to apply). Logs paths and key
-    names, never a value; RuntimeError when a file cannot be removed."""
+    as it is; a file holding none of them is not rewritten.
+
+    This runs as optio, outside any sandbox, on paths the agent may have
+    planted (a snapshot keeps symlinks), so it never reads, writes or
+    deletes through a link: when the file or a parent of it inside the
+    workdir (``home``, ``home/.claude``, ``.claude``) is a symlink, that link
+    itself is removed (never its target, never recursively) and nothing is
+    read; otherwise the file is read only when it is a regular file whose
+    real path is inside the workdir. Such a file that is not a JSON object,
+    or cannot be read, is removed: its keys cannot be checked. A missing
+    path, an empty file, a directory and a named pipe are left alone (none
+    of them has an env to apply). Logs paths and key names, never a value;
+    RuntimeError when a path cannot be checked or removed."""
     workdir = host.workdir.rstrip("/")
     for rel in AGENT_SETTINGS_FILES:
-        q = shlex.quote(f"{workdir}/{rel}")
-        r = await host.run_command(
-            f"if [ -d {q} ] && [ ! -L {q} ]; then echo dir; "
-            f"elif [ -e {q} ] || [ -L {q} ]; then echo file; else echo none; fi"
-        )
-        if r.stdout.strip() != "file":
+        kind, component = await _settings_path(host, workdir, rel)
+        if kind == "link":
+            await _remove_settings_file(host, component, shlex.quote(f"{workdir}/{component}"))
+            _LOG.warning("gateway launch: removed the symlink %s (settings are never read through a link)",
+                         component)
             continue
+        if kind != "file":
+            continue
+        q = shlex.quote(f"{workdir}/{rel}")
         r = await host.run_command(f"cat {q}")
         if r.exit_code == 0 and not r.stdout.strip():
             continue
@@ -712,6 +760,38 @@ async def strip_settings_env(
         await _remove_settings_file(host, rel, q)
         await host.write_text(rel, json.dumps(data, indent=2))
         _LOG.warning("gateway launch: removed %s from the env of %s", ", ".join(keys), rel)
+
+
+async def child_env_values(
+    host: "Host", names: Sequence[str], *, env: dict[str, str], env_remove: Sequence[str] | None,
+) -> dict[str, str]:
+    """The values ``names`` have in the environment of a child launched on
+    ``host`` with ``env`` and ``env_remove``, as both hosts build it: the
+    inherited environment, minus the names an ``env_remove`` glob matches,
+    then ``env`` over it. A name left unset is absent. The inherited values
+    are read on the host (its ``env`` filtered to exactly these names, so no
+    other variable is read). ValueError for a name that is not a variable
+    name; RuntimeError when the host cannot be asked."""
+    names = list(names)
+    for name in names:
+        if not _ENV_NAME_RE.fullmatch(name):
+            raise ValueError(f"not an environment variable name: {name!r}")
+    pattern = "^(" + "|".join(names) + ")="
+    r = await host.run_command(f"env | grep -E {shlex.quote(pattern)} || true")
+    if r.exit_code != 0:
+        raise RuntimeError(f"reading the launch environment failed (exit {r.exit_code})")
+    inherited: dict[str, str] = {}
+    for line in r.stdout.splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name in names:
+            inherited.setdefault(name, value)
+    out: dict[str, str] = {}
+    for name in names:
+        if name in env:
+            out[name] = env[name]
+        elif name in inherited and not any(fnmatch.fnmatchcase(name, p) for p in env_remove or ()):
+            out[name] = inherited[name]
+    return out
 
 
 async def _remove_settings_file(host: "Host", rel: str, quoted: str) -> None:

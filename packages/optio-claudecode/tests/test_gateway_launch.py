@@ -6,25 +6,30 @@ import json
 import os
 import pathlib
 import shlex
+import shutil
 from dataclasses import replace
 
 import pytest
 
 from optio_claudecode.gateway import (
     GATEWAY_ENV_REMOVE,
+    GATEWAY_PROVIDER_SWITCHES,
     GATEWAY_SECRET_ENV,
+    GATEWAY_TRANSPORT_ENV,
     GatewayError,
     GatewayModel,
     GatewaySeed,
     gateway_catalog,
     gateway_launch_env,
     gateway_settings_json,
+    gateway_transport_pins,
     launch_effort,
     launch_model,
 )
 from optio_claudecode.host_actions import (
     AGENT_SETTINGS_FILES,
     build_claude_flags,
+    child_env_values,
     strip_settings_env,
     with_stdin_secrets,
     write_stdin_secrets,
@@ -296,7 +301,58 @@ _OWNED = {
     "ANTHROPIC_API_KEY": "sk-other",
     "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
     "CLAUDE_CODE_EFFORT_LEVEL": "unset",
+    # Fix 2: transport and provider variables.
+    **{name: "http://proxy.invalid:3128" for name in GATEWAY_TRANSPORT_ENV},
+    **{name: "1" for name in GATEWAY_PROVIDER_SWITCHES},
 }
+
+
+def test_the_transport_variables_and_provider_switches():
+    """Fix 2: one definition each; the proxy, TLS-trust and provider
+    variables a settings file could use to move or intercept the token."""
+    assert set(GATEWAY_TRANSPORT_ENV) == {
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    }
+    assert set(GATEWAY_PROVIDER_SWITCHES) == {
+        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    }
+    # Pinned at the launch's own values, "" when unset; the switches off.
+    pins = gateway_transport_pins({"HTTPS_PROXY": "http://corp-proxy:3128", "NO_PROXY": "internal"})
+    assert pins == {
+        **{name: "" for name in GATEWAY_TRANSPORT_ENV},
+        "HTTPS_PROXY": "http://corp-proxy:3128", "NO_PROXY": "internal",
+        **{name: "0" for name in GATEWAY_PROVIDER_SWITCHES},
+    }
+    assert sorted(_gateway_owned_keys(pins)) == sorted(pins)
+
+
+async def test_child_env_values_are_what_the_launched_child_gets(tmp_path, monkeypatch):
+    """Fix 2: inherited from the host, minus the env_remove globs, then env;
+    a name left unset is absent. Checked against a real child's environment."""
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    os.makedirs(host.workdir)
+    for name in GATEWAY_TRANSPORT_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://inherited:3128")
+    monkeypatch.setenv("HTTP_PROXY", "http://scrubbed:3128")
+    monkeypatch.setenv("HTTP_PROXY_EXTRA", "not-a-transport-name")
+    monkeypatch.setenv("SSL_CERT_FILE", "/inherited/ca.pem")
+    env = {"NO_PROXY": "internal.example", "SSL_CERT_FILE": "/from/env/ca.pem"}
+    env_remove = ["HTTP_PROXY*"]
+
+    got = await child_env_values(host, GATEWAY_TRANSPORT_ENV, env=env, env_remove=env_remove)
+
+    assert got == {"HTTPS_PROXY": "http://inherited:3128", "NO_PROXY": "internal.example",
+                   "SSL_CERT_FILE": "/from/env/ca.pem"}
+    printer = "import json, os, sys; print(json.dumps({n: os.environ[n] for n in sys.argv[1:] if n in os.environ}))"
+    handle = await host.launch_subprocess(
+        shlex.join(["python3", "-c", printer, *GATEWAY_TRANSPORT_ENV]), env=env, env_remove=env_remove,
+    )
+    out = await asyncio.wait_for(_all_output(handle), 60)
+    assert await asyncio.wait_for(proc_wait(handle), 60) == 0
+    assert json.loads(out) == got
 
 
 def _settings_host(tmp_path) -> tuple[LocalHost, pathlib.Path]:
@@ -358,16 +414,82 @@ async def test_the_strip_leaves_what_it_need_not_touch_and_removes_what_it_canno
     assert not project.exists() and not local.exists()
 
 
-async def test_the_strip_replaces_a_symlinked_settings_file(tmp_path):
+# Content of a file outside the workdir that the agent must never see.
+_OUTSIDE_MARKER = "outside-only-7c41e9"
+
+
+def _outside_files(root: pathlib.Path) -> dict[pathlib.Path, bytes]:
+    """Files outside the workdir: one with gateway keys (it would be
+    rewritten), one that is not JSON (it would be removed); their bytes."""
+    root.mkdir(parents=True, exist_ok=True)
+    files = {
+        root / "settings.json": json.dumps(
+            {"env": {"FOO": _OUTSIDE_MARKER, **_OWNED}, "secret": _OUTSIDE_MARKER}).encode(),
+        root / "settings.local.json": f"not json {_OUTSIDE_MARKER}".encode(),
+    }
+    for path, data in files.items():
+        path.write_bytes(data)
+    return files
+
+
+def _workdir_holding(work: pathlib.Path, needle: str) -> list[str]:
+    hits = []
+    for dirpath, _dirs, names in os.walk(work):
+        for name in names:
+            path = pathlib.Path(dirpath, name)
+            if not path.is_symlink() and path.is_file() and needle.encode() in path.read_bytes():
+                hits.append(str(path.relative_to(work)))
+    return hits
+
+
+@pytest.mark.parametrize("rel", [".claude/settings.json", ".claude/settings.local.json",
+                                 "home/.claude/settings.json"])
+async def test_the_strip_never_reads_a_settings_file_through_a_link(tmp_path, rel):
+    """Fix 1: the strip runs as optio, outside any sandbox, and the agent
+    can plant a symlink that a snapshot keeps. A link in a settings file's
+    place is removed itself; its target outside the workdir stays as it was,
+    and its content never reaches the workdir."""
     host, work = _settings_host(tmp_path)
-    outside = tmp_path / "outside.json"
-    outside.write_text(json.dumps({"env": {"FOO": "bar", **_OWNED}}))
-    link = work / ".claude/settings.local.json"
-    link.symlink_to(outside)
+    outside = _outside_files(tmp_path / "outside")
+    link = work / rel
+    link.symlink_to(tmp_path / "outside" / "settings.json")
 
     await strip_settings_env(host, owned=_gateway_owned_keys)
 
-    assert not link.is_symlink()
-    assert json.loads(link.read_text()) == {"env": {"FOO": "bar"}}
-    # The link's target, outside the workdir, is not written to.
-    assert json.loads(outside.read_text()) == {"env": {"FOO": "bar", **_OWNED}}
+    assert not link.is_symlink() and not link.exists()
+    assert {path: path.read_bytes() for path in outside} == outside
+    assert _workdir_holding(work, _OUTSIDE_MARKER) == []
+
+
+@pytest.mark.parametrize("component", [".claude", "home/.claude", "home"])
+async def test_the_strip_never_writes_or_deletes_through_a_directory_link(tmp_path, component):
+    """Fix 1: a parent directory of a settings path that is a link (``[ -L ]``
+    on the last component alone would miss it) is removed itself, never its
+    target: the outside settings.json (gateway keys) is not rewritten, the
+    outside settings.local.json (not JSON) is not deleted, and neither one's
+    content reaches the workdir."""
+    host, work = _settings_host(tmp_path)
+    outside = _outside_files(tmp_path / "outside")
+    (tmp_path / "outside" / ".claude").mkdir()
+    for path, data in list(outside.items()):
+        copy = tmp_path / "outside" / ".claude" / path.name
+        copy.write_bytes(data)
+        outside[copy] = data
+    shutil.rmtree(work / component)
+    (work / component).symlink_to(tmp_path / "outside")
+
+    await strip_settings_env(host, owned=_gateway_owned_keys)
+
+    assert not (work / component).is_symlink() and not (work / component).exists()
+    assert {path: path.read_bytes() for path in outside} == outside
+    assert _workdir_holding(work, _OUTSIDE_MARKER) == []
+
+
+async def test_the_strip_skips_a_settings_path_that_is_not_a_regular_file(tmp_path):
+    """A named pipe would block the read forever: it is left alone, as Claude
+    Code cannot apply an env from it either."""
+    host, work = _settings_host(tmp_path)
+    fifo = work / ".claude/settings.json"
+    os.mkfifo(fifo)
+    await asyncio.wait_for(strip_settings_env(host, owned=_gateway_owned_keys), 60)
+    assert fifo.exists() and not fifo.is_file()

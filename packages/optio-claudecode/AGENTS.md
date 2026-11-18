@@ -549,7 +549,12 @@ when the hook returns, and when it raises `NothingToResurrect`.
   another host): every `ANTHROPIC_*` key, `CLAUDE_CODE_OAUTH_TOKEN`,
   `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`, `CLAUDE_CODE_AUTO_MODE_SERVER`,
   `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` and `CLAUDE_CODE_EFFORT_LEVEL` (the
-  message names the keys, never a value).
+  message names the keys, never a value). `claude_config["env"]` may not set
+  the transport variables and provider switches either
+  (`gateway.GATEWAY_TRANSPORT_ENV`, `GATEWAY_PROVIDER_SWITCHES`; a proxy
+  there would route the token): the launch strips and pins them, so such a
+  value could never take effect. `env` may set the transport variables: it is
+  the launch's own environment, which the pin carries as it is.
 
 ## Conversation mode
 
@@ -1081,22 +1086,41 @@ unchanged.
   since HOME is `<workdir>/home`, and `.claude/settings.json` and
   `.claude/settings.local.json` in the workdir, the cwd). An
   `ANTHROPIC_BASE_URL` there sends the requests, token included, to another
-  host, and a file rewritten mid-session redirects the next turn (Testing,
-  the settings probe). Two defences, so either one holds alone:
+  host, an `HTTPS_PROXY` / `HTTP_PROXY` sends them through a proxy, and a file
+  rewritten mid-session redirects the next turn (Testing, the settings probe).
+  Two defences, so either one holds alone:
   - every gateway launch, fresh or resumed (a resume after crash-orphan rescue
     or Resurrect too, since both only save a snapshot for it), runs
     `host_actions.strip_settings_env(host, owned=_gateway_owned_keys)` after the
-    restore, after `claude_config` and after `before_execute`: the keys
-    gateway mode owns (as for `claude_config["env"]`) leave each file's `env`,
-    every other key stays, and a file without one is not rewritten. A file that
-    is not a JSON object or cannot be read is removed (its keys cannot be
-    checked); a symlink is replaced, never written through. Key names and
-    paths are logged, never a value.
+    restore, after `claude_config` and after `before_execute`. The keys gateway
+    mode owns in a settings env (as for `claude_config["env"]`: the `ANTHROPIC_*`
+    and Claude Code keys above, the transport variables and the provider
+    switches) leave each file's `env`, every other key stays, and a file
+    without one is not rewritten.
+  - The strip runs as optio, outside any sandbox, on paths the agent may have
+    planted (a snapshot keeps symlinks), so it never reads, writes or deletes
+    through a link. When the file or a parent of it inside the workdir
+    (`home`, `home/.claude`, `.claude`) is a symlink, that link itself is
+    removed (`rm -f`, never its target, never recursively) and nothing is
+    read. Otherwise a file is read only when it is a regular file whose real
+    path (`readlink -f`) is inside the workdir's. Such a file that is not a
+    JSON object, or cannot be read, is removed (fail-closed: its keys cannot
+    be checked). A missing path, an empty file, a directory and a named pipe
+    are left alone. Key names and paths are logged, never a value.
   - `--settings <json>` (`build_claude_flags(settings=...)`,
-    `gateway.gateway_settings_json(gateway_launch_env(seed))`) pins the
-    gateway's non-secret environment at the command-line settings layer,
-    which outranks the three files at launch, after a live
-    `apply_flag_settings` switch and after a mid-session rewrite (measured).
+    `gateway.gateway_settings_json(...)`) pins, at the command-line settings
+    layer, the gateway's non-secret environment (`gateway_launch_env(seed)`)
+    and `gateway_transport_pins(values)`: each `GATEWAY_TRANSPORT_ENV` name
+    (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, their lowercase
+    forms, `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`,
+    `SSL_CERT_FILE`, `SSL_CERT_DIR`) at the value the launched child has, ""
+    when none, and each `GATEWAY_PROVIDER_SWITCHES` name
+    (`CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`) at `"0"`. The child's
+    values come from `host_actions.child_env_values(host, names, env=,
+    env_remove=)`: inherited on the host (its `env` filtered to exactly those
+    names), minus the `env_remove` globs, then `env`. That layer outranks the
+    three files at launch, after a live `apply_flag_settings` switch and after
+    a mid-session rewrite, for the base URL and for a proxy alike (measured).
     `gateway_settings_json` refuses a `GATEWAY_SECRET_ENV` key (`ValueError`
     naming it): the token never goes into it. A session that is not a gateway
     session passes no `--settings` and strips nothing.
@@ -1132,7 +1156,9 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
   directory, `task_dir(ssh=ssh, process_id="gateway-check-<12 hex>",
   consumer_name="optio-claudecode")`, then `connect` and `setup_workdir`, and
   the workdir gets `CHECK_FILE` (`optio-check.txt`), holding a random word
-  with four digits. Those three host steps share `per_model_timeout`, so an
+  with four digits; then the launch's transport values are read
+  (`child_env_values`, for the `--settings` pin). Those four host steps share
+  `per_model_timeout`, so an
   unreachable host fails the model instead of hanging the setup. claude is
   then installed under the batch's install lock, so one install runs at a
   time: the first also checks upstream for a newer claude (once per batch,
@@ -1140,7 +1166,8 @@ for this machine), and returns `{model_id: (ok, reason)}` in the order given.
   own bound, `_INSTALL_TIMEOUT_S` (600 s, for a first download). A step past
   its bound fails the model with `"<step> did not finish within <t> s"`
   (`connecting to the session host`, `setting up the task directory`,
-  `writing the check file`, `installing claude`). claude launches with `--permission-mode
+  `writing the check file`, `reading the launch environment`, `installing
+  claude`). claude launches with `--permission-mode
   dontAsk --allowed-tools Read --tools Read --model <id>`. The prompt
   (`CHECK_PROMPT`) asks it to read the file with the Read tool and reply with
   only the word.
@@ -1384,21 +1411,25 @@ So gateway mode leaves `effortLevel` out for a model without levels, and the
 CLI sends its default effort for it. Whether a gateway accepts that is
 checked in the live test.
 
-### Live probe: settings files against the gateway's base URL
+### Live probe: settings files against the gateway's base URL and proxies
 
 `tests/live/probe_gateway_settings_env.py` is not collected by pytest. Run it
 like the effort probe (`python
-packages/optio-claudecode/tests/live/probe_gateway_settings_env.py`; exit 2
-and `no cached claude binary` without one). It uses only the loopback: two
-aiohttp servers, A (the gateway, the process's `ANTHROPIC_BASE_URL`) and B
-(another host), record each POST and whether the token came with it, and
+packages/optio-claudecode/tests/live/probe_gateway_settings_env.py [S1 T2
+...]`, scenario names select some; exit 2 and `no cached claude binary`
+without one). It uses only the loopback: two aiohttp servers, A (the gateway,
+the process's `ANTHROPIC_BASE_URL`) and B (another host), and a raw HTTP
+proxy C each record every request and whether the token came with it, and
 answer `/v1/messages*` with a 400. Each scenario runs the newest cached claude
 in conversation mode laid out as a gateway session: cwd `<root>/work`,
 `HOME=<root>/work/home`, a fresh `TMPDIR`, the gateway environment (base URL,
 token, aliases, `CLAUDE_CODE_AUTO_MODE_SERVER=0`). Settings files carry
-`{"env": {"ANTHROPIC_BASE_URL": B}}` at launch, or are written between two
-turns (then 8 s pass before the next turn). "pin" adds `--settings` holding
-the gateway's non-secret environment, as gateway mode does.
+`{"env": {"ANTHROPIC_BASE_URL": B}}` (or, for "proxy", `HTTP_PROXY`,
+`HTTPS_PROXY`, `http_proxy`, `https_proxy` = C) at launch, or are written
+between two turns (then 8 s pass before the next turn). "pin" adds
+`--settings`: "yes" holds the gateway's non-secret environment, "full" adds
+the transport variables at the launch's own values ("" when unset) and the
+provider switches at "0", as gateway mode does.
 
 Measured with Claude Code 2.1.319 on 2026-11-18, on a host without
 bubblewrap. Every turn sent its `/v1/messages` POSTs (six per turn) to one
@@ -1419,6 +1450,18 @@ server only, with the token.
 | S10 | none | | turn, create the three = B, turn | A, then B |
 | S11 | none | yes | as S10 | A, then A |
 | S12 | as S8 | yes | turn, `apply_flag_settings {model}`, rewrite to B, turn | A, then A |
+| T1 | process env proxies = C | | | C |
+| T2 | the three files = proxy | | | C |
+| T3 | none | full | | A |
+| T4 | the three files = proxy | full | | A |
+| T5 | the three files, `{}` | full | turn, rewrite to proxy, turn | A, then A |
+| T6 | the three files, `{}` | | turn, rewrite to proxy, turn | A, then C |
+| T7 | process env proxies = C | full (so C) | | C |
+
+C saw plain proxy requests (absolute URI, no `CONNECT`) for the `http://`
+gateway, each with the token in its headers; through an `https://` gateway it
+would see a `CONNECT` and could read the token only with a CA the client
+trusts (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_*`, `NODE_TLS_REJECT_UNAUTHORIZED`).
 
 What the table shows:
 
@@ -1428,6 +1471,17 @@ What the table shows:
   read (S5).
 - The `--settings` layer outranks all three, at launch, after a live switch
   and after a mid-session rewrite (S6, S7, S9, S11, S12).
+- A proxy in a settings file sends every request, token included, through
+  it, at launch and after a mid-session rewrite (T2, T6), as one in the
+  process environment does (T1). The full pin keeps them off it (T4, T5),
+  claude accepts every transport variable empty and the switches at "0"
+  (T3), and a pin at the process's own proxy keeps that proxy (T7).
+- Not measured offline (live test): whether an empty `SSL_CERT_FILE` /
+  `SSL_CERT_DIR` / `NODE_EXTRA_CA_CERTS` pin changes TLS trust against a
+  real `https://` gateway (the probe's gateway is plain HTTP), and whether
+  the pinned `CLAUDE_CODE_USE_*` "0" overrides a process value "1" (that
+  would need the provider's network). The validation check runs with the
+  same pin, so a TLS failure shows as every model failing at setup.
 - No file under the scenario's root, `TMPDIR` included, held the token, the
   `--settings` JSON or A's URL after any run: the CLI writes the pin nowhere
   the agent could edit it.

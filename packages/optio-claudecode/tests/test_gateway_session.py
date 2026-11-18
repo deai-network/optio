@@ -37,6 +37,8 @@ from optio_claudecode import resurrect
 from optio_claudecode import session as session_mod
 from optio_claudecode import snapshots
 from optio_claudecode.gateway import (
+    GATEWAY_PROVIDER_SWITCHES,
+    GATEWAY_TRANSPORT_ENV,
     GatewayModel,
     gateway_launch_env,
     update_gateway_seed,
@@ -112,6 +114,24 @@ async def _gw_task(mongo_db, prefix: str, pid: str, shim, cache, **kw):
     return create_claudecode_requesty_task(process_id=pid, name="Gateway session", config=config)
 
 
+def _pinned(argv: list[str]) -> dict:
+    """The env block a launch pinned with --settings."""
+    pinned = json.loads(argv[argv.index("--settings") + 1])
+    assert set(pinned) == {"env"}
+    return pinned["env"]
+
+
+def _expected_pin(child_env: dict, seed=None) -> dict:
+    """The pin a launch must carry: the gateway's environment, each transport
+    variable at the value the child got ("" when it got none), the provider
+    switches off."""
+    return {
+        **gateway_launch_env(seed or _seed()),
+        **{name: child_env.get(name, "") for name in GATEWAY_TRANSPORT_ENV},
+        **{name: "0" for name in GATEWAY_PROVIDER_SWITCHES},
+    }
+
+
 def _files_containing(root: pathlib.Path, needle: str) -> list[str]:
     """The regular files under ``root`` whose bytes hold ``needle``, relative
     to it. Symlinks are skipped (the claude cache is linked in)."""
@@ -179,8 +199,9 @@ async def test_a_gateway_session_gets_the_seed_in_its_environment_only(
         assert "CLAUDE_CODE_EFFORT_LEVEL" not in env
         assert argv[argv.index("--model") + 1] == KIMI.id
         assert argv[argv.index("--effort") + 1] == "high"
-        # The non-secret gateway values, pinned above every settings file.
-        assert json.loads(argv[argv.index("--settings") + 1]) == {"env": gateway_launch_env(_seed())}
+        # The non-secret gateway values, pinned above every settings file,
+        # with the transport variables at the child's own values.
+        assert _pinned(argv) == _expected_pin(env)
         assert TOKEN not in json.dumps(argv)
 
         workdir = pathlib.Path(seen["workdir"])
@@ -628,7 +649,7 @@ async def test_a_resume_strips_gateway_keys_from_the_restored_settings_files(
     back with the snapshot; the resume removes the gateway's keys from it
     after the restore and after claude_config, leaving every other key, and
     the launch pins the gateway's values with --settings."""
-    argv_log = tmp_path / "argv.jsonl"
+    argv_log, env_log = tmp_path / "argv.jsonl", tmp_path / "env.jsonl"
     seen: dict = {}
     pid = "gw-settings-strip"
     optio = await _make_optio(mongo_db, "gwstrip")
@@ -637,13 +658,17 @@ async def test_a_resume_strips_gateway_keys_from_the_restored_settings_files(
         "ANTHROPIC_BASE_URL": "https://elsewhere.invalid",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
         "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
+        # Fix 2: a proxy, a CA and a provider switch go too.
+        "HTTPS_PROXY": "http://elsewhere.invalid:3128",
+        "NODE_EXTRA_CA_CERTS": "/tmp/agent-ca.pem",
+        "CLAUDE_CODE_USE_BEDROCK": "1",
     }}
     try:
         task = await _gw_task(
             mongo_db, "gwstrip", pid, shim_install_dir, claude_cache_dir,
             supports_resume=True, before_execute=_plant_and_remember(seen),
             claude_config={"theme": "light"},
-            env={"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+            env={"FAKE_CLAUDE_ARGV_LOG": str(argv_log), "FAKE_CLAUDE_ENV_LOG": str(env_log)},
         )
         await optio.adhoc_define(task)
         conv = await optio.launch_and_await_result(pid, session_id=None, timeout=60)
@@ -673,8 +698,49 @@ async def test_a_resume_strips_gateway_keys_from_the_restored_settings_files(
         ".claude/settings.json": kept,
         ".claude/settings.local.json": kept,
     }
-    for argv in _log_lines(argv_log):
-        assert json.loads(_flag(argv, "--settings")) == {"env": gateway_launch_env(_seed())}
+    for argv, child_env in zip(_log_lines(argv_log), _log_lines(env_log), strict=True):
+        assert _pinned(argv) == _expected_pin(child_env)
+
+
+@pytest.mark.asyncio
+async def test_the_pin_carries_the_launchs_own_transport_values(
+    shim_install_dir, claude_cache_dir, task_root, mongo_db, monkeypatch, tmp_path,
+):
+    """Fix 2: each transport variable is pinned at the value the child's
+    process environment has (inherited, minus scrub_env, then config.env),
+    "" when it has none, and the provider switches at "0": a settings file
+    cannot change them, at launch or mid-session. The token is not among
+    them."""
+    for name in (*GATEWAY_TRANSPORT_ENV, *GATEWAY_PROVIDER_SWITCHES):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://inherited-proxy.invalid:3128")
+    monkeypatch.setenv("HTTP_PROXY", "http://scrubbed-proxy.invalid:3128")
+    env_log, argv_log = tmp_path / "env.jsonl", tmp_path / "argv.jsonl"
+    pid = "gw-transport-pin"
+    optio = await _make_optio(mongo_db, "gwtransport")
+    try:
+        task = await _gw_task(
+            mongo_db, "gwtransport", pid, shim_install_dir, claude_cache_dir,
+            scrub_env=["HTTP_PROXY"],
+            env={"FAKE_CLAUDE_ENV_LOG": str(env_log), "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+                 "NO_PROXY": "internal.example"},
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(pid, session_id=None, timeout=60)
+        await _wait_widget_data(optio, pid)
+        await conv.close()
+        await _wait_terminal(optio, pid)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    child_env, argv = _log_lines(env_log)[0], _log_lines(argv_log)[0]
+    pinned = _pinned(argv)
+    assert pinned == _expected_pin(child_env)
+    assert (pinned["HTTPS_PROXY"], pinned["HTTP_PROXY"], pinned["NO_PROXY"], pinned["SSL_CERT_FILE"]) == (
+        "http://inherited-proxy.invalid:3128", "", "internal.example", "",
+    )
+    assert {pinned[name] for name in GATEWAY_PROVIDER_SWITCHES} == {"0"}
+    assert "ANTHROPIC_AUTH_TOKEN" not in pinned and TOKEN not in json.dumps(argv)
 
 
 @pytest.mark.asyncio

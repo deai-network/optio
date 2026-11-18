@@ -10,7 +10,12 @@ import pytest
 
 from optio_claudecode import gateway_setup
 from optio_claudecode.conversation import ClaudeCodeConversation
-from optio_claudecode.gateway import GatewayModel, GatewaySeed
+from optio_claudecode.gateway import (
+    GATEWAY_PROVIDER_SWITCHES,
+    GATEWAY_TRANSPORT_ENV,
+    GatewayModel,
+    GatewaySeed,
+)
 from optio_claudecode.gateway_setup import validate_gateway_models
 
 TOKEN = "rq-validate-token-5678wxyz"
@@ -120,12 +125,18 @@ async def test_each_check_runs_its_model_alone_through_the_gateway(
     assert envs["plain"]["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] == "1"
     # The non-secret gateway values are pinned at the --settings layer too,
     # as in a session.
+    # The transport variables at the check's own values ("" when unset), the
+    # provider switches off.
     for model, argv in argvs.items():
         pinned = json.loads(_flag(argv, "--settings"))
         assert set(pinned) == {"env"}
-        assert pinned["env"] == {k: envs[model][k] for k in pinned["env"]}
-        assert pinned["env"]["ANTHROPIC_BASE_URL"] == SEED.base_url
-        assert pinned["env"]["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] == "1"
+        transport = {k: envs[model].get(k, "") for k in GATEWAY_TRANSPORT_ENV}
+        switches = {k: "0" for k in GATEWAY_PROVIDER_SWITCHES}
+        gateway = {k: v for k, v in pinned["env"].items() if k not in transport and k not in switches}
+        assert pinned["env"] == {**gateway, **transport, **switches}
+        assert gateway == {k: envs[model][k] for k in gateway}
+        assert gateway["ANTHROPIC_BASE_URL"] == SEED.base_url
+        assert gateway["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] == "1"
         assert "ANTHROPIC_AUTH_TOKEN" not in pinned["env"]
 
 

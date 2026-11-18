@@ -46,7 +46,7 @@ import io
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Literal
+from typing import Callable, Literal, Mapping
 
 from gridfs.errors import NoFile
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
@@ -392,6 +392,22 @@ GATEWAY_ENV_REMOVE = ("ANTHROPIC_*", "CLAUDE_CODE_OAUTH_TOKEN")
 # background calls (haiku) and alias-based subagents stay on a validated model.
 _MODEL_ALIASES = ("OPUS", "SONNET", "HAIKU", "FABLE")
 
+# Variables that route or intercept the gateway's traffic: a proxy (a
+# settings file's HTTPS_PROXY sends every request, token included, through
+# it; measured, AGENTS.md Testing) and the TLS trust a proxy would need to
+# read it. The settings files the agent can write may not set them
+# (`types._gateway_owned_keys`, the strip), and `--settings` pins them to the
+# launch's own values (`gateway_transport_pins`).
+GATEWAY_TRANSPORT_ENV = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED", "SSL_CERT_FILE", "SSL_CERT_DIR",
+)
+
+# Claude Code's switches to another provider, which would bypass the gateway:
+# kept out of the settings files and pinned off, like the transport variables.
+GATEWAY_PROVIDER_SWITCHES = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+
 
 def _usable_default(seed: GatewaySeed) -> str:
     model = seed.effective_default_model()
@@ -434,9 +450,22 @@ def gateway_launch_env(seed: GatewaySeed) -> dict[str, str]:
     return env
 
 
+def gateway_transport_pins(values: Mapping[str, str]) -> dict[str, str]:
+    """The pinned transport and provider values of a launch: each
+    `GATEWAY_TRANSPORT_ENV` name at its value in ``values`` (the launched
+    child's environment, `host_actions.child_env_values`), "" when it has
+    none, and each `GATEWAY_PROVIDER_SWITCHES` name at "0". Claude Code
+    2.1.319 accepts every one of them empty (measured)."""
+    return {
+        **{name: values.get(name, "") for name in GATEWAY_TRANSPORT_ENV},
+        **{name: "0" for name in GATEWAY_PROVIDER_SWITCHES},
+    }
+
+
 def gateway_settings_json(env: dict[str, str]) -> str:
     """`--settings` for a gateway launch: ``{"env": env}`` as JSON, ``env``
-    being the launch's non-secret gateway environment (`gateway_launch_env`).
+    being the launch's non-secret gateway environment (`gateway_launch_env`
+    and `gateway_transport_pins`).
     Claude Code applies a settings file's `env` over the process environment,
     and the agent can write the user, project and local settings files; the
     command-line layer outranks all three, at launch and after a settings

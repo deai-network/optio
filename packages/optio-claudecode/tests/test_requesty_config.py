@@ -9,6 +9,7 @@ from optio_claudecode import (
     ClaudeCodeRequestyTaskConfig,
     create_claudecode_requesty_task,
 )
+from optio_claudecode.gateway import GATEWAY_PROVIDER_SWITCHES, GATEWAY_TRANSPORT_ENV
 from optio_claudecode.types import ClaudeCodeTaskConfig
 
 
@@ -96,6 +97,23 @@ def test_claude_config_env_cannot_undo_the_gateway_environment(key):
     assert "claude_config" in str(excinfo.value) and key in str(excinfo.value)
     assert "sk-not-for-errors" not in str(excinfo.value)
     assert "FOO" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("key", [*GATEWAY_TRANSPORT_ENV, *GATEWAY_PROVIDER_SWITCHES])
+def test_claude_config_env_cannot_set_a_transport_or_provider_variable(key):
+    # Fix 2: a settings env proxy, CA or provider switch could route or
+    # intercept the token; the strip removes them and --settings pins them,
+    # so a claude_config value could never take effect: refused instead.
+    with pytest.raises(ValueError) as excinfo:
+        _cfg(claude_config={"env": {"FOO": "bar", key: "http://sk-not-for-errors"}})
+    assert "claude_config" in str(excinfo.value) and key in str(excinfo.value)
+    assert "sk-not-for-errors" not in str(excinfo.value)
+
+
+def test_env_may_set_the_launchs_own_transport_variables():
+    # config.env is the launch's environment, which the pin carries as is.
+    cfg = _cfg(env={"HTTPS_PROXY": "http://corp-proxy:3128", "NO_PROXY": "internal"})
+    assert cfg.env["HTTPS_PROXY"] == "http://corp-proxy:3128"
 
 
 def test_a_seed_id_string_and_other_env_are_accepted():

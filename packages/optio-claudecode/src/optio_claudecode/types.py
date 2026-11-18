@@ -37,6 +37,7 @@ from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
 from optio_claudecode.controls import validate_custom_controls
+from optio_claudecode.gateway import GATEWAY_PROVIDER_SWITCHES, GATEWAY_TRANSPORT_ENV
 from optio_claudecode.seed_manifest import REQUESTY_SEED_SUFFIX
 
 # AllowedDir, ConversationMode, ToolVerbosity, ThinkingVerbosity, SeedProvider
@@ -493,7 +494,7 @@ class ClaudeCodeRequestyTaskConfig(ClaudeCodeTaskConfig):
                 "gateway mode (gateway sessions capture no seed; the gateway "
                 "setup task saves seeds)."
             )
-        env_keys = _gateway_owned_keys(self.env or {})
+        env_keys = _gateway_env_keys(self.env or {})
         if env_keys:
             raise ValueError(
                 f"ClaudeCodeRequestyTaskConfig: env keys {env_keys} are "
@@ -506,8 +507,8 @@ class ClaudeCodeRequestyTaskConfig(ClaudeCodeTaskConfig):
             raise ValueError(
                 f"ClaudeCodeRequestyTaskConfig: claude_config env keys "
                 f"{settings_keys} are refused (Claude Code applies settings env "
-                "itself, over the gateway's environment: ANTHROPIC_BASE_URL there "
-                "would send the token to another host)."
+                "itself, over the gateway's environment: ANTHROPIC_BASE_URL or a "
+                "proxy there would send the token to another host)."
             )
         super().__post_init__()
 
@@ -525,11 +526,30 @@ _GATEWAY_CLAUDE_CODE_KEYS = frozenset({
     "CLAUDE_CODE_EFFORT_LEVEL",
 })
 
+# The transport variables and provider switches gateway mode pins
+# (gateway.py holds the one definition). A settings env may not set them;
+# `env` may, as the launch's own environment, which the pin carries.
+_GATEWAY_PINNED_KEYS = frozenset(GATEWAY_TRANSPORT_ENV) | frozenset(GATEWAY_PROVIDER_SWITCHES)
 
-def _gateway_owned_keys(env: dict) -> list[str]:
-    """The keys of ``env`` gateway mode owns, sorted (names only, never a
-    value, so an error can name them)."""
+
+def _gateway_env_keys(env: dict) -> list[str]:
+    """The keys of ``env`` (the launch environment, `config.env`) gateway
+    mode owns: every ANTHROPIC_* key and `_GATEWAY_CLAUDE_CODE_KEYS`; sorted,
+    names only, never a value, so an error can name them."""
     return sorted(
         k for k in env
         if isinstance(k, str) and (k.startswith("ANTHROPIC_") or k in _GATEWAY_CLAUDE_CODE_KEYS)
+    )
+
+
+def _gateway_owned_keys(env: dict) -> list[str]:
+    """The keys of a settings ``env`` (Claude Code applies it over the process
+    environment) gateway mode owns: those of `_gateway_env_keys` and the
+    pinned transport variables and provider switches. `claude_config["env"]`
+    may not set them, and the launch strips them from the settings files the
+    agent can write (`host_actions.strip_settings_env`). Sorted, names only."""
+    return sorted(
+        k for k in env
+        if isinstance(k, str) and (
+            k.startswith("ANTHROPIC_") or k in _GATEWAY_CLAUDE_CODE_KEYS or k in _GATEWAY_PINNED_KEYS)
     )

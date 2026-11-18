@@ -1,27 +1,32 @@
 """Whether a settings file the agent can write sends Claude Code's gateway
-calls to another host, and whether a ``--settings`` pin keeps them on the
-gateway.
+calls to another host or through a proxy, and whether a ``--settings`` pin
+keeps them on the gateway.
 
 Not collected by pytest (not a ``test_*.py`` file). Run it on a host with a
-cached claude binary, from the optio repo:
+cached claude binary, from the optio repo (scenario names select some; none
+runs them all):
 
-    python packages/optio-claudecode/tests/live/probe_gateway_settings_env.py
+    python packages/optio-claudecode/tests/live/probe_gateway_settings_env.py [S1 T1 ...]
 
 Only the loopback is used: two aiohttp servers on 127.0.0.1, A (the gateway,
 the process's ``ANTHROPIC_BASE_URL``) and B (another host), record every POST
 with its auth header and answer ``/v1/messages*`` with a 400, so no turn ever
-reaches a model. Each scenario runs the newest cached claude in optio's
-conversation mode (stream-json in and out) laid out as a gateway session is:
-cwd ``<root>/work``, ``HOME=<root>/work/home``, a fresh TMPDIR, and the
-gateway environment (with ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`` in S0 only:
-without bubblewrap on the host, claude does not start with it, and S0 records
-that). Some settings files carry an ``env`` block whose
-``ANTHROPIC_BASE_URL`` is B, at launch or written between two turns (then the
-next turn waits ``RELOAD_WAIT_S`` for Claude Code's settings watcher). With
-``pin`` the launch adds ``--settings <json>`` holding the gateway's
-non-secret environment (never the token), as gateway mode does.
+reaches a model; C is a raw HTTP proxy on 127.0.0.1 that records every
+request (``CONNECT`` tunnels included, and the request inside one) and
+answers it the same way. Each scenario runs the newest cached claude in
+optio's conversation mode (stream-json in and out) laid out as a gateway
+session is: cwd ``<root>/work``, ``HOME=<root>/work/home``, a fresh TMPDIR, and
+the gateway environment (with ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`` in S0
+only: without bubblewrap on the host, claude does not start with it, and S0
+records that). Some settings files carry an ``env`` block whose
+``ANTHROPIC_BASE_URL`` is B, or whose proxy variables name C, at launch or
+written between two turns (then the next turn waits ``RELOAD_WAIT_S`` for
+Claude Code's settings watcher). ``pin`` adds ``--settings <json>``: "gw"
+holds the gateway's non-secret environment, "full" adds the transport
+variables at the launch's own values ("" when unset) and the provider
+switches at "0", as gateway mode does; never the token.
 
-For each turn it prints which server got the turn's ``/v1/messages`` POSTs
+For each turn it prints which server got the turn's ``/v1/messages`` requests
 and whether the token came with them; then whether any file under the
 scenario's root (TMPDIR included) holds the token or the pin.
 
@@ -54,28 +59,45 @@ PROJECT = ".claude/settings.json"
 LOCAL = ".claude/settings.local.json"
 AGENT_FILES = (HOME_SETTINGS, PROJECT, LOCAL)
 
-# (name, files at launch {relpath: "B" | "empty"}, pin, steps). A step is
-# "turn", ("write", {relpath: "B"}) or ("switch", apply_flag_settings settings).
-# S0 runs with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, as gateway mode sets it;
-# the others leave it out, since Claude Code 2.1.319 does not start with it on
-# a host without bubblewrap (S0 shows the message).
+# Gateway mode's transport variables and provider switches (gateway.py).
+TRANSPORT = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED", "SSL_CERT_FILE", "SSL_CERT_DIR",
+)
+SWITCHES = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+
+ALL = {f: "B" for f in AGENT_FILES}
+PROXIED = {f: "proxy" for f in AGENT_FILES}
+EMPTY = {f: "empty" for f in AGENT_FILES}
+
+# (name, files at launch {relpath: "B" | "proxy" | "empty"}, pin None | "gw" |
+# "full", steps, extra process env {name: "C" | value}). A step is "turn",
+# ("write", {relpath: kind}) or ("switch", apply_flag_settings settings).
 SCENARIOS = [
-    ("S0", {}, False, ["turn"]),
-    ("S1", {}, False, ["turn"]),
-    ("S2", {HOME_SETTINGS: "B"}, False, ["turn"]),
-    ("S3", {PROJECT: "B"}, False, ["turn"]),
-    ("S4", {LOCAL: "B"}, False, ["turn"]),
-    ("S5", {HOME_LOCAL: "B"}, False, ["turn"]),
-    ("S6", {f: "B" for f in AGENT_FILES}, True, ["turn"]),
-    ("S7", {f: "B" for f in AGENT_FILES}, True, [("switch", {"model": MODEL}), "turn"]),
-    ("S8", {f: "empty" for f in AGENT_FILES}, False,
-     ["turn", ("write", {f: "B" for f in AGENT_FILES}), "turn"]),
-    ("S9", {f: "empty" for f in AGENT_FILES}, True,
-     ["turn", ("write", {f: "B" for f in AGENT_FILES}), "turn"]),
-    ("S10", {}, False, ["turn", ("write", {f: "B" for f in AGENT_FILES}), "turn"]),
-    ("S11", {}, True, ["turn", ("write", {f: "B" for f in AGENT_FILES}), "turn"]),
-    ("S12", {f: "empty" for f in AGENT_FILES}, True,
-     ["turn", ("switch", {"model": MODEL}), ("write", {f: "B" for f in AGENT_FILES}), "turn"]),
+    ("S0", {}, None, ["turn"], {}),
+    ("S1", {}, None, ["turn"], {}),
+    ("S2", {HOME_SETTINGS: "B"}, None, ["turn"], {}),
+    ("S3", {PROJECT: "B"}, None, ["turn"], {}),
+    ("S4", {LOCAL: "B"}, None, ["turn"], {}),
+    ("S5", {HOME_LOCAL: "B"}, None, ["turn"], {}),
+    ("S6", ALL, "gw", ["turn"], {}),
+    ("S7", ALL, "gw", [("switch", {"model": MODEL}), "turn"], {}),
+    ("S8", EMPTY, None, ["turn", ("write", ALL), "turn"], {}),
+    ("S9", EMPTY, "gw", ["turn", ("write", ALL), "turn"], {}),
+    ("S10", {}, None, ["turn", ("write", ALL), "turn"], {}),
+    ("S11", {}, "gw", ["turn", ("write", ALL), "turn"], {}),
+    ("S12", EMPTY, "gw", ["turn", ("switch", {"model": MODEL}), ("write", ALL), "turn"], {}),
+    # Transport: a proxy in the process env (does claude use one at all for
+    # the loopback gateway), in the settings files, and the full pin.
+    ("T1", {}, None, ["turn"], {v: "C" for v in PROXY_VARS}),
+    ("T2", PROXIED, None, ["turn"], {}),
+    ("T3", {}, "full", ["turn"], {}),
+    ("T4", PROXIED, "full", ["turn"], {}),
+    ("T5", EMPTY, "full", ["turn", ("write", PROXIED), "turn"], {}),
+    ("T6", EMPTY, None, ["turn", ("write", PROXIED), "turn"], {}),
+    ("T7", {}, "full", ["turn"], {v: "C" for v in PROXY_VARS}),
 ]
 
 
@@ -114,6 +136,61 @@ class Server:
         return [tok for path, tok in self.posts[start:] if path.startswith("/v1/messages")]
 
 
+class Proxy:
+    """A raw HTTP proxy that forwards nothing: it records each request (a
+    CONNECT, then the request inside the tunnel) and answers a POST the way A
+    does."""
+
+    name = "C"
+
+    def __init__(self) -> None:
+        self.url = ""
+        self.posts: list[tuple[str, bool]] = []  # (request target, the token came with it)
+        self.connects: list[str] = []
+
+    async def _head(self, reader) -> tuple[str, dict[str, str]]:
+        raw = await reader.readuntil(b"\r\n\r\n")
+        lines = raw.decode("latin-1").split("\r\n")
+        headers = {}
+        for line in lines[1:]:
+            name, sep, value = line.partition(":")
+            if sep:
+                headers[name.strip().lower()] = value.strip()
+        return lines[0], headers
+
+    async def _answer(self, reader, writer, request_line: str, headers: dict[str, str]) -> None:
+        method, _, rest = request_line.partition(" ")
+        target = rest.rsplit(" ", 1)[0]
+        length = int(headers.get("content-length") or 0)
+        if length:
+            await reader.readexactly(length)
+        if method == "POST":
+            auth = headers.get("authorization", "") + " " + headers.get("x-api-key", "")
+            self.posts.append((target, TOKEN in auth))
+        body = json.dumps(PROBE_ERROR if "/v1/messages" in target else NOT_FOUND).encode()
+        status = "400 Bad Request" if "/v1/messages" in target else "404 Not Found"
+        writer.write((f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
+                      f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body)
+        await writer.drain()
+
+    async def handle(self, reader, writer) -> None:
+        try:
+            request_line, headers = await self._head(reader)
+            if request_line.startswith("CONNECT "):
+                self.connects.append(request_line.split(" ")[1])
+                writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                await writer.drain()
+                request_line, headers = await self._head(reader)
+            await self._answer(reader, writer, request_line, headers)
+        except (asyncio.IncompleteReadError, ConnectionError, ValueError):
+            pass
+        finally:
+            writer.close()
+
+    def messages(self, start: int) -> list[bool]:
+        return [tok for target, tok in self.posts[start:] if "/v1/messages" in target]
+
+
 async def _serve(server: Server) -> web.AppRunner:
     app = web.Application()
     app.router.add_route("*", "/{tail:.*}", server.handle)
@@ -138,10 +215,15 @@ def gateway_env(a: Server, *, scrub: bool) -> dict[str, str]:
     return env
 
 
-def _write_file(work: str, rel: str, kind: str, b: Server) -> None:
+def _write_file(work: str, rel: str, kind: str, b: Server, c: Proxy) -> None:
     path = os.path.join(work, rel)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    body = {} if kind == "empty" else {"env": {"ANTHROPIC_BASE_URL": b.url}}
+    if kind == "empty":
+        body = {}
+    elif kind == "proxy":
+        body = {"env": {v: c.url for v in PROXY_VARS}}
+    else:
+        body = {"env": {"ANTHROPIC_BASE_URL": b.url}}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(body, f)
 
@@ -180,9 +262,9 @@ async def _switch(proc, settings: dict, n: int) -> str:
     return (obj["response"].get("subtype") or "?")
 
 
-def _where(a: Server, b: Server, a0: int, b0: int) -> str:
+def _where(servers, starts) -> str:
     out = []
-    for server, start in ((a, a0), (b, b0)):
+    for server, start in zip(servers, starts):
         hits = server.messages(start)
         if hits:
             out.append(f"{server.name} x{len(hits)}" + (" +token" if any(hits) else ""))
@@ -207,8 +289,8 @@ def _files_holding(root: str, needles: dict[str, bytes]) -> dict[str, list[str]]
     return found
 
 
-async def run_scenario(binary: str, a: Server, b: Server, scenario) -> str:
-    name, at_launch, pin, steps = scenario
+async def run_scenario(binary: str, a: Server, b: Server, c: Proxy, scenario) -> str:
+    name, at_launch, pin, steps, extra = scenario
     root = tempfile.mkdtemp(prefix=f"probe-settings-{name}-")
     try:
         work = os.path.join(root, "work")
@@ -216,8 +298,9 @@ async def run_scenario(binary: str, a: Server, b: Server, scenario) -> str:
         os.makedirs(os.path.join(work, "home"))
         os.mkdir(tmp)
         for rel, kind in at_launch.items():
-            _write_file(work, rel, kind, b)
+            _write_file(work, rel, kind, b, c)
         scrub = name == "S0"
+        inherited = {k: (c.url if v == "C" else v) for k, v in extra.items()}
         env = {
             "HOME": os.path.join(work, "home"),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -226,11 +309,16 @@ async def run_scenario(binary: str, a: Server, b: Server, scenario) -> str:
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "ANTHROPIC_AUTH_TOKEN": TOKEN,
             **gateway_env(a, scrub=scrub),
+            **inherited,
         }
+        pinned = dict(gateway_env(a, scrub=scrub))
+        if pin == "full":
+            pinned.update({v: env.get(v, "") for v in TRANSPORT})
+            pinned.update({v: "0" for v in SWITCHES})
+        pin_json = json.dumps({"env": pinned})
         argv = [binary, "-p", "--input-format", "stream-json", "--output-format",
                 "stream-json", "--verbose", "--model", MODEL]
-        pin_json = json.dumps({"env": gateway_env(a, scrub=scrub)})
-        if pin:
+        if pin is not None:
             argv += ["--settings", pin_json]
         stderr_path = os.path.join(root, "stderr.txt")
         with open(stderr_path, "wb") as stderr:
@@ -239,19 +327,25 @@ async def run_scenario(binary: str, a: Server, b: Server, scenario) -> str:
                 stdout=asyncio.subprocess.PIPE, stderr=stderr, limit=16 * 1024 * 1024)
         results: list[str] = []
         failure = None
+        servers = (a, b, c)
         try:
             for n, step in enumerate(steps):
                 if step == "turn":
-                    a0, b0 = len(a.posts), len(b.posts)
+                    starts = [len(s.posts) for s in servers]
+                    connects = len(c.connects)
                     await _turn(proc)
-                    results.append(f"turn -> {_where(a, b, a0, b0)}")
+                    tunnels = c.connects[connects:]
+                    results.append(f"turn -> {_where(servers, starts)}"
+                                   + (f" (C CONNECT x{len(tunnels)})" if tunnels else ""))
                 elif step[0] == "switch":
                     results.append(f"switch {json.dumps(step[1])} -> {await _switch(proc, step[1], n)}")
                 elif step[0] == "write":
                     for rel, kind in step[1].items():
-                        _write_file(work, rel, kind, b)
+                        _write_file(work, rel, kind, b, c)
                     await asyncio.sleep(RELOAD_WAIT_S)
-                    results.append(f"rewrite {'+'.join(sorted(step[1]))} (waited {RELOAD_WAIT_S:g} s)")
+                    kinds = sorted(set(step[1].values()))
+                    results.append(f"rewrite {'+'.join(sorted(step[1]))} = {'/'.join(kinds)} "
+                                   f"(waited {RELOAD_WAIT_S:g} s)")
         except (EOFError, asyncio.TimeoutError) as e:
             failure = type(e).__name__
         finally:
@@ -267,8 +361,9 @@ async def run_scenario(binary: str, a: Server, b: Server, scenario) -> str:
         holding = {k: [p for p in v if p != "stderr.txt"] for k, v in holding.items()}
         files = ", ".join(f"{k}: {v or 'none'}" for k, v in holding.items())
         launch = "+".join(f"{rel}={kind}" for rel, kind in at_launch.items()) or "-"
-        row = (f"{name} | scrub {'yes' if scrub else 'no'} | at launch {launch} | "
-               f"pin {'yes' if pin else 'no'} | " + "; ".join(results))
+        env_text = " ".join(f"{k}={v}" for k, v in extra.items()) or "-"
+        row = (f"{name} | scrub {'yes' if scrub else 'no'} | env {env_text} | at launch {launch} | "
+               f"pin {pin or 'no'} | " + "; ".join(results))
         row += f"\n    files under the root holding {files}"
         if failure is not None:
             with open(stderr_path, "rb") as f:
@@ -279,23 +374,28 @@ async def run_scenario(binary: str, a: Server, b: Server, scenario) -> str:
         shutil.rmtree(root, ignore_errors=True)
 
 
-async def main() -> int:
+async def main(selected: list[str]) -> int:
     binary = newest_binary()
     if binary is None:
         print("no cached claude binary")
         return 2
-    a, b = Server("A"), Server("B")
+    a, b, c = Server("A"), Server("B"), Proxy()
     runners = [await _serve(a), await _serve(b)]
+    proxy = await asyncio.start_server(c.handle, "127.0.0.1", 0)
+    c.url = f"http://127.0.0.1:{proxy.sockets[0].getsockname()[1]}"
     try:
         print(f"claude {os.path.basename(binary)} ({binary}); bwrap on PATH: {shutil.which('bwrap') or 'no'}")
-        print(f"A (gateway) {a.url}, B (elsewhere) {b.url}")
+        print(f"A (gateway) {a.url}, B (elsewhere) {b.url}, C (proxy) {c.url}")
         for scenario in SCENARIOS:
-            print(await run_scenario(binary, a, b, scenario), flush=True)
+            if selected and scenario[0] not in selected:
+                continue
+            print(await run_scenario(binary, a, b, c, scenario), flush=True)
     finally:
+        proxy.close()
         for runner in runners:
             await runner.cleanup()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    sys.exit(asyncio.run(main(sys.argv[1:])))

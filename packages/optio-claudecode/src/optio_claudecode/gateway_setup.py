@@ -50,11 +50,13 @@ from optio_claudecode.conversation import ClaudeCodeConversation
 from optio_claudecode.gateway import (
     GATEWAY_ENV_REMOVE,
     GATEWAY_SECRET_ENV,
+    GATEWAY_TRANSPORT_ENV,
     GatewaySeed,
     SeedStatus,
     gateway_launch_env,
     gateway_seed_status,
     gateway_settings_json,
+    gateway_transport_pins,
     launch_effort,
     read_gateway_seed,
     seed_summary,
@@ -203,8 +205,9 @@ async def _check_model(
     """One model's check: ``(True, None)`` or ``(False, reason)``. Raises for
     a host, install or launch failure, which the batch makes the model's
     reason; `_TooSlow` when the host steps (connect, task directory, check
-    file) take longer than ``per_model_timeout`` together, or the install
-    longer than `_INSTALL_TIMEOUT_S`. Whatever happens, claude is killed and
+    file, launch environment) take longer than ``per_model_timeout``
+    together, or the install longer than `_INSTALL_TIMEOUT_S`. Whatever
+    happens, claude is killed and
     the task directory removed. The batch removes the token from every
     reason; an answer is cleaned here as well, before it is cut short."""
     check_seed = _check_seed(seed, model_id)
@@ -212,15 +215,20 @@ async def _check_model(
         ssh=ssh, process_id=f"gateway-check-{secrets.token_hex(6)}", consumer_name="optio-claudecode",
     ))
     word = secrets.choice(_WORDS) + str(1000 + secrets.randbelow(9000))
+    gateway_env = _check_env(seed, check_seed)
+    launch_env = host_actions.conversation_launch_env(host.workdir, gateway_env)
+    env_remove = list(GATEWAY_ENV_REMOVE)
     handle = None
     reader = None
     try:
         # Bounded like the turn, so an unreachable host fails its model
         # rather than hanging the setup.
-        await _bounded(per_model_timeout, (
-            ("connecting to the session host", host.connect),
-            ("setting up the task directory", host.setup_workdir),
+        *_, transport = await _bounded(per_model_timeout, (
+            ("connecting to the session host", lambda: host.connect()),
+            ("setting up the task directory", lambda: host.setup_workdir()),
             ("writing the check file", lambda: host.write_text(CHECK_FILE, f"{word}\n")),
+            ("reading the launch environment", lambda: host_actions.child_env_values(
+                host, GATEWAY_TRANSPORT_ENV, env=launch_env, env_remove=env_remove)),
         ))
         async with install_lock.lock:
             try:
@@ -233,20 +241,19 @@ async def _check_model(
             finally:
                 # Asked once per batch, whatever that first install did.
                 install_lock.update_checked = True
-        gateway_env = _check_env(seed, check_seed)
         flags = host_actions.build_claude_flags(
             permission_mode="dontAsk", allowed_tools=["Read"], disallowed_tools=None, tools=["Read"],
             model=model_id, effort=launch_effort(check_seed, model_id, None),
-            # Pinned as in a session (gateway_settings_json).
-            settings=gateway_settings_json(gateway_env),
+            # Pinned as in a session: the gateway's environment and the
+            # transport variables at this launch's own values.
+            settings=gateway_settings_json({**gateway_env, **gateway_transport_pins(transport)}),
         )
         argv = host_actions.build_conversation_argv(claude_path, claude_flags=flags, permission_gate=False)
         # The token reaches claude's environment over its first stdin line,
         # never a command line (RemoteHost writes `env=` into the one sshd runs).
         handle = await host.launch_subprocess(
             host_actions.with_stdin_secrets(shlex.join(argv), GATEWAY_SECRET_ENV),
-            env=host_actions.conversation_launch_env(host.workdir, gateway_env),
-            env_remove=list(GATEWAY_ENV_REMOVE), cwd=host.workdir, stdin=True,
+            env=launch_env, env_remove=env_remove, cwd=host.workdir, stdin=True,
         )
         await host_actions.write_stdin_secrets(handle, [seed.token], names=GATEWAY_SECRET_ENV)
         conv = ClaudeCodeConversation()
@@ -310,7 +317,8 @@ async def validate_gateway_models(
     called after each model; an error it raises is logged, and the outcomes
     stand. A check that raises fails its model only, with ``"check failed:
     <type>: <message>"``. The host steps before the turn (connect, task
-    directory, check file) share ``per_model_timeout`` too, and the claude
+    directory, check file, launch environment) share ``per_model_timeout``
+    too, and the claude
     install has its own `_INSTALL_TIMEOUT_S`: past it the model fails with
     ``"<step> did not finish within <t> s"``. ``install_dir`` is the claude
     cache override (as ``ClaudeCodeTaskConfig.install_dir``). ValueError for a

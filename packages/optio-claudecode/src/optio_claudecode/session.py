@@ -712,8 +712,7 @@ async def run_claudecode_session(
                 resuming=do_continue,
                 effort=current_effort,
                 show_thinking=config.thinking_verbosity == "visible",
-                settings=(cc_gateway.gateway_settings_json(cc_gateway.gateway_launch_env(gateway_seed))
-                          if gateway_seed is not None else None),
+                settings=gateway_settings,
             )
             argv = host_actions.build_conversation_argv(
                 claude_path, claude_flags=claude_flags,
@@ -754,6 +753,20 @@ async def run_claudecode_session(
         )
         env_remove = (config.scrub_env if gateway_seed is None
                       else [*(config.scrub_env or []), *cc_gateway.GATEWAY_ENV_REMOVE])
+        # Gateway mode's `--settings` (_spawn): the gateway's non-secret
+        # environment, and the transport variables at the values this launch
+        # gives the child ("" when none) with the provider switches off, so
+        # no settings file changes them, at launch or mid-session. None (no
+        # flag) for every other session.
+        gateway_settings = None
+        if gateway_seed is not None:
+            transport = await host_actions.child_env_values(
+                host, cc_gateway.GATEWAY_TRANSPORT_ENV, env=env, env_remove=env_remove,
+            )
+            gateway_settings = cc_gateway.gateway_settings_json({
+                **cc_gateway.gateway_launch_env(gateway_seed),
+                **cc_gateway.gateway_transport_pins(transport),
+            })
         async def _probe_cli_models(model: str | None) -> list[dict] | None:
             """The CLI's model list before the launch: a short-lived claude
             (same env and fs-isolation, ``--model model``, no ``--continue``)
