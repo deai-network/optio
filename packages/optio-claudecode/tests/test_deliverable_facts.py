@@ -72,11 +72,22 @@ def test_before_the_cli_names_a_model_optios_values_stand():
         *NATIVE_AGENT, entry("model.label", "Default (recommended)", "agent"), entry("effort", None, "optio")]
 
 
-def test_no_label_when_the_catalog_does_not_list_the_model():
+def test_no_label_without_a_catalog():
     cfg = _native_config()
     conv = _conv(models_offered=None, model="sonnet", turn_model="claude-sonnet-5")
     assert deliverable_metadata(cfg, conv, None) == [
         *NATIVE_AGENT, entry("model", "sonnet", "optio"), entry("model", "claude-sonnet-5", "agent"),
+        entry("effort", None, "optio")]
+
+
+def test_no_label_when_the_catalog_lacks_the_turns_model():
+    # The label follows the model the CLI reports; optio's model, which the
+    # catalog does list, is no fallback.
+    cfg = _native_config()
+    conv = _conv(models_offered=CATALOG, model="sonnet", turn_model="claude-unlisted-1")
+    assert catalog_label(CATALOG, "sonnet") == "Sonnet"
+    assert deliverable_metadata(cfg, conv, None) == [
+        *NATIVE_AGENT, entry("model", "sonnet", "optio"), entry("model", "claude-unlisted-1", "agent"),
         entry("effort", None, "optio")]
 
 

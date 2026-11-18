@@ -1355,9 +1355,11 @@ conversation, gateway)`, in this order:
   gateway, the CLI's own list natively) whose id is the model, or which
   resolves to it. The model is `turn_model` once the CLI has named one.
   Before that it is `conversation.model`, or `default` when that is None.
-- What the provider reads from the conversation are four attributes kept by
-  `ClaudeCodeConversation._route`, plus `model`, `effort` and
-  `models_offered`. None of the four is cleared by a switch or a relaunch:
+- The conversation keeps four attributes, set by
+  `ClaudeCodeConversation._route`. The provider reports three of them,
+  `cli_version`, `cli_session_id` and `turn_model`, and also reads `model`,
+  `effort` and `models_offered`. None of the four is cleared by a switch or
+  a relaunch:
   - `cli_session_id` and `cli_version`: system/init's `session_id` and
     `claude_code_version`;
   - `message_model`: the last main-thread assistant `message.model`;
