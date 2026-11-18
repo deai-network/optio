@@ -442,8 +442,13 @@ def gateway_launch_env(seed: GatewaySeed) -> dict[str, str]:
         **{f"ANTHROPIC_DEFAULT_{alias}_MODEL": default for alias in _MODEL_ALIASES},
         # The server-side auto-mode classifier needs Anthropic's API.
         "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
-        # Keeps the token from the agent's Bash commands, hooks and MCP servers.
-        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+        # Off (owner, 2026-11-18): with it on, Claude Code 2.1.327 forces
+        # permission mode default and requires its own Bash sandbox (socat).
+        # The agent's shell commands can therefore read the token, as a login
+        # agent can read its credentials file. Pinned like every key here, so
+        # no host environment or settings file turns it on. Re-enable once the
+        # CLI's sandbox can be configured for these sessions (AGENTS.md).
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
     }
     if any(m.efforts for m in seed.usable_models()):
         env["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"] = "1"

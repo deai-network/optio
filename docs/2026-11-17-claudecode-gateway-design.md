@@ -111,8 +111,17 @@ When the config is a gateway agent type:
   - `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL` set to the default model, so background
     calls and alias-based subagents stay on validated models;
   - `CLAUDE_CODE_AUTO_MODE_SERVER=0` (the server-side auto-mode classifier needs Anthropic's API);
-  - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, so the token does not reach the agent's Bash commands,
-    hooks or MCP servers;
+  - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0`. The design had `1`, so the token would not reach the
+    agent's Bash commands, hooks or MCP servers. Owner decision, 2026-11-18, from the live test:
+    on Claude Code 2.1.327 the scrub forces permission mode `default` (an analysis session
+    launched with `bypassPermissions` had every write and output redirection denied, with no way
+    to ask), and it requires the CLI's own Bash sandbox, which needs `socat` and runs nothing
+    outside it. The cost: the agent's shell commands can read `ANTHROPIC_AUTH_TOKEN` from their
+    environment, as a login agent can read its credentials file; optio's own file confinement
+    still applies, and the token still arrives over stdin only. The key stays gateway-owned and
+    is pinned at `0`, so neither the host environment nor a settings file can turn it on.
+    Follow-up: re-enable it once Claude Code's sandbox can be configured for these sessions
+    (explicit `allowedTools`, `socat`, a network allowlist);
   - the effort settings below.
 - `--model` is the session's model, as an exact id.
 - **Catalog:** `models_offered` is the seed's usable models with their labels and effort levels,
@@ -200,6 +209,8 @@ reminders, the graduation report.
 - How to send "no effort" for a model without levels: `apply_flag_settings` without an
   `effortLevel`, or `CLAUDE_CODE_EFFORT_LEVEL=unset`.
 - That `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` and its PID namespace do not break analysis
-  sessions under claustrum.
+  sessions under claustrum. Answered in the live test (2026-11-18, Claude Code 2.1.327): the
+  scrub breaks analysis sessions, so gateway sessions run without it (Launching in gateway
+  mode).
 - Policy ids as `--model`.
 - Whether gateway sessions still need `initialize` for its command list.

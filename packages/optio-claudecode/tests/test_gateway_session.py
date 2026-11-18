@@ -195,7 +195,7 @@ async def test_a_gateway_session_gets_the_seed_in_its_environment_only(
         assert {env[f"ANTHROPIC_DEFAULT_{f}_MODEL"]
                 for f in ("OPUS", "SONNET", "HAIKU", "FABLE")} == {KIMI.id}
         assert (env["CLAUDE_CODE_AUTO_MODE_SERVER"], env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"],
-                env["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"]) == ("0", "1", "1")
+                env["CLAUDE_CODE_ALWAYS_ENABLE_EFFORT"]) == ("0", "0", "1")
         assert "CLAUDE_CODE_EFFORT_LEVEL" not in env
         assert argv[argv.index("--model") + 1] == KIMI.id
         assert argv[argv.index("--effort") + 1] == "high"
@@ -398,7 +398,7 @@ async def test_the_gateway_environment_is_merged_last(
             "FAKE_CLAUDE_ENV_LOG": str(env_log),
             "ANTHROPIC_BASE_URL": "https://elsewhere.invalid",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
-            "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
+            "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
             "CLAUDE_CODE_AUTO_MODE_SERVER": "1",
         })
         await optio.adhoc_define(
@@ -657,7 +657,7 @@ async def test_a_resume_strips_gateway_keys_from_the_restored_settings_files(
         "FOO": "bar",
         "ANTHROPIC_BASE_URL": "https://elsewhere.invalid",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
-        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
         # Fix 2: a proxy, a CA and a provider switch go too.
         "HTTPS_PROXY": "http://elsewhere.invalid:3128",
         "NODE_EXTRA_CA_CERTS": "/tmp/agent-ca.pem",

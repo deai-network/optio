@@ -1080,6 +1080,26 @@ unchanged.
   that write fails, the launched shell is stopped and the run fails. The token
   is never in argv, a command line, a file, a snapshot, the process record or
   a log line.
+- **No subprocess scrub.** `gateway_launch_env` sets
+  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0`. Owner decision, 2026-11-18, from the
+  live test on Claude Code 2.1.327: with `1` the CLI forces permission mode
+  `default` ("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set (allowed_non_write_users
+  hardening). Declare allowedTools explicitly, or set
+  CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to opt out"), so an analysis session
+  launched with `bypassPermissions` had every write and output redirection
+  denied, with no way to ask; and it requires its own Bash sandbox, which
+  failed to start without `socat` and runs nothing outside it. The cost: the
+  agent's shell commands (and hooks and stdio MCP servers) can read
+  `ANTHROPIC_AUTH_TOKEN` from their environment, as a login agent can read its
+  credentials file. optio's own file confinement still applies, and the token
+  still arrives only as the first stdin line. The key stays gateway-owned:
+  `env` and `claude_config["env"]` refuse it, the strip removes it from the
+  settings files the agent can write, and `--settings` pins `"0"`, so neither
+  the host environment nor a settings file can turn it on. The model checks
+  (Validation) launch with the same environment. Follow-up: re-enable it once
+  Claude Code's sandbox can be configured for these sessions (explicit
+  `allowedTools`, `socat` on the session host, a network allowlist for the
+  gateway).
 - **Settings the agent can write.** Claude Code applies the `env` of its
   settings files over the process environment, and the agent can write three
   of them (`host_actions.AGENT_SETTINGS_FILES`: `home/.claude/settings.json`,
@@ -1517,5 +1537,6 @@ What the table shows:
   required for subprocess env scrubbing and isolation. Install with: sudo
   apt-get install -y bubblewrap, set sandbox.bwrapPath in managed settings,
   or set CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to disable (loses subprocess
-  isolation).` (S0). Gateway mode sets it, so a gateway session host needs
-  bubblewrap; S1-S12 leave it out to measure the settings layers.
+  isolation).` (S0). Gateway mode set it then; it now sets `0` (Gateway
+  launch, No subprocess scrub). S1-S12 leave it out to measure the settings
+  layers.

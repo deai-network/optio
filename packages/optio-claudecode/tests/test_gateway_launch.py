@@ -70,7 +70,8 @@ def test_the_launch_env():
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "prov-a/kimi-k3.1-pro",
         "ANTHROPIC_DEFAULT_FABLE_MODEL": "prov-a/kimi-k3.1-pro",
         "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
-        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+        # Off (owner, 2026-11-18; AGENTS.md Gateway launch).
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
         "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT": "1",
     }
     assert all(SEED.token not in value for value in env.values())
@@ -299,7 +300,7 @@ def test_build_claude_flags_pins_settings_only_when_asked():
 _OWNED = {
     "ANTHROPIC_BASE_URL": "https://elsewhere.invalid",
     "ANTHROPIC_API_KEY": "sk-other",
-    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",         # would force permission mode default
     "CLAUDE_CODE_EFFORT_LEVEL": "unset",
     # Fix 2: transport and provider variables.
     **{name: "http://proxy.invalid:3128" for name in GATEWAY_TRANSPORT_ENV},
