@@ -4,7 +4,8 @@ A deliverable's metadata is a list of ``{key, value, source}`` entries that says
 which agent and model delivered the file. The same fact may come from several
 sources (the model optio launched and the model the CLI reports), so consumers
 pick one with ``meta_get(md, key, prefer=(...))`` and spell keys and sources only
-through the constants here.
+through the constants here. ``invoke_on_deliverable`` is the one way optio hands
+a deliverable and its metadata to a consumer's ``on_deliverable`` callback.
 
 Design: ``docs/2026-11-18-deliverable-metadata-design.md``.
 
@@ -13,8 +14,11 @@ package itself, so that ``optio_agents.protocol`` can import it while the
 package is still being initialised.
 """
 
+import inspect
+import math
+import weakref
 from datetime import datetime, timezone
-from typing import Any, TypedDict
+from typing import Any, Awaitable, Callable, Literal, TypedDict
 
 from optio_agents.agent_info import AgentInfo
 
@@ -49,6 +53,8 @@ MAX_VALUE_CHARS = 256
 DEFAULT_PREFER = (SOURCE_AGENT, SOURCE_OPTIO, SOURCE_SEED, SOURCE_CONFIG, SOURCE_HARNESS)
 
 _SCALARS = (str, int, float, bool)
+# BSON (excavator stores the list in MongoDB) has no int wider than 64 bits.
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 
 
 def entry(key: str, value: MetaValue, source: str) -> DeliverableMeta:
@@ -77,9 +83,10 @@ def clamp(md: DeliverableMetadata) -> DeliverableMetadata:
     """A bounded copy of ``md`` that holds well-formed scalar entries only.
 
     Drops anything that is not a dict with a str ``key``, a str ``source`` and a
-    scalar ``value``; keeps only those three fields, in new dicts; cuts string
-    values to ``MAX_VALUE_CHARS``; keeps the first ``MAX_ENTRIES``. The input is
-    never changed.
+    scalar ``value``, and a value BSON cannot store (an int outside the signed
+    64-bit range, a float that is not finite); keeps only those three fields, in
+    new dicts; cuts string values to ``MAX_VALUE_CHARS``; keeps the first
+    ``MAX_ENTRIES``. The input is never changed.
     """
     out: DeliverableMetadata = []
     for item in md:
@@ -91,6 +98,10 @@ def clamp(md: DeliverableMetadata) -> DeliverableMetadata:
         if not isinstance(key, str) or not isinstance(source, str):
             continue
         if value is not None and not isinstance(value, _SCALARS):
+            continue
+        if isinstance(value, int) and not isinstance(value, bool) and not _INT64_MIN <= value <= _INT64_MAX:
+            continue
+        if isinstance(value, float) and not math.isfinite(value):
             continue
         if isinstance(value, str):
             value = value[:MAX_VALUE_CHARS]
@@ -115,3 +126,64 @@ def delivery_entries(
     if resumed is not None:
         md.append(entry(KEY_RESUMED, resumed, source))
     return md
+
+
+_MetadataMode = Literal["positional", "keyword", "none"]
+_MODES: "weakref.WeakKeyDictionary[Callable[..., Any], _MetadataMode]" = weakref.WeakKeyDictionary()
+_POSITIONAL_KINDS = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+
+
+def _read_metadata_mode(callback: Callable[..., Any]) -> _MetadataMode:
+    try:
+        params = list(inspect.signature(callback).parameters.values())
+    except (ValueError, TypeError):
+        return "none"
+    kinds = [p.kind for p in params]
+    if inspect.Parameter.VAR_POSITIONAL in kinds or sum(k in _POSITIONAL_KINDS for k in kinds) >= 4:
+        return "positional"
+    if inspect.Parameter.VAR_KEYWORD in kinds or any(
+        p.kind is inspect.Parameter.KEYWORD_ONLY and p.name == "metadata" for p in params
+    ):
+        return "keyword"
+    return "none"
+
+
+def _metadata_mode(callback: Callable[..., Any]) -> _MetadataMode:
+    """How ``callback`` takes the metadata, read once per callback.
+
+    The answer is cached weakly by callback; a callable that cannot be weakly
+    referenced (or hashed) is inspected on every call.
+    """
+    try:
+        mode = _MODES.get(callback)
+    except TypeError:
+        return _read_metadata_mode(callback)
+    if mode is None:
+        mode = _MODES[callback] = _read_metadata_mode(callback)
+    return mode
+
+
+async def invoke_on_deliverable(
+    callback: Callable[..., Awaitable[str | None]],
+    hook_ctx: Any,
+    path: str,
+    text: str,
+    metadata: DeliverableMetadata,
+) -> str | None:
+    """Call an ``on_deliverable`` callback; await and return its answer.
+
+    The metadata goes in only when the callback takes it:
+
+    * as a fourth positional argument when it has 4 or more positional
+      parameters or ``*args``;
+    * else as ``metadata=`` when it has a keyword-only ``metadata`` or
+      ``**kwargs``;
+    * else not at all: the callback gets ``(hook_ctx, path, text)``, as before
+      the metadata existed. So does a callback whose signature cannot be read.
+    """
+    mode = _metadata_mode(callback)
+    if mode == "positional":
+        return await callback(hook_ctx, path, text, metadata)
+    if mode == "keyword":
+        return await callback(hook_ctx, path, text, metadata=metadata)
+    return await callback(hook_ctx, path, text)

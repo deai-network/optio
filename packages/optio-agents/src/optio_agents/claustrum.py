@@ -30,6 +30,14 @@ import shlex
 import tempfile
 from typing import TYPE_CHECKING, Callable, Optional
 
+from optio_agents.deliverable_meta import (
+    ORIGIN_HARNESS,
+    SOURCE_HARNESS,
+    clamp,
+    delivery_entries,
+    invoke_on_deliverable,
+)
+
 if TYPE_CHECKING:
     from optio_host import Host
 
@@ -189,7 +197,11 @@ async def emit_claustrum_update_notice(
 ) -> None:
     """Route the 'a newer claustrum release is available' notice through
     ``on_deliverable``, then remove the notice file (clean slate for the real
-    agent). No-op when ``on_deliverable`` is None or ``newer`` is falsy."""
+    agent). No-op when ``on_deliverable`` is None or ``newer`` is falsy.
+
+    The callback is called through ``invoke_on_deliverable``; a callback that
+    takes the metadata gets ``origin`` (``harness``) and ``delivered_at``, both
+    with source ``harness``: no agent sent this notice."""
     if on_deliverable is None or not newer:
         return
     rel = f"{delivery_type}/claustrum-update-{newer}.md"
@@ -199,7 +211,10 @@ async def emit_claustrum_update_notice(
     )
     await host.write_text(f"deliverables/{rel}", text)
     try:
-        await on_deliverable(hook_ctx, rel, text)
+        await invoke_on_deliverable(
+            on_deliverable, hook_ctx, rel, text,
+            clamp(delivery_entries(origin=ORIGIN_HARNESS, source=SOURCE_HARNESS, resumed=None)),
+        )
     finally:
         await host.run_command(
             f"rm -f {shlex.quote(host.workdir.rstrip('/') + '/deliverables/' + rel)}"

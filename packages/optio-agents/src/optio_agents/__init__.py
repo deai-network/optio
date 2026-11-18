@@ -64,6 +64,7 @@ from optio_agents.deliverable_meta import (
     SOURCE_SEED,
     agent_entries,
     clamp,
+    invoke_on_deliverable,
     meta_get,
 )
 from optio_agents.protocol import (
@@ -173,6 +174,7 @@ __all__ = [
     "meta_get",
     "clamp",
     "agent_entries",
+    "invoke_on_deliverable",
     "ControlSettings",
     "CustomControl",
     "CustomControlsConfigMixin",

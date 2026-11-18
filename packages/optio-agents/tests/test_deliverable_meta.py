@@ -1,8 +1,13 @@
-"""optio_agents.deliverable_meta: the entry type, the key constants, meta_get, clamp, builders."""
+"""optio_agents.deliverable_meta: the entry type, the key constants, meta_get, clamp, builders,
+and invoke_on_deliverable."""
 
 import copy
+import functools
+import inspect
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+
+import pytest
 
 from optio_agents.agent_info import AgentInfo
 from optio_agents.deliverable_meta import (
@@ -29,6 +34,7 @@ from optio_agents.deliverable_meta import (
     clamp,
     delivery_entries,
     entry,
+    invoke_on_deliverable,
     meta_get,
 )
 
@@ -70,6 +76,14 @@ def test_clamp_drops_a_non_str_source_and_a_missing_value():
     assert clamp(md) == [entry("d", "y", "agent")]
 
 
+def test_clamp_drops_what_bson_cannot_store():
+    md = [entry("a", 2**63, "agent"), entry("b", -(2**63) - 1, "agent"), entry("c", 2**63 - 1, "agent"),
+          entry("d", -(2**63), "agent"), entry("e", float("nan"), "agent"), entry("f", float("inf"), "agent"),
+          entry("g", float("-inf"), "agent"), entry("h", True, "agent"), entry("i", 1.5, "agent")]
+    assert clamp(md) == [entry("c", 2**63 - 1, "agent"), entry("d", -(2**63), "agent"),
+                         entry("h", True, "agent"), entry("i", 1.5, "agent")]
+
+
 def test_clamp_cuts_values_and_the_count():
     assert clamp([entry("a", "x" * 300, "agent")])[0]["value"] == "x" * 256
     md = [entry(f"k{i}", "v", "agent") for i in range(40)]
@@ -105,3 +119,102 @@ def test_delivery_entries():
     shifted = delivery_entries(origin=ORIGIN_AGENT, source=SOURCE_OPTIO, resumed=False, now=plus_two)
     assert shifted[1] == entry("delivered_at", "2026-11-18T09:30:05.123+00:00", "optio")
     assert shifted[2] == entry("resumed", False, "optio")
+
+
+CALLS = []
+
+
+async def _three(h, p, t):
+    CALLS.append((h, p, t))
+    return "r3"
+
+
+async def _four(h, p, t, md): CALLS.append((h, p, t, md))
+async def _excavator_form(h, p, t, metadata=None): CALLS.append((h, p, t, metadata))
+async def _kw_only(h, p, t, *, metadata): CALLS.append((h, p, t, {"metadata": metadata}))
+async def _var_args(*args): CALLS.append(args)
+async def _var_kwargs(h, p, t, **kw): CALLS.append((h, p, t, kw))
+
+
+class _Bound:
+    async def cb(self, h, p, t): CALLS.append((h, p, t))
+
+
+async def _extra_first(extra, h, p, t, md): CALLS.append((h, p, t, md))
+
+
+class _NoWeakref:
+    __slots__ = ()
+
+    async def __call__(self, h, p, t, md): CALLS.append((h, p, t, md))
+
+
+MDX = [entry("model", "m", "agent")]
+
+
+@pytest.mark.parametrize("cb, expected", [
+    (_three, ("H", "p", "t")),                                          # RF3
+    (_Bound().cb, ("H", "p", "t")),                                     # RF3
+    (_four, ("H", "p", "t", MDX)), (_excavator_form, ("H", "p", "t", MDX)),
+    (_kw_only, ("H", "p", "t", {"metadata": MDX})), (_var_args, ("H", "p", "t", MDX)),
+    (_var_kwargs, ("H", "p", "t", {"metadata": MDX})), (functools.partial(_extra_first, "x"), ("H", "p", "t", MDX)),
+])
+async def test_the_metadata_goes_only_to_a_callback_that_takes_it(cb, expected):
+    CALLS.clear()
+    await invoke_on_deliverable(cb, "H", "p", "t", MDX)
+    assert CALLS == [expected]
+
+
+async def test_the_callbacks_answer_is_returned():
+    assert await invoke_on_deliverable(_three, "H", "p", "t", MDX) == "r3"
+    assert await invoke_on_deliverable(_four, "H", "p", "t", MDX) is None
+
+
+def _count_signature_reads(monkeypatch, cb):
+    """Wrap inspect.signature; the returned dict counts the reads of ``cb``."""
+    real = inspect.signature
+    reads = {"n": 0}
+
+    def counting(fn, *args, **kwargs):
+        if fn is cb:
+            reads["n"] += 1
+        return real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(inspect, "signature", counting)
+    return reads
+
+
+async def test_the_signature_is_read_once_per_callback(monkeypatch):
+    async def four(h, p, t, md): CALLS.append((h, p, t, md))   # fresh: not yet read by another test
+    reads = _count_signature_reads(monkeypatch, four)
+    CALLS.clear()
+    await invoke_on_deliverable(four, "H", "p", "t", MDX)
+    await invoke_on_deliverable(four, "H", "p", "t", MDX)
+    assert CALLS == [("H", "p", "t", MDX)] * 2
+    assert reads["n"] == 1
+
+
+async def test_a_callback_without_weak_references_is_read_each_time(monkeypatch):
+    cb = _NoWeakref()
+    reads = _count_signature_reads(monkeypatch, cb)
+    CALLS.clear()
+    await invoke_on_deliverable(cb, "H", "p", "t", MDX)
+    await invoke_on_deliverable(cb, "H", "p", "t", MDX)
+    assert CALLS == [("H", "p", "t", MDX)] * 2
+    assert reads["n"] == 2
+
+
+@pytest.mark.parametrize("error", [ValueError, TypeError])
+async def test_an_unreadable_signature_gets_three_arguments(monkeypatch, error):
+    async def fresh(*args): CALLS.append(args)
+    real = inspect.signature
+
+    def unreadable(fn, *args, **kwargs):
+        if fn is fresh:
+            raise error("no signature")
+        return real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(inspect, "signature", unreadable)
+    CALLS.clear()
+    await invoke_on_deliverable(fresh, "H", "p", "t", MDX)
+    assert CALLS == [("H", "p", "t")]

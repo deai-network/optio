@@ -466,10 +466,26 @@ that says which agent and model delivered a file.
   non-dict entries, a `key` or `source` that is not a str, a missing or
   non-scalar `value`; cuts a string value to `MAX_VALUE_CHARS` (256); keeps
   the first `MAX_ENTRIES` (32) in order. Never changes its input.
+  It also drops an int (not a bool) outside the signed 64-bit range and a
+  float that is not finite (NaN, ±inf): excavator stores the list in
+  MongoDB, and BSON cannot encode either.
 * Builders: `agent_entries(config, info)` gives `agent.type`
   (`config.agent_type`) and `agent.name` (`info.name`), source `config`.
   `delivery_entries(*, origin, source, resumed, now=None)` gives `origin`,
   `delivered_at` and, unless `resumed` is None, `resumed`, all with `source`.
+* Calling rule: optio calls every `on_deliverable` callback through
+  `invoke_on_deliverable(callback, hook_ctx, path, text, metadata)`
+  (exported from `optio_agents`), never directly. It awaits and returns the
+  callback's answer. The metadata goes in only when the callback takes it:
+  4 or more positional parameters or `*args` → `cb(h, p, t, md)`; else a
+  keyword-only `metadata` or `**kwargs` → `cb(h, p, t, metadata=md)`; else,
+  and when `inspect.signature` raises `ValueError` or `TypeError`,
+  `cb(h, p, t)` as before. The choice is read once per callback and cached
+  in a `weakref.WeakKeyDictionary`; a callable that cannot be weakly
+  referenced is inspected on every call. `DeliverableCallback` is the union
+  of the three- and the four-argument form. The claustrum update notice
+  (`emit_claustrum_update_notice`) is sent this way with `origin` `harness`
+  and `delivered_at`, both source `harness`, and no agent or model entries.
 * Leaf module: it imports only `optio_agents` submodules
   (`optio_agents.agent_info`), never the package, so that
   `optio_agents.protocol` can import it while the package initialises.

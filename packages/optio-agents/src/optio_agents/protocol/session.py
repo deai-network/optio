@@ -25,6 +25,7 @@ import time as _time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from optio_agents.context import HookContext
+from optio_agents.deliverable_meta import DeliverableMetadata
 from optio_host.host import Host, unwind_tracing
 from optio_agents.protocol.parser import (
     AttentionEvent,
@@ -104,10 +105,19 @@ _BODY_EXIT_TAIL_GRACE_SECONDS = 2.0
 
 # Public type aliases. ``HookContext`` is forward-quoted in these aliases
 # so consumers don't need to import HookContext to type-check.
-DeliverableCallback = Callable[["HookContext", str, str], Awaitable["str | None"]]
+DeliverableCallback = (
+    Callable[["HookContext", str, str], Awaitable["str | None"]]
+    | Callable[["HookContext", str, str, DeliverableMetadata], Awaitable["str | None"]]
+)
 """Consumer callback invoked per fetched DELIVERABLE.
 
-Arguments: ``(hook_ctx, deliverable_path, decoded_text)``.
+Arguments: ``(hook_ctx, deliverable_path, decoded_text)``, optionally followed
+by ``metadata``: the deliverable's clamped ``DeliverableMetadata`` (which agent
+and model delivered it; see ``optio_agents.deliverable_meta``). optio calls the
+callback through ``invoke_on_deliverable``, which passes the metadata only to a
+callback that takes it: one with 4 or more positional parameters or ``*args``
+gets it positionally, one with a keyword-only ``metadata`` or ``**kwargs`` gets
+``metadata=``, and any other callback gets the three arguments.
 
 May return a non-empty string to send back to the running agent (the
 deliverable loop routes it through ``hook_ctx.send_to_agent``); return
