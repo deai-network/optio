@@ -150,16 +150,20 @@ class ClaudeCodeConversation:
         self.runtime_model_observed: asyncio.Event = asyncio.Event()
         # What the running claude last reported about itself (the deliverable
         # metadata names them): system/init's session_id and
-        # claude_code_version; the model of the last main-thread assistant
-        # message (message.model; a subagent's message, parent_tool_use_id
-        # set, is not the turn's, nor is the CLI's own after an API error,
-        # SYNTHETIC_MODEL); and the turn's model, the latest of
-        # system/init.model and that message.model. Only a non-empty string
-        # updates one. Unlike runtime_model, neither attach() nor a switch
-        # clears them: a switch applies from the next turn, whose system/init
-        # names the new model.
+        # claude_code_version; the model of the latest system/init (cli_model:
+        # the model as the CLI resolved it, e.g. "claude-opus-5[1m]", the form
+        # its model list's ids and resolvedModel use, so the label is looked
+        # up for it); the model of the last main-thread assistant message
+        # (message.model, as the API names it, which may lack the context
+        # suffix; a subagent's message, parent_tool_use_id set, is not the
+        # turn's, nor is the CLI's own after an API error, SYNTHETIC_MODEL);
+        # and the turn's model, the latest of system/init.model and that
+        # message.model. Only a non-empty string updates one. Unlike
+        # runtime_model, neither attach() nor a switch clears them: a switch
+        # applies from the next turn, whose system/init names the new model.
         self.cli_session_id: str | None = None
         self.cli_version: str | None = None
+        self.cli_model: str | None = None
         self.message_model: str | None = None
         self.turn_model: str | None = None
         # The running permission mode, as the stream reports it (system/init,
@@ -292,7 +296,7 @@ class ClaudeCodeConversation:
             # effort control's presence. Set on every launch (incl. relaunch).
             model = _reported(obj.get("model"))
             if model is not None:
-                self.runtime_model = self.turn_model = model
+                self.runtime_model = self.cli_model = self.turn_model = model
                 self.runtime_model_observed.set()
             self.cli_session_id = _reported(obj.get("session_id")) or self.cli_session_id
             self.cli_version = _reported(obj.get("claude_code_version")) or self.cli_version
@@ -502,8 +506,8 @@ class ClaudeCodeConversation:
 
         On success ``model`` / ``effort`` hold the new values, and after a
         model change ``runtime_model`` is unknown again until the next turn's
-        system/init names it (``turn_model`` keeps the last model reported
-        until then). Claude answers a model change asked for while a
+        system/init names it (``cli_model`` and ``turn_model`` keep the last
+        model reported until then). Claude answers a model change asked for while a
         turn runs after that turn; it applies from the next turn. After an
         applied model/effort change claude is asked what it now runs
         (``check_settings``): a mismatch is logged and reported, the values

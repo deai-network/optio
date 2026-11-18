@@ -38,7 +38,8 @@ def _native_config(**kw) -> ClaudeCodeTaskConfig:
 def test_a_gateway_conversation_reports_exactly_these_entries():                  # RF1, RF5
     cfg = ClaudeCodeRequestyTaskConfig(consumer_instructions="x", fs_isolation=False, permission_mode="dontAsk")
     conv = _conv(models_offered=GW_CATALOG, model="lyceum/kimi-k3.1-pro", effort="high",
-                 cli_session_id="s-1", cli_version="2.1.326", turn_model="lyceum/kimi-k3.1-pro")
+                 cli_session_id="s-1", cli_version="2.1.326", cli_model="lyceum/kimi-k3.1-pro",
+                 turn_model="lyceum/kimi-k3.1-pro")
     assert deliverable_metadata(cfg, conv, ("requesty", "eu")) == [
         entry("agent.type", "claudecode_requesty", "config"), entry("agent.name", "Claude Code + Requesty", "config"),
         entry("agent.version", "2.1.326", "agent"), entry("agent.session", "s-1", "agent"),
@@ -49,8 +50,8 @@ def test_a_gateway_conversation_reports_exactly_these_entries():                
 
 def test_a_native_conversation_labels_the_model_the_cli_reports():               # RF5
     cfg = _native_config(env={"OPERATOR": "Jane Doe <jane@x.com>"})
-    conv = _conv(models_offered=CATALOG, model=None, effort=None,
-                 cli_session_id="s-2", cli_version="2.1.326", turn_model="claude-opus-5[1m]")
+    conv = _conv(models_offered=CATALOG, model=None, effort=None, cli_session_id="s-2", cli_version="2.1.326",
+                 cli_model="claude-opus-5[1m]", turn_model="claude-opus-5[1m]")
     md = deliverable_metadata(cfg, conv, None)
     assert md == [*NATIVE_AGENT,
                   entry("agent.version", "2.1.326", "agent"), entry("agent.session", "s-2", "agent"),
@@ -59,10 +60,22 @@ def test_a_native_conversation_labels_the_model_the_cli_reports():              
     assert "jane@x.com" not in json.dumps(md)
 
 
+def test_the_label_follows_the_model_the_cli_resolved():
+    # system/init names "claude-opus-5[1m]", the form of the CLI's model list;
+    # the API's message.model, now the turn's model, lacks the context suffix.
+    cfg = _native_config()
+    conv = _conv(models_offered=CATALOG, model=None, effort=None,
+                 cli_model="claude-opus-5[1m]", turn_model="claude-opus-5")
+    assert catalog_label(CATALOG, "claude-opus-5") is None
+    assert deliverable_metadata(cfg, conv, None) == [
+        *NATIVE_AGENT, entry("model", "claude-opus-5", "agent"), entry("model.label", "Opus (1M context)", "agent"),
+        entry("effort", None, "optio")]
+
+
 def test_before_the_cli_names_a_model_optios_values_stand():
     cfg = _native_config()
     conv = _conv(models_offered=CATALOG, model="sonnet", effort=None,
-                 cli_session_id=None, cli_version=None, turn_model=None)
+                 cli_session_id=None, cli_version=None, cli_model=None, turn_model=None)
     assert deliverable_metadata(cfg, conv, None) == [
         *NATIVE_AGENT, entry("model", "sonnet", "optio"), entry("model.label", "Sonnet", "agent"),
         entry("effort", None, "optio")]
@@ -74,7 +87,7 @@ def test_before_the_cli_names_a_model_optios_values_stand():
 
 def test_no_label_without_a_catalog():
     cfg = _native_config()
-    conv = _conv(models_offered=None, model="sonnet", turn_model="claude-sonnet-5")
+    conv = _conv(models_offered=None, model="sonnet", cli_model="claude-sonnet-5", turn_model="claude-sonnet-5")
     assert deliverable_metadata(cfg, conv, None) == [
         *NATIVE_AGENT, entry("model", "sonnet", "optio"), entry("model", "claude-sonnet-5", "agent"),
         entry("effort", None, "optio")]
@@ -84,7 +97,7 @@ def test_no_label_when_the_catalog_lacks_the_turns_model():
     # The label follows the model the CLI reports; optio's model, which the
     # catalog does list, is no fallback.
     cfg = _native_config()
-    conv = _conv(models_offered=CATALOG, model="sonnet", turn_model="claude-unlisted-1")
+    conv = _conv(models_offered=CATALOG, model="sonnet", cli_model="claude-unlisted-1", turn_model="claude-unlisted-1")
     assert catalog_label(CATALOG, "sonnet") == "Sonnet"
     assert deliverable_metadata(cfg, conv, None) == [
         *NATIVE_AGENT, entry("model", "sonnet", "optio"), entry("model", "claude-unlisted-1", "agent"),

@@ -53,9 +53,11 @@ def deliverable_metadata(
     4. ``model``: the one optio launched or switched to (source ``optio``),
        then the one the CLI reports for the turn (source ``agent``), each when
        known;
-    5. ``model.label``: the catalog label of the model the CLI reports, or,
-       before it names one, of optio's model (``default`` when none); source
-       ``seed`` under a gateway, else ``agent``; only when the catalog has one;
+    5. ``model.label``: the catalog label of the model the CLI resolved
+       (``cli_model``), else of the turn's model (``turn_model``), or, before
+       the CLI names one, of optio's model (``default`` when none); source
+       ``seed`` under a gateway, else ``agent``; only when the catalog has one
+       (see ``_label``);
     6. ``effort`` (source ``optio``), always, None meaning no explicit level;
     7. under a gateway (``(provider, region)``, from the seed): ``provider``
        and ``gateway.region`` (source ``seed``).
@@ -75,10 +77,7 @@ def deliverable_metadata(
         md.append(entry(KEY_MODEL, conversation.model, SOURCE_OPTIO))
     if turn_model:
         md.append(entry(KEY_MODEL, turn_model, SOURCE_AGENT))
-    label = cc_models.catalog_label(
-        conversation.models_offered,
-        turn_model or conversation.model or cc_models.DEFAULT_MODEL,
-    )
+    label = _label(conversation)
     if label is not None:
         md.append(entry(KEY_MODEL_LABEL, label, SOURCE_SEED if gateway is not None else SOURCE_AGENT))
     md.append(entry(KEY_EFFORT, conversation.effort, SOURCE_OPTIO))
@@ -87,3 +86,22 @@ def deliverable_metadata(
         md.append(entry(KEY_PROVIDER, provider, SOURCE_SEED))
         md.append(entry(KEY_GATEWAY_REGION, region, SOURCE_SEED))
     return md
+
+
+def _label(conversation: ClaudeCodeConversation) -> str | None:
+    """The catalog label (``conversation.models_offered``) of the model the CLI runs.
+
+    The label of ``cli_model``, the latest system/init's model, when the catalog
+    has one: it is the model as the CLI resolved it, the form the catalog's ids
+    and ``resolved`` values take (e.g. ``claude-opus-5[1m]``). Else the label of
+    ``turn_model``: an assistant ``message.model`` names the model as the API
+    does, and may lack the context suffix (``claude-opus-5``). Once the CLI has
+    named a model, optio's model is no fallback. Before that, the label of
+    ``conversation.model``, or of ``default`` when that is None.
+    """
+    catalog = conversation.models_offered
+    cli_model, turn_model = conversation.cli_model, conversation.turn_model
+    if not cli_model and not turn_model:
+        return cc_models.catalog_label(catalog, conversation.model or cc_models.DEFAULT_MODEL)
+    label = cc_models.catalog_label(catalog, cli_model)
+    return label if label is not None else cc_models.catalog_label(catalog, turn_model)

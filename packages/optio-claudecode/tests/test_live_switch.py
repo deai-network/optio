@@ -352,15 +352,30 @@ async def test_the_stream_names_the_session_version_and_the_turns_model():
     await _done(handle, reader)
 
 
+async def test_the_cli_model_is_the_latest_inits_and_no_message_moves_it():
+    # system/init names the model as the CLI resolved it, the form its model
+    # list uses; the API's message.model may lack the context suffix.
+    conv, handle, reader = _conv(model="opus[1m]")
+    conv._route({"type": "system", "subtype": "init", "model": "claude-opus-5[1m]"})
+    assert conv.cli_model == "claude-opus-5[1m]"
+    conv._route({"type": "assistant", "parent_tool_use_id": None,
+                 "message": {"model": "claude-opus-5", "content": []}})
+    assert (conv.cli_model, conv.message_model, conv.turn_model) == (
+        "claude-opus-5[1m]", "claude-opus-5", "claude-opus-5")
+    conv._route({"type": "system", "subtype": "init", "model": "claude-sonnet-5"})
+    assert (conv.cli_model, conv.turn_model) == ("claude-sonnet-5",) * 2
+    await _done(handle, reader)
+
+
 async def test_a_switch_keeps_the_turn_model_until_the_next_turn_names_one():   # RF4
     conv, handle, reader = _conv(model="opus[1m]", effort="high")
     conv._route({"type": "system", "subtype": "init", "model": "claude-opus-5[1m]"})
     switch = asyncio.create_task(conv.apply_settings(model="sonnet"))
     _answer(handle, await _next_request(handle)); await _answer_readback(handle)
     await asyncio.wait_for(switch, 60)
-    assert conv.runtime_model is None and conv.turn_model == "claude-opus-5[1m]"
+    assert conv.runtime_model is None and conv.turn_model == conv.cli_model == "claude-opus-5[1m]"
     conv._route({"type": "system", "subtype": "init", "model": "claude-sonnet-5"})
-    assert conv.turn_model == "claude-sonnet-5"
+    assert conv.turn_model == conv.cli_model == "claude-sonnet-5"
     await _done(handle, reader)
 
 
@@ -402,6 +417,7 @@ async def test_only_a_named_value_updates_what_the_cli_reported():
     conv._route({"type": "assistant", "parent_tool_use_id": None, "message": "not an object"})
     assert (conv.cli_session_id, conv.cli_version, conv.message_model, conv.turn_model) == (
         "s-1", "2.1.326", "claude-sonnet-5-0915", "claude-sonnet-5-0915")
+    assert conv.cli_model == "claude-sonnet-5"
     await _done(handle, reader)
 
 
@@ -411,8 +427,8 @@ async def test_a_new_process_keeps_the_cli_facts():
     conv._route({"type": "system", "subtype": "init", "model": "claude-opus-5[1m]",
                  "session_id": "s-1", "claude_code_version": "2.1.326"})
     conv.attach(_FakeHandle())
-    assert (conv.cli_session_id, conv.cli_version, conv.turn_model) == (
-        "s-1", "2.1.326", "claude-opus-5[1m]")
+    assert (conv.cli_session_id, conv.cli_version, conv.cli_model, conv.turn_model) == (
+        "s-1", "2.1.326", "claude-opus-5[1m]", "claude-opus-5[1m]")
     assert conv.runtime_model is None
 
 

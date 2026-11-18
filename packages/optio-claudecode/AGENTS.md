@@ -1353,20 +1353,29 @@ conversation, gateway)`, in this order:
 - The label rule (`models.catalog_label`): it is the label of the catalog
   entry (`conversation.models_offered`: the seed's usable models under a
   gateway, the CLI's own list natively) whose id is the model, or which
-  resolves to it. The model is `turn_model` once the CLI has named one.
-  Before that it is `conversation.model`, or `default` when that is None.
-- The conversation keeps four attributes, set by
+  resolves to it. Once the CLI has named a model, that model is
+  `cli_model` when the catalog labels it, else `turn_model`: the catalog's
+  ids and `resolved` values come from the same CLI as system/init's
+  `model` (e.g. `claude-opus-5[1m]`), while the API's `message.model` may
+  lack the context suffix (`claude-opus-5`). Then there is no fallback to
+  `conversation.model`. Before the CLI names a model it is
+  `conversation.model`, or `default` when that is None.
+- Natively, the label needs the CLI's model list, which the session
+  fetches only with `conversation_ui` (excavator sets it).
+- The conversation keeps five attributes, set by
   `ClaudeCodeConversation._route`. The provider reports three of them,
-  `cli_version`, `cli_session_id` and `turn_model`, and also reads `model`,
-  `effort` and `models_offered`. None of the four is cleared by a switch or
-  a relaunch:
+  `cli_version`, `cli_session_id` and `turn_model`, uses `cli_model` for
+  the label, and also reads `model`, `effort` and `models_offered`. None of
+  the five is cleared by a switch or a relaunch:
   - `cli_session_id` and `cli_version`: system/init's `session_id` and
     `claude_code_version`;
+  - `cli_model`: the latest system/init's `model`;
   - `message_model`: the last main-thread assistant `message.model`;
   - `turn_model`: the latest of system/init's `model` and that
     `message.model`.
-  A subagent's message (`parent_tool_use_id` set) and the CLI's own message
-  after an API error (`message.model` `<synthetic>`) move neither model.
+  Only a non-empty string updates one. A subagent's message
+  (`parent_tool_use_id` set) and the CLI's own message after an API error
+  (`message.model` `<synthetic>`) move no model.
 - What is never read: the gateway seed object (the session keeps only
   `gateway_facts`, the plain tuple `(seed.provider, seed.region)`, and hands
   the provider that), so never its token, `base_url` or key hint. Also never
