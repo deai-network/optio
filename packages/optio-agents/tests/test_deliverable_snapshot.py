@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from optio_agents import deliverable_meta as DM
 from optio_agents import get_protocol
 from optio_agents.context import SYSTEM_MESSAGE_PREFIX, HookContext
 from optio_agents.deliverable_meta import (
@@ -174,6 +175,27 @@ def test_a_non_list_answer_counts_as_a_failure(caplog, answer):                 
     assert _keys(md) == DRIVER_KEYS
     assert len(_warnings(caplog)) == 1
     assert "rq-sentinel-value-0001" not in caplog.text
+
+
+def test_a_failure_while_clamping_still_sends_the_drivers_entries(caplog, monkeypatch):   # RF1, RF2
+    class ClampFailed(Exception):
+        pass
+
+    real, calls = DM.clamp, []
+
+    def clamp_failing_once(md):
+        calls.append(md)
+        if len(calls) == 1:
+            raise ClampFailed("rq-sentinel-value-0003")
+        return real(md)
+
+    monkeypatch.setattr(DM, "clamp", clamp_failing_once)
+    md = snapshot_metadata(lambda: [entry(KEY_MODEL, "m", SOURCE_AGENT)], resumed=False)
+    assert _keys(md) == DRIVER_KEYS
+    [warning] = _warnings(caplog)
+    assert "ClampFailed" in warning.getMessage()
+    assert all(key in warning.getMessage() for key in DRIVER_KEYS)
+    assert "rq-sentinel-value-0003" not in caplog.text
 
 
 def test_without_a_provider_only_the_drivers_entries(caplog):

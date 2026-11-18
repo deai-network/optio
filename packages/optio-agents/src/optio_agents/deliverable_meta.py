@@ -155,31 +155,31 @@ def snapshot_metadata(
     accepting the line and queueing the deliverable.
 
     A provider failure never fails the delivery. These leave the provider's part empty:
-    an ``Exception`` raised by the provider, an answer that is not a list, and an
+    an ``Exception`` raised by the provider, an answer that is not a list, an
     awaitable answer (closed first when it has ``close``, as a coroutine does, so no
-    never-awaited warning appears). Each is logged at WARNING with the type name and the
-    keys sent, never the exception's text or any value. ``CancelledError`` propagates.
+    never-awaited warning appears), and an ``Exception`` raised while clamping the
+    list with the provider's entries (not expected from real input). Each is logged at
+    WARNING with the type name and the keys sent, never the exception's text or any
+    value; the driver's own entries, clamped, are sent. ``CancelledError`` propagates.
     """
     own = delivery_entries(origin=ORIGIN_AGENT, source=SOURCE_OPTIO, resumed=resumed, now=now)
-    provided: DeliverableMetadata = []
-    if provider is not None:
-        failure: str | None = None
-        try:
-            answer: Any = provider()
-            if inspect.isawaitable(answer):
-                failure = f"answered a {type(answer).__name__}: a provider must be synchronous"
-                close = getattr(answer, "close", None)
-                if callable(close):
-                    close()
-            elif not isinstance(answer, list):
-                failure = f"answered a {type(answer).__name__}, not a list"
-            else:
-                provided = answer
-        except Exception as exc:  # noqa: BLE001 - a provider failure never fails a delivery
-            failure = type(exc).__name__
-        if failure is not None:
-            _log_provider_failure(failure, own)
-    return clamp(own + provided)
+    if provider is None:
+        return clamp(own)
+    try:
+        answer: Any = provider()
+        if inspect.isawaitable(answer):
+            failure = f"answered a {type(answer).__name__}: a provider must be synchronous"
+            close = getattr(answer, "close", None)
+            if callable(close):
+                close()
+        elif not isinstance(answer, list):
+            failure = f"answered a {type(answer).__name__}, not a list"
+        else:
+            return clamp(own + answer)
+    except Exception as exc:  # noqa: BLE001 - a provider failure never fails a delivery
+        failure = type(exc).__name__
+    _log_provider_failure(failure, own)
+    return clamp(own)
 
 
 def _log_provider_failure(what: str, sent: DeliverableMetadata) -> None:
@@ -194,6 +194,7 @@ def _log_provider_failure(what: str, sent: DeliverableMetadata) -> None:
 _MetadataMode = Literal["positional", "keyword", "none"]
 _MODES: "weakref.WeakKeyDictionary[Callable[..., Any], _MetadataMode]" = weakref.WeakKeyDictionary()
 _POSITIONAL_KINDS = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+_KEYWORD_KINDS = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
 
 
 def _read_metadata_mode(callback: Callable[..., Any]) -> _MetadataMode:
@@ -201,12 +202,12 @@ def _read_metadata_mode(callback: Callable[..., Any]) -> _MetadataMode:
         params = list(inspect.signature(callback).parameters.values())
     except (ValueError, TypeError):
         return "none"
+    if any(p.name == "metadata" and p.kind in _KEYWORD_KINDS for p in params):
+        return "keyword"
     kinds = [p.kind for p in params]
     if inspect.Parameter.VAR_POSITIONAL in kinds or sum(k in _POSITIONAL_KINDS for k in kinds) >= 4:
         return "positional"
-    if inspect.Parameter.VAR_KEYWORD in kinds or any(
-        p.kind is inspect.Parameter.KEYWORD_ONLY and p.name == "metadata" for p in params
-    ):
+    if inspect.Parameter.VAR_KEYWORD in kinds:
         return "keyword"
     return "none"
 
@@ -237,10 +238,13 @@ async def invoke_on_deliverable(
 
     The metadata goes in only when the callback takes it:
 
-    * as a fourth positional argument when it has 4 or more positional
+    * as ``metadata=`` when it has a parameter named ``metadata`` that can be
+      passed by keyword (positional-or-keyword or keyword-only), whatever
+      parameters come before it: ``cb(h, p, t, extra=None, metadata=None)``
+      gets the list in ``metadata``;
+    * else as a fourth positional argument when it has 4 or more positional
       parameters or ``*args``;
-    * else as ``metadata=`` when it has a keyword-only ``metadata`` or
-      ``**kwargs``;
+    * else as ``metadata=`` when it has ``**kwargs``;
     * else not at all: the callback gets ``(hook_ctx, path, text)``, as before
       the metadata existed. So does a callback whose signature cannot be read.
     """

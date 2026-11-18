@@ -120,9 +120,10 @@ Arguments: ``(hook_ctx, deliverable_path, decoded_text)``, optionally followed
 by ``metadata``: the deliverable's clamped ``DeliverableMetadata`` (which agent
 and model delivered it; see ``optio_agents.deliverable_meta``). optio calls the
 callback through ``invoke_on_deliverable``, which passes the metadata only to a
-callback that takes it: one with 4 or more positional parameters or ``*args``
-gets it positionally, one with a keyword-only ``metadata`` or ``**kwargs`` gets
-``metadata=``, and any other callback gets the three arguments.
+callback that takes it: one with a parameter named ``metadata`` that can be
+passed by keyword gets ``metadata=``, wherever that parameter stands; else one
+with 4 or more positional parameters or ``*args`` gets it positionally, one with
+``**kwargs`` gets ``metadata=``, and any other callback gets the three arguments.
 
 May return a non-empty string to send back to the running agent (the
 deliverable loop routes it through ``hook_ctx.send_to_agent``); return

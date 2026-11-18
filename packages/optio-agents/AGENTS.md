@@ -477,8 +477,11 @@ that says which agent and model delivered a file.
   `invoke_on_deliverable(callback, hook_ctx, path, text, metadata)`
   (exported from `optio_agents`), never directly. It awaits and returns the
   callback's answer. The metadata goes in only when the callback takes it:
-  4 or more positional parameters or `*args` → `cb(h, p, t, md)`; else a
-  keyword-only `metadata` or `**kwargs` → `cb(h, p, t, metadata=md)`; else,
+  a parameter named `metadata` that can be passed by keyword
+  (positional-or-keyword or keyword-only) → `cb(h, p, t, metadata=md)`,
+  whatever comes before it (so `cb(h, p, t, extra=None, metadata=None)`
+  gets it in `metadata`); else 4 or more positional parameters or `*args`
+  → `cb(h, p, t, md)`; else `**kwargs` → `cb(h, p, t, metadata=md)`; else,
   and when `inspect.signature` raises `ValueError` or `TypeError`,
   `cb(h, p, t)` as before. The choice is read once per callback and cached
   in a `weakref.WeakKeyDictionary`; a callable that cannot be weakly
@@ -508,11 +511,13 @@ that says which agent and model delivered a file.
   counts as a failure; a coroutine is closed unawaited. Without a provider
   the driver's entries are sent alone.
 * Failure rule: a provider failure never fails a delivery. An `Exception`
-  raised by the provider, an answer that is not a `list`, and an
-  awaitable answer leave the provider's part empty: the driver's entries
-  are sent, the reply to the agent is unchanged, and one WARNING names
-  the exception's type (or the answer's type) and the keys sent, never
-  the exception's text or a value. `CancelledError` propagates.
+  raised by the provider, an answer that is not a `list`, an awaitable
+  answer, and an `Exception` raised while clamping the list with the
+  provider's entries (not expected from real input) leave the provider's
+  part empty: the driver's entries are sent, the reply to the agent is
+  unchanged, and one WARNING names the exception's type (or the answer's
+  type) and the keys sent, never the exception's text or a value.
+  `CancelledError` propagates.
 * Leaf module: it imports only `optio_agents` submodules
   (`optio_agents.agent_info`), never the package, so that
   `optio_agents.protocol` can import it while the package initialises.

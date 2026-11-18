@@ -165,6 +165,15 @@ async def test_the_metadata_goes_only_to_a_callback_that_takes_it(cb, expected):
     assert CALLS == [expected]
 
 
+async def _extra_then_metadata(h, p, t, extra=None, metadata=None): CALLS.append((h, p, t, extra, metadata))
+
+
+async def test_a_parameter_named_metadata_gets_it_by_keyword_wherever_it_stands():
+    CALLS.clear()
+    await invoke_on_deliverable(_extra_then_metadata, "H", "p", "t", MDX)
+    assert CALLS == [("H", "p", "t", None, MDX)]
+
+
 async def test_the_callbacks_answer_is_returned():
     assert await invoke_on_deliverable(_three, "H", "p", "t", MDX) == "r3"
     assert await invoke_on_deliverable(_four, "H", "p", "t", MDX) is None
