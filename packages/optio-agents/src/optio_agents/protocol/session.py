@@ -215,9 +215,10 @@ async def run_log_protocol_session(
     # Keyword-channel opt-out. True (default) keeps today's behavior for every
     # existing caller. False runs scaffolding only — see the docstring.
     keywords: bool = True,
-    # The wrapper's deliverable metadata provider (agent, model, ...); called
-    # when the tail accepts a DELIVERABLE line. None sends the driver's own
-    # entries only — see the docstring.
+    # The wrapper's deliverable metadata provider (agent, model, ...): a
+    # synchronous callable reading in-memory state only, called when the tail
+    # accepts a DELIVERABLE line. None sends the driver's own entries only —
+    # see the docstring.
     deliverable_metadata: "MetadataProvider | None" = None,
 ) -> None:
     """Run ``body`` against ``host`` while the log/deliverables protocol
@@ -266,12 +267,16 @@ async def run_log_protocol_session(
     source ``optio``, then the provider's entries, clamped. It is taken
     then, not when the callback runs, because the agent ends its turn
     right after the line and a live model switch can land in between. The
-    snapshot is queued with the deliverable and handed to
+    snapshot is queued with the deliverable at once and handed to
     ``on_deliverable`` through ``invoke_on_deliverable`` (a callback that
-    does not take it gets three arguments). A provider that raises, times
-    out (``PROVIDER_TIMEOUT_S`` for an awaitable answer) or answers
-    something that is not a list never fails the delivery: the driver's
-    entries are sent alone and the failure is logged.
+    does not take it gets three arguments). The provider must be
+    synchronous and read in-memory state only: the tail calls it inline
+    and nothing times it out, so the snapshot adds no await at which the
+    end-of-session cancellation could lose an accepted deliverable. A
+    provider that raises, answers something that is not a list, or
+    answers an awaitable (an ``async def`` provider) never fails the
+    delivery: the driver's entries are sent alone and the failure is
+    logged.
 
     What this driver does NOT do:
       * Workdir teardown / ``host.cleanup_taskdir`` — caller's
@@ -471,7 +476,9 @@ async def _tail_and_dispatch(
 
     An accepted DELIVERABLE line is queued as ``(absolute, display,
     metadata)``, with the metadata snapshot taken here, at acceptance,
-    rather than when the callback runs. A rejected line takes no snapshot.
+    rather than when the callback runs. The provider is synchronous, so
+    taking the snapshot adds no await before the item is queued. A
+    rejected line takes no snapshot.
     """
     async for line in host.tail_file(f"{host.workdir}/optio.log"):
         ev: LogEvent = parse_line(line)
@@ -507,7 +514,7 @@ async def _tail_and_dispatch(
                 )
                 continue
             ctx.report_progress(None, f"Deliverable: {display}")
-            metadata = await snapshot_metadata(
+            metadata = snapshot_metadata(
                 deliverable_metadata, resumed=bool(getattr(ctx, "resume", False)),
             )
             item = (absolute, display, metadata)

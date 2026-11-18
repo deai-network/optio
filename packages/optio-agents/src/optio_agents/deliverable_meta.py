@@ -15,7 +15,6 @@ package itself, so that ``optio_agents.protocol`` can import it while the
 package is still being initialised.
 """
 
-import asyncio
 import inspect
 import logging
 import math
@@ -56,14 +55,14 @@ ORIGIN_HARNESS = "harness"
 MAX_ENTRIES = 32
 MAX_VALUE_CHARS = 256
 DEFAULT_PREFER = (SOURCE_AGENT, SOURCE_OPTIO, SOURCE_SEED, SOURCE_CONFIG, SOURCE_HARNESS)
-PROVIDER_TIMEOUT_S = 2.0
 
-MetadataProvider = Callable[[], Awaitable[DeliverableMetadata] | DeliverableMetadata]
+MetadataProvider = Callable[[], DeliverableMetadata]
 """A wrapper's entries for one deliverable.
 
 Called with no arguments when the driver accepts a ``DELIVERABLE:`` line; returns the
-list, or an awaitable of it. It reads in-memory state only: an awaitable answer is
-bounded by ``PROVIDER_TIMEOUT_S``, a synchronous one cannot be timed out.
+list. It is synchronous and reads in-memory state only: the driver calls it inline and
+nothing can time it out. An awaitable answer (an ``async def`` provider) counts as a
+failure.
 """
 
 _SCALARS = (str, int, float, bool)
@@ -142,38 +141,44 @@ def delivery_entries(
     return md
 
 
-async def snapshot_metadata(
+def snapshot_metadata(
     provider: MetadataProvider | None,
     *,
     resumed: bool,
-    timeout: float = PROVIDER_TIMEOUT_S,
     now: datetime | None = None,
 ) -> DeliverableMetadata:
     """The metadata of one agent deliverable, taken when the driver accepts its line.
 
     The driver's own ``origin`` (``agent``), ``delivered_at`` and ``resumed``, source
     ``optio``, come first and the provider's entries follow; the whole list is clamped.
-    An awaitable answer is awaited under ``asyncio.wait_for(..., timeout)``.
+    Synchronous, like the provider, so taking it adds no await between the driver
+    accepting the line and queueing the deliverable.
 
-    A provider failure never fails the delivery: an ``Exception`` (a timeout included)
-    or an answer that is not a list leaves the provider's part empty, and is logged at
-    WARNING with the exception's type name and the keys sent, never the exception's
-    text or any value. ``CancelledError`` propagates.
+    A provider failure never fails the delivery. These leave the provider's part empty:
+    an ``Exception`` raised by the provider, an answer that is not a list, and an
+    awaitable answer (closed first when it has ``close``, as a coroutine does, so no
+    never-awaited warning appears). Each is logged at WARNING with the type name and the
+    keys sent, never the exception's text or any value. ``CancelledError`` propagates.
     """
     own = delivery_entries(origin=ORIGIN_AGENT, source=SOURCE_OPTIO, resumed=resumed, now=now)
-    provided: Any = []
+    provided: DeliverableMetadata = []
     if provider is not None:
+        failure: str | None = None
         try:
-            provided = provider()
-            if inspect.isawaitable(provided):
-                provided = await asyncio.wait_for(provided, timeout)
+            answer: Any = provider()
+            if inspect.isawaitable(answer):
+                failure = f"answered a {type(answer).__name__}: a provider must be synchronous"
+                close = getattr(answer, "close", None)
+                if callable(close):
+                    close()
+            elif not isinstance(answer, list):
+                failure = f"answered a {type(answer).__name__}, not a list"
+            else:
+                provided = answer
         except Exception as exc:  # noqa: BLE001 - a provider failure never fails a delivery
-            _log_provider_failure(type(exc).__name__, own)
-            provided = []
-        else:
-            if not isinstance(provided, list):
-                _log_provider_failure(f"answered a {type(provided).__name__}, not a list", own)
-                provided = []
+            failure = type(exc).__name__
+        if failure is not None:
+            _log_provider_failure(failure, own)
     return clamp(own + provided)
 
 
