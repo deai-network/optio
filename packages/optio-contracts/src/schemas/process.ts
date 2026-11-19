@@ -116,10 +116,11 @@ export const ProcessSchema = z.object({
 
 // One of a process's valid snapshots (listSnapshots, GET /processes/:id/snapshots):
 // capturedAt is its capture time as optio-core gave it (UTC, three fraction
-// digits, e.g. 2026-11-19T13:05:12.345Z; a launch's resumeFrom names it so);
-// endState the state the run ended in ("" when the snapshot has none).
+// digits, e.g. 2026-11-19T13:05:12.345Z; a launch's resumeFrom names it so,
+// hence non-empty as resumeFrom is); endState the state the run ended in (""
+// when the snapshot has none).
 export const ProcessSnapshotSchema = z.object({
-  capturedAt: z.string(),
+  capturedAt: z.string().min(1),
   endState: z.string(),
 });
 

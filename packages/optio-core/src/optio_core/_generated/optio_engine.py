@@ -516,7 +516,7 @@ class Snapshot(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    captured_at: str = Field(..., alias="capturedAt")
+    captured_at: str = Field(..., alias="capturedAt", min_length=1)
     end_state: str = Field(..., alias="endState")
 
 

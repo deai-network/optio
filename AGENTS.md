@@ -162,7 +162,8 @@ await optio_core.launch(process_id: str, resume: bool = False, *, session_id: st
 # resume_from: a snapshot's capturedAt (from list_snapshots); resumes from that older snapshot. After every
 # check, the task's discard_snapshots_after hook deletes the newer snapshots, then the resume runs as with
 # resume=True; its log (reset by the launch) holds "State changed to scheduled", then "Resuming from the
-# snapshot of <capturedAt>: <n> newer snapshot(s) discarded".
+# snapshot of <capturedAt>: <n> newer snapshot(s) discarded". The engine RPC's launch passes resumeFrom as
+# resume_from.
 # Refusals, in this order: shutting-down, invalid-request (resume_from without resume=True), not-found, the
 # factory's and a kept launch's refusals (as for any resume), not-launchable (a resurrect, another resume_from,
 # or a run a launch scheduled that has not returned, in progress), not-launchable (state), no-resume-support,
@@ -231,7 +232,7 @@ await optio_core.list_snapshots(process_id: str) -> ListSnapshotsOutcome  # ok, 
 # The task's list_snapshots hook, run with a ReadOnlyProcessContext: snapshots = [{capturedAt, endState}],
 # newest first, valid only, the newest included. Refusals: not-found, no-snapshot-support (no task or no hook).
 # Engine RPC: listSnapshots({ processId }) -> { ok: true, snapshots } | { ok: false, reason }
-# (OptioEngineService.list_snapshots); the RPC's launch passes resumeFrom as resume_from.
+# (OptioEngineService.list_snapshots).
 await optio_core.cancel(process_id: str) -> CancelOutcome
 # Cancels the named process. Recursively cancels active direct descendants whose
 # TaskInstance has auto_cancel_children=True (default). Opt-out parents handle

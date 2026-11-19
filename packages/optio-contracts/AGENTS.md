@@ -119,7 +119,7 @@ One of a process's valid snapshots, as `getSnapshots` and the engine RPC `listSn
 
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `capturedAt` | `string` | the capture time as optio-core gave it: UTC, three fraction digits (e.g. `2026-11-19T13:05:12.345Z`); a plain string, not `.datetime()`, so codegen keeps it a Python `str` and the spelling survives. A launch's `resumeFrom` names the snapshot by it |
+| `capturedAt` | `string` | the capture time as optio-core gave it: UTC, three fraction digits (e.g. `2026-11-19T13:05:12.345Z`); a non-empty string, not `.datetime()`, so codegen keeps it a Python `str` and the spelling survives. A launch's `resumeFrom` names the snapshot by it |
 | `endState` | `string` | the state the run ended in; `""` when the snapshot has none |
 
 Type: `ProcessSnapshot`.

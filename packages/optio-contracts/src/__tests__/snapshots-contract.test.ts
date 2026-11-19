@@ -23,6 +23,8 @@ describe('processesContract.getSnapshots', () => {
     expect(ok.parse(body)).toEqual(body);
     expect(ok.safeParse({ snapshots: [{ capturedAt: TS }] }).success).toBe(false);
     expect(ProcessSnapshotSchema.parse({ capturedAt: TS, endState: '' })).toEqual({ capturedAt: TS, endState: '' });
+    // Every listed capturedAt must be a valid resumeFrom (non-empty).
+    expect(ProcessSnapshotSchema.safeParse({ capturedAt: '', endState: '' }).success).toBe(false);
   });
 
   it('its 404 carries a typed reason', () => {
