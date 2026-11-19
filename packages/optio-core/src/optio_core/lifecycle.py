@@ -31,6 +31,7 @@ from optio_core.models import (
     TaskInstance, TaskFactory, OptioConfig, MongoStore, ProcessStatus,
     ProcessMetadataFilter, matches_filter, LaunchBlocked, Progress,
     LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome,
+    ListSnapshotsOutcome,
 )
 from optio_core.task_factory import (
     check_factory, check_factory_values, child_task, is_factory_launch,
@@ -48,9 +49,13 @@ from optio_core.state_machine import (
     ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
     LAUNCHABLE_STATES,
 )
-from optio_core.exceptions import LaunchError, NothingToResurrect
+from optio_core.exceptions import (
+    CapturePending, LaunchError, NothingToResurrect, SnapshotNotFound,
+)
 from optio_core.context import ProcessContext
-from optio_core.conversation_archive import ConversationArchiveListener
+from optio_core.conversation_archive import (
+    ConversationArchiveListener, ReadOnlyProcessContext,
+)
 from optio_core.executor import Executor
 from clamator_protocol import RpcServerCore
 from clamator_over_redis import RedisRpcServer
@@ -526,6 +531,7 @@ class Optio:
         params: dict[str, Any] | None = None,
         ephemeral: bool | None = None,
         metadata: Mapping[str, str | int | float | bool | None] | None = None,
+        resume_from: str | None = None,
     ) -> LaunchOutcome:
         """Fire-and-forget launch. Returns LaunchOutcome with a typed reason on
         precondition failure (not-found, not-launchable -- also while a
@@ -558,14 +564,36 @@ class Optio:
         task registry holds; only `resume` runs a kept one again
         (_relaunch_refusal), its task registered by its launch or rebuilt at
         init() (_rebuild_kept_launches).
+
+        `resume_from` (a snapshot's capturedAt, as the task's list_snapshots
+        hook gave it) resumes from that older snapshot: after every check
+        has passed, the task's discard_snapshots_after hook deletes the
+        snapshots newer than it, the process log gets "Resuming from the
+        snapshot of <capturedAt>: <n> newer snapshot(s) discarded", and the
+        process is resumed as by `resume=True` (the chosen snapshot is now
+        the newest). Its refusals, in this order: shutting-down,
+        invalid-request (`resume_from` without `resume=True`), not-found,
+        the factory's and a kept launch's refusals as for any resume,
+        not-launchable (a resurrect in progress), not-launchable (state),
+        no-resume-support, not-launchable (no saved state: a picked snapshot
+        never becomes a fresh run), launch-blocked, no-snapshot-support (no
+        registered task, or no discard_snapshots_after hook), then the
+        hook's own: capture-pending (CapturePending) and snapshot-not-found
+        (SnapshotNotFound). Nothing is deleted when a check fails; any other
+        exception of the hook propagates. If the launch fails after the
+        deletion, the chosen snapshot is the newest, so a later resume
+        restores it.
         Spec: docs/2026-10-20-task-factory-design.md §1.2,
         docs/2026-10-22-task-factory-launch-options-design.md §1.5,
-        docs/2026-10-25-factory-results-design.md §2"""
+        docs/2026-10-25-factory-results-design.md §2,
+        docs/2026-11-19-resume-from-snapshot-design.md"""
         # Stop sign: once shutdown has begun, refuse new launches so nothing
         # half-boots into a shutting-down engine. Covers scheduler, RPC, and
         # programmatic launch paths.
         if self._shutting_down:
             return LaunchOutcome(ok=False, reason="shutting-down")
+        if resume_from is not None and not resume:
+            return LaunchOutcome(ok=False, reason="invalid-request")
         proc = await self._resolve(process_id)
         if proc is None:
             return LaunchOutcome(ok=False, reason="not-found")
@@ -584,7 +612,7 @@ class Optio:
             refusal = self._relaunch_refusal(proc, resume)
             if refusal is not None:
                 return LaunchOutcome(ok=False, reason=refusal)
-        return await self._launch_record(proc, resume, session_id)
+        return await self._launch_record(proc, resume, session_id, resume_from=resume_from)
 
     def _relaunch_refusal(self, proc: dict, resume: bool) -> str | None:
         """Why the factory's launch `proc` (or a record under it) is not
@@ -607,11 +635,14 @@ class Optio:
 
     async def _launch_record(
         self, proc: dict, resume: bool, session_id: str | None,
+        resume_from: str | None = None,
     ) -> LaunchOutcome:
         """launch() of the resolved record `proc`, which is no factory's:
         its remaining refusals, then the run in the background and the
         re-read. Also a factory launch's first and only launch, and the
-        resume of a kept one."""
+        resume of a kept one. With `resume_from` (launch() has checked that
+        `resume` is set), the snapshots newer than that one are discarded
+        after the last refusal, before the run (_discard_newer_snapshots)."""
         if proc["_id"] in self._resurrecting:
             # The resurrect in progress ends in its own resume.
             return LaunchOutcome(ok=False, reason="not-launchable")
@@ -627,11 +658,20 @@ class Optio:
         # misfire as if state had been restored. Downgrade rather than reject —
         # the caller legitimately wants to launch; it just has nothing to resume.
         if resume and not proc.get("hasSavedState", False):
+            if resume_from is not None:
+                # A picked snapshot must never silently become a fresh run.
+                return LaunchOutcome(ok=False, reason="not-launchable")
             resume = False
 
         task = self._executor._task_registry.get(proc["processId"])
         if task is not None and self._matches_block(task.metadata):
             return LaunchOutcome(ok=False, reason="launch-blocked")
+        if resume_from is not None:
+            refusal = await self._discard_newer_snapshots(
+                proc, task, resume_from, session_id,
+            )
+            if refusal is not None:
+                return LaunchOutcome(ok=False, reason=refusal)
 
         oid_str = str(proc["_id"])
         asyncio.create_task(
@@ -652,6 +692,39 @@ class Optio:
         await asyncio.sleep(0)
         post = await self._resolve(oid_str)
         return LaunchOutcome(ok=True, proc=post if post is not None else proc)
+
+    async def _discard_newer_snapshots(
+        self, proc: dict, task: TaskInstance | None, captured_at: str,
+        session_id: str | None,
+    ) -> str | None:
+        """The resume-from-snapshot step of _launch_record, after its last
+        refusal: the task's discard_snapshots_after hook deletes the
+        snapshots of `proc` newer than `captured_at`, and the process log
+        names it. Returns the refusal's reason, or None when the resume may
+        follow: no-snapshot-support (no task, or no hook), capture-pending
+        (the hook raised CapturePending), snapshot-not-found
+        (SnapshotNotFound); the hook has deleted nothing then. Any other
+        exception of the hook propagates. The hook gets the detached
+        ProcessContext Optio.resurrect uses (it writes).
+        Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
+        hook = getattr(task, "discard_snapshots_after", None) if task is not None else None
+        if hook is None:
+            return "no-snapshot-support"
+        try:
+            discarded = await hook(
+                self._detached_context(proc, session_id=session_id), captured_at,
+            )
+        except CapturePending:
+            return "capture-pending"
+        except SnapshotNotFound:
+            return "snapshot-not-found"
+        noun = "snapshot" if discarded == 1 else "snapshots"
+        await append_log(
+            self._config.mongo_db, self._config.prefix, proc["_id"], "event",
+            f"Resuming from the snapshot of {captured_at}: "
+            f"{discarded} newer {noun} discarded",
+        )
+        return None
 
     async def _factory_child(
         self, proc: dict, resume: bool, params: dict[str, Any] | None,
@@ -842,8 +915,9 @@ class Optio:
     ) -> ProcessContext:
         """A ProcessContext for `proc` outside any run of its task: its own
         cancellation flag (never set), resume=False. Used for task hooks the
-        engine calls outside `execute` — the resurrect hook and the
-        conversation archive's read_conversation hook."""
+        engine calls outside `execute` — the resurrect hook, the
+        conversation archive's read_conversation hook, and the snapshot
+        hooks (list_snapshots, discard_snapshots_after)."""
         oid = proc["_id"]
         ctx = ProcessContext(
             process_oid=oid,
@@ -862,6 +936,25 @@ class Optio:
         )
         ctx._executor = self._executor
         return ctx
+
+    async def list_snapshots(self, process_id: str) -> ListSnapshotsOutcome:
+        """The snapshots a launch's `resume_from` may name: the process's
+        task's list_snapshots hook, run with a ReadOnlyProcessContext (a view
+        of the detached context, as read_conversation gets), answers
+        [{"capturedAt": str, "endState": str}], newest first, valid snapshots
+        only, the newest included. Refusals: not-found (no such process),
+        no-snapshot-support (no registered task, or no list_snapshots hook;
+        a TaskFactory's own record has no task). An exception of the hook
+        propagates. Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
+        proc = await self._resolve(process_id)
+        if proc is None:
+            return ListSnapshotsOutcome(ok=False, reason="not-found")
+        task = self._executor._task_registry.get(proc["processId"])
+        hook = getattr(task, "list_snapshots", None) if task is not None else None
+        if hook is None:
+            return ListSnapshotsOutcome(ok=False, reason="no-snapshot-support")
+        snapshots = await hook(ReadOnlyProcessContext(self._detached_context(proc)))
+        return ListSnapshotsOutcome(ok=True, snapshots=snapshots)
 
     async def _run_resurrect(
         self, proc: dict, task: TaskInstance, session_id: str | None,

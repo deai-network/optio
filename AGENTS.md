@@ -158,7 +158,15 @@ await optio_core.shutdown(grace_seconds: float | None = None)  # graceful shutdo
 
 # Commands. session_id is keyword-only and required (None is valid): the session that started
 # the run (optio-ui sends its browser session's id), stored as originatingSessionId, read as ctx.session_id.
-await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down, parameters-required, not-a-factory, invalid-parameters, invalid-metadata)
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None, resume_from: str | None = None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down, parameters-required, not-a-factory, invalid-parameters, invalid-metadata, invalid-request, no-snapshot-support, snapshot-not-found, capture-pending)
+# resume_from: a snapshot's capturedAt (from list_snapshots); resumes from that older snapshot. After every
+# check, the task's discard_snapshots_after hook deletes the newer snapshots, the log gets "Resuming from the
+# snapshot of <capturedAt>: <n> newer snapshot(s) discarded", then the resume runs as with resume=True.
+# Refusals, in this order: shutting-down, invalid-request (resume_from without resume=True), not-found, the
+# factory's and a kept launch's refusals (as for any resume), not-launchable (resurrect in progress),
+# not-launchable (state), no-resume-support, not-launchable (no saved state: never downgraded to a fresh run),
+# launch-blocked, no-snapshot-support (no task or no discard_snapshots_after hook), then the hook's
+# capture-pending (CapturePending) and snapshot-not-found (SnapshotNotFound). Nothing is deleted on a refusal.
 await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError, but LaunchBlocked for a launch block)
 await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> Any
 # Launches like launch() and returns the object the task passes to ctx.publish_result(obj) while it keeps
@@ -204,6 +212,9 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 # would wipe the work): with supportsResurrect and a registered hook it calls resurrect
 # (session_id=None) instead; otherwise it skips it and logs "Auto-resume skipped <processId>:
 # unsaved work on the host (use Resurrect)". The autoResumeScheduled stamp is cleared either way.
+await optio_core.list_snapshots(process_id: str) -> ListSnapshotsOutcome  # ok, reason, snapshots
+# The task's list_snapshots hook, run with a ReadOnlyProcessContext: snapshots = [{capturedAt, endState}],
+# newest first, valid only, the newest included. Refusals: not-found, no-snapshot-support (no task or no hook).
 await optio_core.cancel(process_id: str) -> CancelOutcome
 # Cancels the named process. Recursively cancels active direct descendants whose
 # TaskInstance has auto_cancel_children=True (default). Opt-out parents handle
@@ -298,13 +309,19 @@ class TaskInstance:
     auto_resume: bool = False                # a top-level process (or a TaskFactory's kept launch) interrupted by engine shutdown that saved its state is re-launched (resume=True) after the next start, after auto_resume_delay_seconds; requires supports_resume=True (ValueError at sync)
     schedule_offset_seconds: int | None = None  # second (0-59) within each matching minute at which `schedule` fires; None = second 0
     session_crypto: SessionCrypto | None = None  # the task's at-rest cipher (encrypt/decrypt callables) for its own blob channels; set by engine-wrapper factories, read e.g. by deferred migrations
-    read_conversation: Callable[[ReadOnlyProcessContext], Awaitable[list | dict | None]] | None = None  # last field; returns a suspended process's saved conversation record ([[seq, event], ...] or {events, capturedAt}; None = no record) for the engine's conversation archive listener; gets a read-only context (process_id, _db, _prefix, load_blob)
+    read_conversation: Callable[[ReadOnlyProcessContext], Awaitable[list | dict | None]] | None = None  # returns a suspended process's saved conversation record ([[seq, event], ...] or {events, capturedAt}; None = no record) for the engine's conversation archive listener; gets a read-only context (process_id, _db, _prefix, load_blob)
+    list_snapshots: Callable[[ReadOnlyProcessContext], Awaitable[list[dict]]] | None = None  # the process's valid snapshots [{capturedAt, endState}], newest first, newest included; for Optio.list_snapshots; gets a read-only context; must not write
+    discard_snapshots_after: Callable[[ProcessContext, str], Awaitable[int]] | None = None  # last field; deletes the snapshots newer than the one with exactly that capturedAt (documents and blobs), returns how many; raises SnapshotNotFound / CapturePending having deleted nothing; called by launch(resume=True, resume_from=...) after every check
 ```
 
 The engine's conversation archive listener (`optio_core.ConversationArchiveListener`, started by
 `run()`, stopped by `shutdown()`) serves `read_conversation` over HTTP for the optio-api proxy:
 `GET /conversation/{_id}` behind basic auth, address published as `conversationArchive` in
 `{prefix}_engine_endpoints`. Details: `packages/optio-core/AGENTS.md` "Conversation archive listener".
+
+`SnapshotNotFound`, `CapturePending` and `ListSnapshotsOutcome` (the snapshot hooks' exceptions
+and `list_snapshots`' result) are exported from `optio_core`; details in
+`packages/optio-core/AGENTS.md` "TaskInstance.list_snapshots / discard_snapshots_after".
 
 `NothingToResurrect` and `ResurrectOutcome` are exported from `optio_core`. The only task
 that sets `resurrect` today is optio-claudecode's (`create_claudecode_task`, when

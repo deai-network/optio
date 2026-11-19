@@ -72,3 +72,17 @@ class NothingToResurrect(Exception):
     """Raised by a task's resurrect hook when nothing is left to save
     (no workdir on the host, an empty one, or no session state). optio-core
     then clears the process's hasUnsavedWork flag."""
+
+
+class SnapshotNotFound(Exception):
+    """Raised by a task's discard_snapshots_after hook when no valid snapshot
+    of the process has exactly the given capturedAt (millisecond precision),
+    having deleted nothing. Optio.launch(..., resume_from=) then answers
+    LaunchOutcome(ok=False, reason="snapshot-not-found")."""
+
+
+class CapturePending(Exception):
+    """Raised by a task's discard_snapshots_after hook when the task holds an
+    unfinished capture for the process (a Resurrect would make a newer
+    snapshot), having deleted nothing. Optio.launch(..., resume_from=) then
+    answers LaunchOutcome(ok=False, reason="capture-pending")."""

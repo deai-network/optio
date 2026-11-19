@@ -17,12 +17,21 @@ class LaunchOutcome:
     record. `message` is the refusal's text for "invalid-parameters"
     ("<id>: <what>") and "invalid-metadata" (the colliding stamp keys:
     "<key>, <key>: <what>"); None otherwise.
+
+    A launch with `resume_from` (resume from an older snapshot) adds
+    "invalid-request" (`resume_from` without `resume=True`),
+    "no-snapshot-support" (the task has no discard_snapshots_after hook),
+    "snapshot-not-found" and "capture-pending" (the hook's refusals:
+    SnapshotNotFound, CapturePending). Nothing is deleted when a launch is
+    refused. Spec: docs/2026-11-19-resume-from-snapshot-design.md
     """
     ok: bool
     reason: Literal[
         "not-found", "not-launchable", "launch-blocked", "no-resume-support",
         "shutting-down", "parameters-required", "not-a-factory",
         "invalid-parameters", "invalid-metadata",
+        "invalid-request", "no-snapshot-support", "snapshot-not-found",
+        "capture-pending",
     ] | None = None
     proc: dict[str, Any] | None = None
     message: str | None = None
@@ -64,6 +73,19 @@ class ResurrectOutcome:
         "resurrect-in-progress", "launch-blocked", "shutting-down",
     ] | None = None
     proc: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ListSnapshotsOutcome:
+    """Result of Optio.list_snapshots. ok=True carries `snapshots`, the task's
+    list_snapshots hook's answer: [{"capturedAt": str, "endState": str}],
+    newest first, valid snapshots only, the newest included. ok=False carries
+    a typed reason: "not-found" (no such process) or "no-snapshot-support"
+    (no registered task, or its list_snapshots is None).
+    Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
+    ok: bool
+    reason: Literal["not-found", "no-snapshot-support"] | None = None
+    snapshots: list[dict] | None = None
 
 
 @dataclass
@@ -148,6 +170,25 @@ class TaskInstance(TaskInstanceCore):
     # most 4 run at once.
     # Spec: docs/2026-10-12-suspended-conversation-view-design.md §1.
     read_conversation: Callable[..., Awaitable[list | dict | None]] | None = None
+    # Optional "list snapshots" hook, (ctx: ReadOnlyProcessContext) ->
+    # [{"capturedAt": str, "endState": str}]: the process's valid snapshots,
+    # newest first, the newest included. Called by Optio.list_snapshots with a
+    # conversation_archive.ReadOnlyProcessContext (as read_conversation is); it
+    # must not write. capturedAt is the snapshot's capture time as an ISO 8601
+    # string, the value a launch's resume_from names it by.
+    # Spec: docs/2026-11-19-resume-from-snapshot-design.md
+    list_snapshots: Callable[..., Awaitable[list[dict]]] | None = None
+    # Optional "discard snapshots after" hook, (ctx: ProcessContext,
+    # captured_at: str) -> int: deletes every snapshot of the process newer
+    # than the one with exactly that capturedAt (documents and their blobs)
+    # and returns how many it deleted, so that the chosen snapshot is the
+    # newest and an ordinary resume restores it. Raises SnapshotNotFound (no
+    # valid snapshot has that capturedAt) or CapturePending (an unfinished
+    # capture is held for the process), having deleted nothing. Called by
+    # Optio.launch(..., resume_from=) after every launch check has passed,
+    # with the detached ProcessContext Optio.resurrect uses; the resume
+    # follows. Spec: docs/2026-11-19-resume-from-snapshot-design.md
+    discard_snapshots_after: Callable[..., Awaitable[int]] | None = None
 
 
 @dataclass

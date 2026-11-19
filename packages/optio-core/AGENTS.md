@@ -62,6 +62,51 @@ found nothing.
 
 ---
 
+### TaskInstance.list_snapshots / discard_snapshots_after
+
+```python
+@dataclass
+class TaskInstance:
+    ...
+    list_snapshots: Callable[[ReadOnlyProcessContext], Awaitable[list[dict]]] | None = None
+    discard_snapshots_after: Callable[[ProcessContext, str], Awaitable[int]] | None = None
+```
+
+Optional hooks, the last two fields (after `read_conversation`), for resuming from an older
+snapshot. Both apply to a resumable task that keeps several snapshots per process; optio-agents'
+snapshot helper implements them for the engine wrappers.
+
+- `list_snapshots(ctx)` returns the process's valid snapshots, `[{"capturedAt": str, "endState":
+  str}]`, newest first, the newest included. `capturedAt` is an ISO 8601 string, the value a
+  launch's `resume_from` names a snapshot by. `Optio.list_snapshots` calls it with a
+  `ReadOnlyProcessContext` (as `read_conversation` gets: `process_id`, `_db`, `_prefix`,
+  `load_blob`; anything else raises `AttributeError`). It must not write.
+- `discard_snapshots_after(ctx, captured_at)` deletes every snapshot of the process newer than
+  the one whose `capturedAt` is exactly `captured_at` (documents and their blobs), and returns
+  how many it deleted. The chosen snapshot is then the newest, so the ordinary resume restores
+  it. It raises `optio_core.SnapshotNotFound` when no valid snapshot has that `capturedAt`
+  (millisecond precision), and `optio_core.CapturePending` when the task holds an unfinished
+  capture for the process (a Resurrect would make a newer snapshot), in both cases having
+  deleted nothing. `Optio.launch(..., resume=True, resume_from=...)` calls it after every
+  launch check has passed (see "Optio.launch"), with the detached `ProcessContext` that
+  `Optio.resurrect` uses, and then resumes.
+
+Known behaviour (documented, not changed):
+
+- The deletion is final: going "forward" again to a discarded snapshot is not possible (as
+  with Restart).
+- What the discarded runs delivered (files the app received through `on_deliverable`) stays
+  in the app; the resumed agent may deliver again.
+- The conversation view after the resume continues from the chosen snapshot's record; the
+  newer turns stay in the process log only.
+- Restoring replaces the host workdir with the snapshot's.
+- Auto-resume, Resurrect and the conversation archive are unchanged: they read the newest
+  snapshot, which is the chosen one after the deletion.
+
+Spec: `docs/2026-11-19-resume-from-snapshot-design.md`.
+
+---
+
 ### TaskInstance.schedule_offset_seconds
 
 ```python
@@ -317,10 +362,10 @@ payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them, and `t
 
 Both methods gain a `resume` keyword argument (default `False`), and `params`, `ephemeral` and
 `metadata` (a TaskFactory's launch values, whether its launch's record is deleted when its run
-ends, and the launch's stamp; see "TaskFactory"):
+ends, and the launch's stamp; see "TaskFactory"); `launch` also `resume_from` (below):
 
 ```python
-await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> LaunchOutcome
+await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None, resume_from: str | None = None) -> LaunchOutcome
 await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> None
 await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> Any
 ```
@@ -337,9 +382,26 @@ A TaskFactory's launch beyond its factory's `max_concurrency` is no refusal: `ok
 `scheduled` until a slot frees (`launch_and_wait` waits that long too; see "TaskFactory", the
 concurrency limit).
 
+`resume_from` (a snapshot's `capturedAt`, as `Optio.list_snapshots` gave it) resumes from that
+older snapshot. After every check has passed, the task's `discard_snapshots_after` hook deletes
+the snapshots newer than it, the process log gets the event "Resuming from the snapshot of
+<capturedAt>: <n> newer snapshot(s) discarded" ("snapshot" for 1), and the process is resumed
+as by `resume=True`. The refusals, in this order: `shutting-down`; `invalid-request`
+(`resume_from` without `resume=True`); `not-found`; a TaskFactory's and a kept launch's
+refusals, as for any resume; `not-launchable` (a resurrect in progress); `not-launchable`
+(state); `no-resume-support`; `not-launchable` (no saved state: unlike a plain resume, which
+then launches fresh, a picked snapshot never becomes a fresh run); `launch-blocked`;
+`no-snapshot-support` (no registered task, or its `discard_snapshots_after` is `None`); then the
+hook's own, `capture-pending` (`CapturePending`) and `snapshot-not-found` (`SnapshotNotFound`).
+Nothing is deleted when a check fails; any other exception of the hook propagates. If the
+launch fails after the deletion, the chosen snapshot is the newest, so a later resume restores
+it. A plain `resume=True` never calls the hook. Spec:
+`docs/2026-11-19-resume-from-snapshot-design.md`.
+
 `LaunchOutcome` (`ok`, `reason`, `proc`, `message`): `reason` is one of `not-found`,
 `not-launchable`, `launch-blocked`, `no-resume-support`, `shutting-down`, `parameters-required`,
-`not-a-factory`, `invalid-parameters`, `invalid-metadata`; `message` is set for
+`not-a-factory`, `invalid-parameters`, `invalid-metadata`, and for `resume_from`
+`invalid-request`, `no-snapshot-support`, `snapshot-not-found`, `capture-pending`; `message` is set for
 `invalid-parameters` and `invalid-metadata` only (the engine RPC's launch answers it unchanged). On
 `ok=True`, `proc` is the record re-read after the launch, as `cancel`'s `CancelOutcome.proc` is
 after the cancel; an ephemeral record that its run has already deleted by then (a run that
@@ -671,6 +733,23 @@ reasons above.
 
 ---
 
+### Optio.list_snapshots
+
+```python
+await optio_core.list_snapshots(process_id: str) -> ListSnapshotsOutcome
+```
+
+The snapshots a launch's `resume_from` may name. Resolves the process (an ObjectId hex or a
+processId, as `launch`), looks up its task in the task registry and calls its `list_snapshots`
+hook with a `ReadOnlyProcessContext`. `optio_core.ListSnapshotsOutcome` (frozen: `ok`,
+`reason`, `snapshots`): `ok=True` carries the hook's list, `[{"capturedAt": str, "endState":
+str}]`, newest first, valid snapshots only, the newest included. Refusals: `not-found` (no
+such process) and `no-snapshot-support` (no registered task, or its `list_snapshots` is
+`None`; a TaskFactory's own record has no task). An exception of the hook propagates. See
+"TaskInstance.list_snapshots / discard_snapshots_after".
+
+---
+
 ### Optio.count_processes
 
 ```python
@@ -999,7 +1078,7 @@ class TaskInstance:
     read_conversation: Callable[[ReadOnlyProcessContext], Awaitable[list | dict | None]] | None = None
 ```
 
-Optional, last field. Returns the conversation record a suspended process saved, for a
+Optional field, before `list_snapshots`. Returns the conversation record a suspended process saved, for a
 read-only view without resuming it. The engine's conversation archive listener (below)
 calls it only for a suspended process (`conversation_archive.is_suspended`: `status.state`
 in `END_STATES` — `done`, `failed` or `cancelled` —, `supportsResume`, `hasSavedState`;

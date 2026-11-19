@@ -3,10 +3,11 @@
 from optio_core.models import (
     TaskInstance, TaskInstanceCore, TaskFactory, ChildResult, ChildHandle,
     LaunchBlocked, LaunchOutcome, CancelOutcome, DismissOutcome,
-    ResurrectOutcome, MongoStore, SessionCrypto,
+    ResurrectOutcome, ListSnapshotsOutcome, MongoStore, SessionCrypto,
 )
 from optio_core.exceptions import (
-    LaunchError, ResultNotPublished, NothingToResurrect,
+    LaunchError, ResultNotPublished, NothingToResurrect, SnapshotNotFound,
+    CapturePending,
 )
 from optio_core.lifecycle import Optio
 from optio_core.task_factory import check_factory
@@ -24,6 +25,7 @@ launch = _instance.launch
 launch_and_wait = _instance.launch_and_wait
 launch_and_await_result = _instance.launch_and_await_result
 resurrect = _instance.resurrect
+list_snapshots = _instance.list_snapshots
 get_published_result = _instance.get_published_result
 cancel = _instance.cancel
 dismiss = _instance.dismiss
@@ -40,11 +42,14 @@ __all__ = [
     "TaskInstance", "TaskInstanceCore", "TaskFactory", "ChildResult",
     "ChildHandle", "LaunchBlocked",
     "LaunchOutcome", "CancelOutcome", "DismissOutcome", "ResurrectOutcome",
+    "ListSnapshotsOutcome",
     "LaunchError", "ResultNotPublished", "NothingToResurrect",
+    "SnapshotNotFound", "CapturePending",
     "check_factory",
     "init", "run", "shutdown",
     "adhoc_define", "adhoc_delete",
     "launch", "launch_and_wait", "launch_and_await_result", "resurrect",
+    "list_snapshots",
     "get_published_result", "cancel", "dismiss", "resync",
     "get_process", "list_processes", "count_processes",
     "block_launches", "unblock_launches",
