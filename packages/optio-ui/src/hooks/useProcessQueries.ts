@@ -2,6 +2,10 @@ import { useContext, useEffect } from 'react';
 import type { Process, ProcessMetadataFilter } from 'optio-contracts';
 import { useOptioPrefix, useOptioClient, useOptioDatabase } from '../context/useOptioContext.js';
 import { MultiProcessStreamContext } from '../context/MultiProcessStreamContext.js';
+import { shareTsRestResponse } from '../ts-rest-sharing.js';
+
+// Every query below polls: an unchanged poll keeps the previous response
+// (structuralSharing: shareTsRestResponse; ts-rest's Headers defeat the default sharing).
 
 export function useProcessList(options?: {
   refetchInterval?: number | false;
@@ -24,6 +28,7 @@ export function useProcessList(options?: {
       },
     },
     refetchInterval: options?.refetchInterval ?? 5000,
+    structuralSharing: shareTsRestResponse,
   });
   return {
     processes: data?.status === 200 ? data.body.items : [],
@@ -53,6 +58,7 @@ export function useProcess(id: string | undefined, options?: { refetchInterval?:
     queryData: { params: { id: id! }, query: { database, prefix } },
     enabled: !!id && !slice,  // skip polling when provider covers this pid
     refetchInterval: options?.refetchInterval ?? 5000,
+    structuralSharing: shareTsRestResponse,
   });
 
   if (slice) {
@@ -75,6 +81,7 @@ export function useProcessTree(id: string | undefined, options?: { refetchInterv
     queryData: { params: { id: id! }, query: { database, prefix } },
     enabled: !!id,
     refetchInterval: options?.refetchInterval ?? 5000,
+    structuralSharing: shareTsRestResponse,
   });
   return data?.status === 200 ? data.body : null;
 }
@@ -92,6 +99,7 @@ export function useProcesses(
       queryData: { params: { id: pid! }, query: { database, prefix } },
       enabled: !!pid,
       refetchInterval: options?.refetchInterval ?? 5000,
+      structuralSharing: shareTsRestResponse,
     })),
   }) as Array<{ data?: { status: number; body: Process }; isLoading: boolean }>;
   return results.map((q) => ({
@@ -109,6 +117,7 @@ export function useProcessTreeLog(id: string | undefined, options?: { refetchInt
     queryData: { params: { id: id! }, query: { database, prefix, limit: options?.limit ?? 100 } },
     enabled: !!id,
     refetchInterval: options?.refetchInterval ?? 5000,
+    structuralSharing: shareTsRestResponse,
   });
   return data?.status === 200 ? data.body.items : [];
 }

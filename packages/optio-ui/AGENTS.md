@@ -1054,6 +1054,25 @@ Query key: `['process-tree-log', database, prefix, id]`. Disabled when `id` is f
 
 ---
 
+### shareTsRestResponse
+
+```ts
+function shareTsRestResponse(oldData: unknown, newData: unknown): unknown  // a react-query structuralSharing
+```
+
+`src/ts-rest-sharing.ts`. ts-rest answers `{ status, body, headers }` with the fetch's own `Headers`,
+which react-query's default structural sharing does not look into, so every fetch is a new `data`
+even when nothing changed. This keeps the previous response object when the status is the same and
+the body deep-equal; otherwise it gives the new response, its body sharing every unchanged part with
+the previous one (`replaceEqualDeep`). Other data is shared as react-query does by default.
+
+optio-ui's polling queries use it (`structuralSharing: shareTsRestResponse`): `useInstances`, `useProcessList`,
+`useProcess`, `useProcesses`, `useProcessTree`, `useProcessTreeLog`. Exported for a host's own ts-rest
+queries, one by one or as a `QueryClient` default (`defaultOptions.queries.structuralSharing`).
+Test: `src/__tests__/ts-rest-sharing.test.tsx`.
+
+---
+
 ### useProcessStream
 
 ```ts

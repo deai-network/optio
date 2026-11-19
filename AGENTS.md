@@ -1650,6 +1650,13 @@ Resurrecting indicator (`optio:process:<id>:resurrecting`), and before the "Load
 (`optio:process:<id>:widget`); size `'small'` except `ProcessList`. A vultus-core `SpinnerScope` prefixes the keys; without a lent spinner nothing
 changes. Details: `packages/optio-ui/AGENTS.md` "Spinner slot".
 
+**Unchanged polls.** `OptioProvider`'s context value stays the same object while its fields do, and
+optio-ui's polling queries keep their previous response when the status and body are unchanged
+(`shareTsRestResponse`, a react-query `structuralSharing` for ts-rest responses, whose `Headers`
+otherwise make every fetch a new `data`). `shareTsRestResponse` is exported for a host's own ts-rest
+queries, or as a `QueryClient` default (`defaultOptions.queries.structuralSharing`). Details:
+`packages/optio-ui/AGENTS.md` "shareTsRestResponse".
+
 ### OptioProvider Props
 
 ```typescript

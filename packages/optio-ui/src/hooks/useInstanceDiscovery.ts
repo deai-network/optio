@@ -1,4 +1,5 @@
 import { useOptioClient } from '../context/useOptioContext.js';
+import { shareTsRestResponse } from '../ts-rest-sharing.js';
 
 export interface OptioInstance {
   database: string;
@@ -24,6 +25,8 @@ export function useInstances(): UseInstancesResult {
     // by react-query's default refetchIntervalInBackground=false; they catch
     // up on refocus.
     refetchInterval: 10_000,
+    // An unchanged poll keeps the previous response (ts-rest's Headers defeat the default sharing).
+    structuralSharing: shareTsRestResponse,
   });
   return {
     instances: data?.body?.instances ?? [],
