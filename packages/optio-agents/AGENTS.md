@@ -522,6 +522,66 @@ that says which agent and model delivered a file.
   (`optio_agents.agent_info`), never the package, so that
   `optio_agents.protocol` can import it while the package initialises.
 
+## Snapshot history (`optio_agents.snapshots`)
+
+Spec: `docs/2026-11-19-resume-from-snapshot-design.md`. Implements optio-core's
+`TaskInstance.list_snapshots` and `discard_snapshots_after` hooks for every engine
+wrapper (optio-core's AGENTS.md, "TaskInstance.list_snapshots /
+discard_snapshots_after"). A submodule: the package does not re-export it.
+
+* Documents: one per capture in `{prefix}{suffix}`, with `processId`, `capturedAt`
+  (a BSON datetime), `endState` and one field per GridFS blob (bucket `fs`, same
+  database). *Valid*: every required blob field is set and names an id that has an
+  `fs.files` document; one `$in` query covers every required id of the process.
+  Optional blob fields do not count.
+* `SnapshotLayout(suffix, required_blob_fields, optional_blob_fields=())`: frozen
+  dataclass, a wrapper's declaration of its layout. `.collection(prefix)` is
+  `f"{prefix}{suffix}"`.
+* `await list_snapshots(db, collection, process_id, required_blob_fields) ->
+  list[dict]`: `[{"capturedAt": str, "endState": str}]`, valid snapshots only,
+  newest first, the newest included. `endState` as stored, `""` when absent. A
+  document whose `capturedAt` is not a datetime is not listed. Reads only.
+* `await discard_snapshots_after(db, collection, process_id, captured_at,
+  required_blob_fields, optional_blob_fields=()) -> int`: the chosen snapshot is the
+  valid document whose `capturedAt` is the instant `captured_at` names; when there
+  is none it raises `optio_core.SnapshotNotFound(captured_at)` having deleted
+  nothing. Otherwise it deletes, by `_id`, every document of the process with a
+  later `capturedAt`, then (documents first, as in prune) each blob such a document
+  names in any blob field, required or optional, that no remaining document of the
+  process names in any blob field: `AsyncIOMotorGridFSBucket(db).delete`, `NoFile`
+  ignored, any other error logged as a warning and not raised. An older or shared
+  blob is never deleted. Returns how many documents it deleted (0 for the newest).
+* Invalid newer documents are deleted too: an invalid newest document would
+  otherwise be the one a plain Resume reads (the wrappers' `load_latest_snapshot`
+  does not check blobs). The list holds valid snapshots only, so when a newer
+  document has lost a blob, a count taken from the list (the UI's confirmation) can
+  be lower than what is deleted.
+* `capturedAt` wire form. Out: UTC (a naive stored datetime is UTC), formatted
+  `YYYY-MM-DDTHH:MM:SS.mmmZ`, exactly three fraction digits, since BSON datetimes
+  hold milliseconds. In: `captured_at` is parsed with `datetime.fromisoformat`, so
+  any ISO 8601 spelling of the instant that carries an offset matches
+  (`2026-11-19T13:05:12.345Z`, `...345+00:00`, `2026-11-19T14:05:12.345+01:00`).
+  These match nothing: a string without an offset, one with a non-zero digit below
+  the millisecond (a seventh or later fraction digit too, which `fromisoformat`
+  drops), another millisecond, and one that is not ISO 8601. Instants are compared
+  in Python on aware UTC datetimes, never in a query, so naive and tz-aware
+  (`CodecOptions(tz_aware=True)`) clients give the same answers.
+* `snapshot_hooks(layout, *, capture_pending=None) -> SnapshotHooks`:
+  `SnapshotHooks` is a `NamedTuple(list_snapshots, discard_snapshots_after)` with
+  core's hook signatures, `list_snapshots(ctx)` (a `ReadOnlyProcessContext`) and
+  `discard_snapshots_after(ctx, captured_at)` (the detached `ProcessContext`); both
+  read only `ctx.process_id`, `ctx._db` and `ctx._prefix`. The discard hook first
+  awaits `capture_pending(ctx)` (an `async (ProcessContext) -> bool`, when given)
+  and raises `optio_core.CapturePending(process_id)` when it is true, before any
+  read or deletion. Neither hook reports progress or writes the process log
+  (optio-core logs the "Resuming from the snapshot of ..." line).
+* Known behaviour (documented, not changed):
+  - What the discarded runs delivered (files the app received through
+    `on_deliverable`) stays in the app; the resumed agent may deliver again.
+  - The conversation view after the resume continues from the chosen snapshot's
+    conversation record; the newer turns are gone with the discarded snapshots.
+  - The resume's restore replaces the host workdir with the chosen snapshot's.
+
 ## Dependency direction
 
 Depends on `optio-host` and `optio-core`; consumed by every engine wrapper
