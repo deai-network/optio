@@ -386,7 +386,7 @@ function launchStamp<TRequest>(hook, req, params): LaunchStamp;  // binds the ho
   `invalid-metadata`, its message (naming the keys) passed on unchanged.
 
 Adapters bind it per request with `opts.launchMetadata && launchStamp(opts.launchMetadata,
-req, body?.params)` and pass that as `launchProcess`'s trailing `stamp`, with the
+req, body?.params)` and pass that as `launchProcess`'s `stamp` (after `ephemeral`), with the
 framework's own request object, the one `authenticate` got (the Next.js App Router carries
 it into the ts-rest route in its `AsyncLocalStorage`, beside the `Access`).
 
@@ -636,7 +636,9 @@ async function getProcessConversation(
 // GET /api/processes/:id/snapshots: a process's valid snapshots, newest first, the
 // newest included (engine RPC `listSnapshots`, the task's `list_snapshots` hook).
 // Gated as GET /api/processes/:id is (`findReadableProcess`: scope and visibility;
-// `authorize` is not asked); the engine is asked by the document's `_id`.
+// `authorize` is not asked); the engine is asked by the document's `_id`. Address it by
+// `_id`, as a launch with `resumeFrom` is: a processId names the first document it finds,
+// while a launch acts on the newest.
 async function getProcessSnapshots(
   ctx: OptioContext,
   query: { database?: string; prefix?: string },
