@@ -170,10 +170,14 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
       res.set(headers);
       return result as any;
     },
+    getSnapshots: async ({ params, query, req }) => {
+      const result = await handlers.getProcessSnapshots(ctx, query, params.id, await access(req));
+      return result as any;
+    },
     launch: async ({ params, query, body, req }) => {
       const result = await handlers.launchProcess(
         ctx, query, params.id, body?.resume === true, null, await access(req), body?.params, body?.ephemeral,
-        opts.launchMetadata && launchStamp(opts.launchMetadata, req, body?.params),
+        opts.launchMetadata && launchStamp(opts.launchMetadata, req, body?.params), body?.resumeFrom,
       );
       return result as any;
     },

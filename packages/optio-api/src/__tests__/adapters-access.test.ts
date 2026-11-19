@@ -36,6 +36,9 @@ afterAll(async () => {
   await client.close();
 });
 
+// One listed snapshot, its capturedAt in the wire form optio-core gives it.
+const SNAP = { capturedAt: '2026-11-19T13:05:12.345Z', endState: 'done' };
+
 function makeEngine() {
   const ok = (params: any) => ({
     ok: true,
@@ -44,6 +47,7 @@ function makeEngine() {
   return {
     launch: vi.fn(ok), cancel: vi.fn(ok), dismiss: vi.fn(ok), resurrect: vi.fn(ok),
     resync: vi.fn(async () => undefined),
+    listSnapshots: vi.fn(() => ({ ok: true, snapshots: [SNAP] })),
   };
 }
 
@@ -255,6 +259,32 @@ for (const [name, makeDriver] of drivers) {
       expect(engine.resurrect).toHaveBeenCalledWith({ processId: String(mineId), sessionId: 's1' });
       expect((await call('POST', `/api/processes/${mineId}/resurrect?${q}`)).status).toBe(200);
       expect(engine.resurrect).toHaveBeenLastCalledWith({ processId: String(mineId), sessionId: null });
+    });
+
+    it('serves the snapshot list of an in-scope process; 404s another customer\'s', async () => {
+      const engine = makeEngine();
+      const call = makeDriver(engine);
+      const mine = await call('GET', `/api/processes/${mineId}/snapshots?${q}`);
+      expect(mine.status).toBe(200);
+      expect(mine.json).toEqual({ snapshots: [SNAP] });
+      expect(engine.listSnapshots).toHaveBeenCalledWith({ processId: String(mineId) });
+      const other = await call('GET', `/api/processes/${otherId}/snapshots?${q}`);
+      expect(other.status).toBe(404);
+      expect(other.json).toEqual({ reason: 'not-found', message: 'Process not found' });
+      expect(engine.listSnapshots).not.toHaveBeenCalledWith({ processId: String(otherId) });
+      // A read: authorize, which refuses every action on the guarded process, is not asked.
+      expect((await call('GET', `/api/processes/${guardedId}/snapshots?${q}`)).status).toBe(200);
+      expect(engine.listSnapshots).toHaveBeenCalledTimes(2);
+    });
+
+    it('forwards resumeFrom on launch', async () => {
+      const engine = makeEngine();
+      const call = makeDriver(engine);
+      const res = await call('POST', `/api/processes/${mineId}/launch?${q}`, { resume: true, resumeFrom: SNAP.capturedAt });
+      expect(res.status).toBe(200);
+      expect(engine.launch).toHaveBeenCalledWith(expect.objectContaining({
+        processId: String(mineId), resume: true, resumeFrom: SNAP.capturedAt,
+      }));
     });
 
     it('narrows resync to the caller\'s scope', async () => {

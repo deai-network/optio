@@ -27,6 +27,9 @@ afterAll(async () => {
   await client.close();
 });
 
+// One listed snapshot, its capturedAt in the wire form optio-core gives it.
+const SNAP = { capturedAt: '2026-11-19T13:05:12.345Z', endState: 'done' };
+
 function makeEngine() {
   const ok = (params: any) => ({
     ok: true,
@@ -39,6 +42,7 @@ function makeEngine() {
     resurrect: vi.fn(ok),
     resync: vi.fn(async () => undefined),
     materializeUpload: vi.fn(async () => ({ ok: true, path: '/x' })),
+    listSnapshots: vi.fn(() => ({ ok: true, snapshots: [SNAP] })),
   };
 }
 
@@ -197,6 +201,38 @@ describe('fastify adapter with scope + authorize', () => {
     const bare = await app.inject({ method: 'POST', url: `/api/processes/${mineId}/resurrect?${q}`, headers: as1, payload: {} });
     expect(bare.statusCode).toBe(200);
     expect(engine.resurrect).toHaveBeenLastCalledWith({ processId: String(mineId), sessionId: null });
+    await app.close();
+  });
+
+  it('serves the snapshot list of an in-scope process; 404s another customer\'s', async () => {
+    const engine = makeEngine();
+    const app = await buildApp(engine);
+    const url = (id: ObjectId) => `/api/processes/${id}/snapshots?${q}`;
+    const mine = await app.inject({ method: 'GET', url: url(mineId), headers: as1 });
+    expect(mine.statusCode).toBe(200);
+    expect(mine.json()).toEqual({ snapshots: [SNAP] });
+    expect(engine.listSnapshots).toHaveBeenCalledWith({ processId: String(mineId) });
+    const other = await app.inject({ method: 'GET', url: url(otherId), headers: as1 });
+    expect(other.statusCode).toBe(404);
+    expect(other.json()).toEqual({ reason: 'not-found', message: 'Process not found' });
+    expect(engine.listSnapshots).not.toHaveBeenCalledWith({ processId: String(otherId) });
+    // A read: authorize, which refuses every action on the guarded process, is not asked.
+    expect((await app.inject({ method: 'GET', url: url(guardedId), headers: as1 })).statusCode).toBe(200);
+    expect(engine.listSnapshots).toHaveBeenCalledTimes(2);
+    await app.close();
+  });
+
+  it('forwards resumeFrom on launch', async () => {
+    const engine = makeEngine();
+    const app = await buildApp(engine);
+    const res = await app.inject({
+      method: 'POST', url: `/api/processes/${mineId}/launch?${q}`, headers: as1,
+      payload: { resume: true, resumeFrom: SNAP.capturedAt },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(engine.launch).toHaveBeenCalledWith(expect.objectContaining({
+      processId: String(mineId), resume: true, resumeFrom: SNAP.capturedAt,
+    }));
     await app.close();
   });
 

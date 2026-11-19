@@ -237,6 +237,7 @@ visibility: (req) => or(
 | `GET /api/processes/tree/multi/stream` | reported in `missing` |
 | `POST /api/processes/:id/launch` / `cancel` / `dismiss` / `resurrect` | 404 `{ reason: 'not-found' }`; the engine is not called |
 | `GET /api/processes/:id/conversation` | 404 `{ reason: 'not-found' }`; the engine is not called |
+| `GET /api/processes/:id/snapshots` | 404 `{ reason: 'not-found' }`; the engine is not called |
 | `GET /api/processes/:id/result` | 404 `{ reason: 'not-found' }`; GridFS is not read |
 | widget proxy, `widget-control`, `widget-upload` (Fastify) | the route's not-found response |
 | `POST /api/processes/resync` | runs with the client's flat filter plus the scope keys (the engine filters regenerated tasks and pruned records by it); 403 if the filter contradicts the scope, 400 for a predicate-tree filter |
@@ -254,7 +255,9 @@ resurrect, resync, the three widget routes, the conversation read (as
 `'widget'`), the result file (as `'result'`) and `GET /api/optio/instances`;
 `false` gives **403** `{ message: 'Forbidden' }` (the conversation read:
 `{ reason: 'forbidden', message: 'Forbidden' }`) and the engine is not called
-(the result file: GridFS is not read).
+(the result file: GridFS is not read). It is not asked for the snapshot list
+(`GET /api/processes/:id/snapshots`): like `GET /api/processes/:id`, whoever may
+see the process may read it.
 
 Without any hook behaviour is exactly as before: commands go straight to
 the engine and no extra lookups run. A `launchMetadata` hook alone (see
@@ -333,8 +336,8 @@ children whose parent chain doesn't resolve to a kept root, preserving input
 order and memoising per id. `findReadableProcess(reads, id, access)` (in
 `access-scope.ts`) looks a process up by either id form under both `scope` and
 `visibility`, returning `null` for a process that fails either — the single-read
-building block `getProcess`, `getProcessLog`, `getProcessTree` and
-`getProcessTreeLog` use in place of `findScopedProcess`. `findScopedProcess`,
+building block `getProcess`, `getProcessLog`, `getProcessTree`,
+`getProcessTreeLog` and `getProcessSnapshots` use in place of `findScopedProcess`. `findScopedProcess`,
 `findReadableProcess`, `findActionTarget`, `inScope` and `gateProcess` all accept
 either a `ProcessReads` or a plain `Collection`, wrapped internally with
 `processReadsOf(col, null)` (no visibility, so a plain `Collection` sees
@@ -578,6 +581,8 @@ async function launchProcess(
   ephemeral?: boolean,  // overrides the factory's retention of the launch's record
   stamp?: LaunchStamp,  // launchMetadata bound to the request; called for a factory's launch
                         // only, its map sent as the engine's `metadata` (see "Launch stamp")
+  resumeFrom?: string,  // resume from this older snapshot (a getProcessSnapshots capturedAt);
+                        // sent as the engine's `resumeFrom` only when given
 ): Promise<LaunchCommandResult>
 
 async function cancelProcess(
@@ -628,6 +633,21 @@ async function getProcessConversation(
 //   | { status: 403 | 404 | 409 | 500 | 503; body: { reason: ConversationFailureReason; message } })
 //   & { headers: { 'Cache-Control': 'no-store' } }   // adapters must send `headers`
 
+// GET /api/processes/:id/snapshots: a process's valid snapshots, newest first, the
+// newest included (engine RPC `listSnapshots`, the task's `list_snapshots` hook).
+// Gated as GET /api/processes/:id is (`findReadableProcess`: scope and visibility;
+// `authorize` is not asked); the engine is asked by the document's `_id`.
+async function getProcessSnapshots(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,           // either id form
+  access?: Access,
+): Promise<SnapshotsResult>
+// SnapshotsResult = { status: 200; body: { snapshots: { capturedAt: string; endState: string }[] } }
+//   | { status: 404; body: { reason: ListSnapshotsFailureReason; message } }
+//   // not-found 'Process not found' (also out of scope, hidden or missing: the engine is not
+//   // called); no-snapshot-support 'This task keeps no snapshot history'
+
 // GET /api/processes/:id/result: a task's result file, streamed from GridFS.
 async function getProcessResult(
   ctx: OptioContext,
@@ -656,20 +676,25 @@ The error response body (404/409, and 400 for a launch) for `launchProcess` / `c
 **Adapters** (`fastify`, `express`, `nextjs-app`, `nextjs-pages`): all four extract `body?.resume`
 from the request body and forward it to `launchProcess` as the fourth argument; as the fifth
 (`sessionId`), Fastify forwards `body?.sessionId ?? null` and the other three pass `null`; after
-`access` come `body?.params` (a task factory's values), `body?.ephemeral`, and the stamp,
+`access` come `body?.params` (a task factory's values), `body?.ephemeral`, the stamp,
 `opts.launchMetadata && launchStamp(opts.launchMetadata, req, body?.params)` (see "Launch
-stamp"). For resurrect they forward `body?.sessionId ?? null` (the body is optional) to
-`resurrectProcess` as the fourth argument.
+stamp"), and last `body?.resumeFrom`. For resurrect they forward `body?.sessionId ?? null`
+(the body is optional) to `resurrectProcess` as the fourth argument. Their `getSnapshots`
+route returns `getProcessSnapshots`'s result as is.
 
 Per the architectural rule above, command handlers do not validate state — they forward the raw
 id to the engine via `engine.launch / cancel / dismiss / resurrect` and translate the discriminated-union
 result into HTTP status + body. Failure reasons (`not-found`, `not-launchable`, `no-resume-support`,
 `launch-blocked`, `not-cancellable`, `not-dismissable`, `shutting-down` for launch and resurrect,
-for resurrect `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, and for launch
-the task-factory reasons `parameters-required`, `invalid-parameters`, `not-a-factory`, and
-`invalid-metadata` for a launch stamp that collides) come from the engine; the API only maps each
-to a status: `not-found` is 404, launch's `parameters-required`, `invalid-parameters` and
-`invalid-metadata` are 400, every other reason is 409. A factory's launch answers 200 with the
+for resurrect `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress` and
+`not-launchable` (another launch of the process is in progress: a resume from a snapshot, or a run
+a launch scheduled), for launch the task-factory reasons `parameters-required`,
+`invalid-parameters`, `not-a-factory`, `invalid-metadata` for a launch stamp that collides, and for
+`resumeFrom` `invalid-request` (no `resume: true`), `no-snapshot-support`, `snapshot-not-found` and
+`capture-pending`) come from the engine; the API only maps each to a status: `not-found` is 404,
+launch's `parameters-required`, `invalid-parameters`, `invalid-metadata` and `invalid-request` are
+400, every other reason is 409 (`resumeFrom`'s refusals too, so 404 keeps meaning "no such
+process"). A factory's launch answers 200 with the
 child's record. The body keeps `{ reason, message }`; for `invalid-parameters` the message is the
 engine's `"<id>: <what>"` text passed on unchanged (optio-ui reads the parameter's id from it), for
 `invalid-metadata` the engine's text naming the colliding keys, unchanged (each a fixed text only if

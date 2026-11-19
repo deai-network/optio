@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import {
-  getProcess, getProcessTree, getProcessLog, getProcessTreeLog, getProcessConversation,
+  getProcess, getProcessTree, getProcessLog, getProcessTreeLog, getProcessConversation, getProcessSnapshots,
   listProcesses, launchProcess, cancelProcess, dismissProcess, resurrectProcess, resyncProcesses,
 } from '../handlers.js';
 import type { OptioContext } from '../context.js';
@@ -31,6 +31,9 @@ beforeEach(async () => {
   await col().deleteMany({});
 });
 
+// One listed snapshot, its capturedAt in the wire form optio-core gives it.
+const SNAP = { capturedAt: '2026-11-19T13:05:12.345Z', endState: 'done' };
+
 function makeEngine() {
   const ok = (params: any) => ({
     ok: true,
@@ -45,6 +48,7 @@ function makeEngine() {
     dismiss: vi.fn(ok),
     resurrect: vi.fn(ok),
     resync: vi.fn(async () => undefined),
+    listSnapshots: vi.fn((): any => ({ ok: true, snapshots: [SNAP] })),
   };
 }
 
@@ -287,6 +291,115 @@ describe('launchProcess: the launch stamp', () => {
   });
 });
 
+// GET /processes/:id/snapshots: gated as GET /processes/:id is (scope and
+// visibility, no authorize); the engine is asked by the document's _id.
+describe('getProcessSnapshots', () => {
+  const NOT_FOUND = { status: 404, body: { reason: 'not-found', message: 'Process not found' } };
+  // Hides every data-chat: none in this block has an ownerId of u1.
+  const HIDE_CHATS = or(not(eq('kind', 'data-chat')), eq('ownerId', 'u1'));
+
+  it('answers the engine\'s list for an in-scope process, asking it by _id, without authorize', async () => {
+    const { rootId } = await insertTree(1);
+    const engine = makeEngine();
+    const access = scoped(1);
+    const result = await getProcessSnapshots(makeCtx(engine), { prefix: PREFIX }, 'root-1', access);
+    expect(result).toEqual({ status: 200, body: { snapshots: [SNAP] } });
+    expect(engine.listSnapshots).toHaveBeenCalledTimes(1);
+    expect(engine.listSnapshots).toHaveBeenCalledWith({ processId: rootId.toHexString() });
+    expect(access.authorize).not.toHaveBeenCalled();
+  });
+
+  it('outside the scope or hidden: 404 not-found, the engine not called', async () => {
+    const other = await insertTree(0);
+    const hidden = await insertProcess({ processId: 'hidden-1', metadata: { kind: 'data-chat' } });
+    const engine = makeEngine();
+    const ctx = makeCtx(engine);
+    for (const id of [other.rootId.toHexString(), 'root-0', other.childId.toHexString()]) {
+      const access = scoped(1);
+      expect(await getProcessSnapshots(ctx, { prefix: PREFIX }, id, access)).toEqual(NOT_FOUND);
+      expect(access.authorize).not.toHaveBeenCalled();
+    }
+    for (const id of [hidden._id.toHexString(), 'hidden-1']) {
+      const access = visible(HIDE_CHATS);
+      expect(await getProcessSnapshots(ctx, { prefix: PREFIX }, id, access)).toEqual(NOT_FOUND);
+      expect(access.authorize).not.toHaveBeenCalled();
+    }
+    expect(engine.listSnapshots).not.toHaveBeenCalled();
+  });
+
+  it('the engine\'s reasons answer 404 with the reason', async () => {
+    await insertTree(1);
+    const messages = {
+      'no-snapshot-support': 'This task keeps no snapshot history',
+      'not-found': 'Process not found',
+    } as const;
+    for (const reason of ['no-snapshot-support', 'not-found'] as const) {
+      const engine = makeEngine();
+      engine.listSnapshots = vi.fn(() => ({ ok: false, reason }));
+      const result = await getProcessSnapshots(makeCtx(engine), { prefix: PREFIX }, 'root-1', scoped(1));
+      expect(result).toEqual({ status: 404, body: { reason, message: messages[reason] } });
+    }
+  });
+
+  it('unrestricted: a missing id is 404 not-found; the engine is asked by _id', async () => {
+    const { rootId } = await insertTree(1);
+    const engine = makeEngine();
+    const ctx = makeCtx(engine);
+    for (const id of ['not-in-db', new ObjectId().toHexString()]) {
+      expect(await getProcessSnapshots(ctx, { prefix: PREFIX }, id)).toEqual(NOT_FOUND);
+    }
+    expect(engine.listSnapshots).not.toHaveBeenCalled();
+    expect(await getProcessSnapshots(ctx, { prefix: PREFIX }, 'root-1')).toEqual({
+      status: 200, body: { snapshots: [SNAP] },
+    });
+    expect(engine.listSnapshots).toHaveBeenCalledWith({ processId: rootId.toHexString() });
+  });
+});
+
+// resumeFrom (resume from an older snapshot): launchProcess's trailing parameter.
+describe('launchProcess: resumeFrom', () => {
+  const launch = (engine: any, access?: Access, resumeFrom?: string) =>
+    launchProcess(
+      makeCtx(engine), { prefix: PREFIX }, 'root-1', true, null, access, undefined, undefined, undefined, resumeFrom,
+    );
+
+  it('forwards resumeFrom to the engine', async () => {
+    await insertTree(1);
+    const engine = makeEngine();
+    const result: any = await launch(engine, scoped(1), SNAP.capturedAt);
+    expect(result.status).toBe(200);
+    expect(engine.launch).toHaveBeenCalledWith(expect.objectContaining({
+      processId: 'root-1', resume: true, resumeFrom: SNAP.capturedAt,
+    }));
+  });
+
+  it('no resumeFrom key without it', async () => {
+    await insertTree(1);
+    for (const access of [scoped(1), undefined]) {
+      const engine = makeEngine();
+      const result: any = await launch(engine, access);
+      expect(result.status).toBe(200);
+      expect(Object.keys(engine.launch.mock.calls[0][0])).not.toContain('resumeFrom');
+    }
+  });
+
+  it('maps the new reasons', async () => {
+    const cases = [
+      ['invalid-request', 400, 'resumeFrom needs resume: true'],
+      ['no-snapshot-support', 409, 'This task keeps no snapshot history'],
+      ['snapshot-not-found', 409, 'No valid snapshot was taken at that time'],
+      ['capture-pending', 409,
+        'An unfinished snapshot capture of this process must be resolved first (Resurrect or Resume)'],
+    ] as const;
+    for (const [reason, status, message] of cases) {
+      const engine = makeEngine();
+      engine.launch = vi.fn(() => ({ ok: false, reason })) as any;
+      const result: any = await launch(engine, undefined, SNAP.capturedAt);
+      expect(result).toEqual({ status, body: { reason, message } });
+    }
+  });
+});
+
 describe('resurrectProcess', () => {
   it('asks authorize with action resurrect and the process', async () => {
     await insertTree(1);
@@ -311,6 +424,17 @@ describe('resurrectProcess', () => {
     engine.resurrect = vi.fn(() => ({ ok: false, reason: 'not-found' })) as any;
     const r2: any = await resurrectProcess(makeCtx(engine), { prefix: PREFIX }, 'root-1', null);
     expect(r2.status).toBe(404);
+  });
+
+  it('answers the engine\'s not-launchable refusal (another launch in progress) with 409 and the reason', async () => {
+    await insertTree(1);
+    const engine = makeEngine();
+    engine.resurrect = vi.fn(() => ({ ok: false, reason: 'not-launchable' })) as any;
+    const result: any = await resurrectProcess(makeCtx(engine), { prefix: PREFIX }, 'root-1', null, scoped(1));
+    expect(result).toEqual({
+      status: 409,
+      body: { reason: 'not-launchable', message: 'Another launch of this process is in progress; try again shortly' },
+    });
   });
 });
 

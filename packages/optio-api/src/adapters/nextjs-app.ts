@@ -142,10 +142,14 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
         for (const [name, value] of Object.entries(headers)) responseHeaders.set(name, value);
         return result as any;
       },
+      getSnapshots: async ({ params, query }) => {
+        const result = await handlers.getProcessSnapshots(ctx, query, params.id, await currentAccess());
+        return result as any;
+      },
       launch: async ({ params, query, body }) => {
         const result = await handlers.launchProcess(
           ctx, query, params.id, body?.resume === true, null, await currentAccess(), body?.params, body?.ephemeral,
-          opts.launchMetadata && launchStamp(opts.launchMetadata, currentRequest(), body?.params),
+          opts.launchMetadata && launchStamp(opts.launchMetadata, currentRequest(), body?.params), body?.resumeFrom,
         );
         return result as any;
       },

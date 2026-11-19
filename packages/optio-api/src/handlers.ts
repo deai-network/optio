@@ -21,6 +21,8 @@ import type {
   DismissFailureReason as DismissFailureReasonType,
   ResurrectFailureReason as ResurrectFailureReasonType,
   ConversationFailureReason as ConversationFailureReasonType,
+  ListSnapshotsFailureReason as ListSnapshotsFailureReasonType,
+  ProcessSnapshot,
 } from 'optio-contracts';
 
 // Fields only the server may see: both upstreams carry innerAuth credentials;
@@ -274,6 +276,41 @@ export async function getProcessConversation(
   return { ...result, headers: NO_STORE };
 }
 
+// --- Snapshot history of a process (proxied from the engine) ---
+
+/** `GET /processes/:id/snapshots`. */
+export type SnapshotsResult =
+  | { status: 200; body: { snapshots: ProcessSnapshot[] } }
+  | { status: 404; body: { reason: ListSnapshotsFailureReasonType; message: string } };
+
+/**
+ * A process's valid snapshots, newest first, the newest included: the
+ * engine's `listSnapshots` (the task's `list_snapshots` hook). Gated as
+ * `GET /processes/:id` is, by scope and visibility: a process the request
+ * may not see, or none, is 404 `not-found` and the engine is not called.
+ * `authorize` is not asked: this is a read. The engine is asked by the
+ * process document's `_id`, also when `id` is a `processId` string. Both of
+ * the engine's reasons, `not-found` and `no-snapshot-support`, are 404.
+ */
+export async function getProcessSnapshots(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,
+  access: Access = UNRESTRICTED,
+): Promise<SnapshotsResult> {
+  const { db, prefix } = resolveDb(ctx.dbOpts, query);
+  const doc = await findReadableProcess(processReads(db, prefix, access.visibility), id, access);
+  if (!doc) return snapshotsFail('not-found');
+  const engine = resolveOptioEngine(ctx, query);
+  const result = await engine.listSnapshots({ processId: doc._id.toString() });
+  if (result.ok) return { status: 200, body: { snapshots: result.snapshots } };
+  return snapshotsFail(result.reason);
+}
+
+function snapshotsFail(reason: ListSnapshotsFailureReasonType): SnapshotsResult {
+  return { status: 404, body: { reason, message: MESSAGES[reason] } };
+}
+
 // --- A task's result file (result-download.ts) ---
 
 const PRIVATE_NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
@@ -388,6 +425,11 @@ const LAUNCH_STATUS: Record<LaunchFailureReasonType, 400 | 404 | 409> = {
   'not-a-factory': 409,
   'invalid-parameters': 400,
   'invalid-metadata': 400,
+  'invalid-request': 400,
+  // resumeFrom's refusals: 409, so 404 keeps meaning "no such process".
+  'no-snapshot-support': 409,
+  'snapshot-not-found': 409,
+  'capture-pending': 409,
 };
 
 const CANCEL_STATUS: Record<CancelFailureReasonType, 404 | 409> = {
@@ -400,8 +442,9 @@ const DISMISS_STATUS: Record<DismissFailureReasonType, 404 | 409> = {
   'not-dismissable': 409,
 };
 
+// Also the snapshot route's (getProcessSnapshots): its reasons are launch's too.
 const MESSAGES: Record<
-  LaunchFailureReasonType | CancelFailureReasonType | DismissFailureReasonType,
+  LaunchFailureReasonType | CancelFailureReasonType | DismissFailureReasonType | ListSnapshotsFailureReasonType,
   string
 > = {
   'not-found': 'Process not found',
@@ -415,6 +458,10 @@ const MESSAGES: Record<
   'invalid-parameters': 'The parameter values were refused',
   // The engine's own text (the colliding keys) replaces this when it sent one.
   'invalid-metadata': 'The launch stamp collides with the factory\'s metadata',
+  'invalid-request': 'resumeFrom needs resume: true',
+  'no-snapshot-support': 'This task keeps no snapshot history',
+  'snapshot-not-found': 'No valid snapshot was taken at that time',
+  'capture-pending': 'An unfinished snapshot capture of this process must be resolved first (Resurrect or Resume)',
   'not-cancellable': 'Process is not cancellable in its current state',
   'not-dismissable': 'Process is not in a dismissable state',
 };
@@ -451,6 +498,9 @@ export async function launchProcess(
   params?: Record<string, unknown>,
   ephemeral?: boolean,
   stamp?: LaunchStamp,
+  // Resume from this older snapshot (a getProcessSnapshots capturedAt); the
+  // engine refuses it without `resume` (invalid-request).
+  resumeFrom?: string,
 ): Promise<LaunchCommandResult> {
   const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const reads = processReads(db, prefix, access.visibility);
@@ -466,7 +516,9 @@ export async function launchProcess(
   }
   const engine = resolveOptioEngine(ctx, query);
   const result = await engine.launch({
-    processId: id, resume, sessionId, params, ephemeral, ...(metadata ? { metadata } : {}),
+    processId: id, resume, sessionId, params, ephemeral,
+    ...(metadata ? { metadata } : {}),
+    ...(resumeFrom !== undefined ? { resumeFrom } : {}),
   });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return launchFail(result.reason, result.message);
@@ -512,6 +564,7 @@ const RESURRECT_STATUS: Record<ResurrectFailureReasonType, 404 | 409> = {
   'resurrect-in-progress': 409,
   'launch-blocked': 409,
   'shutting-down': 409,
+  'not-launchable': 409,
 };
 
 const RESURRECT_MESSAGES: Record<ResurrectFailureReasonType, string> = {
@@ -521,6 +574,8 @@ const RESURRECT_MESSAGES: Record<ResurrectFailureReasonType, string> = {
   'resurrect-in-progress': 'A resurrect of this process is already running',
   'launch-blocked': 'Launches matching this filter are currently blocked',
   'shutting-down': 'The engine is shutting down',
+  // A resume from a snapshot, or a run a launch scheduled, is in progress.
+  'not-launchable': 'Another launch of this process is in progress; try again shortly',
 };
 
 function resurrectFail(reason: ResurrectFailureReasonType): ResurrectCommandResult {

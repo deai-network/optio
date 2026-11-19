@@ -1233,13 +1233,13 @@ When N projects need the same code — especially interface, contract, or wire-f
 ```typescript
 // Handlers (framework-agnostic)
 export { listProcesses, getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
-         getProcessConversation, getProcessResult,
+         getProcessConversation, getProcessSnapshots, getProcessResult,
          launchProcess, cancelProcess, dismissProcess, resurrectProcess,
          resyncProcesses } from 'optio-api';
 export type { ListQuery, PaginationQuery, TreeLogQuery,
               LaunchCommandResult, CancelCommandResult, DismissCommandResult,
               ResurrectCommandResult, ResyncCommandResult, ForbiddenResult,
-              ConversationResult, ResultDownloadResult } from 'optio-api';
+              ConversationResult, SnapshotsResult, ResultDownloadResult } from 'optio-api';
 
 // A task's result file (for custom adapters): resultQueryOf checks the route's query with
 // the contract's schema (the adapters serve it outside ts-rest); contentDisposition builds
@@ -1494,6 +1494,13 @@ async function getProcessTree(ctx: OptioContext, query: InstanceQuery & { maxDep
 async function getProcessLog(ctx: OptioContext, query: PaginationQuery & InstanceQuery, id: string, access?: Access): Promise<PaginatedResponse<LogEntry> | null>
 async function getProcessTreeLog(ctx: OptioContext, query: TreeLogQuery & InstanceQuery, id: string, access?: Access): Promise<PaginatedResponse | null>
 async function getProcessConversation(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<ConversationResult>
+async function getProcessSnapshots(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<SnapshotsResult>
+// GET /processes/:id/snapshots: the engine's listSnapshots, asked by the document's _id (either id
+// form accepted). Gated as GET /processes/:id is (findReadableProcess: scope and visibility; authorize
+// is not asked). SnapshotsResult = { status: 200; body: { snapshots: ProcessSnapshot[] } } (newest
+// first, valid snapshots only, the newest included) | { status: 404; body: { reason:
+// ListSnapshotsFailureReason, message } }: not-found (also out of scope or hidden; the engine is not
+// called) and no-snapshot-support ("This task keeps no snapshot history").
 async function getProcessResult(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access,
                                 deps?: ResultDownloadDeps): Promise<ResultDownloadResult>
 // GET /processes/:id/result: the file of optio-core's store_result, from GridFS (default bucket).
@@ -1511,20 +1518,25 @@ async function getProcessResult(ctx: OptioContext, query: InstanceQuery, id: str
 async function launchProcess(ctx: OptioContext, query: InstanceQuery, id: string, resume = false,
                              sessionId: string | null = null, access?: Access,
                              params?: Record<string, unknown>, ephemeral?: boolean,
-                             stamp?: LaunchStamp): Promise<LaunchCommandResult>
+                             stamp?: LaunchStamp, resumeFrom?: string): Promise<LaunchCommandResult>
 // 409 { reason: 'no-resume-support', message: "This task does not support resume" } when resume=true and supportsResume=false.
 // `params` (a task factory's values) go to the engine unchanged. `stamp` (launchMetadata bound to
 // the request) is called only when the target is a task factory's record, after authorize; its
-// map goes to the engine as `metadata` (none for a plain record, or a null stamp). 400 for
-// parameters-required, invalid-parameters (its message is the engine's "<id>: <what>", unchanged)
-// and invalid-metadata (its message names the colliding stamp keys, unchanged), 409 for
-// not-a-factory and shutting-down.
+// map goes to the engine as `metadata` (none for a plain record, or a null stamp). `resumeFrom` (a
+// getProcessSnapshots capturedAt) goes to the engine as `resumeFrom`, only when given. 400 for
+// parameters-required, invalid-parameters (its message is the engine's "<id>: <what>", unchanged),
+// invalid-metadata (its message names the colliding stamp keys, unchanged) and invalid-request
+// ("resumeFrom needs resume: true"), 409 for not-a-factory, shutting-down and resumeFrom's
+// no-snapshot-support ("This task keeps no snapshot history"), snapshot-not-found ("No valid
+// snapshot was taken at that time") and capture-pending ("An unfinished snapshot capture of this
+// process must be resolved first (Resurrect or Resume)").
 async function cancelProcess(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<CancelCommandResult>
 async function dismissProcess(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<DismissCommandResult>
 async function resurrectProcess(ctx: OptioContext, query: InstanceQuery, id: string,
                                 sessionId: string | null = null, access?: Access): Promise<ResurrectCommandResult>
 // POST /processes/:id/resurrect. 200: Process; 404/409: { reason: ResurrectFailureReason, message }
-// (not-found is 404, every other reason 409); 403 when authorize refuses.
+// (not-found is 404, every other reason 409, not-launchable "Another launch of this process is in
+// progress; try again shortly" among them); 403 when authorize refuses.
 async function resyncProcesses(ctx: OptioContext, query: InstanceQuery, clean = false,
                                metadataFilter?: ProcessMetadataFilter, access?: Access): Promise<ResyncCommandResult>
 // 202 { message }; 400/403 { message } when the filter is a predicate tree under a scope / contradicts it, or authorize refuses.

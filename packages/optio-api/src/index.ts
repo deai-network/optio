@@ -6,6 +6,7 @@ export {
   getProcessLog,
   getProcessTreeLog,
   getProcessConversation,
+  getProcessSnapshots,
   getProcessResult,
   launchProcess,
   cancelProcess,
@@ -22,6 +23,7 @@ export {
   type ResyncCommandResult,
   type ForbiddenResult,
   type ConversationResult,
+  type SnapshotsResult,
   type ResultDownloadResult,
 } from './handlers.js';
 

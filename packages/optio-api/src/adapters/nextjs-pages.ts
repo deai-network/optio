@@ -128,11 +128,15 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
       for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
       return result as any;
     },
+    getSnapshots: async ({ params, query }) => {
+      const result = await handlers.getProcessSnapshots(ctx, query, params.id, await currentAccess());
+      return result as any;
+    },
     // `req` is the caller's own request object (`tsRestHandler(req, res)` below).
     launch: async ({ params, query, body, req }) => {
       const result = await handlers.launchProcess(
         ctx, query, params.id, body?.resume === true, null, await currentAccess(), body?.params, body?.ephemeral,
-        opts.launchMetadata && launchStamp(opts.launchMetadata, req, body?.params),
+        opts.launchMetadata && launchStamp(opts.launchMetadata, req, body?.params), body?.resumeFrom,
       );
       return result as any;
     },

@@ -535,10 +535,14 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       reply.headers(headers);
       return result as any;
     },
+    getSnapshots: async ({ params, query, request }) => {
+      const result = await handlers.getProcessSnapshots(ctx, query, params.id, await access(request));
+      return result as any;
+    },
     launch: async ({ params, query, body, request }) => {
       const result = await handlers.launchProcess(
         ctx, query, params.id, body?.resume === true, body?.sessionId ?? null, await access(request), body?.params, body?.ephemeral,
-        opts.launchMetadata && launchStamp(opts.launchMetadata, request, body?.params),
+        opts.launchMetadata && launchStamp(opts.launchMetadata, request, body?.params), body?.resumeFrom,
       );
       return result as any;
     },
