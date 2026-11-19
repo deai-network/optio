@@ -174,10 +174,19 @@ async def test_unknown_process_404(mongo_db):
 
 
 @pytest.mark.parametrize("fields", [
+    # A run that has not ended (or never ran), both flags set.
     {"state": "running"},
+    {"state": "scheduled"},
+    {"state": "cancel_requested"},
+    {"state": "cancelling"},
+    {"state": "idle"},
+    # A finished run without saved state, or of a task that cannot resume.
     {"state": "cancelled", "has_saved_state": False},
     {"state": "cancelled", "supports_resume": False},
-    {"state": "done"},
+    {"state": "done", "has_saved_state": False},
+    {"state": "done", "supports_resume": False},
+    {"state": "failed", "has_saved_state": False},
+    {"state": "failed", "supports_resume": False},
 ])
 async def test_not_suspended_409(mongo_db, fields):
     async def hook(ctx):
@@ -189,6 +198,26 @@ async def test_not_suspended_409(mongo_db, fields):
         assert (status, body["reason"]) == (409, "not-suspended")
     finally:
         await listener.stop()
+
+
+@pytest.mark.parametrize("state", ["done", "failed", "cancelled"])
+async def test_any_finished_run_with_saved_state_is_read(mongo_db, state):
+    """Whatever the run ended in, supportsResume and hasSavedState decide:
+    the hook reads the record (owner, 2026-11-19)."""
+    seen = []
+
+    async def hook(ctx):
+        seen.append(ctx.process_id)
+        return [[1, {"type": "user"}]]
+    oid = await _insert_proc(mongo_db, "ca24", state=state)
+    listener = await _started(mongo_db, "ca24", {"t1": _task(read_conversation=hook)})
+    try:
+        status, body, _ = await _get(listener, oid)
+    finally:
+        await listener.stop()
+    assert status == 200
+    assert body == {"events": [[1, {"type": "user"}]], "capturedAt": None}
+    assert seen == ["t1"]
 
 
 async def test_no_task_or_hook_404(mongo_db):

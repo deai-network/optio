@@ -5,13 +5,16 @@ injects the basic-auth credential), like the per-task conversation listeners:
 
   GET /conversation/{processId}  — processId is the process document's _id
       (an ObjectId hex string). 200 {"events": [[seq, event], ...],
-      "capturedAt": <ISO or null>} for a suspended process whose task has a
-      `read_conversation` hook; otherwise an error.
+      "capturedAt": <ISO or null>} for a suspended process (`is_suspended`:
+      a run that ended done, failed or cancelled, with supportsResume and
+      hasSavedState) whose task has a `read_conversation` hook; otherwise an
+      error.
 
 Errors are JSON {"reason": <code>, "message": <text>}:
   401 unauthorized             wrong or missing basic auth (optio:<password>)
   404 not-found                no process document with that _id
-  409 not-suspended            not cancelled + supportsResume + hasSavedState
+  409 not-suspended            not a terminal state (done | failed |
+                               cancelled) + supportsResume + hasSavedState
   404 no-conversation-support  no registered task, or no read_conversation hook
   404 no-conversation          the hook returned None (no record)
   500 read-failed              the hook raised, returned something unusable or
@@ -51,6 +54,8 @@ from typing import TYPE_CHECKING, Any, Callable
 from aiohttp import web
 from bson import ObjectId
 
+from optio_core.state_machine import END_STATES
+
 if TYPE_CHECKING:
     from optio_core.context import ProcessContext
     from optio_core.models import TaskInstance
@@ -72,10 +77,13 @@ _NO_STORE = {"Cache-Control": "no-store"}
 
 
 def is_suspended(doc: dict) -> bool:
-    """A suspended process: cancelled, resumable, with a saved state."""
+    """A finished run (any END_STATES state: done, failed or cancelled) of a
+    task that can resume and saved its state: its record can be read, and it
+    can be resumed. The name is historical (only a cancel, a suspend,
+    qualified once); supportsResume and hasSavedState decide."""
     status = doc.get("status") or {}
     return (
-        status.get("state") == "cancelled"
+        status.get("state") in END_STATES
         and bool(doc.get("supportsResume"))
         and bool(doc.get("hasSavedState"))
     )

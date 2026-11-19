@@ -1001,8 +1001,10 @@ class TaskInstance:
 
 Optional, last field. Returns the conversation record a suspended process saved, for a
 read-only view without resuming it. The engine's conversation archive listener (below)
-calls it only for a suspended process (`status.state == "cancelled"`, `supportsResume`,
-`hasSavedState`), with a `ReadOnlyProcessContext` (exported from `optio_core`): a view of
+calls it only for a suspended process (`conversation_archive.is_suspended`: `status.state`
+in `END_STATES` — `done`, `failed` or `cancelled` —, `supportsResume`, `hasSavedState`;
+the name is historical, from when only a cancel qualified), with a
+`ReadOnlyProcessContext` (exported from `optio_core`): a view of
 the detached `ProcessContext` that `Optio._detached_context` builds (the same one
 `Optio.resurrect` uses: own never-set cancellation flag, `resume=False`), exposing only
 `process_id`, `_db`, `_prefix` and `load_blob`. Any other attribute (the write methods
@@ -1064,7 +1066,7 @@ await listener.stop()    # unpublish (only its own document) + close; idempotent
   | 200 | — | `{"events": [[seq, event], ...], "capturedAt": <ISO or null>}` |
   | 401 | `unauthorized` | missing or wrong basic auth |
   | 404 | `not-found` | no process document with that `_id` |
-  | 409 | `not-suspended` | not `cancelled` + `supportsResume` + `hasSavedState` |
+  | 409 | `not-suspended` | not a terminal state (`done` \| `failed` \| `cancelled`) + `supportsResume` + `hasSavedState` |
   | 404 | `no-conversation-support` | no registered task, or its `read_conversation` is `None` |
   | 404 | `no-conversation` | the hook returned `None` |
   | 500 | `read-failed` | the hook raised, returned something unusable or timed out (`READ_TIMEOUT_S`), or anything else failed (e.g. MongoDB) |
