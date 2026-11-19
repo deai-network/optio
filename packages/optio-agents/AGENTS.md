@@ -550,7 +550,10 @@ discard_snapshots_after"). A submodule: the package does not re-export it.
   names in any blob field, required or optional, that no remaining document of the
   process names in any blob field: `AsyncIOMotorGridFSBucket(db).delete`, `NoFile`
   ignored, any other error logged as a warning and not raised. An older or shared
-  blob is never deleted. Returns how many documents it deleted (0 for the newest).
+  blob is never deleted. What to delete is decided from the one read before the
+  deletion starts; a blob field whose value is not hashable (corrupt data: a list, a
+  sub-document) names no blob and is skipped. Returns how many documents it deleted
+  (0 for the newest).
 * Invalid newer documents are deleted too: an invalid newest document would
   otherwise be the one a plain Resume reads (the wrappers' `load_latest_snapshot`
   does not check blobs). The list holds valid snapshots only, so when a newer

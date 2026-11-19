@@ -42,9 +42,9 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-# The fraction of the seconds, when it has more digits than datetime keeps (six):
-# fromisoformat drops the rest, so they are checked here. An ISO date part holds no
-# "." or ",", so the first match is the time's fraction.
+# A fraction of seconds with more digits than datetime keeps (six): fromisoformat drops
+# the rest, so they are checked here, in every match (the time's and an offset's). An
+# ISO date part holds no "." or ",".
 _LONG_FRACTION = re.compile(r"[.,](\d{7,})")
 
 
@@ -95,14 +95,30 @@ def _parse_instant(captured_at: Any) -> datetime | None:
         return None
     if parsed.microsecond % 1000:
         return None
-    long_fraction = _LONG_FRACTION.search(captured_at)
-    if long_fraction is not None and long_fraction.group(1)[6:].strip("0"):
-        return None
+    for long_fraction in _LONG_FRACTION.finditer(captured_at):
+        if long_fraction.group(1)[6:].strip("0"):
+            return None
     return parsed.astimezone(timezone.utc)
 
 
+def _hashable(value: Any) -> bool:
+    try:
+        hash(value)
+    except TypeError:
+        return False
+    return True
+
+
+def _named(doc: dict, fields: Sequence[str]) -> dict[str, Any]:
+    """The ids `doc` names in `fields`, by field: set and hashable values only, so a
+    corrupt value (a list, a sub-document) names no blob and fails nothing."""
+    return {
+        f: doc[f] for f in fields if doc.get(f) is not None and _hashable(doc[f])
+    }
+
+
 def _named_ids(doc: dict, fields: Sequence[str]) -> list:
-    return [doc[f] for f in fields if doc.get(f) is not None]
+    return list(_named(doc, fields).values())
 
 
 async def _existing_blob_ids(db: "AsyncIOMotorDatabase", ids: set) -> set:
@@ -128,9 +144,8 @@ async def _load(
     existing = await _existing_blob_ids(db, required_ids)
     out = []
     for doc in docs:
-        valid = all(
-            doc.get(f) is not None and doc[f] in existing for f in required_blob_fields
-        )
+        named = _named(doc, required_blob_fields)
+        valid = all(f in named and named[f] in existing for f in required_blob_fields)
         out.append((doc, _utc(doc.get("capturedAt")), valid))
     return out
 
@@ -175,26 +190,24 @@ async def discard_snapshots_after(
     loaded = await _load(db, collection, process_id, required, blob_fields)
     if not any(valid and at == instant for _, at, valid in loaded):
         raise SnapshotNotFound(captured_at)
-    newer = [doc for doc, at, _ in loaded if at is not None and at > instant]
+    newer, kept = [], []
+    for doc, at, _ in loaded:
+        (newer if at is not None and at > instant else kept).append(doc)
     if not newer:
         return 0
 
-    coll = db[collection]
-    newer_ids = [doc["_id"] for doc in newer]
-    await coll.delete_many({"_id": {"$in": newer_ids}})
+    # What to delete is decided from the first read, before the deletion starts, so
+    # corrupt data cannot fail the discard half-way.
+    import gridfs.errors
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 
-    remaining = await coll.find(
-        {"processId": process_id}, projection={f: 1 for f in blob_fields},
-    ).to_list(None)
-    kept = {i for d in remaining for i in _named_ids(d, blob_fields)}
+    kept_ids = {i for d in kept for i in _named_ids(d, blob_fields)}
     doomed = [
         i for i in dict.fromkeys(i for d in newer for i in _named_ids(d, blob_fields))
-        if i not in kept
+        if i not in kept_ids
     ]
+    await db[collection].delete_many({"_id": {"$in": [doc["_id"] for doc in newer]}})
     if doomed:
-        import gridfs.errors
-        from motor.motor_asyncio import AsyncIOMotorGridFSBucket
-
         bucket = AsyncIOMotorGridFSBucket(db)
         for blob_id in doomed:
             try:

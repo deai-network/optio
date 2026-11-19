@@ -131,6 +131,8 @@ async def test_discard_deletes_newer_docs_and_their_blobs(mongo_db):
     TS,
     "2026-11-19T13:05:12.345+00:00",
     "2026-11-19T14:05:12.345+01:00",
+    "2026-11-19T13:05:12.345000Z",
+    "2026-11-19T13:05:12.3450000+00:00",
 ])
 async def test_discard_matches_any_iso_spelling_of_the_instant(mongo_db, spelling):
     chosen = await _snap(mongo_db, COLL, "p", _at(13, 5, 12, 345000))
@@ -179,6 +181,24 @@ async def test_discard_keeps_a_blob_a_kept_snapshot_names(mongo_db):
     assert await _blob_exists(mongo_db, a["sessionBlobId"])
     assert not await _blob_exists(mongo_db, c["sessionBlobId"])
     assert not await _blob_exists(mongo_db, c["workdirBlobId"])
+
+
+async def test_discard_skips_an_unhashable_blob_field_value(mongo_db):
+    a = await _snap(mongo_db, COLL, "p", _at(10))
+    c = await _snap(
+        mongo_db, COLL, "p", _at(12), extra={"conversationBlobId": ["not", "an", "id"]},
+    )
+
+    n = await discard_snapshots_after(
+        mongo_db, COLL, "p", "2026-11-19T10:00:00.000Z", REQ, OPT,
+    )
+
+    assert n == 1
+    assert await _remaining_ids(mongo_db) == [a["_id"]]
+    assert not await _blob_exists(mongo_db, c["sessionBlobId"])
+    assert not await _blob_exists(mongo_db, c["workdirBlobId"])
+    for field in REQ:
+        assert await _blob_exists(mongo_db, a[field])
 
 
 async def test_discard_deletes_invalid_newer_documents_too(mongo_db):
@@ -233,11 +253,14 @@ async def test_tz_aware_client(mongo_db):
 
 
 async def test_hooks_follow_the_layout_and_check_the_pending_capture_first(mongo_db):
-    layout = SnapshotLayout("_x_session_snapshots", ("workdirBlobId",))
+    layout = SnapshotLayout("_x_session_snapshots", ("workdirBlobId",), ("conversationBlobId",))
     assert layout.collection("t") == COLL
     ctx = SimpleNamespace(process_id="p", _db=mongo_db, _prefix="t")
     chosen = await _snap(mongo_db, COLL, "p", _at(13, 5, 12, 345000), fields=("workdirBlobId",))
-    await _snap(mongo_db, COLL, "p", _at(14), end="failed", fields=("workdirBlobId",))
+    newer = await _snap(
+        mongo_db, COLL, "p", _at(14), end="failed",
+        fields=("workdirBlobId", "conversationBlobId"),
+    )
 
     pending = AsyncMock(return_value=True)
     hooks = snapshot_hooks(layout, capture_pending=pending)
@@ -258,3 +281,6 @@ async def test_hooks_follow_the_layout_and_check_the_pending_capture_first(mongo
 
     assert await snapshot_hooks(layout).discard_snapshots_after(ctx, TS) == 1
     assert await _remaining_ids(mongo_db) == [chosen["_id"]]
+    assert not await _blob_exists(mongo_db, newer["workdirBlobId"])
+    assert not await _blob_exists(mongo_db, newer["conversationBlobId"])
+    assert await _blob_exists(mongo_db, chosen["workdirBlobId"])
