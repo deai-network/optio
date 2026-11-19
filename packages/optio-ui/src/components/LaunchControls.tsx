@@ -144,6 +144,7 @@ export function LaunchControls({
 
   // Case 1: single play button (fresh start semantics — no opts).
   if (!isResumable(process)) {
+    const launchFresh = () => onLaunch(process._id, undefined);
     const button = (
       <Button
         type="text"
@@ -152,12 +153,13 @@ export function LaunchControls({
         style={{ color: '#52c41a' }}
         onClick={(e) => {
           e.preventDefault();
-          onLaunch(process._id, undefined);
+          // With a warning, the click only opens the Popconfirm: its OK launches.
+          if (!process.warning) launchFresh();
         }}
       />
     );
     const wrapped = process.warning ? (
-      <Popconfirm title={process.warning} onConfirm={() => onLaunch(process._id, undefined)}>
+      <Popconfirm title={process.warning} onConfirm={launchFresh}>
         {button}
       </Popconfirm>
     ) : button;
