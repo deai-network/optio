@@ -37,6 +37,7 @@ from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.mcp import resolve_mcp_servers
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_env import session_env_remove
+from optio_agents.snapshots import snapshot_hooks
 from optio_host.host import (
     Host, LocalHost, ProcessHandle, RemoteHost, proc_wait, unwind_tracing,
 )
@@ -75,12 +76,14 @@ from optio_claudecode.pending_captures import (
     delete_pending_capture,
     discard_pending_conversation_blob,
     discard_pending_workdir_blob,
+    has_pending_capture,
     load_pending_capture,
     record_pending_capture,
     settle_pending_capture,
 )
 from optio_claudecode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_claudecode.snapshots import (
+    SNAPSHOT_LAYOUT,
     insert_snapshot,
     load_latest_snapshot,
     prune_snapshots,
@@ -2608,6 +2611,14 @@ def create_claudecode_task(
         from optio_claudecode.resurrect import resurrect_claudecode_session
         await resurrect_claudecode_session(ctx, config)
 
+    # Snapshot history (resume from an older snapshot): only with resume
+    # support, as Resurrect. A cut-off capture's record refuses the discard
+    # (CapturePending) until Resurrect or a plain Resume settles it.
+    hooks = (
+        snapshot_hooks(SNAPSHOT_LAYOUT, capture_pending=has_pending_capture)
+        if config.supports_resume else None
+    )
+
     return TaskInstance(
         execute=_execute,
         process_id=process_id,
@@ -2627,6 +2638,10 @@ def create_claudecode_task(
         read_conversation=(
             (lambda ctx: _read_conversation(ctx, decrypt=config.session_blob_decrypt))
             if config.conversation_ui else None
+        ),
+        list_snapshots=hooks.list_snapshots if hooks is not None else None,
+        discard_snapshots_after=(
+            hooks.discard_snapshots_after if hooks is not None else None
         ),
     )
 

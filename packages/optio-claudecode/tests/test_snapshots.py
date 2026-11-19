@@ -90,3 +90,126 @@ async def test_prune_noop_when_within_retention(mongo_db):
         await asyncio.sleep(0.001)
     pruned = await prune_snapshots(mongo_db, prefix="opt", process_id=pid)
     assert pruned == []
+
+
+# --- Snapshot history: the list_snapshots / discard_snapshots_after hooks ---
+
+
+def _config(supports_resume=True):
+    from optio_claudecode import ClaudeCodeTaskConfig
+    return ClaudeCodeTaskConfig(
+        consumer_instructions="(snapshot history test)",
+        fs_isolation=False,
+        supports_resume=supports_resume,
+        session_blob_encrypt=lambda b: b,
+        session_blob_decrypt=lambda b: b,
+    )
+
+
+def _task(supports_resume=True):
+    from optio_claudecode.session import create_claudecode_task
+    return create_claudecode_task(
+        process_id="p", name="P", config=_config(supports_resume),
+    )
+
+
+async def _blob(db, name):
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+    return await AsyncIOMotorGridFSBucket(db).upload_from_stream(name, b"payload")
+
+
+async def _blob_exists(db, blob_id):
+    return await db["fs.files"].find_one({"_id": blob_id}) is not None
+
+
+async def _two_snapshots(db):
+    """Two snapshots of process "p" under prefix "t", captured at 10:00 and
+    11:00, each with real session, workdir and conversation blobs. Returns
+    (older, newer) as (document id, [session, workdir, conversation blob ids])."""
+    from datetime import datetime, timezone
+    out = []
+    for hour in (10, 11):
+        blobs = [
+            await _blob(db, "session"),
+            await _blob(db, "workdir"),
+            await _blob(db, "conversation"),
+        ]
+        doc = await insert_snapshot(
+            db, prefix="t", process_id="p", end_state="done",
+            session_blob_id=blobs[0], workdir_blob_id=blobs[1],
+            conversation_blob_id=blobs[2], deliverables_emitted=[],
+        )
+        await db[f"t{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"].update_one(
+            {"_id": doc["_id"]},
+            {"$set": {"capturedAt": datetime(2026, 11, 19, hour, 0, tzinfo=timezone.utc)}},
+        )
+        out.append((doc["_id"], blobs))
+    return out[0], out[1]
+
+
+def _ctx(db):
+    from types import SimpleNamespace
+    return SimpleNamespace(process_id="p", _db=db, _prefix="t")
+
+
+async def test_snapshot_layout():
+    from optio_agents.snapshots import SnapshotLayout
+    from optio_claudecode.snapshots import SNAPSHOT_LAYOUT
+    assert SNAPSHOT_LAYOUT == SnapshotLayout(
+        "_claudecode_session_snapshots",
+        required_blob_fields=("sessionBlobId", "workdirBlobId"),
+        optional_blob_fields=("conversationBlobId", "migratedFromWorkdirBlobId"),
+    )
+    assert SNAPSHOT_LAYOUT.suffix == SESSION_SNAPSHOT_COLLECTION_SUFFIX
+
+
+async def test_task_wires_snapshot_hooks():
+    resumable = _task(supports_resume=True)
+    assert resumable.list_snapshots is not None
+    assert resumable.discard_snapshots_after is not None
+    plain = _task(supports_resume=False)
+    assert plain.list_snapshots is None
+    assert plain.discard_snapshots_after is None
+
+
+async def test_hooks_list_and_discard_claudecode_snapshots(mongo_db):
+    (older_id, older_blobs), (newer_id, newer_blobs) = await _two_snapshots(mongo_db)
+    task = _task()
+    ctx = _ctx(mongo_db)
+
+    assert await task.list_snapshots(ctx) == [
+        {"capturedAt": "2026-11-19T11:00:00.000Z", "endState": "done"},
+        {"capturedAt": "2026-11-19T10:00:00.000Z", "endState": "done"},
+    ]
+    assert await task.discard_snapshots_after(ctx, "2026-11-19T10:00:00.000Z") == 1
+
+    coll = mongo_db[f"t{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"]
+    assert await coll.find_one({"_id": newer_id}) is None
+    assert await coll.find_one({"_id": older_id}) is not None
+    for blob_id in newer_blobs:
+        assert not await _blob_exists(mongo_db, blob_id)
+    for blob_id in older_blobs:
+        assert await _blob_exists(mongo_db, blob_id)
+    assert await task.list_snapshots(ctx) == [
+        {"capturedAt": "2026-11-19T10:00:00.000Z", "endState": "done"},
+    ]
+
+
+async def test_capture_pending_refuses_and_deletes_nothing(mongo_db):
+    from optio_core import CapturePending
+    from optio_claudecode.pending_captures import record_pending_capture
+    (older_id, older_blobs), (newer_id, newer_blobs) = await _two_snapshots(mongo_db)
+    await record_pending_capture(
+        mongo_db, "t", process_id="p",
+        session_blob_id=ObjectId(), workdir_blob_id=ObjectId(),
+    )
+    task = _task()
+
+    with pytest.raises(CapturePending):
+        await task.discard_snapshots_after(_ctx(mongo_db), "2026-11-19T10:00:00.000Z")
+
+    coll = mongo_db[f"t{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"]
+    assert await coll.find_one({"_id": older_id}) is not None
+    assert await coll.find_one({"_id": newer_id}) is not None
+    for blob_id in (*older_blobs, *newer_blobs):
+        assert await _blob_exists(mongo_db, blob_id)

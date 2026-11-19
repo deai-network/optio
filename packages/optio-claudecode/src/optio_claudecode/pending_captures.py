@@ -73,6 +73,13 @@ async def load_pending_capture(
     return await _collection(db, prefix).find_one({"processId": process_id})
 
 
+async def has_pending_capture(ctx: "ProcessContext") -> bool:
+    """True when a cut-off capture of this process left its record. The
+    snapshot history's discard hook refuses then (CapturePending): Resurrect,
+    or a plain Resume, settles the record first."""
+    return await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id) is not None
+
+
 async def delete_pending_capture(
     db: AsyncIOMotorDatabase, prefix: str, process_id: str,
 ) -> None:

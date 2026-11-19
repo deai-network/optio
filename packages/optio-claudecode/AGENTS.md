@@ -36,7 +36,9 @@ create_claudecode_task(
 
 `TaskInstance` returned has `ui_widget="iframe"` and `supports_resume`
 tracking the config field (defaults to `True`); when `supports_resume` it
-also carries the `resurrect` hook (see Resurrect below). Its
+also carries the `resurrect` hook (see Resurrect below) and the snapshot
+history hooks `list_snapshots` / `discard_snapshots_after` (see Snapshot
+history below). Its
 `session_crypto` is always `SessionCrypto(encrypt=config.session_blob_encrypt,
 decrypt=config.session_blob_decrypt)` (members None without session
 encryption), so the engine can reach the cipher of a process that is not
@@ -239,6 +241,42 @@ retry would fix it). New blobs' metadata is `{processId: <process doc _id as
 str, else the snapshot's processId>, prefix, name}`. An interruption before
 the update leaves orphan new blobs and an unmarked document, redone on the
 next start.
+
+### Snapshot history
+
+`create_claudecode_task` sets `TaskInstance.list_snapshots` and
+`TaskInstance.discard_snapshots_after` when `config.supports_resume` (else
+both `None`, as `resurrect`), from
+`optio_agents.snapshots.snapshot_hooks(snapshots.SNAPSHOT_LAYOUT,
+capture_pending=pending_captures.has_pending_capture)`. optio-core calls them
+for `listSnapshots` and for a launch with `resume_from` (optio-core's
+AGENTS.md, "TaskInstance.list_snapshots / discard_snapshots_after"); the
+helper's rules (validity, timestamp matching, which blobs go) are in
+optio-agents' AGENTS.md, "Snapshot history (optio_agents.snapshots)". The
+capture, prune and restore code above is unchanged.
+
+`snapshots.SNAPSHOT_LAYOUT` is `SnapshotLayout(SESSION_SNAPSHOT_COLLECTION_SUFFIX,
+required_blob_fields=("sessionBlobId", "workdirBlobId"),
+optional_blob_fields=("conversationBlobId", "migratedFromWorkdirBlobId"))`. A
+snapshot is listed (and can be chosen) when its session and workdir blobs
+exist. Discarding the snapshots newer than the chosen one deletes their
+documents and every blob they name that no remaining snapshot of the process
+names: session, workdir, conversation, and `migratedFromWorkdirBlobId`, the
+deferred migration's transient field naming an old workdir blob (deleting its
+document would otherwise orphan that blob for good).
+
+`pending_captures.has_pending_capture(ctx) -> bool`: the process has a
+`{prefix}_claudecode_pending_captures` record (a cut-off capture, see above).
+The discard hook asks it first, and with a record raises `CapturePending`
+before any read or deletion: the launch is refused with `capture-pending` and
+nothing is deleted. Resurrect, or a plain Resume, settles it first
+(`settle_pending_capture`); after that an older snapshot can be chosen.
+Listing ignores the record.
+
+The model pick lives inside the session blob (`home/.claude/optio-picks.json`,
+see Public API), so each snapshot carries its own: a resume from an older
+snapshot gets that snapshot's picks, and a snapshot without a pick resumes on
+the configuration's current default model.
 
 ## Resurrect
 

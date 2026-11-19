@@ -38,9 +38,19 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from optio_agents.snapshots import SnapshotLayout
+
 
 SESSION_SNAPSHOT_COLLECTION_SUFFIX = "_claudecode_session_snapshots"
 SNAPSHOT_RETENTION = 5
+# The snapshot history hooks' view of this collection (optio_agents.snapshots).
+# migratedFromWorkdirBlobId is the deferred migration's transient field naming
+# the old workdir blob: optional, so deleting its document never orphans it.
+SNAPSHOT_LAYOUT = SnapshotLayout(
+    SESSION_SNAPSHOT_COLLECTION_SUFFIX,
+    required_blob_fields=("sessionBlobId", "workdirBlobId"),
+    optional_blob_fields=("conversationBlobId", "migratedFromWorkdirBlobId"),
+)
 
 
 def _collection(db: AsyncIOMotorDatabase, prefix: str):
