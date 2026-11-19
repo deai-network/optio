@@ -16,6 +16,13 @@ interface OptioContextValue {
 
 export const OptioContext = createContext<OptioContextValue>(null as any);
 
+// The context value, the same object while its fields stay the same: the
+// instances poll re-renders the provider at each fetch's start and end, and a
+// new value object would re-render every consumer with it.
+function useOptioContextValue(prefix: string, database: string | undefined, live: boolean, baseUrl: string, client: OptioClient): OptioContextValue {
+  return useMemo(() => ({ prefix, database, live, baseUrl, client, resetSession }), [prefix, database, live, baseUrl, client]);
+}
+
 interface OptioProviderProps {
   prefix?: string;
   database?: string;
@@ -41,9 +48,10 @@ function OptioProviderInner({ explicitPrefix, explicitDatabase, explicitLive, ba
   const prefix = explicitPrefix ?? discoveredInstance?.prefix ?? 'optio';
   const database = explicitDatabase ?? discoveredInstance?.database;
   const live = explicitLive ?? discoveredInstance?.live ?? false;
+  const value = useOptioContextValue(prefix, database, live, baseUrl, client);
 
   return (
-    <OptioContext.Provider value={{ prefix, database, live, baseUrl, client, resetSession }}>
+    <OptioContext.Provider value={value}>
       {children}
     </OptioContext.Provider>
   );
@@ -76,8 +84,10 @@ export function OptioProvider({ prefix, database, live, baseUrl = '', onAttentio
     return () => setBrowserOpenNotifier(undefined);
   }, [notificationApi]);
 
+  const value = useOptioContextValue(prefix ?? 'optio', database, live ?? false, baseUrl, client);
+
   return (
-    <OptioContext.Provider value={{ prefix: prefix ?? 'optio', database, live: live ?? false, baseUrl, client, resetSession }}>
+    <OptioContext.Provider value={value}>
       {notificationHolder}
       <OptioProviderInner explicitPrefix={prefix} explicitDatabase={database} explicitLive={live} baseUrl={baseUrl} client={client}>
         {children}

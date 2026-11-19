@@ -163,6 +163,10 @@ interface OptioContextValue {
 }
 ```
 
+The value is the same object while these fields stay the same (memoised on them): the
+10 s instances poll re-renders the provider at each fetch's start and end, and that re-renders
+no consumer unless the poll changed what it reads. Test: `src/__tests__/OptioProvider-stable-value.test.tsx`.
+
 ## Components
 
 ### LaunchControls
