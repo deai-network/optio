@@ -22,8 +22,10 @@ class LaunchOutcome:
     "invalid-request" (`resume_from` without `resume=True`),
     "no-snapshot-support" (the task has no discard_snapshots_after hook),
     "snapshot-not-found" and "capture-pending" (the hook's refusals:
-    SnapshotNotFound, CapturePending). Nothing is deleted when a launch is
-    refused. Spec: docs/2026-11-19-resume-from-snapshot-design.md
+    SnapshotNotFound, CapturePending), and answers "not-launchable" also
+    while another resume from a snapshot of the process is deleting its
+    newer snapshots. Nothing is deleted when a check before the hook fails.
+    Spec: docs/2026-11-19-resume-from-snapshot-design.md
     """
     ok: bool
     reason: Literal[
@@ -66,11 +68,14 @@ class DismissOutcome:
 @dataclass(frozen=True)
 class ResurrectOutcome:
     """Result of Optio.resurrect. ok=True means the save was started in the
-    background; `proc` is the process doc at that moment."""
+    background; `proc` is the process doc at that moment. "not-launchable":
+    a resume from a snapshot of the process is deleting the newer snapshots
+    (Optio.launch with resume_from, its discard window)."""
     ok: bool
     reason: Literal[
         "not-found", "not-resurrectable", "no-resurrect-support",
         "resurrect-in-progress", "launch-blocked", "shutting-down",
+        "not-launchable",
     ] | None = None
     proc: dict[str, Any] | None = None
 
@@ -187,7 +192,10 @@ class TaskInstance(TaskInstanceCore):
     # capture is held for the process), having deleted nothing. Called by
     # Optio.launch(..., resume_from=) after every launch check has passed,
     # with the detached ProcessContext Optio.resurrect uses; the resume
-    # follows. Spec: docs/2026-11-19-resume-from-snapshot-design.md
+    # follows. It must not report progress (ctx.report_progress): no flush
+    # follows it. While it runs, a launch or a resurrect of the process is
+    # refused (not-launchable). Any other exception is logged on the process
+    # and propagates. Spec: docs/2026-11-19-resume-from-snapshot-design.md
     discard_snapshots_after: Callable[..., Awaitable[int]] | None = None
 
 

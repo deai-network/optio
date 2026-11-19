@@ -702,10 +702,14 @@ async def relaunch_reset(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
     status: ProcessStatus, log: tuple[str, str] | None,
     *, launch_mode: str | None = None,
+    extra_log: Sequence[tuple[str, str]] = (),
 ) -> None:
     """Reset the previous run's result fields and set `status`, in one update.
 
-    The log becomes `[<log entry>]`, or empty without `log`. Unlike
+    The log becomes `[<log entry>]`, or empty without `log`, followed by the
+    `extra_log` entries ((level, message) each): lines the launch's caller
+    wrote about it (a resurrect's, a resume from a snapshot's), which a line
+    pushed before the launch would lose to this reset. Unlike
     clear_result_fields this does not delete descendants: the caller runs
     delete_descendants first. Spec: docs/2026-10-09-fewer-process-writes-design.md
 
@@ -726,7 +730,9 @@ async def relaunch_reset(
     # field, and one $set may not hold both `status` and `status.<x>`.
     fields = {k: v for k, v in _reset_fields().items() if not k.startswith("status.")}
     fields["status"] = status.to_dict()
-    fields["log"] = [_log_entry(*log)] if log is not None else []
+    fields["log"] = ([_log_entry(*log)] if log is not None else []) + [
+        _log_entry(*entry) for entry in extra_log
+    ]
     if launch_mode is not None:
         fields["launchMode"] = launch_mode
     await _collection(db, prefix).update_one(

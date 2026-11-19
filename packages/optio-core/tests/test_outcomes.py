@@ -233,7 +233,7 @@ async def test_launch_resume_downgraded_when_no_saved_state(mongo_db):
         "hasSavedState": False,
     })
     captured = {}
-    async def _spy(oid, *, resume, session_id):
+    async def _spy(oid, *, resume, session_id, extra_log=()):
         captured["resume"] = resume
     fw._executor.launch_process = _spy
 
@@ -257,7 +257,7 @@ async def test_launch_resume_kept_when_saved_state(mongo_db):
         "hasSavedState": True,
     })
     captured = {}
-    async def _spy(oid, *, resume, session_id):
+    async def _spy(oid, *, resume, session_id, extra_log=()):
         captured["resume"] = resume
     fw._executor.launch_process = _spy
 

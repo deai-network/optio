@@ -620,7 +620,7 @@ async def test_sweep_resurrect_end_to_end_saves_then_resumes(mongo_db):
             "hasUnsavedWork": True, "autoResumeScheduled": True,
         }})
 
-        async def _spy(oid, *, resume, session_id):
+        async def _spy(oid, *, resume, session_id, extra_log=()):
             order.append(("launch", resume))
         fw._executor.launch_process = _spy
         await fw._auto_resume_scheduled_processes()

@@ -160,13 +160,18 @@ await optio_core.shutdown(grace_seconds: float | None = None)  # graceful shutdo
 # the run (optio-ui sends its browser session's id), stored as originatingSessionId, read as ctx.session_id.
 await optio_core.launch(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None, resume_from: str | None = None) -> LaunchOutcome  # fire-and-forget; ok=False carries a reason (not-found, not-launchable, no-resume-support, launch-blocked, shutting-down, parameters-required, not-a-factory, invalid-parameters, invalid-metadata, invalid-request, no-snapshot-support, snapshot-not-found, capture-pending)
 # resume_from: a snapshot's capturedAt (from list_snapshots); resumes from that older snapshot. After every
-# check, the task's discard_snapshots_after hook deletes the newer snapshots, the log gets "Resuming from the
-# snapshot of <capturedAt>: <n> newer snapshot(s) discarded", then the resume runs as with resume=True.
+# check, the task's discard_snapshots_after hook deletes the newer snapshots, then the resume runs as with
+# resume=True; its log (reset by the launch) holds "State changed to scheduled", then "Resuming from the
+# snapshot of <capturedAt>: <n> newer snapshot(s) discarded".
 # Refusals, in this order: shutting-down, invalid-request (resume_from without resume=True), not-found, the
-# factory's and a kept launch's refusals (as for any resume), not-launchable (resurrect in progress),
-# not-launchable (state), no-resume-support, not-launchable (no saved state: never downgraded to a fresh run),
-# launch-blocked, no-snapshot-support (no task or no discard_snapshots_after hook), then the hook's
-# capture-pending (CapturePending) and snapshot-not-found (SnapshotNotFound). Nothing is deleted on a refusal.
+# factory's and a kept launch's refusals (as for any resume), not-launchable (a resurrect or another resume
+# from a snapshot in progress), not-launchable (state), no-resume-support, not-launchable (no saved state:
+# never downgraded to a fresh run), launch-blocked, no-snapshot-support (no task or no discard_snapshots_after
+# hook), then the hook's capture-pending (CapturePending) and snapshot-not-found (SnapshotNotFound). Nothing is
+# deleted on these refusals. While the hook runs, launch and resurrect of the process return not-launchable; a
+# shutdown begun meanwhile refuses the launch after the hook (shutting-down; the discard line is logged).
+# Another exception of the hook is logged ("Resume from the snapshot of <capturedAt> failed: <error>") and
+# propagates. After a deletion without a launch the chosen snapshot is the newest: a later Resume restores it.
 await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError, but LaunchBlocked for a launch block)
 await optio_core.launch_and_await_result(process_id: str, resume: bool = False, *, session_id: str | None, timeout: float | None = None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> Any
 # Launches like launch() and returns the object the task passes to ctx.publish_result(obj) while it keeps
@@ -194,12 +199,14 @@ await optio_core.launch_and_await_result(process_id: str, resume: bool = False, 
 await optio_core.resurrect(process_id: str, *, session_id: str | None) -> ResurrectOutcome  # fire-and-forget
 # Saves the work a failed run left on its host, then resumes. Refusals come back as
 # ResurrectOutcome(ok=False, reason=...), checked in this order: shutting-down, not-found,
-# no-resurrect-support (no TaskInstance.resurrect hook), resurrect-in-progress,
+# no-resurrect-support (no TaskInstance.resurrect hook), resurrect-in-progress, not-launchable
+# (a resume from a snapshot of the process is deleting its newer snapshots),
 # not-resurrectable (state not launchable, or hasUnsavedWork false), launch-blocked.
 # On ok=True a background task sets the process's resurrecting marker and runs the hook
 # (ctx.resume=False) under progress "Resurrecting: saving the unsaved work…". Hook returns:
-# hasUnsavedWork cleared, then launch(resume=True, same session_id); a refused launch is
-# logged. Hook raises NothingToResurrect: flag cleared, reason logged, no resume. Any other
+# hasUnsavedWork cleared, then launch(resume=True, same session_id), whose reset log holds
+# "Resurrected: unsaved work saved; resuming" after "State changed to scheduled"; a refused
+# launch logs that line and the reason. Hook raises NothingToResurrect: flag cleared, reason logged, no resume. Any other
 # exception: logged, flag kept (retry possible); an error escaping the background run
 # (e.g. a Mongo write) is logged by its done-callback. Progress and resurrecting are cleared in
 # every case, before the resume launch; init() clears a marker left by a dead engine. While
@@ -311,7 +318,7 @@ class TaskInstance:
     session_crypto: SessionCrypto | None = None  # the task's at-rest cipher (encrypt/decrypt callables) for its own blob channels; set by engine-wrapper factories, read e.g. by deferred migrations
     read_conversation: Callable[[ReadOnlyProcessContext], Awaitable[list | dict | None]] | None = None  # returns a suspended process's saved conversation record ([[seq, event], ...] or {events, capturedAt}; None = no record) for the engine's conversation archive listener; gets a read-only context (process_id, _db, _prefix, load_blob)
     list_snapshots: Callable[[ReadOnlyProcessContext], Awaitable[list[dict]]] | None = None  # the process's valid snapshots [{capturedAt, endState}], newest first, newest included; for Optio.list_snapshots; gets a read-only context; must not write
-    discard_snapshots_after: Callable[[ProcessContext, str], Awaitable[int]] | None = None  # last field; deletes the snapshots newer than the one with exactly that capturedAt (documents and blobs), returns how many; raises SnapshotNotFound / CapturePending having deleted nothing; called by launch(resume=True, resume_from=...) after every check
+    discard_snapshots_after: Callable[[ProcessContext, str], Awaitable[int]] | None = None  # last field; deletes the snapshots newer than the one with exactly that capturedAt (documents and blobs), returns how many; raises SnapshotNotFound / CapturePending having deleted nothing; called by launch(resume=True, resume_from=...) after every check; must not report progress (no flush follows); launch and resurrect of the process are refused while it runs
 ```
 
 The engine's conversation archive listener (`optio_core.ConversationArchiveListener`, started by
@@ -2124,7 +2131,7 @@ All components use `react-i18next`. Required keys:
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync
 - **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"` (no ephemeral one is left by then: see "Ephemeral processes"), and every `resurrecting` marker is cleared (no resurrect survives an engine restart). On `shutdown(grace_seconds=None)` (None = `cancel_grace_seconds`, default 5.0), tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not unwind within cancellation grace period"` (an ephemeral one is then deleted). Spec: `docs/2026-04-22-process-reconciliation-design.md`
 - **Lost final-state writes**: if MongoDB is unreachable when a process ends, the executor keeps the final state in memory and the supervisor loop retries it (backing off from 1 s to 30 s, no attempt limit) until it lands; the row gets a `"State recorded late: <state> (database was unavailable)"` log entry. `cancel()`, `cancel_and_wait()` and `group_cancel_and_wait()` settle an active row that no task in this engine owns instead of waiting on it (to the queued final state, else `failed` with `error="Process had no running task in this engine; its final state was never recorded"`; an ephemeral row is then deleted). Spec: `docs/2026-10-03-lost-final-state-writes-design.md`
-- **Process writes**: each lifecycle step of a process is one update on its document -- relaunch (reset, `scheduled` and its log line), start (`running`, its log line and `originatingSessionId`; conditional on the record still being `scheduled`, else the run does not start), a progress message and its log line, the end (final status, `expireAt`, its log or error line and the `widgetUpstream` clear), dismiss. Log entries keep their own timestamps and order; nothing is buffered. `store.update_status(..., log=, set_fields=, expected_state=)` (returns whether the record matched), `store.update_progress(..., log=)` and `store.relaunch_reset` carry the combined writes. Spec: `docs/2026-10-09-fewer-process-writes-design.md`
+- **Process writes**: each lifecycle step of a process is one update on its document -- relaunch (reset, `scheduled` and its log line, then the caller's lines about the launch: `Executor.launch_process(..., extra_log=)`, e.g. a resurrect's or a resume from a snapshot's, which a write before the reset would lose), start (`running`, its log line and `originatingSessionId`; conditional on the record still being `scheduled`, else the run does not start), a progress message and its log line, the end (final status, `expireAt`, its log or error line and the `widgetUpstream` clear), dismiss. Log entries keep their own timestamps and order; nothing is buffered. `store.update_status(..., log=, set_fields=, expected_state=)` (returns whether the record matched), `store.update_progress(..., log=)` and `store.relaunch_reset` carry the combined writes. Spec: `docs/2026-10-09-fewer-process-writes-design.md`
 - **Process indexes**: every `init()` ensures six indexes on `{prefix}_processes` (`store.ensure_process_indexes`): `processId`+`_id` desc, `parentId`+`order`, `rootId`+`depth`+`order`, `status.state`, `originatingSessionId`, and the `expireAt` TTL index (`expireAt_ttl`, as migration m004 creates it). It also ensures `store.RESULT_FILE_INDEX` on the default GridFS bucket's `fs.files` (`metadata.kind`+`metadata.prefix`+`metadata.processId`, one per database; `store.ensure_result_file_index`), which the result files' deletions and sweep query. An index that conflicts with an existing one is logged and skipped; for the result files' index any MongoDB error (`OperationFailure`, e.g. no right to create indexes on `fs.files`) is a logged warning, never a failed `init`. A record the TTL monitor evicts leaves its result file to `store.sweep_orphan_results`. A relaunch or dismiss removes `expireAt` (a terminal state sets it again), and a child copies its parent's `ttlSeconds`, so a tree expires with its root. Spec: `docs/2026-10-09-process-indexes-design.md`
 - **Persistent launch blocks**: `block_launches(..., persist=True)` and `group_cancel*(..., block_new_launches=True, persist=True)` write a record to `{prefix}_launch_blocks` (Mongo); records are reloaded into the in-memory block list on every `init()` so the block survives restarts. Removed only by `unblock_launches(launch_filter)` (exact filter match). When set, `reason` is stored on the record and appended to the `LaunchBlocked` exception message (`...; reason={reason}`). Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`
 

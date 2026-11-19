@@ -38,7 +38,7 @@ async def _setup(
     }})
     launched = []
 
-    async def _spy(oid, *, resume, session_id):
+    async def _spy(oid, *, resume, session_id, extra_log=()):
         launched.append((oid, resume, session_id))
     fw._executor.launch_process = _spy
     return fw, coll, proc, launched
@@ -78,6 +78,12 @@ async def test_success_clears_flag_and_resumes(mongo_db):
         calls.append(ctx.process_id)
         ctx.report_progress(None, "hook ran")
     fw, coll, proc, launched = await _setup(mongo_db, "res3", hook)
+    extra = []
+
+    async def _spy(oid, *, resume, session_id, extra_log=()):
+        launched.append((oid, resume, session_id))
+        extra.extend(extra_log)
+    fw._executor.launch_process = _spy
     out = await fw.resurrect("r1", session_id="s1")
     assert out.ok is True and out.proc["_id"] == proc["_id"]
 
@@ -90,7 +96,8 @@ async def test_success_clears_flag_and_resumes(mongo_db):
     assert doc["hasUnsavedWork"] is False
     messages = [e["message"] for e in doc["log"]]
     assert "Resurrect requested" in messages
-    assert any(m.startswith("Resurrected") for m in messages)
+    # The resume launch resets the log: it writes the line after its reset.
+    assert extra == [("event", "Resurrected: unsaved work saved; resuming")]
     assert proc["_id"] not in fw._resurrecting
 
 
@@ -176,6 +183,46 @@ async def test_resurrect_success_but_launch_blocked(mongo_db):
     doc = await coll.find_one({"_id": proc["_id"]})
     assert doc["hasUnsavedWork"] is False
     assert launched == []
+    # No launch reset the log: the save is recorded before the refusal.
+    messages = [e["message"] for e in doc["log"]]
+    resurrected = messages.index("Resurrected: unsaved work saved; resuming")
+    assert messages[resurrected + 1] == "Resume after resurrect not started: launch-blocked"
+
+
+@pytest.mark.asyncio
+async def test_resurrected_line_survives_the_real_resume_launch(mongo_db):
+    """The resume launch resets the log; the resurrect's line is written after
+    that reset ("State changed to scheduled"), so the running process keeps it."""
+    release = asyncio.Event()
+
+    async def hook(ctx):
+        pass
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="res14")
+
+    async def execute(ctx):
+        await release.wait()
+    proc = await fw.adhoc_define(TaskInstance(
+        execute=execute, process_id="r1", name="R1", supports_resume=True,
+        resurrect=hook,
+    ))
+    coll = mongo_db["res14_processes"]
+    await coll.update_one({"_id": proc["_id"]}, {"$set": {
+        "status.state": "failed", "hasUnsavedWork": True, "hasSavedState": True,
+    }})
+
+    async def state_is(state):
+        return (await coll.find_one({"_id": proc["_id"]}))["status"]["state"] == state
+    try:
+        assert (await fw.resurrect("r1", session_id=None)).ok is True
+        await _wait_until(lambda: state_is("running"))
+        messages = [e["message"] for e in (await coll.find_one({"_id": proc["_id"]}))["log"]]
+        line = "Resurrected: unsaved work saved; resuming"
+        assert line in messages
+        assert messages.index("State changed to scheduled") < messages.index(line)
+    finally:
+        release.set()
+    await _wait_until(lambda: state_is("done"))
 
 
 @pytest.mark.asyncio
@@ -241,7 +288,7 @@ async def test_resurrecting_marker_set_while_hook_runs(mongo_db, outcome):
     fw, coll, proc, _ = await _setup(mongo_db, f"res11-{outcome}", hook)
     at_launch = []
 
-    async def _spy(oid, *, resume, session_id):
+    async def _spy(oid, *, resume, session_id, extra_log=()):
         at_launch.append((await coll.find_one({"_id": proc["_id"]})).get("resurrecting"))
     fw._executor.launch_process = _spy
     assert (await fw.resurrect("r1", session_id=None)).ok is True

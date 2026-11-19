@@ -549,7 +549,7 @@ async def test_detached_context_shared_with_resurrect(mongo_db, monkeypatch):
         "status.state": "failed", "hasUnsavedWork": True, "hasSavedState": True,
     }})
 
-    async def _no_launch(oid, *, resume, session_id):
+    async def _no_launch(oid, *, resume, session_id, extra_log=()):
         pass
     fw._executor.launch_process = _no_launch
     assert (await fw.resurrect("r1", session_id="s1")).ok is True

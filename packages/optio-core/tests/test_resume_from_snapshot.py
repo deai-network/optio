@@ -1,8 +1,10 @@
 """Optio.list_snapshots and Optio.launch(..., resume_from=): the hook dispatch,
-the refusals (decided before the discard hook runs) and the order of the checks.
+the refusals (decided before the discard hook runs), the order of the checks,
+the guarded discard window and the log line the launch keeps.
 Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
 
 import asyncio
+import inspect
 import time
 
 import pytest
@@ -12,9 +14,10 @@ from optio_core import (
 )
 from optio_core.context import ProcessContext
 from optio_core.lifecycle import Optio
-from optio_core.models import TaskInstance
+from optio_core.models import TaskFactory, TaskInstance
 
 TS = "2026-11-19T13:05:12.345Z"
+LINE_2 = "Resuming from the snapshot of 2026-11-19T13:05:12.345Z: 2 newer snapshots discarded"
 
 
 async def _noop(ctx):
@@ -22,9 +25,14 @@ async def _noop(ctx):
 
 
 async def _wait_until(pred, timeout=60.0):
+    """Poll `pred` (sync or async) until it is truthy; the timeout only bounds
+    a hang."""
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        if pred():
+        value = pred()
+        if inspect.isawaitable(value):
+            value = await value
+        if value:
             return
         await asyncio.sleep(0.05)
     raise AssertionError("condition not reached within the hang ceiling")
@@ -32,11 +40,14 @@ async def _wait_until(pred, timeout=60.0):
 
 async def _setup(
     mongo_db, prefix, *, list_hook=None, discard_hook=None, state="cancelled",
-    saved=True, supports_resume=True, metadata=None,
+    saved=True, supports_resume=True, metadata=None, execute=_noop, spy=True,
+    resurrect=None, unsaved=False, extra_logs=None,
 ):
-    """An ad-hoc process "r1" with the given hooks and record state. The
-    executor's launch_process is a spy; it and the discard hook record into
-    the shared `events` list: ("launch", resume) and ("discard", captured_at)."""
+    """An ad-hoc process "r1" with the given hooks and record state. With
+    `spy`, the executor's launch_process is a spy; it and the discard hook
+    record into the shared `events` list: ("launch", resume) and
+    ("discard", captured_at). The spy adds the launch's extra log entries to
+    `extra_logs` when one is given."""
     events: list = []
     discard = None
     if discard_hook is not None:
@@ -46,24 +57,31 @@ async def _setup(
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix=prefix)
     proc = await fw.adhoc_define(TaskInstance(
-        execute=_noop, process_id="r1", name="R1", supports_resume=supports_resume,
+        execute=execute, process_id="r1", name="R1", supports_resume=supports_resume,
         metadata=metadata or {}, list_snapshots=list_hook,
-        discard_snapshots_after=discard,
+        discard_snapshots_after=discard, resurrect=resurrect,
     ))
     coll = mongo_db[f"{prefix}_processes"]
     await coll.update_one({"_id": proc["_id"]}, {"$set": {
         "status.state": state, "hasSavedState": saved,
-        "supportsResume": supports_resume,
+        "supportsResume": supports_resume, "hasUnsavedWork": unsaved,
     }})
 
-    async def _spy(oid, *, resume, session_id):
-        events.append(("launch", resume))
-    fw._executor.launch_process = _spy
+    if spy:
+        async def _spy(oid, *, resume, session_id, extra_log=()):
+            events.append(("launch", resume))
+            if extra_logs is not None:
+                extra_logs.extend(extra_log)
+        fw._executor.launch_process = _spy
     return fw, coll, proc, events
 
 
 async def _discard_none(ctx, captured_at):
     return 0
+
+
+def _messages(doc):
+    return [e["message"] for e in doc["log"]]
 
 
 @pytest.mark.asyncio
@@ -127,16 +145,18 @@ async def test_refusals_before_the_hook(mongo_db, case, setup, expected):
     fw._resurrecting.pop(proc["_id"], None)
     assert out.ok is False and out.reason == expected
     assert events == []
+    assert proc["_id"] not in fw._resuming_from
 
 
 @pytest.mark.asyncio
 async def test_no_hook_is_no_snapshot_support(mongo_db):
     async def list_hook(ctx):
         return []
-    fw, _, _, events = await _setup(mongo_db, "rfs5", list_hook=list_hook)
+    fw, _, proc, events = await _setup(mongo_db, "rfs5", list_hook=list_hook)
     out = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
     assert out.ok is False and out.reason == "no-snapshot-support"
     assert events == []
+    assert proc["_id"] not in fw._resuming_from
 
 
 @pytest.mark.asyncio
@@ -152,23 +172,42 @@ async def test_hook_refusals_map_to_reasons(mongo_db, raised, expected):
     assert out.ok is False and out.reason == expected
     assert events == [("discard", TS)]
     assert not any(e[0] == "launch" for e in events)
+    assert proc["_id"] not in fw._resuming_from
     doc = await coll.find_one({"_id": proc["_id"]})
-    assert not any(e["message"].startswith("Resuming from the snapshot") for e in doc["log"])
+    assert not any(m.startswith("Resum") for m in _messages(doc))
+
+
+@pytest.mark.asyncio
+async def test_another_hook_exception_propagates_and_is_logged(mongo_db):
+    async def hook(ctx, captured_at):
+        raise RuntimeError("disk full")
+    fw, coll, proc, events = await _setup(mongo_db, "rfs6-error", discard_hook=hook)
+    with pytest.raises(RuntimeError, match="disk full"):
+        await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
+    assert events == [("discard", TS)]
+    assert proc["_id"] not in fw._resuming_from
+    doc = await coll.find_one({"_id": proc["_id"]})
+    assert not any("discarded" in m for m in _messages(doc))
+    assert {
+        "level": "error",
+        "message": "Resume from the snapshot of 2026-11-19T13:05:12.345Z failed: disk full",
+    } in [{"level": e["level"], "message": e["message"]} for e in doc["log"]]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("discarded, line", [
-    (2, "Resuming from the snapshot of 2026-11-19T13:05:12.345Z: 2 newer snapshots discarded"),
+    (2, LINE_2),
     (1, "Resuming from the snapshot of 2026-11-19T13:05:12.345Z: 1 newer snapshot discarded"),
 ])
 async def test_success_discards_then_resumes(mongo_db, discarded, line):
     contexts = []
+    extra: list = []
 
     async def hook(ctx, captured_at):
         contexts.append(ctx)
         return discarded
     fw, coll, proc, events = await _setup(
-        mongo_db, f"rfs7-{discarded}", discard_hook=hook,
+        mongo_db, f"rfs7-{discarded}", discard_hook=hook, extra_logs=extra,
     )
     out = await fw.launch("r1", resume=True, session_id="s1", resume_from=TS)
     assert out.ok
@@ -177,8 +216,96 @@ async def test_success_discards_then_resumes(mongo_db, discarded, line):
     assert len(contexts) == 1
     assert isinstance(contexts[0], ProcessContext)
     assert contexts[0].process_id == "r1"
-    doc = await coll.find_one({"_id": proc["_id"]})
-    assert line in [e["message"] for e in doc["log"]]
+    assert contexts[0].session_id == "s1"
+    assert contexts[0].resume is False
+    # The line goes to the launch, which writes it after resetting the log.
+    assert extra == [("event", line)]
+    assert proc["_id"] not in fw._resuming_from
+
+
+@pytest.mark.asyncio
+async def test_the_line_survives_the_real_launch(mongo_db):
+    release = asyncio.Event()
+
+    async def execute(ctx):
+        await release.wait()
+
+    async def hook(ctx, captured_at):
+        return 2
+    fw, coll, proc, events = await _setup(
+        mongo_db, "rfs10", discard_hook=hook, execute=execute, spy=False,
+    )
+
+    async def state_is(state):
+        return (await coll.find_one({"_id": proc["_id"]}))["status"]["state"] == state
+    try:
+        out = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
+        assert out.ok
+        await _wait_until(lambda: state_is("running"))
+        messages = _messages(await coll.find_one({"_id": proc["_id"]}))
+        assert LINE_2 in messages
+        assert messages.index("State changed to scheduled") < messages.index(LINE_2)
+    finally:
+        release.set()
+    await _wait_until(lambda: state_is("done"))
+
+
+@pytest.mark.asyncio
+async def test_the_discard_window_refuses_a_launch_and_a_resurrect(mongo_db):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hook(ctx, captured_at):
+        entered.set()
+        await release.wait()
+        return 1
+    fw, _, proc, events = await _setup(
+        mongo_db, "rfs11", discard_hook=hook, resurrect=_noop, unsaved=True,
+    )
+    pending = asyncio.create_task(
+        fw.launch("r1", resume=True, session_id=None, resume_from=TS),
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 60)
+        assert proc["_id"] in fw._resuming_from
+        plain = await fw.launch("r1", resume=True, session_id=None)
+        assert plain.ok is False and plain.reason == "not-launchable"
+        again = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
+        assert again.ok is False and again.reason == "not-launchable"
+        resurrected = await fw.resurrect("r1", session_id=None)
+        assert resurrected.ok is False and resurrected.reason == "not-launchable"
+        assert events == [("discard", TS)]
+    finally:
+        release.set()
+    out = await asyncio.wait_for(pending, 60)
+    assert out.ok
+    await _wait_until(lambda: ("launch", True) in events)
+    assert events == [("discard", TS), ("launch", True)]
+    assert proc["_id"] not in fw._resuming_from
+
+
+@pytest.mark.asyncio
+async def test_shutdown_during_the_discard_is_shutting_down(mongo_db):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hook(ctx, captured_at):
+        entered.set()
+        await release.wait()
+        return 2
+    fw, coll, proc, events = await _setup(mongo_db, "rfs12", discard_hook=hook)
+    pending = asyncio.create_task(
+        fw.launch("r1", resume=True, session_id=None, resume_from=TS),
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 60)
+        await fw.shutdown(grace_seconds=0.1)
+    finally:
+        release.set()
+    out = await asyncio.wait_for(pending, 60)
+    assert out.ok is False and out.reason == "shutting-down"
+    assert events == [("discard", TS)]
+    assert proc["_id"] not in fw._resuming_from
+    # No launch resets the log: the deletion is recorded there at once.
+    assert LINE_2 in _messages(await coll.find_one({"_id": proc["_id"]}))
 
 
 @pytest.mark.asyncio
@@ -189,6 +316,9 @@ async def test_check_order(mongo_db):
     assert out.reason == "invalid-request"
     out = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
     assert out.reason == "not-launchable"
+    # invalid-request comes before not-found.
+    out = await fw.launch("missing", resume=False, session_id=None, resume_from=TS)
+    assert out.reason == "invalid-request"
     assert events == []
     # launch-blocked comes before no-snapshot-support.
     fw, _, _, events = await _setup(
@@ -198,6 +328,68 @@ async def test_check_order(mongo_db):
         out = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
     assert out.reason == "launch-blocked"
     assert events == []
+    # no saved state (not-launchable) comes before launch-blocked.
+    fw, _, _, events = await _setup(
+        mongo_db, "rfs8c", state="idle", saved=False, metadata={"project": "p1"},
+        discard_hook=_discard_none,
+    )
+    async with fw.block_launches({"project": "p1"}):
+        out = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
+    assert out.reason == "not-launchable"
+    assert events == []
+    # shutting-down comes before invalid-request.
+    await fw.shutdown(grace_seconds=0.1)
+    out = await fw.launch("r1", resume=False, session_id=None, resume_from=TS)
+    assert out.reason == "shutting-down"
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_resume_from_a_kept_launch(mongo_db):
+    """A TaskFactory's kept launch (a task_for instance with the hook) resumes
+    from a snapshot through _relaunch_refusal and _launch_record; without saved
+    state it is refused before the hook."""
+    events: list = []
+
+    async def discard(ctx, captured_at):
+        events.append(("discard", ctx.process_id, captured_at))
+        return 1
+
+    def task_for(values, process_id):
+        return TaskInstance(
+            execute=_noop, process_id=process_id, name="Kept",
+            supports_resume=True, discard_snapshots_after=discard,
+        )
+    factory = TaskFactory(
+        process_id="fac", name="Fac", ttl_seconds=3600, task_for=task_for,
+        parameters=[{"kind": "boolean", "id": "dry", "label": "Dry run", "required": False}],
+    )
+
+    async def get_defs(_services, metadata_filter=None):
+        return [factory]
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="rfs13", get_task_definitions=get_defs)
+
+    async def _spy(oid, *, resume, session_id, extra_log=()):
+        events.append(("launch", resume))
+    fw._executor.launch_process = _spy
+    first = await fw.launch("fac", session_id=None, params={"dry": True})
+    assert first.ok
+    pid = first.proc["processId"]
+    await _wait_until(lambda: ("launch", False) in events)
+    coll = mongo_db["rfs13_processes"]
+    await coll.update_one({"processId": pid}, {"$set": {
+        "status.state": "cancelled", "hasSavedState": False,
+    }})
+    events.clear()
+    out = await fw.launch(pid, resume=True, session_id=None, resume_from=TS)
+    assert out.ok is False and out.reason == "not-launchable"
+    assert events == []
+    await coll.update_one({"processId": pid}, {"$set": {"hasSavedState": True}})
+    out = await fw.launch(pid, resume=True, session_id=None, resume_from=TS)
+    assert out.ok
+    await _wait_until(lambda: ("launch", True) in events)
+    assert events == [("discard", pid, TS), ("launch", True)]
 
 
 @pytest.mark.asyncio

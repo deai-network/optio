@@ -6,6 +6,7 @@ import os as _os
 import sys
 import time
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
@@ -202,12 +203,20 @@ class Executor:
 
     async def launch_process(
         self, process_id: str, resume: bool = False, *, session_id: str | None,
+        extra_log: Sequence[tuple[str, str]] = (),
     ) -> str | None:
         """Launch a top-level process by processId OR OID hex (dual-form).
 
         If resume is True, ctx.resume will be True inside the execute function,
         signalling that the task should restore previous state rather than start fresh.
         A TaskFactory's record is never launched (returns None).
+
+        `extra_log` ((level, message) entries) follows "State changed to
+        scheduled" in the run's new log (store.relaunch_reset): the caller's
+        lines about this launch, e.g. a resurrect's or a resume from a
+        snapshot's (Optio._launch_record), which the reset would wipe if
+        they were written before it. A launch that does not start (the
+        record not launchable, a factory's record) writes none of them.
 
         A TaskFactory's launch (metadata.taskFactory) runs in one of its
         factory's slots (max_concurrency, _take_slot): it may wait for one in
@@ -239,6 +248,7 @@ class Executor:
             self._db, self._prefix, proc["_id"], ProcessStatus(state="scheduled"),
             ("event", "State changed to scheduled"),
             launch_mode="resume" if resume else "fresh",
+            extra_log=extra_log,
         )
         # A launch rebuilds the workdir: whatever unsaved work a failed run
         # left there is gone from now on (Resurrect no longer applies).

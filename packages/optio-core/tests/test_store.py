@@ -463,6 +463,27 @@ async def test_relaunch_reset_is_one_update_and_resets_like_clear_result_fields(
     assert await mongo_db["test_processes"].find_one({"_id": child_oid}) is not None
 
 
+async def test_relaunch_reset_appends_extra_log_after_its_entry(mongo_db):
+    """A caller's lines about the launch (a resurrect's, a resume from a
+    snapshot's) follow the reset's own entry, in the same update."""
+    from process_write_counter import CountingDb
+    from optio_core.store import relaunch_reset
+    oid, _ = await _seed_finished_run(mongo_db, "rr4")
+    db = CountingDb(mongo_db, "test")
+
+    await relaunch_reset(
+        db, "test", oid, ProcessStatus(state="scheduled"),
+        ("event", "State changed to scheduled"),
+        extra_log=[("event", "first"), ("warning", "second")],
+    )
+
+    assert [w.op for w in db.writes] == ["update"]
+    doc = await mongo_db["test_processes"].find_one({"_id": oid})
+    assert _entries(doc) == [
+        ("event", "State changed to scheduled"), ("event", "first"), ("warning", "second"),
+    ]
+
+
 async def test_relaunch_reset_without_log_empties_the_log(mongo_db):
     from optio_core.store import relaunch_reset
     oid, _ = await _seed_finished_run(mongo_db, "rr2")

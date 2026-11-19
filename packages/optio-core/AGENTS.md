@@ -58,7 +58,8 @@ found nothing.
 
 `optio_core.ResurrectOutcome` (`ok`, `reason`, `proc`) is the result type of `Optio.resurrect`.
 `reason` is one of `not-found`, `not-resurrectable`, `no-resurrect-support`,
-`resurrect-in-progress`, `launch-blocked`, `shutting-down`.
+`resurrect-in-progress`, `launch-blocked`, `shutting-down`, `not-launchable` (a resume from a
+snapshot of the process is deleting its newer snapshots; see "Optio.launch").
 
 ---
 
@@ -89,7 +90,11 @@ snapshot helper implements them for the engine wrappers.
   capture for the process (a Resurrect would make a newer snapshot), in both cases having
   deleted nothing. `Optio.launch(..., resume=True, resume_from=...)` calls it after every
   launch check has passed (see "Optio.launch"), with the detached `ProcessContext` that
-  `Optio.resurrect` uses, and then resumes.
+  `Optio.resurrect` uses, and then resumes. It must not report progress
+  (`ctx.report_progress`): no flush follows it. While it runs, a launch or a resurrect of the
+  process is refused (`not-launchable`). Any other exception is logged on the process
+  ("Resume from the snapshot of <capturedAt> failed: <error>", level `error`) and propagates
+  out of `launch`.
 
 Known behaviour (documented, not changed):
 
@@ -97,9 +102,8 @@ Known behaviour (documented, not changed):
   with Restart).
 - What the discarded runs delivered (files the app received through `on_deliverable`) stays
   in the app; the resumed agent may deliver again.
-- The conversation view after the resume continues from the chosen snapshot's record; the
-  newer turns stay in the process log only.
-- Restoring replaces the host workdir with the snapshot's.
+- The conversation and the workdir continue from the chosen snapshot; the newer turns are gone
+  with the discarded snapshots.
 - Auto-resume, Resurrect and the conversation archive are unchanged: they read the newest
   snapshot, which is the chosen one after the deletion.
 
@@ -384,19 +388,32 @@ concurrency limit).
 
 `resume_from` (a snapshot's `capturedAt`, as `Optio.list_snapshots` gave it) resumes from that
 older snapshot. After every check has passed, the task's `discard_snapshots_after` hook deletes
-the snapshots newer than it, the process log gets the event "Resuming from the snapshot of
-<capturedAt>: <n> newer snapshot(s) discarded" ("snapshot" for 1), and the process is resumed
-as by `resume=True`. The refusals, in this order: `shutting-down`; `invalid-request`
-(`resume_from` without `resume=True`); `not-found`; a TaskFactory's and a kept launch's
-refusals, as for any resume; `not-launchable` (a resurrect in progress); `not-launchable`
-(state); `no-resume-support`; `not-launchable` (no saved state: unlike a plain resume, which
-then launches fresh, a picked snapshot never becomes a fresh run); `launch-blocked`;
+the snapshots newer than it, and the process is resumed as by `resume=True`. The run's log (a
+launch resets it) starts with "State changed to scheduled", then the event "Resuming from the
+snapshot of <capturedAt>: <n> newer snapshot(s) discarded" ("snapshot" for 1). The refusals, in
+this order: `shutting-down`; `invalid-request` (`resume_from` without `resume=True`);
+`not-found`; a TaskFactory's and a kept launch's refusals, as for any resume; `not-launchable`
+(a resurrect, or another resume from a snapshot, in progress); `not-launchable` (state);
+`no-resume-support`; `not-launchable` (no saved state: unlike a plain resume, which then
+launches fresh, a picked snapshot never becomes a fresh run); `launch-blocked`;
 `no-snapshot-support` (no registered task, or its `discard_snapshots_after` is `None`); then the
 hook's own, `capture-pending` (`CapturePending`) and `snapshot-not-found` (`SnapshotNotFound`).
-Nothing is deleted when a check fails; any other exception of the hook propagates. If the
-launch fails after the deletion, the chosen snapshot is the newest, so a later resume restores
-it. A plain `resume=True` never calls the hook. Spec:
+Nothing is deleted when one of these fails.
+
+From the hook's start until the run is scheduled, the process is in the discard window
+(`Optio._resuming_from`): a `launch` of it (plain or with `resume_from`) and a `resurrect` of it
+are refused with `not-launchable`, so nothing reads the snapshots while they are deleted. A
+shutdown begun while the hook ran refuses the launch after it (`shutting-down`); the discard
+line is then written to the log at once. Any other exception of the hook is logged ("Resume
+from the snapshot of <capturedAt> failed: <error>", level `error`) and propagates. When the
+launch does not follow a deletion (a shutdown, a failed launch), the chosen snapshot is the
+newest, so a later resume restores it. A plain `resume=True` never calls the hook. Spec:
 `docs/2026-11-19-resume-from-snapshot-design.md`.
+
+A caller's lines about a launch go through it, because the launch resets the log
+(`Executor.launch_process(..., extra_log=)` and `store.relaunch_reset(..., extra_log=)`: (level,
+message) entries written after "State changed to scheduled", in the same update): the
+resume-from line above, and the resurrect's "Resurrected: unsaved work saved; resuming".
 
 `LaunchOutcome` (`ok`, `reason`, `proc`, `message`): `reason` is one of `not-found`,
 `not-launchable`, `launch-blocked`, `no-resume-support`, `shutting-down`, `parameters-required`,
@@ -689,8 +706,10 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 Saves the work a failed run left on its host, then resumes. Fire-and-forget like `launch`:
 preconditions are answered at once, checked in this order, as `ResurrectOutcome(ok=False,
 reason=...)`: `shutting-down`, `not-found`, `no-resurrect-support` (the task has no
-`resurrect` hook), `resurrect-in-progress`, `not-resurrectable` (state not launchable, or
-`hasUnsavedWork` false), `launch-blocked` (it ends in a launch, so launch blocks apply).
+`resurrect` hook), `resurrect-in-progress`, `not-launchable` (a resume from a snapshot of the
+process is in its discard window; see "Optio.launch"), `not-resurrectable` (state not
+launchable, or `hasUnsavedWork` false), `launch-blocked` (it ends in a launch, so launch blocks
+apply).
 
 On `ok=True` (`proc` is the process document at that moment) a background task logs
 "Resurrect requested", sets `resurrecting` to true, sets progress "Resurrecting: saving the
@@ -698,8 +717,10 @@ unsaved work…" and runs the task's `resurrect` hook with a `ProcessContext` fo
 (`resume=False`). Then:
 
 - hook returns: `hasUnsavedWork` is cleared, then the process is launched with
-  `resume=True` and the same `session_id`. If that launch is refused (e.g. a launch block
-  appeared meanwhile), the reason is logged ("Resume after resurrect not started: ...").
+  `resume=True` and the same `session_id`. The launch writes "Resurrected: unsaved work saved;
+  resuming" to the run's log after its reset ("State changed to scheduled"). If that launch is
+  refused (e.g. a launch block appeared meanwhile), the line is logged as it is, followed by
+  the reason ("Resume after resurrect not started: ...").
 - hook raises `NothingToResurrect`: `hasUnsavedWork` is cleared and the reason logged; no
   resume.
 - hook raises anything else: the error is logged at `error` level and `hasUnsavedWork` stays
