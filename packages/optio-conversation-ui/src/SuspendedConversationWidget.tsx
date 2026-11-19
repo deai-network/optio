@@ -1,15 +1,16 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { Alert, Button, Typography, theme } from 'antd';
-import { isActive, isSuspended, useProcessConversation, type WidgetProps } from 'optio-ui';
+import { isActive, isSuspended, runEndedAt, useProcessConversation, type WidgetProps } from 'optio-ui';
 import { useSpinnerKey, useVultusComponents } from 'vultus-antd';
 import { ClaudeCodeReplayView } from './claudecode/ClaudeCodeReplayView.js';
 
 // The conversation widget's suspended variant
 // (docs/2026-10-12-suspended-conversation-view-design.md, section 5): optio-ui
 // renders it instead of ConversationWidget while the process is suspended
-// (cancelled with saved state). It reads the conversation as it stood at the
-// suspend, through optio-api's getConversation — its only request until the
-// user sends a message, which resumes the session (ClaudeCodeReplayView).
+// (`isSuspended`: a run that ended done, failed or cancelled, with saved
+// state). It reads the conversation as it stood at the end of that run,
+// through optio-api's getConversation — its only request until the user
+// sends a message, which resumes the session (ClaudeCodeReplayView).
 
 const OTHER_PROTOCOL_NOTE = 'Resume to view this conversation.';
 const NO_RECORD_NOTE = 'No saved conversation to show; resume to continue it.';
@@ -55,13 +56,18 @@ export function SuspendedConversationWidget(props: WidgetProps) {
   const { process } = props;
   // optio-ui keeps this variant on screen while the process resumes, until
   // its live widget is ready (useProcessWidgetState's 'resuming'). The
-  // relaunch clears widgetData and stoppedAt: keep what the suspended
-  // process had, so the replay neither changes nor refetches meanwhile.
+  // relaunch clears widgetData, the state the run ended in and its end
+  // timestamp: keep what the suspended process had, so the replay neither
+  // changes nor refetches meanwhile.
   const resuming = !isSuspended(process) && isActive(process);
-  const own = { widgetData: process?.widgetData ?? undefined, stoppedAt: process?.status?.stoppedAt ?? null };
+  const own = {
+    widgetData: process?.widgetData ?? undefined,
+    stoppedAt: runEndedAt(process),
+    endState: process?.status?.state as string | undefined,
+  };
   const kept = useRef(own);
   if (!resuming) kept.current = own;
-  const { widgetData, stoppedAt } = resuming ? kept.current : own;
+  const { widgetData, stoppedAt, endState } = resuming ? kept.current : own;
   // widgetData.protocol survives the suspend. Only claudecode writes a record
   // today; the other agents get a note and no request.
   const protocol = widgetData?.protocol ?? 'claudecode';
@@ -72,8 +78,8 @@ export function SuspendedConversationWidget(props: WidgetProps) {
   // SpinnerScope, so the key names the process itself.
   const { Spinner } = useVultusComponents();
   const spinnerKey = useSpinnerKey(`optio:process:${process?._id}:archive`);
-  // stoppedAt from props keys the query per suspend without polling the
-  // process document.
+  // The run's end timestamp from props keys the query per end of a run
+  // without polling the process document.
   const conversation = useProcessConversation(process?._id, {
     enabled: replayable,
     stoppedAt,
@@ -96,7 +102,7 @@ export function SuspendedConversationWidget(props: WidgetProps) {
   const body = conversation.data?.body;
   // The process resumed while this view was open, before the record was
   // read (or this view mounted only once it resumed: the relaunch cleared
-  // stoppedAt): the host's stand-in, else nothing, until the live widget
+  // the end timestamp): the host's stand-in, else nothing, until the live widget
   // takes over.
   if (reason === 'not-suspended' && !body) {
     if (resuming && props.placeholder !== undefined) {
@@ -109,6 +115,7 @@ export function SuspendedConversationWidget(props: WidgetProps) {
       <ClaudeCodeReplayView
         process={process}
         widgetData={widgetData}
+        endState={endState}
         events={body.events}
         capturedAt={typeof body.capturedAt === 'string' ? body.capturedAt : null}
         apiBaseUrl={props.apiBaseUrl}

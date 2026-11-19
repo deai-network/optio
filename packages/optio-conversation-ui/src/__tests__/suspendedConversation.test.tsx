@@ -456,6 +456,91 @@ describe('SuspendedConversationWidget: sending resumes the session', () => {
   });
 });
 
+// A run that ended done or failed with its state saved shows its record as a
+// cancelled one does (owner, 2026-11-19): read under the timestamp its own end
+// set, its wording naming how it ended, a send resuming it.
+describe('SuspendedConversationWidget: a done or failed run', () => {
+  const box = () => screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+  const LAUNCH = '/api/processes/p1/launch?database=db&prefix=gm';
+  const GET = '/api/processes/p1?database=db&prefix=gm';
+  const jsonResp = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+  const typeAndSend = (text: string) => {
+    fireEvent.change(box(), { target: { value: text } });
+    fireEvent.click(within(screen.getByTestId('conversation-send-combined')).getByRole('button'));
+  };
+  const DONE = { state: 'done', doneAt: '2026-11-19T11:00:00.000Z' };
+  const FAILED = { state: 'failed', failedAt: '2026-11-19T12:00:00.000Z', error: 'boom' };
+  const rows = [
+    ['done', DONE, '2026-11-19T11:00:00.000Z', 'Session ended', 'This session has ended.'],
+    ['failed', FAILED, '2026-11-19T12:00:00.000Z', 'Session failed', 'This session failed.'],
+  ] as const;
+
+  it.each(rows)('a %s run: the record is read under the timestamp its end set', (_state, status, key) => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps({ status })} />));
+    expect(useProcessConversation).toHaveBeenCalledWith('p1', { enabled: true, stoppedAt: key });
+  });
+
+  it.each(rows)('a %s run: the divider says how the session ended', (_state, status, _key, label) => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps({ status })} />));
+    expect(screen.getByText('List the files')).toBeTruthy();
+    expect(screen.getByTestId('conversation-closed').textContent).toBe(label);
+  });
+
+  it.each(rows)('a %s run: Send asks to resume it, saying how it ended', async (_state, status, _key, _label, said) => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps({ status })} />));
+    typeAndSend('carry on');
+    await screen.findByRole('button', { name: 'Resume and send' });
+    expect(document.querySelector('.ant-modal-confirm-title')?.textContent).toBe('Resume the session?');
+    expect(document.querySelector('.ant-modal-confirm-content')?.textContent).toBe(
+      `${said} Sending this message will resume it. Is this what you want?`,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('Resume and send on a done run resumes it and the message waits', async () => {
+    const f = vi.fn(async (url: string) => (
+      url === LAUNCH ? jsonResp(200, { _id: 'p1' })
+        : url === GET ? jsonResp(200, { status: { state: 'scheduled' } }) : jsonResp(404, {})));
+    vi.stubGlobal('fetch', f);
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps({ status: DONE })} />));
+    typeAndSend('carry on');
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume and send' }));
+    await waitFor(() => expect(f.mock.calls.some((c) => c[0] === LAUNCH)).toBe(true), { timeout: 60_000 });
+    const launch = f.mock.calls.find((c) => c[0] === LAUNCH) as unknown as [string, RequestInit];
+    expect(JSON.parse(String(launch[1].body))).toMatchObject({ resume: true });
+    await waitFor(() => expect(screen.getByTestId('optio-resume-send-pending')).toBeTruthy(), { timeout: 60_000 });
+  });
+
+  it('a failed run over unsaved work: the question says it failed and that resuming discards the work', async () => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    render(wrap(<SuspendedConversationWidget {...widgetProps({ status: FAILED, supportsResurrect: true, hasUnsavedWork: true })} />));
+    typeAndSend('carry on');
+    const ok = await screen.findByRole('button', { name: 'Discard and send' });
+    expect(document.querySelector('.ant-modal-confirm-content')?.textContent).toBe(
+      'This session failed. Sending this message will resume it. Is this what you want? '
+      + 'This discards the unsaved work left by the failed run.',
+    );
+    expect(ok.className).toContain('ant-btn-dangerous');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('while a done run resumes, the replay keeps its divider and its record key', () => {
+    useProcessConversation.mockReturnValue(loaded(RECORD));
+    const props = widgetProps({ status: DONE });
+    const { rerender } = render(wrap(<SuspendedConversationWidget {...props} />));
+    // The relaunch cleared the end timestamps and widgetData.
+    rerender(wrap(<SuspendedConversationWidget {...props}
+      process={{ ...props.process, status: { state: 'running', doneAt: null }, widgetData: null }} />));
+    expect(screen.getByTestId('optio-replay-resuming')).toBeTruthy();
+    expect(useProcessConversation.mock.calls.at(-1)![1]).toEqual({ enabled: true, stoppedAt: '2026-11-19T11:00:00.000Z' });
+    expect(screen.getByTestId('conversation-closed').textContent).toBe('Session ended');
+  });
+});
+
 describe('SuspendedConversationWidget: other protocols and the error states', () => {
   it('protocol grok shows the resume-to-view note and fetches nothing', () => {
     useProcessConversation.mockReturnValue({ data: undefined, error: null, isPending: true, isFetching: false, refetch });

@@ -48,27 +48,32 @@ It registers for `ui_widget = "conversation"`. Each task carries its engine in `
 
 `registerConversationWidget()` also registers `SuspendedConversationWidget` as the widget's
 suspended variant (optio-ui's `registerWidget(name, component, { suspended })`). optio-ui
-renders it instead of the live widget while a process is suspended (cancelled, with
-`supportsResume` and `hasSavedState`); its process page keeps a Resume control. It shows the
-conversation as it stood at the suspend. Reading it starts no agent host; sending a message
-resumes the session (claudecode, below).
+renders it instead of the live widget while a process is suspended (optio-ui's `isSuspended`:
+its run ended done, failed or cancelled, with `supportsResume` and `hasSavedState`); its
+process page keeps a Resume control. It shows the conversation as it stood at the end of that
+run. Reading it starts no agent host; sending a message resumes the session (claudecode,
+below).
 
-- **Its one request** is optio-ui's `useProcessConversation(process._id, { stoppedAt })`
-  (`GET /processes/:id/conversation`, proxied by optio-api from the engine's conversation
-  archive). It runs once per suspend: a window refocus does not refetch the record. There is
-  no EventSource, and nothing else goes over the network until the user sends a message.
+- **Its one request** is optio-ui's `useProcessConversation(process._id, { stoppedAt })`, with
+  `stoppedAt` the run's end timestamp (`runEndedAt(process)`) (`GET /processes/:id/conversation`,
+  proxied by optio-api from the engine's conversation archive). It runs once per end of a run:
+  a window refocus does not refetch the record. There is no EventSource, and nothing else goes
+  over the network until the user sends a message.
 - **claudecode** (`widgetData.protocol`, which survives the suspend): `ClaudeCodeReplayView`
   folds the saved record through the claudecode reducer with one fixed clock (the record's
   `capturedAt`, else the mount time). It then closes the session as suspended, which stops any
-  row still running. The view is `ConversationView`, closed, under the divider "Session has
-  been saved". Interrupt, permission and download do nothing, and it offers no upload
+  row still running. The view is `ConversationView`, closed, under a divider that says how the
+  run ended: "Session suspended" (cancelled), "Session ended" (done) or "Session failed"
+  (failed). Interrupt, permission and download do nothing, and it offers no upload
   and no control inputs. A permission request the record left unanswered still shows its
   Approve and Deny buttons, but they are inert. The tool verbosity, the controls and custom
   controls seeds and todos come from `widgetData`, as in the live view. The custom controls
   name the modes in the switch and resume bands ("Switched to fast mode."); with no
   `onCustomControlChange`, no selector renders.
-- **Sending resumes the session** (claudecode). The input and Send stay usable. Send asks
-  "Resume the session?"; on "Resume and send" the view resumes the process (`POST
+- **Sending resumes the session** (claudecode), whichever way the run ended. The input and Send
+  stay usable. Send asks "Resume the session?", its text saying how the run ended ("This
+  session is currently suspended." / "has ended." / "failed."); on "Resume and send" the view
+  resumes the process (`POST
   /processes/:id/launch` with `resume: true`) and the message waits, in browser memory only,
   until the session is live; then it goes to the listener's `/send`, like a live send. The
   waiting runs outside the component (`resumeAndSend.ts`), so it survives the swap to the live
@@ -78,7 +83,7 @@ resumes the session (claudecode, below).
   resume shows its reason and keeps the text. A message that cannot be sent afterwards (the
   session stopped, the conversation closed, no session within 10 minutes) comes back into the
   input with the reason, below anything already typed; when no view of the process is
-  mounted (the page shows no widget for a failed process), an antd notification carries the
+  mounted (the page shows no widget for a process that ended without saved state), an antd notification carries the
   reason and the text instead. A send that broke off may have arrived, so it is never repeated
   and is reported as "may not have been sent". The listener holds the message until the
   session has written its "you have been resumed" notice, so it always comes after it. A

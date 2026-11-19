@@ -12,7 +12,8 @@ import { ResumeSendNotice } from './ResumeSendNotice.js';
 import { ResumingPanel } from './ResumingPanel.js';
 
 // Read-only replay of a suspended claudecode task's saved conversation record
-// (docs/2026-10-12-suspended-conversation-view-design.md, section 5). It folds
+// (a run that ended done, failed or cancelled with saved state;
+// docs/2026-10-12-suspended-conversation-view-design.md, section 5). It folds
 // the record through the same reducer ClaudeCodeView uses live and renders the
 // same ConversationView, closed, with no transport: no EventSource, no POSTs.
 // Given the widget's API and proxy URLs, its composer stays usable: Send asks
@@ -26,6 +27,10 @@ export interface ClaudeCodeReplayViewProps {
   // The process's widgetData (it survives the suspend): the same settings the
   // live view reads.
   widgetData: unknown;
+  // The state the saved run ended in (done, failed or cancelled), kept while
+  // the session resumes: the divider and the resume question say it. Absent:
+  // the process's state.
+  endState?: string;
   // The record's `[seq, event]` pairs, as optio-api's getConversation returns them.
   events: unknown[];
   // When the record was captured (ISO, with offset), or null.
@@ -50,9 +55,15 @@ export interface ClaudeCodeReplayViewProps {
   onToggleTheme?: () => void;
 }
 
-const SUSPENDED_CLOSED_LABEL = 'Session suspended';
+// How the saved run ended, by its terminal state: the divider's label and the
+// resume question's first sentence. Any other state reads as a suspend.
+const ENDED: Record<string, { label: string; said: string }> = {
+  cancelled: { label: 'Session suspended', said: 'This session is currently suspended.' },
+  done: { label: 'Session ended', said: 'This session has ended.' },
+  failed: { label: 'Session failed', said: 'This session failed.' },
+};
 const CONFIRM_TITLE = 'Resume the session?';
-const CONFIRM_TEXT = 'This session is currently suspended. Sending this message will resume it. Is this what you want?';
+const CONFIRM_RESUMES = 'Sending this message will resume it. Is this what you want?';
 const CONFIRM_OK = 'Resume and send';
 // A failed run left unsaved work on its host: resuming discards it, so the
 // question says so, as LaunchControls' Resume does.
@@ -88,6 +99,7 @@ function foldRecord(events: unknown[], seed: ChatState, now: number, opts: Reduc
 export function ClaudeCodeReplayView({
   process,
   widgetData,
+  endState,
   events,
   capturedAt,
   apiBaseUrl,
@@ -112,6 +124,8 @@ export function ClaudeCodeReplayView({
   const nativeSpinner = Boolean((widgetData as any)?.nativeSpinner);
   // The task's smooth_resume: sending resumes the session without asking.
   const smoothResume = (widgetData as any)?.smoothResume === true;
+  const ended = ENDED[endState ?? (process as any)?.status?.state] ?? ENDED.cancelled;
+  const confirmText = `${ended.said} ${CONFIRM_RESUMES}`;
 
   // capturedAt, else one clock read at mount.
   const [mountedAt] = useState(() => Date.now());
@@ -145,7 +159,7 @@ export function ClaudeCodeReplayView({
     new Promise((resolve) => {
       modal.confirm({
         title: CONFIRM_TITLE,
-        content: discards ? `${CONFIRM_TEXT} ${DISCARD_TEXT}` : CONFIRM_TEXT,
+        content: discards ? `${confirmText} ${DISCARD_TEXT}` : confirmText,
         okText: discards ? DISCARD_OK : CONFIRM_OK,
         okButtonProps: discards ? { danger: true } : undefined,
         cancelText: 'Cancel',
@@ -174,7 +188,7 @@ export function ClaudeCodeReplayView({
         todos={todosFromWidgetData(widgetData)}
         state={state}
         closed={state.closed}
-        closedLabel={SUSPENDED_CLOSED_LABEL}
+        closedLabel={ended.label}
         busy={state.busy}
         toolVerbosity={toolVerbosity}
         hideEmptyRuns={hideEmptyRuns}

@@ -16,7 +16,7 @@ import { getSessionId, isTerminal, isWidgetLive } from 'optio-ui';
 // A failure is shown where the user is: by the replay or live view of the
 // process when one is mounted (its notice, and the text back in the input),
 // else by an antd notification carrying the text. The process page renders no
-// widget for a failed or finished process, so that case is common.
+// widget for a process that ended without saved state, so that case is common.
 
 export type ResumeSendState =
   // The resume was accepted; the message waits for the session to go live.
