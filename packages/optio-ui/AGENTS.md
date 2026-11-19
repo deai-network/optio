@@ -24,14 +24,16 @@
 - `@tanstack/react-query: >=5`
 - `react-i18next: >=15`
 - `i18next: >=24`
-- `vultus-core: >=0.5.4` — a peer so the app has one copy and one components context
-  (see "Spinner slot"), the copy vultus-antd uses too (vultus-antd 0.7.2 depends on
-  `^0.5.4`): the task factory form's action finds its form through vultus-core's
+- `vultus-core: >=0.5.10` — a peer so the app has one copy and one components context
+  (see "Spinner slot"), the copy vultus-antd uses too (vultus-antd 0.8.3 depends on
+  `^0.5.9`): the task factory form's action finds its form through vultus-core's
   `ActionErrorContext`, which vultus-antd's `FormPanel` provides.
-- `vultus-antd: >=0.7.2` — the task factory form's widgets (`Field`, `FormPanel`,
+- `vultus-antd: >=0.8.3` — the task factory form's widgets (`Field`, `FormPanel`,
   `FormSubmitButton`, `ActionButton`; see "TaskFactoryLaunchModal").
 
-In this workspace both vultus packages are dev dependencies (`^0.5.4`, `^0.7.2`), linked to
+The floors follow the latest vultus releases: optio-ui does not keep older vultus versions working.
+
+In this workspace both vultus packages are dev dependencies (`^0.5.10`, `^0.8.3`), linked to
 `../unitas/packages/vultus-*` when that checkout exists (`pnpm-workspace.yaml`). vultus-filtrum
 is not linked: it comes from npm. Linked, its `filtrum-core` dependency would resolve to this
 workspace's `packages/filtrum-core`, and the lockfile would record that link from the unitas

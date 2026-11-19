@@ -22,8 +22,8 @@ npm install optio-ui
 | `i18next` | >=24 |
 | `antd` | >=6 |
 | `@ant-design/icons` | >=6 |
-| `vultus-core` | >=0.5.4 |
-| `vultus-antd` | >=0.7.2 |
+| `vultus-core` | >=0.5.10 |
+| `vultus-antd` | >=0.8.3 |
 
 `vultus-core` is a peer so that an app has a single copy of it, and with it a single
 components context (see [Loading spinner](#loading-spinner)). The app should list
