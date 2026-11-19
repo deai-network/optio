@@ -86,6 +86,21 @@ describe('useProcessWidgetState', () => {
   );
 
   describe('suspended processes', () => {
+    it.each(['done', 'failed'])(
+      'a finished run (state=%s) with saved state gets the suspended variant, as a cancelled one does',
+      (state) => {
+        const Live = () => <div data-testid="live">live</div>;
+        const Suspended = (props: any) => <div data-testid="suspended">suspended:{props.process._id}</div>;
+        registerWidget('my-widget', Live, { suspended: Suspended });
+
+        const { result } = renderHook(() => useProcessWidgetState(suspendedTree({ status: { state } })));
+        expect(result.current?.mode).toBe('suspended');
+        render(<>{result.current?.widget}</>);
+        expect(screen.getByTestId('suspended').textContent).toBe('suspended:abc');
+        expect(screen.queryByTestId('live')).toBeNull();
+      },
+    );
+
     it('returns mode "suspended" and the suspended variant when registered', () => {
       const Live = () => <div data-testid="live">live</div>;
       const Suspended = (props: any) => <div data-testid="suspended">suspended:{props.process._id}</div>;
@@ -508,10 +523,22 @@ describe('useProcessWidgetState: the resume handover', () => {
     expect(screen.queryByTestId('live')).toBeNull();
   });
 
-  it('failed during the handover: nothing', () => {
+  it('failed during the handover, its saved state kept: the suspended variant, no hidden live widget', () => {
     vi.useFakeTimers();
     const view = handover();
     view.rerender(<Host t={resumedLive({ status: { state: 'failed' } })} />);
+    expect(lastMode).toBe('suspended');
+    expect(screen.getByTestId('suspended')).toBeTruthy();
+    expect(screen.queryByTestId('live')).toBeNull();
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(lastMode).toBe('suspended');
+    expect(screen.queryByTestId('live')).toBeNull();
+  });
+
+  it('failed during the handover without saved state: nothing', () => {
+    vi.useFakeTimers();
+    const view = handover();
+    view.rerender(<Host t={resumedLive({ status: { state: 'failed' }, hasSavedState: false })} />);
     expect(lastMode).toBeNull();
     expect(screen.queryByTestId('live')).toBeNull();
     expect(screen.queryByTestId('suspended')).toBeNull();
@@ -603,6 +630,17 @@ describe('useProcessWidgetState: the suspend handover', () => {
     act(() => { vi.advanceTimersByTime(1); });
     expect(screen.queryByTestId('live')).toBeNull();
     expect(suspendedMounts).toBe(1);
+  });
+
+  it('a run that finishes (done) with saved state while shown live hands over the same way', () => {
+    const view = render(<Host t={baseTree()} />);
+    view.rerender(<Host t={suspendedTree({ status: { state: 'done' } })} />);
+    expect(lastMode).toBe('suspended');
+    expect(slotOf('live').style.display).toBe('contents');
+    expect(slotOf('suspended').style.display).toBe('none');
+    act(() => suspendedOnReady!());
+    expect(screen.queryByTestId('live')).toBeNull();
+    expect(slotOf('suspended').style.display).toBe('contents');
   });
 
   it('a suspended process shown first (not live before) shows its suspended variant at once', () => {

@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query';
 import { OptioProvider } from '../context/OptioProvider.js';
-import { conversationRetry, conversationRetryDelay, useProcessConversation } from '../hooks/useProcessConversation.js';
+import {
+  conversationRetry, conversationRetryDelay, runEndedAt, useProcessConversation,
+} from '../hooks/useProcessConversation.js';
 
 // Avoid network calls during instance discovery — return a stable instance.
 vi.mock('../hooks/useInstanceDiscovery.js', () => ({
@@ -221,6 +223,59 @@ describe('useProcessConversation', () => {
       await result.current.refetch();
     });
     expect(conversationCalls).toBe(2);
+  });
+
+  describe('runEndedAt: the timestamp that keys a finished run\'s record', () => {
+    it.each([
+      ['cancelled', { state: 'cancelled', stoppedAt: '2026-11-19T10:00:00.000Z' }, '2026-11-19T10:00:00.000Z'],
+      ['done', { state: 'done', doneAt: '2026-11-19T11:00:00.000Z' }, '2026-11-19T11:00:00.000Z'],
+      ['failed', { state: 'failed', failedAt: '2026-11-19T12:00:00.000Z' }, '2026-11-19T12:00:00.000Z'],
+    ])('a %s run: the timestamp its end set', (_label, status, want) => {
+      expect(runEndedAt({ status })).toBe(want);
+    });
+
+    it('null while the run has not ended (a relaunch clears the end timestamps), or without a process', () => {
+      expect(runEndedAt({ status: { state: 'running', stoppedAt: null, doneAt: null, failedAt: null } })).toBeNull();
+      expect(runEndedAt({ status: { state: 'idle' } })).toBeNull();
+      expect(runEndedAt(null)).toBeNull();
+      expect(runEndedAt(undefined)).toBeNull();
+    });
+  });
+
+  it('without opts.stoppedAt, a done process\'s record is keyed by its doneAt', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (isConversationUrl(url)) {
+        return new Response(
+          JSON.stringify({ events: [], capturedAt: null }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          _id: 'p1', processId: 'p1', name: 'P', rootId: 'p1',
+          status: { state: 'done', doneAt: '2026-11-19T11:00:00.000Z' },
+          supportsResume: true, hasSavedState: true,
+          createdAt: new Date().toISOString(),
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const own = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <OptioProvider prefix="test" database="test-db">{children}</OptioProvider>
+      </QueryClientProvider>
+    );
+    // The keys of the conversation queries the hook observes now.
+    const observedKeys = () => queryClient.getQueryCache()
+      .findAll({ queryKey: ['process-conversation'], type: 'active' })
+      .map((q) => q.queryKey.at(-1));
+
+    const { result } = renderHook(() => useProcessConversation('p1'), { wrapper: own });
+    // Once the process document has arrived, the record is read under its doneAt.
+    await waitFor(() => expect(observedKeys()).toEqual(['2026-11-19T11:00:00.000Z']), { timeout: 60_000 });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true), { timeout: 60_000 });
   });
 
   describe('opts.stoppedAt', () => {

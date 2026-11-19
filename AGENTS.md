@@ -1845,7 +1845,8 @@ function getSuspendedWidget(name: string): WidgetComponent | undefined
 
 Call `registerWidget` at module load time to make a widget available to `ProcessDetailView`.
 `options.suspended` registers a second component shown while the process `isSuspended`
-(cancelled, `supportsResume`, `hasSavedState`) rather than widget-live; same `WidgetProps`
+(a terminal state, `done` | `failed` | `cancelled`, with `supportsResume` and
+`hasSavedState`) rather than widget-live; same `WidgetProps`
 either way. Omitting `options` (or `options.suspended`) leaves any suspended variant already
 registered for that name untouched — every pre-existing two-argument call site keeps working
 unchanged. `useProcessWidgetState` (below) is what actually dispatches between the two maps;
@@ -1927,16 +1928,17 @@ conversation archive. A 200 appears as `data` (`data.body` is
 thrown by ts-rest and surfaces as `error` (`error.status`; `error.body` is
 `{ reason, message }` except for 401, which is `{ message }`). Never retries a 4xx (transient
 errors get up to 2). `opts.enabled: false` fetches nothing at all (neither the conversation nor
-the process doc below). `staleTime: Infinity`: a record is fixed for a given suspend (whose
-`stoppedAt` is in the key), so a window refocus or a remount never refetches it; an explicit
-`refetch()` still does.
+the process doc below). `staleTime: Infinity`: a record is fixed for a given end of a run
+(whose timestamp is in the key), so a window refocus or a remount never refetches it; an
+explicit `refetch()` still does.
 
-Query key includes the process's current `status.stoppedAt` alongside the id, so a
-resume-then-resuspend cycle gets a fresh cache entry instead of momentarily showing the
-previous suspend's conversation. Pass `opts.stoppedAt` (even `null`) when the caller already
-has it — e.g. a suspended widget's own `process.status.stoppedAt` — to skip this hook's
-internal `useProcess(processId)` fetch and 5 s poll entirely; omit it to fall back to that
-internal lookup.
+Query key includes, alongside the id, the timestamp the end of the process's latest run set,
+`runEndedAt(process)` (exported: `status.stoppedAt` for a cancel, `doneAt` for done,
+`failedAt` for failed; null while it has not ended), so a resume-then-end-again cycle gets a
+fresh cache entry instead of momentarily showing the previous run's conversation. Pass
+`opts.stoppedAt` (even `null`; the name is historical) when the caller already has it — e.g. a
+suspended widget's `runEndedAt(process)` — to skip this hook's internal `useProcess(processId)`
+fetch and 5 s poll entirely; omit it to fall back to that internal lookup.
 
 **`useProcessList(options?)`**
 

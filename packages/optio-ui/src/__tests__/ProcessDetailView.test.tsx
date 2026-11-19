@@ -389,6 +389,24 @@ describe('ProcessDetailView', () => {
       expect(container.querySelector('.anticon-play-circle')).not.toBeNull();
     });
 
+    it.each(['done', 'failed'])(
+      'a %s process with saved state shows the suspended widget variant and a Resume control',
+      (state) => {
+        registerWidget(
+          'my-widget',
+          () => <div data-testid="my-widget">live</div>,
+          { suspended: (props) => <div data-testid="suspended-widget">suspended:{props.process._id}</div> },
+        );
+        mockProcessStream.mockReturnValue({ tree: suspendedTree({ status: { state } }), logs: [], connected: true });
+        render(<ProcessDetailView processId="abc" />);
+        expect(screen.getByTestId('suspended-widget').textContent).toBe('suspended:abc');
+        expect(screen.queryByTestId('optio-detail-default')).toBeNull();
+        const actions = screen.getByTestId('optio-widget-suspended-actions');
+        fireEvent.click(within(actions).getByRole('button', { name: 'Resume' }));
+        expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true });
+      },
+    );
+
     it('Resume calls launch with resume: true', () => {
       registerWidget(
         'my-widget',
@@ -437,13 +455,15 @@ describe('ProcessDetailView', () => {
     });
 
     // A process whose last capture failed keeps hasUnsavedWork while an older
-    // snapshot leaves hasSavedState set, so it is suspended AND resurrectable.
-    // Both layouts must offer Resurrect, and Resume must ask before it
-    // discards the host's unsaved work.
+    // snapshot leaves hasSavedState set, so it is suspended AND resurrectable
+    // (typically a failed run). Both layouts must offer Resurrect, and Resume
+    // must ask before it discards the host's unsaved work.
     describe.each([
-      ['suspended widget layout', true, 'optio-widget-layout'],
-      ['default layout', false, 'optio-detail-default'],
-    ])('suspended with unsaved work, %s', (_label, withSuspendedVariant, layoutTestId) => {
+      ['cancelled, suspended widget layout', true, 'optio-widget-layout', 'cancelled'],
+      ['cancelled, default layout', false, 'optio-detail-default', 'cancelled'],
+      ['failed, suspended widget layout', true, 'optio-widget-layout', 'failed'],
+      ['failed, default layout', false, 'optio-detail-default', 'failed'],
+    ])('suspended with unsaved work, %s', (_label, withSuspendedVariant, layoutTestId, state) => {
       // antd's confirm modal measures the scrollbar via
       // getComputedStyle(el, '::-webkit-scrollbar'); jsdom logs "Not
       // implemented" for the pseudo-element, so drop the argument.
@@ -466,7 +486,7 @@ describe('ProcessDetailView', () => {
           registerWidget('my-widget', () => <div data-testid="my-widget">live</div>);
         }
         mockProcessStream.mockReturnValue({
-          tree: suspendedTree({ supportsResurrect: true, hasUnsavedWork: true }),
+          tree: suspendedTree({ status: { state }, supportsResurrect: true, hasUnsavedWork: true }),
           logs: [],
           connected: true,
         });

@@ -239,14 +239,17 @@ describe('isResurrecting', () => {
 });
 
 describe('isSuspended', () => {
-  it('true only when cancelled AND supportsResume AND hasSavedState', () => {
-    expect(isSuspended({
-      status: { state: 'cancelled' }, supportsResume: true, hasSavedState: true,
-    })).toBe(true);
-  });
+  it.each(['done', 'failed', 'cancelled'])(
+    'true for a finished run (state=%s) with supportsResume AND hasSavedState',
+    (state) => {
+      expect(isSuspended({
+        status: { state }, supportsResume: true, hasSavedState: true,
+      })).toBe(true);
+    },
+  );
 
-  it.each(['running', 'scheduled', 'cancel_requested', 'cancelling', 'idle', 'done', 'failed'])(
-    'false for state=%s even with both flags true (only cancelled qualifies)',
+  it.each(['running', 'scheduled', 'cancel_requested', 'cancelling', 'idle'])(
+    'false for state=%s even with both flags true (the run has not finished)',
     (state) => {
       expect(isSuspended({
         status: { state }, supportsResume: true, hasSavedState: true,
@@ -254,15 +257,21 @@ describe('isSuspended', () => {
     },
   );
 
-  it('false when cancelled but supportsResume is false or missing', () => {
-    expect(isSuspended({ status: { state: 'cancelled' }, supportsResume: false, hasSavedState: true })).toBe(false);
-    expect(isSuspended({ status: { state: 'cancelled' }, hasSavedState: true })).toBe(false);
-  });
+  it.each(['done', 'failed', 'cancelled'])(
+    'false for state=%s when supportsResume is false or missing',
+    (state) => {
+      expect(isSuspended({ status: { state }, supportsResume: false, hasSavedState: true })).toBe(false);
+      expect(isSuspended({ status: { state }, hasSavedState: true })).toBe(false);
+    },
+  );
 
-  it('false when cancelled but hasSavedState is false or missing', () => {
-    expect(isSuspended({ status: { state: 'cancelled' }, supportsResume: true, hasSavedState: false })).toBe(false);
-    expect(isSuspended({ status: { state: 'cancelled' }, supportsResume: true })).toBe(false);
-  });
+  it.each(['done', 'failed', 'cancelled'])(
+    'false for state=%s when hasSavedState is false or missing',
+    (state) => {
+      expect(isSuspended({ status: { state }, supportsResume: true, hasSavedState: false })).toBe(false);
+      expect(isSuspended({ status: { state }, supportsResume: true })).toBe(false);
+    },
+  );
 
   it('false for null/undefined/empty process', () => {
     expect(isSuspended(null)).toBe(false);

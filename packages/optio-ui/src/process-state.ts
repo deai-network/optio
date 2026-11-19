@@ -30,11 +30,11 @@
  *                  (cancel already in flight, re-request is a no-op) and all
  *                  terminal states. Mirrors optio-core's authoritative
  *                  CANCELLABLE_STATES in state_machine.py.
- *   - suspended:  cancelled AND supportsResume AND hasSavedState — a task
- *                 whose saved conversation can be read while it is not
- *                 running. Suspended ⊂ terminal ⊂ launchable. Not every
- *                 `cancelled` process is suspended (a plain cancel without
- *                 saved state is just terminal).
+ *   - suspended:  terminal (done | failed | cancelled) AND supportsResume AND
+ *                 hasSavedState — a finished run whose saved conversation can
+ *                 be read while it is not running, and resumed. Suspended ⊂
+ *                 terminal ⊂ launchable. Not every terminal process is
+ *                 suspended (a run that saved no state is just terminal).
  *
  * `idle` is launchable but not terminal (never run yet).
  * Terminal ⊂ launchable.
@@ -121,13 +121,13 @@ export function isResurrectable(process: ProcessStateLike | null | undefined): b
     && process?.hasUnsavedWork === true;
 }
 
-/** A cancelled task with a resumable, saved conversation: read-only view is
- *  available without launching anything. Not every `cancelled` process
- *  qualifies — a plain cancel without saved state is just terminal. */
+/** A finished run (any terminal state: done, failed or cancelled) of a task
+ *  that can resume and saved its state: its saved conversation can be read
+ *  without launching anything, and it can be resumed. The name is historical
+ *  (only a cancel, a suspend, qualified once); the decision rests on the two
+ *  flags. A terminal process without both is just terminal. */
 export function isSuspended(process: ProcessStateLike | null | undefined): boolean {
-  return process?.status?.state === 'cancelled'
-    && process?.supportsResume === true
-    && process?.hasSavedState === true;
+  return isTerminal(process) && isResumable(process);
 }
 
 /** A task factory's record: it never runs itself; its launch takes the values

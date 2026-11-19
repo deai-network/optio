@@ -15,24 +15,26 @@ import { useProcess } from './useProcessQueries.js';
  * returns `any` — but its shape at runtime is exactly the ts-rest
  * react-query `UseQueryResult` described above.)
  *
- * The query key includes the process's current `status.stoppedAt` (the
- * timestamp a suspend — a cancel with saved state — sets) alongside the
- * process id. Without it, a resume-then-resuspend cycle would keep the first
- * suspend's cached conversation visible (briefly, or indefinitely if the
- * hook never remounts) while the new one loads; keying on the timestamp
- * makes the second suspend a distinct cache entry instead.
+ * The query key includes the timestamp the end of the process's latest run
+ * set (`runEndedAt`: `stoppedAt` for a cancel, `doneAt` for done, `failedAt`
+ * for failed) alongside the process id. Without it, a resume-then-end-again
+ * cycle would keep the first run's cached conversation visible (briefly, or
+ * indefinitely if the hook never remounts) while the new one loads; keying
+ * on the timestamp makes each end of a run a distinct cache entry instead.
  *
  * `opts.stoppedAt` lets the caller supply that timestamp directly (e.g. a
- * suspended widget already has it on its `process.status.stoppedAt` prop).
- * Passing it — even explicitly `null` — skips this hook's own process-doc
- * fetch (and its 5s poll) entirely; omitting it falls back to reading it via
- * an internal `useProcess(processId)` call, as before. `opts.enabled: false`
- * also skips the process-doc fetch (as well as the conversation fetch) —
- * nothing fetches at all.
+ * suspended widget already has its process: `runEndedAt(process)`; the name
+ * is historical, from when only a cancel kept a readable record). Passing it
+ * — even explicitly `null` — skips this hook's own process-doc fetch (and its
+ * 5s poll) entirely; omitting it falls back to reading it via an internal
+ * `useProcess(processId)` call, as before. `opts.enabled: false` also skips
+ * the process-doc fetch (as well as the conversation fetch) — nothing
+ * fetches at all.
  *
- * `staleTime: Infinity`: a record never changes for a given suspend (whose
- * stoppedAt is in the key), so a window refocus or a remount does not refetch
- * it, and the engine does not decrypt it again. `refetch()` still fetches.
+ * `staleTime: Infinity`: a record never changes for a given end of a run
+ * (whose timestamp is in the key), so a window refocus or a remount does not
+ * refetch it, and the engine does not decrypt it again. `refetch()` still
+ * fetches.
  *
  * Retries: see `conversationRetry` / `conversationRetryDelay`. A 503 (no
  * engine conversation archive reachable) is retried long enough to outlast an
@@ -71,6 +73,21 @@ export function conversationRetryDelay(attempt: number, error: unknown): number 
   return Math.min(1000 * 2 ** attempt, 30000);
 }
 
+/** When the process's latest run ended: the timestamp its terminal state set
+ *  (`stoppedAt` for cancelled, `doneAt` for done, `failedAt` for failed; each
+ *  terminal write replaces the whole status, and a relaunch clears all three),
+ *  or null while it has not ended. Each end of a run saves a new record, so
+ *  this keys the saved conversation (`useProcessConversation`'s
+ *  `opts.stoppedAt`). */
+export function runEndedAt(
+  process: {
+    status?: { state?: string; stoppedAt?: string | null; doneAt?: string | null; failedAt?: string | null } | null;
+  } | null | undefined,
+): string | null {
+  const status = process?.status;
+  return status?.stoppedAt ?? status?.doneAt ?? status?.failedAt ?? null;
+}
+
 export function useProcessConversation(
   processId: string,
   opts?: { enabled?: boolean; stoppedAt?: string | null },
@@ -91,15 +108,15 @@ export function useProcessConversation(
 
   const statusTimestamp = stoppedAtProvided
     ? (opts!.stoppedAt ?? null)
-    : (process as { status?: { stoppedAt?: string } } | null)?.status?.stoppedAt ?? null;
+    : runEndedAt(process as Parameters<typeof runEndedAt>[0]);
 
   return api.processes.getConversation.useQuery({
     queryKey: ['process-conversation', database, prefix, processId, statusTimestamp],
     queryData: { params: { id: processId }, query: { database, prefix } },
     enabled: !!processId && enabled,
-    // A record is fixed for a given suspend, and its stoppedAt is in the key:
-    // never stale, so a window refocus or a remount does not make the engine
-    // decrypt it again. An explicit refetch() (a Retry) still fetches.
+    // A record is fixed for a given end of a run, and its timestamp is in the
+    // key: never stale, so a window refocus or a remount does not make the
+    // engine decrypt it again. An explicit refetch() (a Retry) still fetches.
     staleTime: Infinity,
     // Never a 4xx; a 503 long enough to outlast an engine restart; other
     // transient failures briefly (conversationRetry / conversationRetryDelay).

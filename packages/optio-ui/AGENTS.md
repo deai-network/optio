@@ -67,9 +67,10 @@ Do:
   resurrecting AND `supportsResurrect === true` AND `hasUnsavedWork === true`),
   `isResurrecting(process)` (`resurrecting === true`: a resurrect is saving the
   unsaved work while the state stays as it was), `isSuspended(process)`
-  (`status.state === 'cancelled'` AND `supportsResume === true` AND
-  `hasSavedState === true`: a cancelled task whose saved conversation can be
-  read without launching it), `isTaskFactory(process)` (`taskFactory === true`:
+  (`isTerminal` — `done`, `failed` or `cancelled` — AND `supportsResume === true`
+  AND `hasSavedState === true`: a finished run whose saved conversation can be
+  read without launching it, and resumed; the name is historical, from when
+  only a cancel qualified), `isTaskFactory(process)` (`taskFactory === true`:
   a task factory's record, whose launch opens its launch form; see
   "TaskFactoryLaunchModal"), `isTaskFactoryLaunch(process)` (`metadata.taskFactory`
   a non-empty string, the factory's id: a factory's launch, from its form or a
@@ -950,25 +951,37 @@ read is repeated. A 503 (the engine's conversation archive unreachable, e.g. dur
 restart) gets 6 retries, 1 + 2 + 4 + 8 + 15 + 15 s apart; other transient errors (network,
 other 5xx) get up to 2 retries.
 
-`staleTime: Infinity`: a record is fixed for a given suspend, and the key below carries that
-suspend's `stoppedAt`, so a window refocus or a remount never refetches it (each refetch would
+`staleTime: Infinity`: a record is fixed for a given end of a run, and the key below carries
+that end's timestamp, so a window refocus or a remount never refetches it (each refetch would
 make the engine decrypt it again). An explicit `refetch()` (e.g. a Retry button) still fetches.
 
 The query key is `['process-conversation', database, prefix, processId, statusTimestamp]`,
-where `statusTimestamp` is the process's current `status.stoppedAt`. This is the timestamp a
-suspend (a cancel with saved state) sets, so a resume-then-resuspend cycle gets a fresh cache
-entry — without it, remounting after a second suspend would briefly (or indefinitely, if the
-component never actually unmounts) show the first suspend's cached conversation while the new
-one loads.
+where `statusTimestamp` is the timestamp the end of the process's latest run set:
+`runEndedAt(process)` (below). Each end of a run (done, failed or cancelled with saved state)
+saves a new record, so a resume-then-end-again cycle gets a fresh cache entry — without it,
+remounting after the second end would briefly (or indefinitely, if the component never
+actually unmounts) show the first run's cached conversation while the new one loads.
 
 `statusTimestamp` comes from one of two places:
-- **`opts.stoppedAt`**, when the caller supplies it (even explicitly `null`) — the hook then
-  does **not** fetch or poll the process document at all. Use this when the caller already has
-  the process doc (e.g. a suspended widget gets `process.status.stoppedAt` on its own
-  `WidgetProps.process`), to avoid a redundant `GET /processes/:id` plus its 5 s poll running
-  for every mounted suspended widget just to re-derive a value already in hand.
+- **`opts.stoppedAt`** (the name is historical, from when only a cancel kept a readable
+  record), when the caller supplies it (even explicitly `null`) — the hook then does **not**
+  fetch or poll the process document at all. Use this when the caller already has the process
+  doc (e.g. a suspended widget passes `runEndedAt(WidgetProps.process)`), to avoid a redundant
+  `GET /processes/:id` plus its 5 s poll running for every mounted suspended widget just to
+  re-derive a value already in hand.
 - an internal `useProcess(processId)` call, when `opts.stoppedAt` is omitted — the pre-existing
-  default behaviour, for callers that don't already have the process doc.
+  default behaviour, for callers that don't already have the process doc (it applies
+  `runEndedAt` to that doc).
+
+```ts
+function runEndedAt(process: { status?: { stoppedAt?, doneAt?, failedAt? } | null } | null | undefined): string | null
+```
+
+Exported from the package root, next to the hook: the timestamp the latest run's terminal state
+set — `status.stoppedAt` (cancelled), `status.doneAt` (done) or `status.failedAt` (failed); each
+terminal write replaces the whole status and a relaunch clears all three, so at most one is
+set — or `null` while the run has not ended. A caller that keys its own read of the record the
+same way (the same query, one request) passes it as `opts.stoppedAt`.
 
 ---
 

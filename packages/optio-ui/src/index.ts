@@ -37,7 +37,7 @@ export { WithFilteredProcesses, ProcessFilters, FilteredProcessList, useProcessF
 export { useInstances, useInstanceDiscovery, type OptioInstance } from './hooks/useInstanceDiscovery.js';
 export { useProcessActions } from './hooks/useProcessActions.js';
 export { useProcessList, useProcess, useProcesses, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
-export { useProcessConversation } from './hooks/useProcessConversation.js';
+export { useProcessConversation, runEndedAt } from './hooks/useProcessConversation.js';
 export { useProcessStream } from './hooks/useProcessStream.js';
 export { useProcessListStream } from './hooks/useProcessListStream.js';
 export { usePrefixes, usePrefixDiscovery } from './hooks/usePrefixDiscovery.js';
