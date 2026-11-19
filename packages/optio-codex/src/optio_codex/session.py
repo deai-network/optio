@@ -44,7 +44,9 @@ from optio_codex.fs_allowlist import (
 )
 from optio_codex.prompt import compose_agents_md
 from optio_codex.seed_manifest import CODEX_SEED_MANIFEST, CODEX_SEED_SUFFIX
+from optio_agents.snapshots import snapshot_hooks
 from optio_codex.snapshots import (
+    SNAPSHOT_LAYOUT,
     effective_workdir_exclude,
     insert_snapshot,
     load_latest_snapshot,
@@ -1076,6 +1078,11 @@ def create_codex_task(
     else:
         ui_widget = "iframe-input"
 
+    # Snapshot history (resume from an older snapshot): only with resume support.
+    list_hook, discard_hook = (
+        snapshot_hooks(SNAPSHOT_LAYOUT) if config.supports_resume else (None, None)
+    )
+
     return TaskInstance(
         execute=_execute,
         process_id=process_id,
@@ -1084,4 +1091,6 @@ def create_codex_task(
         ui_widget=ui_widget,
         supports_resume=config.supports_resume,
         metadata=metadata or {},
+        list_snapshots=list_hook,
+        discard_snapshots_after=discard_hook,
     )

@@ -90,3 +90,13 @@ read-modify-write deep-merge applied AFTER the seed merge / snapshot restore:
 the caller's `permissions`/`approvalMode` keys win, the seed's other keys
 (editor prefs, …) survive. Routing test:
 `tests/test_session_seed.py::test_seed_ops_use_seed_pair_snapshot_ops_session_pair`.
+
+## Snapshot history
+
+With `config.supports_resume`, `create_cursor_task` sets
+`TaskInstance.list_snapshots` and `discard_snapshots_after` from
+`optio_agents.snapshots.snapshot_hooks(snapshots.SNAPSHOT_LAYOUT)` (else both
+None). The layout is `{prefix}_cursor_session_snapshots` with one required blob
+field, `workdirBlobId`, and no optional ones. optio-core calls the hooks for
+`listSnapshots` and for a launch with `resume_from`; the helper's rules are in
+optio-agents' AGENTS.md, "Snapshot history (`optio_agents.snapshots`)".

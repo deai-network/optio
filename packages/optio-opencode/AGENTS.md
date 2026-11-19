@@ -292,6 +292,11 @@ MongoDB collection: `{prefix}_opencode_session_snapshots`
 **Retention:** the latest 5 snapshots per process are kept; older snapshots and their
 GridFS blobs (`sessionBlobId`, `workdirBlobId`) are deleted together with the document.
 
+**Snapshot history:** with `supports_resume`, `create_opencode_task` sets `TaskInstance.list_snapshots`
+and `discard_snapshots_after` from `optio_agents.snapshots.snapshot_hooks(snapshots.SNAPSHOT_LAYOUT)`
+(else both None); the layout's required blob fields are `sessionBlobId` and `workdirBlobId`, with no
+optional ones. Rules: optio-agents' AGENTS.md, "Snapshot history (`optio_agents.snapshots`)".
+
 ---
 
 ## Host abstraction additions

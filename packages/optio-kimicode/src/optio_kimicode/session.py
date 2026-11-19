@@ -54,7 +54,9 @@ from optio_kimicode.conversation import KimiCodeConversation
 from optio_kimicode.conversation_listener import ConversationListener
 from optio_kimicode.prompt import compose_agents_md
 from optio_kimicode.seed_manifest import KIMI_SEED_MANIFEST, KIMI_SEED_SUFFIX
+from optio_agents.snapshots import snapshot_hooks
 from optio_kimicode.snapshots import (
+    SNAPSHOT_LAYOUT,
     capture_snapshot,
     load_latest_snapshot,
     restore_snapshot,
@@ -1288,6 +1290,11 @@ def create_kimicode_task(
     else:
         ui_widget = "iframe"
 
+    # Snapshot history (resume from an older snapshot): only with resume support.
+    list_hook, discard_hook = (
+        snapshot_hooks(SNAPSHOT_LAYOUT) if config.supports_resume else (None, None)
+    )
+
     return TaskInstance(
         execute=_execute,
         process_id=process_id,
@@ -1296,4 +1303,6 @@ def create_kimicode_task(
         ui_widget=ui_widget,
         supports_resume=config.supports_resume,
         metadata=metadata or {},
+        list_snapshots=list_hook,
+        discard_snapshots_after=discard_hook,
     )

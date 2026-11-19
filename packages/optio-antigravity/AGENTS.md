@@ -66,3 +66,13 @@ merges the stored Google identity into the fresh workdir BEFORE launch; a
 leased seed is renewed by the in-session credential watcher and released after
 the final token save-back. Routing test:
 `tests/test_session_seed.py::test_seed_ops_use_seed_pair_snapshot_ops_use_session_pair`.
+
+## Snapshot history
+
+With `config.supports_resume`, `create_antigravity_task` sets
+`TaskInstance.list_snapshots` and `discard_snapshots_after` from
+`optio_agents.snapshots.snapshot_hooks(snapshots.SNAPSHOT_LAYOUT)` (else both
+None). The layout is `{prefix}_antigravity_session_snapshots` with one required
+blob field, `workdirBlobId`, and no optional ones. optio-core calls the hooks
+for `listSnapshots` and for a launch with `resume_from`; the helper's rules are
+in optio-agents' AGENTS.md, "Snapshot history (`optio_agents.snapshots`)".

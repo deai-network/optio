@@ -49,6 +49,7 @@ from typing import AsyncIterator, Callable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from optio_agents.snapshots import SnapshotLayout
 from optio_host.host import Host
 
 
@@ -56,6 +57,11 @@ _LOG = logging.getLogger(__name__)
 
 SESSION_SNAPSHOT_COLLECTION_SUFFIX = "_kimicode_session_snapshots"
 SNAPSHOT_RETENTION = 5
+# The snapshot history hooks' view of this collection (optio_agents.snapshots).
+SNAPSHOT_LAYOUT = SnapshotLayout(
+    SESSION_SNAPSHOT_COLLECTION_SUFFIX,
+    required_blob_fields=("sessionBlobId", "workdirBlobId"),
+)
 
 # Sensitive kimi session subtree, RELATIVE to the workdir. KIMI_CODE_HOME =
 # <workdir>/home, so kimi's session store lives at <workdir>/home/sessions.

@@ -36,11 +36,17 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from optio_agents.snapshots import SnapshotLayout
 from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
 
 
 SESSION_SNAPSHOT_COLLECTION_SUFFIX = "_codex_session_snapshots"
 SNAPSHOT_RETENTION = 5
+# The snapshot history hooks' view of this collection (optio_agents.snapshots).
+SNAPSHOT_LAYOUT = SnapshotLayout(
+    SESSION_SNAPSHOT_COLLECTION_SUFFIX,
+    required_blob_fields=("workdirBlobId",),
+)
 
 # Default snapshot exclude list (used when ``CodexTaskConfig.workdir_exclude``
 # is None): the framework defaults plus the CODEX_HOME junk pinned in the

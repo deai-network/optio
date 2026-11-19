@@ -60,6 +60,16 @@ tokens back into the seed in-session and at teardown, renewing the lease, in
 both cases; teardown releases the lease. `on_seed_saved` enables capture at
 teardown of a fresh authed session (ignored on resume).
 
+## Snapshot history
+
+With `config.supports_resume`, `create_grok_task` sets
+`TaskInstance.list_snapshots` and `discard_snapshots_after` from
+`optio_agents.snapshots.snapshot_hooks(snapshots.SNAPSHOT_LAYOUT)` (else both
+None). The layout is `{prefix}_grok_session_snapshots` with one required blob
+field, `workdirBlobId`, and no optional ones. optio-core calls the hooks for
+`listSnapshots` and for a launch with `resume_from`; the helper's rules are in
+optio-agents' AGENTS.md, "Snapshot history (`optio_agents.snapshots`)".
+
 ## Testing
 
 `make test` in the package root (needs the Docker Mongo on :27017). Sessions

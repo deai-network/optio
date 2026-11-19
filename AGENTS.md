@@ -947,6 +947,48 @@ Design: `docs/2026-09-13-conversation-steering-design.md` and
 
 ---
 
+## Python: engine wrappers — snapshot history
+
+`optio_agents.snapshots` implements optio-core's two snapshot history hooks
+for every engine wrapper: `TaskInstance.list_snapshots(ctx)` (a
+`ReadOnlyProcessContext`; the valid snapshots `[{capturedAt, endState}]`,
+newest first, the newest included) and
+`TaskInstance.discard_snapshots_after(ctx, captured_at)` (the detached
+`ProcessContext`; deletes the snapshots newer than the chosen one and the
+blobs only they name, returns how many documents it deleted). optio-core calls
+them for `listSnapshots` and for a launch with `resume_from`. All seven
+wrappers (claudecode, opencode, codex, cursor, grok, kimicode, antigravity)
+declare their collection as `snapshots.SNAPSHOT_LAYOUT`, a
+`SnapshotLayout(suffix, required_blob_fields, optional_blob_fields=())`, and
+their `create_<engine>_task` sets both hooks from
+`snapshot_hooks(SNAPSHOT_LAYOUT)` when `config.supports_resume`, else both
+None. Claude Code through Requesty gets them through `create_claudecode_task`.
+A snapshot is valid (listed, and can be chosen) when every required blob
+exists; optional blobs only go with their document.
+
+| Wrapper | Collection suffix | Required blob fields | Optional blob fields |
+|---|---|---|---|
+| claudecode | `_claudecode_session_snapshots` | `sessionBlobId`, `workdirBlobId` | `conversationBlobId`, `migratedFromWorkdirBlobId` |
+| opencode | `_opencode_session_snapshots` | `sessionBlobId`, `workdirBlobId` | none |
+| codex | `_codex_session_snapshots` | `workdirBlobId` | none |
+| cursor | `_cursor_session_snapshots` | `workdirBlobId` | none |
+| grok | `_grok_session_snapshots` | `workdirBlobId` | none |
+| kimicode | `_kimicode_session_snapshots` | `sessionBlobId`, `workdirBlobId` | none |
+| antigravity | `_antigravity_session_snapshots` | `workdirBlobId` | none |
+
+Only claudecode passes `capture_pending` (`pending_captures.has_pending_capture`):
+while the process has a cut-off capture's record, its discard hook raises
+`CapturePending` before any read or deletion, so the launch is refused with
+`capture-pending` and nothing is deleted. Resurrect, or a plain Resume, settles
+the record first. The wrappers' capture, prune and restore code is unchanged.
+Details (validity, the `capturedAt` wire form and its matching, which blobs
+go): `packages/optio-agents/AGENTS.md`, "Snapshot history
+(`optio_agents.snapshots`)"; the core side: `packages/optio-core/AGENTS.md`,
+"TaskInstance.list_snapshots / discard_snapshots_after".
+Design: `docs/2026-11-19-resume-from-snapshot-design.md`.
+
+---
+
 ## Python: engine wrappers — deliverable callbacks and metadata
 
 Every engine's `on_deliverable` callback (`DeliverableCallback`, exported from

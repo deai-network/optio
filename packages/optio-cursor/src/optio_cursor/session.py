@@ -53,7 +53,9 @@ from optio_cursor.conversation import CursorConversation
 from optio_cursor.conversation_listener import ConversationListener
 from optio_cursor.prompt import compose_agents_md
 from optio_cursor.seed_manifest import CURSOR_SEED_MANIFEST, CURSOR_SEED_SUFFIX
+from optio_agents.snapshots import snapshot_hooks
 from optio_cursor.snapshots import (
+    SNAPSHOT_LAYOUT,
     effective_workdir_exclude,
     insert_snapshot,
     load_latest_snapshot,
@@ -1236,6 +1238,11 @@ def create_cursor_task(
     else:
         ui_widget = "iframe-input"
 
+    # Snapshot history (resume from an older snapshot): only with resume support.
+    list_hook, discard_hook = (
+        snapshot_hooks(SNAPSHOT_LAYOUT) if config.supports_resume else (None, None)
+    )
+
     return TaskInstance(
         execute=_execute,
         process_id=process_id,
@@ -1244,4 +1251,6 @@ def create_cursor_task(
         ui_widget=ui_widget,
         supports_resume=config.supports_resume,
         metadata=metadata or {},
+        list_snapshots=list_hook,
+        discard_snapshots_after=discard_hook,
     )

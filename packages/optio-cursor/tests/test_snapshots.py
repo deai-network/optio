@@ -170,3 +170,98 @@ async def test_prune_noop_within_retention(mongo_db):
         )
         await asyncio.sleep(0.005)
     assert await prune_snapshots(mongo_db, "opt", pid) == []
+
+
+# --- Snapshot history: the list_snapshots / discard_snapshots_after hooks ---
+
+TS = "2026-11-19T13:05:12.345Z"
+
+
+def _task(supports_resume=True):
+    from optio_cursor.session import create_cursor_task
+    from optio_cursor.types import CursorTaskConfig
+    return create_cursor_task(
+        process_id="p", name="P",
+        config=CursorTaskConfig(
+            consumer_instructions="x", mode="iframe", delivery_type="audit",
+            supports_resume=supports_resume,
+        ),
+    )
+
+
+async def _blob(db, name):
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+    return await AsyncIOMotorGridFSBucket(db).upload_from_stream(name, b"payload")
+
+
+async def _blob_exists(db, blob_id):
+    return await db["fs.files"].find_one({"_id": blob_id}) is not None
+
+
+async def _two_snapshots(db):
+    """Two snapshots of process "p" under prefix "t", captured at 10:00 and at
+    TS, each with a real workdir blob. Returns (older, newer) as
+    (document id, [workdir blob id])."""
+    from datetime import datetime, timezone
+    out = []
+    for captured_at in (
+        datetime(2026, 11, 19, 10, 0, tzinfo=timezone.utc),
+        datetime(2026, 11, 19, 13, 5, 12, 345000, tzinfo=timezone.utc),
+    ):
+        blobs = [await _blob(db, "workdir")]
+        doc = await insert_snapshot(
+            db, "t", process_id="p", end_state="done", workdir_blob_id=blobs[0],
+        )
+        await db[f"t{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"].update_one(
+            {"_id": doc["_id"]}, {"$set": {"capturedAt": captured_at}},
+        )
+        out.append((doc["_id"], blobs))
+    return out[0], out[1]
+
+
+def _ctx(db):
+    from types import SimpleNamespace
+    return SimpleNamespace(process_id="p", _db=db, _prefix="t")
+
+
+async def test_snapshot_layout():
+    from optio_agents.snapshots import SnapshotLayout
+    from optio_cursor.snapshots import SNAPSHOT_LAYOUT
+    assert SNAPSHOT_LAYOUT == SnapshotLayout(
+        "_cursor_session_snapshots",
+        required_blob_fields=("workdirBlobId",),
+    )
+    assert SNAPSHOT_LAYOUT.optional_blob_fields == ()
+    assert SNAPSHOT_LAYOUT.suffix == SESSION_SNAPSHOT_COLLECTION_SUFFIX
+
+
+async def test_task_wires_snapshot_hooks():
+    resumable = _task(supports_resume=True)
+    assert resumable.list_snapshots is not None
+    assert resumable.discard_snapshots_after is not None
+    plain = _task(supports_resume=False)
+    assert plain.list_snapshots is None
+    assert plain.discard_snapshots_after is None
+
+
+async def test_hooks_list_and_discard(mongo_db):
+    (older_id, older_blobs), (newer_id, newer_blobs) = await _two_snapshots(mongo_db)
+    task = _task()
+    ctx = _ctx(mongo_db)
+
+    assert await task.list_snapshots(ctx) == [
+        {"capturedAt": TS, "endState": "done"},
+        {"capturedAt": "2026-11-19T10:00:00.000Z", "endState": "done"},
+    ]
+    assert await task.discard_snapshots_after(ctx, "2026-11-19T10:00:00.000Z") == 1
+
+    coll = mongo_db[f"t{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"]
+    assert await coll.find_one({"_id": newer_id}) is None
+    assert await coll.find_one({"_id": older_id}) is not None
+    for blob_id in newer_blobs:
+        assert not await _blob_exists(mongo_db, blob_id)
+    for blob_id in older_blobs:
+        assert await _blob_exists(mongo_db, blob_id)
+    assert await task.list_snapshots(ctx) == [
+        {"capturedAt": "2026-11-19T10:00:00.000Z", "endState": "done"},
+    ]

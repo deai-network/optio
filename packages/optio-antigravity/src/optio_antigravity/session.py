@@ -50,7 +50,9 @@ from optio_antigravity.seed_manifest import (
     ANTIGRAVITY_SEED_MANIFEST,
     ANTIGRAVITY_SEED_SUFFIX,
 )
+from optio_agents.snapshots import snapshot_hooks
 from optio_antigravity.snapshots import (
+    SNAPSHOT_LAYOUT,
     insert_snapshot,
     load_latest_snapshot,
     prune_snapshots,
@@ -1015,6 +1017,11 @@ def create_antigravity_task(
     else:
         ui_widget = "iframe-input"
 
+    # Snapshot history (resume from an older snapshot): only with resume support.
+    list_hook, discard_hook = (
+        snapshot_hooks(SNAPSHOT_LAYOUT) if config.supports_resume else (None, None)
+    )
+
     return TaskInstance(
         execute=_execute,
         process_id=process_id,
@@ -1023,4 +1030,6 @@ def create_antigravity_task(
         ui_widget=ui_widget,
         supports_resume=config.supports_resume,
         metadata=metadata or {},
+        list_snapshots=list_hook,
+        discard_snapshots_after=discard_hook,
     )
