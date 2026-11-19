@@ -145,7 +145,7 @@ async def test_refusals_before_the_hook(mongo_db, case, setup, expected):
     fw._resurrecting.pop(proc["_id"], None)
     assert out.ok is False and out.reason == expected
     assert events == []
-    assert proc["_id"] not in fw._resuming_from
+    assert fw._resuming_from == {}
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_no_hook_is_no_snapshot_support(mongo_db):
     out = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
     assert out.ok is False and out.reason == "no-snapshot-support"
     assert events == []
-    assert proc["_id"] not in fw._resuming_from
+    assert fw._resuming_from == {}
 
 
 @pytest.mark.asyncio
@@ -172,7 +172,7 @@ async def test_hook_refusals_map_to_reasons(mongo_db, raised, expected):
     assert out.ok is False and out.reason == expected
     assert events == [("discard", TS)]
     assert not any(e[0] == "launch" for e in events)
-    assert proc["_id"] not in fw._resuming_from
+    assert fw._resuming_from == {}
     doc = await coll.find_one({"_id": proc["_id"]})
     assert not any(m.startswith("Resum") for m in _messages(doc))
 
@@ -185,7 +185,7 @@ async def test_another_hook_exception_propagates_and_is_logged(mongo_db):
     with pytest.raises(RuntimeError, match="disk full"):
         await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
     assert events == [("discard", TS)]
-    assert proc["_id"] not in fw._resuming_from
+    assert fw._resuming_from == {}
     doc = await coll.find_one({"_id": proc["_id"]})
     assert not any("discarded" in m for m in _messages(doc))
     assert {
@@ -220,7 +220,7 @@ async def test_success_discards_then_resumes(mongo_db, discarded, line):
     assert contexts[0].resume is False
     # The line goes to the launch, which writes it after resetting the log.
     assert extra == [("event", line)]
-    assert proc["_id"] not in fw._resuming_from
+    assert fw._resuming_from == {}
 
 
 @pytest.mark.asyncio
@@ -266,7 +266,7 @@ async def test_the_discard_window_refuses_a_launch_and_a_resurrect(mongo_db):
     )
     try:
         await asyncio.wait_for(entered.wait(), 60)
-        assert proc["_id"] in fw._resuming_from
+        assert fw._resume_from_in_progress(proc)
         plain = await fw.launch("r1", resume=True, session_id=None)
         assert plain.ok is False and plain.reason == "not-launchable"
         again = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
@@ -280,7 +280,73 @@ async def test_the_discard_window_refuses_a_launch_and_a_resurrect(mongo_db):
     assert out.ok
     await _wait_until(lambda: ("launch", True) in events)
     assert events == [("discard", TS), ("launch", True)]
-    assert proc["_id"] not in fw._resuming_from
+    assert fw._resuming_from == {}
+
+
+@pytest.mark.asyncio
+async def test_a_launch_during_the_resume_froms_first_await_never_both_proceed(mongo_db):
+    """The resume_from is held at its first await (the record's read); a plain
+    launch (by the other id form) and a resurrect arrive meanwhile. Exactly one
+    launch runs, and no snapshot is discarded after a competing launch won."""
+    fw, _, proc, events = await _setup(
+        mongo_db, "rfs14", discard_hook=_discard_none, resurrect=_noop, unsaved=True,
+    )
+    real_resolve = fw._resolve
+    gate, at_gate = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def gated_resolve(id_str):
+        calls.append(id_str)
+        if len(calls) == 1:
+            at_gate.set()
+            await gate.wait()
+        return await real_resolve(id_str)
+    fw._resolve = gated_resolve
+    pending = asyncio.create_task(
+        fw.launch("r1", resume=True, session_id=None, resume_from=TS),
+    )
+    try:
+        await asyncio.wait_for(at_gate.wait(), 60)
+        plain = await fw.launch(str(proc["_id"]), resume=True, session_id=None)
+        resurrected = await fw.resurrect(str(proc["_id"]), session_id=None)
+    finally:
+        gate.set()
+    out = await asyncio.wait_for(pending, 60)
+    await _wait_until(lambda: any(e[0] == "launch" for e in events))
+    launches = [e for e in events if e[0] == "launch"]
+    assert len(launches) == 1
+    assert not (plain.ok and out.ok)
+    if plain.ok:
+        assert not any(e[0] == "discard" for e in events)
+    # The marker was set before the read: the plain launch is the one refused.
+    assert plain.ok is False and plain.reason == "not-launchable"
+    assert resurrected.ok is False and resurrected.reason == "not-launchable"
+    assert out.ok
+    assert events == [("discard", TS), ("launch", True)]
+    assert fw._resuming_from == {}
+
+
+@pytest.mark.asyncio
+async def test_a_launch_in_flight_refuses_the_resume_from(mongo_db):
+    """A plain launch scheduled just before the resume_from, whose run has not
+    written its state yet: the resume_from is refused and discards nothing."""
+    fw, _, proc, events = await _setup(mongo_db, "rfs15", discard_hook=_discard_none)
+    hold = asyncio.Event()
+
+    async def _slow_spy(oid, *, resume, session_id, extra_log=()):
+        events.append(("launch", resume))
+        await hold.wait()
+    fw._executor.launch_process = _slow_spy
+    try:
+        plain = await fw.launch("r1", resume=True, session_id=None)
+        assert plain.ok
+        out = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
+        assert out.ok is False and out.reason == "not-launchable"
+        assert events == [("launch", True)]
+    finally:
+        hold.set()
+    await _wait_until(lambda: proc["_id"] not in fw._launching)
+    assert fw._resuming_from == {}
 
 
 @pytest.mark.asyncio
@@ -303,7 +369,7 @@ async def test_shutdown_during_the_discard_is_shutting_down(mongo_db):
     out = await asyncio.wait_for(pending, 60)
     assert out.ok is False and out.reason == "shutting-down"
     assert events == [("discard", TS)]
-    assert proc["_id"] not in fw._resuming_from
+    assert fw._resuming_from == {}
     # No launch resets the log: the deletion is recorded there at once.
     assert LINE_2 in _messages(await coll.find_one({"_id": proc["_id"]}))
 

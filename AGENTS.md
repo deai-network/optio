@@ -168,8 +168,10 @@ await optio_core.launch(process_id: str, resume: bool = False, *, session_id: st
 # from a snapshot in progress), not-launchable (state), no-resume-support, not-launchable (no saved state:
 # never downgraded to a fresh run), launch-blocked, no-snapshot-support (no task or no discard_snapshots_after
 # hook), then the hook's capture-pending (CapturePending) and snapshot-not-found (SnapshotNotFound). Nothing is
-# deleted on these refusals. While the hook runs, launch and resurrect of the process return not-launchable; a
-# shutdown begun meanwhile refuses the launch after the hook (shutting-down; the discard line is logged).
+# deleted on these refusals. A launch and a resume from a snapshot never both proceed: from before the call's
+# first await until its run is scheduled, launch and resurrect of the process return not-launchable, and a run
+# a launch scheduled earlier that has not returned yet refuses the resume_from (not-launchable). A shutdown
+# begun during the hook refuses the launch after it (shutting-down; the discard line is logged).
 # Another exception of the hook is logged ("Resume from the snapshot of <capturedAt> failed: <error>") and
 # propagates. After a deletion without a launch the chosen snapshot is the newest: a later Resume restores it.
 await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError, but LaunchBlocked for a launch block)
@@ -200,7 +202,7 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 # Saves the work a failed run left on its host, then resumes. Refusals come back as
 # ResurrectOutcome(ok=False, reason=...), checked in this order: shutting-down, not-found,
 # no-resurrect-support (no TaskInstance.resurrect hook), resurrect-in-progress, not-launchable
-# (a resume from a snapshot of the process is deleting its newer snapshots),
+# (a launch with resume_from of the process is in progress),
 # not-resurrectable (state not launchable, or hasUnsavedWork false), launch-blocked.
 # On ok=True a background task sets the process's resurrecting marker and runs the hook
 # (ctx.resume=False) under progress "Resurrecting: saving the unsaved work…". Hook returns:

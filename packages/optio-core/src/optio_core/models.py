@@ -69,8 +69,8 @@ class DismissOutcome:
 class ResurrectOutcome:
     """Result of Optio.resurrect. ok=True means the save was started in the
     background; `proc` is the process doc at that moment. "not-launchable":
-    a resume from a snapshot of the process is deleting the newer snapshots
-    (Optio.launch with resume_from, its discard window)."""
+    a launch with resume_from of the process (resume from an older
+    snapshot) is in progress."""
     ok: bool
     reason: Literal[
         "not-found", "not-resurrectable", "no-resurrect-support",

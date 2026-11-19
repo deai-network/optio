@@ -151,12 +151,20 @@ class Optio:
         # the resurrect hook. While a process is here, launch and a second
         # resurrect are refused.
         self._resurrecting: dict[ObjectId, asyncio.Task] = {}
-        # Resumes from a snapshot in their discard window: process ObjectIds
-        # whose discard_snapshots_after hook is running, until their launch
-        # is scheduled. While a process is here, launch and resurrect are
-        # refused (not-launchable), so nothing reads the snapshots as they
-        # are being deleted.
-        self._resuming_from: set[ObjectId] = set()
+        # Launches with resume_from in progress: a token per call -> the id it
+        # was called with (an ObjectId hex or a processId). Set before the
+        # call's first await (before its record is read) and removed when the
+        # call returns, its run scheduled or refused. While one names a
+        # process (_resume_from_in_progress), a launch and a resurrect of it
+        # are refused (not-launchable), so nothing reads the snapshots as
+        # they are being deleted, and no launch slips in between the
+        # resume_from's checks and its discard.
+        self._resuming_from: dict[object, str] = {}
+        # Runs scheduled by _launch_record whose executor run has not
+        # returned yet: process ObjectId -> how many. A resume_from is
+        # refused (not-launchable) while its process has one: its record may
+        # not show the launch yet (the run writes `scheduled` itself, later).
+        self._launching: dict[ObjectId, int] = {}
         # The engine-wide conversation archive listener; started by run(),
         # stopped by shutdown().
         self._archive_listener: ConversationArchiveListener | None = None
@@ -587,8 +595,12 @@ class Optio:
         no-snapshot-support (no registered task, or no
         discard_snapshots_after hook), then the hook's own: capture-pending
         (CapturePending) and snapshot-not-found (SnapshotNotFound). Nothing
-        is deleted when one of these fails. While the hook runs, a launch
-        and a resurrect of the process are refused (not-launchable). Any
+        is deleted when one of these fails. From before the call's first
+        await until its run is scheduled (or it is refused), a launch and a
+        resurrect of the process are refused (not-launchable); and a run of
+        the process that a launch scheduled earlier and that has not
+        returned yet refuses the resume_from (not-launchable): a launch and
+        a resume from a snapshot never both proceed. Any
         other exception of the hook is logged ("Resume from the snapshot of
         <capturedAt> failed: <error>", level error) and propagates. A
         shutdown begun while the hook ran refuses the launch after it
@@ -617,7 +629,13 @@ class Optio:
         ("State changed to scheduled"), as the resume a resurrect ends in
         passes its line (_run_resurrect). A refused launch writes none of
         them. A factory's record's launch (a child's first run) passes
-        none."""
+        none.
+
+        With `resume_from`, the call is in _resuming_from from before its
+        first await, so every check decides on a record read after it was
+        set: a launch or a resurrect that checks later is refused, and one
+        that checked earlier shows in that record, in _resurrecting, or in
+        _launching (_launch_record)."""
         # Stop sign: once shutdown has begun, refuse new launches so nothing
         # half-boots into a shutting-down engine. Covers scheduler, RPC, and
         # programmatic launch paths.
@@ -625,26 +643,44 @@ class Optio:
             return LaunchOutcome(ok=False, reason="shutting-down")
         if resume_from is not None and not resume:
             return LaunchOutcome(ok=False, reason="invalid-request")
-        proc = await self._resolve(process_id)
-        if proc is None:
-            return LaunchOutcome(ok=False, reason="not-found")
-        if proc.get("taskFactory") or params is not None or ephemeral is not None:
-            # A factory's record never runs: its launch is a child's.
-            try:
-                child = await self._factory_child(proc, resume, params, ephemeral, metadata)
-            except LaunchBlocked:
-                return LaunchOutcome(ok=False, reason="launch-blocked")
-            if isinstance(child, LaunchOutcome):
-                return child
-            return await self._launch_child(child, session_id)
-        if is_factory_launch(proc):
-            # Its only launch was the factory's (_launch_child); a resume of
-            # a kept one may follow.
-            refusal = self._relaunch_refusal(proc, resume)
-            if refusal is not None:
-                return LaunchOutcome(ok=False, reason=refusal)
-        return await self._launch_record(
-            proc, resume, session_id, resume_from=resume_from, extra_log=extra_log,
+        marker = None
+        if resume_from is not None:
+            marker = object()
+            self._resuming_from[marker] = process_id
+        try:
+            proc = await self._resolve(process_id)
+            if proc is None:
+                return LaunchOutcome(ok=False, reason="not-found")
+            if proc.get("taskFactory") or params is not None or ephemeral is not None:
+                # A factory's record never runs: its launch is a child's.
+                try:
+                    child = await self._factory_child(proc, resume, params, ephemeral, metadata)
+                except LaunchBlocked:
+                    return LaunchOutcome(ok=False, reason="launch-blocked")
+                if isinstance(child, LaunchOutcome):
+                    return child
+                return await self._launch_child(child, session_id)
+            if is_factory_launch(proc):
+                # Its only launch was the factory's (_launch_child); a resume
+                # of a kept one may follow.
+                refusal = self._relaunch_refusal(proc, resume)
+                if refusal is not None:
+                    return LaunchOutcome(ok=False, reason=refusal)
+            return await self._launch_record(
+                proc, resume, session_id, resume_from=resume_from, extra_log=extra_log,
+                marker=marker,
+            )
+        finally:
+            if marker is not None:
+                self._resuming_from.pop(marker, None)
+
+    def _resume_from_in_progress(self, proc: dict, own: object | None = None) -> bool:
+        """Whether a launch with resume_from (other than the one holding the
+        token `own`) is in progress for the record `proc`: one called with
+        its ObjectId hex or its processId (_resuming_from)."""
+        names = (str(proc["_id"]), proc["processId"])
+        return any(
+            name in names for token, name in self._resuming_from.items() if token is not own
         )
 
     def _relaunch_refusal(self, proc: dict, resume: bool) -> str | None:
@@ -670,22 +706,29 @@ class Optio:
         self, proc: dict, resume: bool, session_id: str | None,
         resume_from: str | None = None,
         extra_log: Sequence[tuple[str, str]] = (),
+        marker: object | None = None,
     ) -> LaunchOutcome:
         """launch() of the resolved record `proc`, which is no factory's:
         its remaining refusals, then the run in the background and the
         re-read. Also a factory launch's first and only launch, and the
         resume of a kept one. `extra_log` goes to the run's log after its
-        reset (Executor.launch_process). With `resume_from` (launch() has
-        checked that `resume` is set), the snapshots newer than that one are
-        discarded after the last refusal, before the run
+        reset (Executor.launch_process). The run is counted in _launching
+        until it returns; no await lies between the first check here and
+        that count, unless `resume_from` is given. With `resume_from`
+        (launch() has checked that `resume` is set, and holds `marker` in
+        _resuming_from since before it read `proc`), the snapshots newer
+        than that one are discarded after the last refusal, before the run
         (_discard_newer_snapshots), and the discard's line follows
-        `extra_log`. From the hook's start until the run is scheduled the
-        process is in _resuming_from: a launch or a resurrect of it is then
-        refused, and a shutdown begun meanwhile refuses this launch after
-        the hook (shutting-down)."""
-        if proc["_id"] in self._resurrecting or proc["_id"] in self._resuming_from:
+        `extra_log`; a run of the process still counted in _launching
+        refuses it (not-launchable), and a shutdown begun during the hook
+        refuses the launch after it (shutting-down)."""
+        if proc["_id"] in self._resurrecting or self._resume_from_in_progress(proc, own=marker):
             # The resurrect in progress ends in its own resume; a resume from
             # a snapshot is deleting the snapshots a launch would read.
+            return LaunchOutcome(ok=False, reason="not-launchable")
+        if resume_from is not None and proc["_id"] in self._launching:
+            # A launch scheduled before this call's marker was set, whose run
+            # may not have written `scheduled` to the record yet.
             return LaunchOutcome(ok=False, reason="not-launchable")
         if proc["status"]["state"] not in LAUNCHABLE_STATES:
             return LaunchOutcome(ok=False, reason="not-launchable")
@@ -711,35 +754,23 @@ class Optio:
         oid = proc["_id"]
         oid_str = str(oid)
         log = list(extra_log)
-        marked = resume_from is not None
-        if marked:
-            # No await since the check above: no other launch or resurrect
-            # passed it meanwhile.
-            self._resuming_from.add(oid)
-        try:
-            if resume_from is not None:
-                refusal, line = await self._discard_newer_snapshots(
-                    proc, task, resume_from, session_id,
-                )
-                if refusal is not None:
-                    return LaunchOutcome(ok=False, reason=refusal)
-                if self._shutting_down:
-                    # The deletion stands: the chosen snapshot is the newest,
-                    # so a later resume restores it. No launch resets the
-                    # log, so the line is written now.
-                    await append_log(
-                        self._config.mongo_db, self._config.prefix, oid, "event", line,
-                    )
-                    return LaunchOutcome(ok=False, reason="shutting-down")
-                log.append(("event", line))
-            asyncio.create_task(
-                self._executor.launch_process(
-                    oid_str, resume=resume, session_id=session_id, extra_log=tuple(log),
-                ),
+        if resume_from is not None:
+            refusal, line = await self._discard_newer_snapshots(
+                proc, task, resume_from, session_id,
             )
-        finally:
-            if marked:
-                self._resuming_from.discard(oid)
+            if refusal is not None:
+                return LaunchOutcome(ok=False, reason=refusal)
+            if self._shutting_down:
+                # The deletion stands: the chosen snapshot is the newest, so a
+                # later resume restores it. No launch resets the log, so the
+                # line is written now.
+                await append_log(
+                    self._config.mongo_db, self._config.prefix, oid, "event", line,
+                )
+                return LaunchOutcome(ok=False, reason="shutting-down")
+            log.append(("event", line))
+        self._launching[oid] = self._launching.get(oid, 0) + 1
+        asyncio.create_task(self._run_launch(oid, resume, session_id, tuple(log)))
         # A launch (manual or timer-driven) supersedes any pending auto-resume
         # stamp on this process — clear it so the post-boot sweep won't
         # double-launch it.
@@ -755,6 +786,24 @@ class Optio:
         await asyncio.sleep(0)
         post = await self._resolve(oid_str)
         return LaunchOutcome(ok=True, proc=post if post is not None else proc)
+
+    async def _run_launch(
+        self, oid: ObjectId, resume: bool, session_id: str | None,
+        extra_log: tuple[tuple[str, str], ...],
+    ) -> str | None:
+        """The background run _launch_record schedules: the executor's
+        launch_process, counted in _launching (by _launch_record, before
+        this task was made) until it returns."""
+        try:
+            return await self._executor.launch_process(
+                str(oid), resume=resume, session_id=session_id, extra_log=extra_log,
+            )
+        finally:
+            left = self._launching.get(oid, 0) - 1
+            if left > 0:
+                self._launching[oid] = left
+            else:
+                self._launching.pop(oid, None)
 
     async def _discard_newer_snapshots(
         self, proc: dict, task: TaskInstance | None, captured_at: str,
@@ -955,9 +1004,11 @@ class Optio:
         Fire-and-forget like `launch`: preconditions are answered here with a
         typed reason; the task's resurrect hook and the follow-up resume run
         in a background task, reported through the process's progress and
-        log. While a resume from a snapshot of the process is in its discard
-        window (launch with resume_from), a resurrect is refused with
-        not-launchable, after resurrect-in-progress.
+        log. While a launch with resume_from of the process is in progress
+        (from before its first await until its run is scheduled or it is
+        refused), a resurrect is refused with not-launchable, after
+        resurrect-in-progress; no await lies between that check and the
+        entry in _resurrecting, which such a launch checks in turn.
         Spec: docs/2026-10-07-resurrect-failed-session-design.md,
         docs/2026-11-19-resume-from-snapshot-design.md
         """
@@ -972,7 +1023,7 @@ class Optio:
         oid = proc["_id"]
         if oid in self._resurrecting:
             return ResurrectOutcome(ok=False, reason="resurrect-in-progress")
-        if oid in self._resuming_from:
+        if self._resume_from_in_progress(proc):
             # A resume from a snapshot is deleting the newer snapshots: a
             # launch and a resurrect never both proceed.
             return ResurrectOutcome(ok=False, reason="not-launchable")
