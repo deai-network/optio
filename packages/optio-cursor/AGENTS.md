@@ -97,6 +97,7 @@ With `config.supports_resume`, `create_cursor_task` sets
 `TaskInstance.list_snapshots` and `discard_snapshots_after` from
 `optio_agents.snapshots.snapshot_hooks(snapshots.SNAPSHOT_LAYOUT)` (else both
 None). The layout is `{prefix}_cursor_session_snapshots` with one required blob
-field, `workdirBlobId`, and no optional ones. optio-core calls the hooks for
-`listSnapshots` and for a launch with `resume_from`; the helper's rules are in
-optio-agents' AGENTS.md, "Snapshot history (`optio_agents.snapshots`)".
+field, `workdirBlobId`, and no optional ones. optio-core calls `list_snapshots`
+from `Optio.list_snapshots` (the engine RPC `listSnapshots`) and
+`discard_snapshots_after` for a launch with `resume_from`; the helper's rules
+are in optio-agents' AGENTS.md, "Snapshot history (`optio_agents.snapshots`)".

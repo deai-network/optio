@@ -5,13 +5,14 @@ export { ProcessSchema, ProcessStateSchema, LogEntrySchema,
          ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema,
          ProcessMetadataPredicateSchema, ProcessMetadataFilterLegacySchema,
          FilterScalar, FilterLeafOps, FilterFieldPath,
-         BrowserOpenRequestSchema, SessionEventSchema } from './schemas/process.js';
+         BrowserOpenRequestSchema, SessionEventSchema,
+         ProcessSnapshotSchema } from './schemas/process.js';
 export { SessionEventsStreamMessageSchema } from './schemas/session-events.js';
 
 // Types
 export type { Process, ProcessState, LogEntry, ProcessMetadataFilter,
               ProcessMetadataPredicate,
-              BrowserOpenRequest, SessionEvent } from './schemas/process.js';
+              BrowserOpenRequest, SessionEvent, ProcessSnapshot } from './schemas/process.js';
 export type { SessionEventsStreamMessage } from './schemas/session-events.js';
 
 // Filter builder helpers
@@ -32,6 +33,7 @@ export {
   CancelFailureReason,
   DismissFailureReason,
   ResurrectFailureReason,
+  ListSnapshotsFailureReason,
   GroupCancelFailureReason,
   BlockLaunchesFailureReason,
 } from './engine-failure-reasons.js';

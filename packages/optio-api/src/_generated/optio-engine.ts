@@ -16,6 +16,8 @@ export type GroupCancelAndWaitParams = z.infer<typeof optioEngineContract.method
 export type GroupCancelAndWaitResult = z.infer<typeof optioEngineContract.methods.groupCancelAndWait.result>;
 export type LaunchParams = z.infer<typeof optioEngineContract.methods.launch.params>;
 export type LaunchResult = z.infer<typeof optioEngineContract.methods.launch.result>;
+export type ListSnapshotsParams = z.infer<typeof optioEngineContract.methods.listSnapshots.params>;
+export type ListSnapshotsResult = z.infer<typeof optioEngineContract.methods.listSnapshots.result>;
 export type MaterializeUploadParams = z.infer<typeof optioEngineContract.methods.materializeUpload.params>;
 export type MaterializeUploadResult = z.infer<typeof optioEngineContract.methods.materializeUpload.result>;
 export type ResurrectParams = z.infer<typeof optioEngineContract.methods.resurrect.params>;
@@ -44,6 +46,9 @@ export class OptioEngineClient {
   launch(params: LaunchParams, opts?: { timeoutMs?: number }): Promise<LaunchResult> {
     return this.client.call('optio-engine', 'launch', params, opts);
   }
+  listSnapshots(params: ListSnapshotsParams, opts?: { timeoutMs?: number }): Promise<ListSnapshotsResult> {
+    return this.client.call('optio-engine', 'listSnapshots', params, opts);
+  }
   materializeUpload(params: MaterializeUploadParams, opts?: { timeoutMs?: number }): Promise<MaterializeUploadResult> {
     return this.client.call('optio-engine', 'materializeUpload', params, opts);
   }
@@ -65,6 +70,7 @@ export interface OptioEngineService {
   groupCancel(params: GroupCancelParams, opts?: { timeoutMs?: number }): Promise<GroupCancelResult>;
   groupCancelAndWait(params: GroupCancelAndWaitParams, opts?: { timeoutMs?: number }): Promise<GroupCancelAndWaitResult>;
   launch(params: LaunchParams, opts?: { timeoutMs?: number }): Promise<LaunchResult>;
+  listSnapshots(params: ListSnapshotsParams, opts?: { timeoutMs?: number }): Promise<ListSnapshotsResult>;
   materializeUpload(params: MaterializeUploadParams, opts?: { timeoutMs?: number }): Promise<MaterializeUploadResult>;
   resurrect(params: ResurrectParams, opts?: { timeoutMs?: number }): Promise<ResurrectResult>;
   resync(params: ResyncParams): Promise<void>;

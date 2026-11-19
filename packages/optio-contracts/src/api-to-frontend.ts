@@ -1,8 +1,8 @@
 import { initContract } from '@ts-rest/core';
 import { z } from 'zod';
 import { PaginationQuerySchema, PaginatedResponseSchema, ErrorSchema, ObjectIdSchema, ProcessIdParamSchema } from './schemas/common.js';
-import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema } from './schemas/process.js';
-import { LaunchFailureReason, CancelFailureReason, DismissFailureReason, ResurrectFailureReason } from './engine-failure-reasons.js';
+import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema, ProcessSnapshotSchema } from './schemas/process.js';
+import { LaunchFailureReason, CancelFailureReason, DismissFailureReason, ResurrectFailureReason, ListSnapshotsFailureReason } from './engine-failure-reasons.js';
 
 const c = initContract();
 
@@ -22,6 +22,8 @@ const DismissErrorBody = z.object({
 });
 
 const ResurrectErrorBody = z.object({ reason: ResurrectFailureReason, message: z.string() });
+
+const SnapshotsErrorBody = z.object({ reason: ListSnapshotsFailureReason, message: z.string() });
 
 /**
  * Why `getConversation` gave no record. The engine's conversation archive
@@ -167,6 +169,19 @@ export const processesContract = c.router({
     },
     summary: 'Read a suspended process\'s saved conversation record (read-only; proxied from the engine)',
   },
+  getSnapshots: {
+    method: 'GET',
+    path: '/processes/:id/snapshots',
+    pathParams: z.object({ id: ProcessIdParamSchema }),
+    query: InstanceQuerySchema,
+    responses: {
+      // Newest first, valid snapshots only, the newest included.
+      200: z.object({ snapshots: z.array(ProcessSnapshotSchema) }),
+      // not-found also answers a process the request may not see.
+      404: SnapshotsErrorBody,
+    },
+    summary: 'List a process\'s valid snapshots, newest first (a launch\'s resumeFrom names one)',
+  },
   launch: {
     method: 'POST',
     path: '/processes/:id/launch',
@@ -174,6 +189,8 @@ export const processesContract = c.router({
     query: InstanceQuerySchema,
     body: z.object({
       resume: z.boolean().optional(),
+      // Resume from an older snapshot (a getSnapshots capturedAt); needs resume: true.
+      resumeFrom: z.string().min(1).optional(),
       sessionId: z.string().nullable().optional(),
       // A task factory's parameter values; the answer is the child's record.
       params: z.record(z.unknown()).optional(),

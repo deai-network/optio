@@ -412,6 +412,7 @@ class LaunchParams(BaseModel):
     )
     process_id: str = Field(..., alias="processId", min_length=1)
     resume: bool | None = None
+    resume_from: str | None = Field(None, alias="resumeFrom", min_length=1)
     session_id: str | None = Field(..., alias="sessionId")
     params: dict[str, Any] | None = None
     ephemeral: bool | None = None
@@ -495,12 +496,48 @@ class LaunchResult2(BaseModel):
         "not-a-factory",
         "invalid-parameters",
         "invalid-metadata",
+        "invalid-request",
+        "no-snapshot-support",
+        "snapshot-not-found",
+        "capture-pending",
     ]
     message: str | None = None
 
 
 class LaunchResult(RootModel[LaunchResult1 | LaunchResult2]):
     root: LaunchResult1 | LaunchResult2
+
+
+class ListSnapshotsParams(CancelParams):
+    pass
+
+
+class Snapshot(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    captured_at: str = Field(..., alias="capturedAt")
+    end_state: str = Field(..., alias="endState")
+
+
+class ListSnapshotsResult1(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ok: Literal[True]
+    snapshots: list[Snapshot]
+
+
+class ListSnapshotsResult2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ok: Literal[False]
+    reason: Literal["not-found", "no-snapshot-support"]
+
+
+class ListSnapshotsResult(RootModel[ListSnapshotsResult1 | ListSnapshotsResult2]):
+    root: ListSnapshotsResult1 | ListSnapshotsResult2
 
 
 class MaterializeUploadParams(BaseModel):
@@ -616,6 +653,7 @@ class ResurrectResult2(BaseModel):
         "resurrect-in-progress",
         "launch-blocked",
         "shutting-down",
+        "not-launchable",
     ]
 
 
@@ -718,6 +756,10 @@ class OptioEngineClient:
         raw = await self._client.call("optio-engine", "launch", params.model_dump(mode='json', by_alias=True), timeout_ms=timeout_ms)
         return LaunchResult.model_validate(raw)
 
+    async def list_snapshots(self, params: ListSnapshotsParams, *, timeout_ms: int | None = None) -> ListSnapshotsResult:
+        raw = await self._client.call("optio-engine", "listSnapshots", params.model_dump(mode='json', by_alias=True), timeout_ms=timeout_ms)
+        return ListSnapshotsResult.model_validate(raw)
+
     async def materialize_upload(self, params: MaterializeUploadParams, *, timeout_ms: int | None = None) -> MaterializeUploadResult:
         raw = await self._client.call("optio-engine", "materializeUpload", params.model_dump(mode='json', by_alias=True), timeout_ms=timeout_ms)
         return MaterializeUploadResult.model_validate(raw)
@@ -754,6 +796,9 @@ class OptioEngineService(ABC):
     async def launch(self, params: LaunchParams) -> LaunchResult: ...
 
     @abstractmethod
+    async def list_snapshots(self, params: ListSnapshotsParams) -> ListSnapshotsResult: ...
+
+    @abstractmethod
     async def materialize_upload(self, params: MaterializeUploadParams) -> MaterializeUploadResult: ...
 
     @abstractmethod
@@ -773,6 +818,7 @@ METHODS = {
     "groupCancel": MethodEntry(params_model=GroupCancelParams, result_model=GroupCancelResult, handler_attr="group_cancel"),
     "groupCancelAndWait": MethodEntry(params_model=GroupCancelAndWaitParams, result_model=GroupCancelAndWaitResult, handler_attr="group_cancel_and_wait"),
     "launch": MethodEntry(params_model=LaunchParams, result_model=LaunchResult, handler_attr="launch"),
+    "listSnapshots": MethodEntry(params_model=ListSnapshotsParams, result_model=ListSnapshotsResult, handler_attr="list_snapshots"),
     "materializeUpload": MethodEntry(params_model=MaterializeUploadParams, result_model=MaterializeUploadResult, handler_attr="materialize_upload"),
     "resurrect": MethodEntry(params_model=ResurrectParams, result_model=ResurrectResult, handler_attr="resurrect"),
     "resync": MethodEntry(params_model=ResyncParams, result_model=None, handler_attr="resync"),

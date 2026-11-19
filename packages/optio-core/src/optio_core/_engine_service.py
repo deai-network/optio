@@ -13,6 +13,7 @@ from optio_core._generated.optio_engine import (
     CancelParams, CancelResult,
     DismissParams, DismissResult,
     ResurrectParams, ResurrectResult,
+    ListSnapshotsParams, ListSnapshotsResult,
     GroupCancelParams, GroupCancelResult,
     GroupCancelAndWaitParams, GroupCancelAndWaitResult,
     BlockLaunchesParams, BlockLaunchesResult,
@@ -114,6 +115,7 @@ class OptioEngineService(OptioEngineServiceBase):
             params.process_id, resume=bool(params.resume),
             session_id=params.session_id, params=params.params,
             ephemeral=params.ephemeral, metadata=_launch_stamp(params.metadata),
+            resume_from=params.resume_from,
         )
         if not outcome.ok:
             refusal: dict = {"ok": False, "reason": outcome.reason}
@@ -155,6 +157,22 @@ class OptioEngineService(OptioEngineServiceBase):
                 {"ok": False, "reason": outcome.reason}
             )
         return ResurrectResult.model_validate(_ok_payload(outcome.proc))
+
+    # --------------------------------------------------------------- list_snapshots
+    async def list_snapshots(self, params: ListSnapshotsParams) -> ListSnapshotsResult:
+        """Optio.list_snapshots: the task's list hook's snapshots
+        ([{capturedAt, endState}], newest first, valid only, the newest
+        included), or not-found / no-snapshot-support. An exception of the
+        hook propagates.
+        Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
+        outcome = await self._optio.list_snapshots(params.process_id)
+        if not outcome.ok:
+            return ListSnapshotsResult.model_validate(
+                {"ok": False, "reason": outcome.reason}
+            )
+        return ListSnapshotsResult.model_validate(
+            {"ok": True, "snapshots": outcome.snapshots}
+        )
 
     # --------------------------------------------------------------- resync
     async def resync(self, params: ResyncParams) -> None:

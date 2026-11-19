@@ -8,10 +8,16 @@ describe('apiToFrontendRouteErrorReasons', () => {
     );
   });
 
+  it('lists processes.launch with the resume-from-snapshot reasons', () => {
+    expect(apiToFrontendRouteErrorReasons['processes.launch']).toEqual(
+      expect.arrayContaining(['invalid-request', 'no-snapshot-support', 'snapshot-not-found', 'capture-pending']),
+    );
+  });
+
   it('lists processes.resurrect with exactly the resurrect failure reasons', () => {
     expect(apiToFrontendRouteErrorReasons['processes.resurrect']).toEqual([
       'not-found', 'not-resurrectable', 'no-resurrect-support',
-      'resurrect-in-progress', 'launch-blocked', 'shutting-down',
+      'resurrect-in-progress', 'launch-blocked', 'shutting-down', 'not-launchable',
     ]);
   });
 });

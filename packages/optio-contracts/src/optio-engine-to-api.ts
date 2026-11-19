@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import { defineContract, defineMethod, defineNotification } from '@clamator/protocol';
-import { ProcessSchema, ProcessMetadataFilterSchema } from './schemas/process.js';
+import { ProcessSchema, ProcessMetadataFilterSchema, ProcessSnapshotSchema } from './schemas/process.js';
 import {
   LaunchFailureReason,
   CancelFailureReason,
   DismissFailureReason,
   ResurrectFailureReason,
+  ListSnapshotsFailureReason,
   GroupCancelFailureReason,
   BlockLaunchesFailureReason,
 } from './engine-failure-reasons.js';
@@ -33,6 +34,12 @@ const dismissResult = z.discriminatedUnion('ok', [
 const resurrectResult = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), process: ProcessSchema }),
   z.object({ ok: z.literal(false), reason: ResurrectFailureReason }),
+]);
+
+// The process's valid snapshots, newest first, the newest included.
+const listSnapshotsResult = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), snapshots: z.array(ProcessSnapshotSchema) }),
+  z.object({ ok: z.literal(false), reason: ListSnapshotsFailureReason }),
 ]);
 
 const groupCancelResult = z.discriminatedUnion('ok', [
@@ -64,6 +71,10 @@ export const optioEngineContract = defineContract('optio-engine', {
     params: z.object({
       processId: ProcessIdParam,
       resume: z.boolean().optional(),
+      // Resume from an older snapshot: the capturedAt listSnapshots gave
+      // it. Needs `resume: true` (else invalid-request); the newer
+      // snapshots are deleted once every launch check has passed.
+      resumeFrom: z.string().min(1).optional(),
       // Required (no `.optional()`) but nullable: every caller must
       // consciously supply the initiating session token, or explicit null
       // for unattended launches.
@@ -96,6 +107,10 @@ export const optioEngineContract = defineContract('optio-engine', {
       sessionId: z.string().nullable(),
     }),
     result: resurrectResult,
+  }),
+  listSnapshots: defineMethod({
+    params: z.object({ processId: ProcessIdParam }),
+    result: listSnapshotsResult,
   }),
   groupCancel: defineMethod({
     params: z.object({

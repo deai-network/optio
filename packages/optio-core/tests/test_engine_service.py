@@ -16,14 +16,18 @@ from optio_core._generated.optio_engine import (
     BlockLaunchesParams, BlockLaunchesResult,
     UnblockLaunchesParams, UnblockLaunchesResult,
     ResurrectParams, ResurrectResult,
+    ListSnapshotsParams, ListSnapshotsResult,
     ResyncParams,
 )
 from optio_core.models import (
     LaunchBlocked, LaunchOutcome, CancelOutcome, DismissOutcome,
-    ResurrectOutcome,
+    ResurrectOutcome, ListSnapshotsOutcome,
 )
 
 _OBJECTID_RE = re.compile(r"^[a-fA-F0-9]{24}$")
+
+# A listed capturedAt in its wire form (UTC, three fraction digits).
+TS = "2026-11-19T13:05:12.345Z"
 
 
 @pytest.fixture
@@ -115,6 +119,7 @@ async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
     assert result.root.ok is True
     fake_optio.launch.assert_awaited_once_with(
         hex_id, resume=False, session_id=None, params=None, ephemeral=None, metadata=None,
+        resume_from=None,
     )
 
 
@@ -135,6 +140,24 @@ async def test_launch_success(fake_optio, sample_idle_proc):
     assert result.root.process.process_id == "p1"
     fake_optio.launch.assert_awaited_once_with(
         "p1", resume=False, session_id=None, params=None, ephemeral=None, metadata=None,
+        resume_from=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_launch_forwards_resume_from(fake_optio):
+    """The launch params' resumeFrom (a listed capturedAt) reaches
+    Optio.launch as resume_from, beside resume.
+    Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
+    result = await svc.launch(LaunchParams.model_validate(
+        {"processId": "p1", "sessionId": None, "resume": True, "resumeFrom": TS}
+    ))
+    assert result.root.ok is True
+    fake_optio.launch.assert_awaited_once_with(
+        "p1", resume=True, session_id=None, params=None, ephemeral=None, metadata=None,
+        resume_from=TS,
     )
 
 
@@ -148,6 +171,7 @@ async def test_launch_passes_params_through(fake_optio, sample_idle_proc):
     assert result.root.ok is True
     fake_optio.launch.assert_awaited_once_with(
         "f", resume=False, session_id=None, params={"n": 3}, ephemeral=None, metadata=None,
+        resume_from=None,
     )
 
 
@@ -166,6 +190,7 @@ async def test_launch_forwards_metadata(fake_optio):
     assert result.root.ok is True
     fake_optio.launch.assert_awaited_once_with(
         "f", resume=False, session_id=None, params={"n": 3}, ephemeral=None, metadata=stamp,
+        resume_from=None,
     )
     # 42 == 42.0 and True == 1: the types are the point.
     forwarded = fake_optio.launch.await_args.kwargs["metadata"]
@@ -214,7 +239,10 @@ async def test_launch_answers_a_factorys_fields(fake_optio, sample_idle_proc):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "reason", ["parameters-required", "not-a-factory", "shutting-down"],
+    "reason", [
+        "parameters-required", "not-a-factory", "shutting-down",
+        "invalid-request", "no-snapshot-support", "snapshot-not-found", "capture-pending",
+    ],
 )
 async def test_launch_answers_every_reason_optio_core_returns(fake_optio, reason):
     from optio_core._engine_service import OptioEngineService
@@ -361,6 +389,7 @@ async def test_launch_passes_ephemeral_through(fake_optio):
     assert result.root.ok is True
     fake_optio.launch.assert_awaited_once_with(
         "f", resume=False, session_id=None, params={"n": 3}, ephemeral=True, metadata=None,
+        resume_from=None,
     )
 
 
@@ -592,6 +621,50 @@ async def test_resurrect_reason(fake_optio):
     svc = OptioEngineService(fake_optio)
     res = await svc.resurrect(ResurrectParams.model_validate({"processId": "p1", "sessionId": None}))
     assert res.root.ok is False and res.root.reason == "not-resurrectable"
+
+
+@pytest.mark.asyncio
+async def test_resurrect_not_launchable_is_a_typed_refusal(fake_optio):
+    """optio-core refuses a resurrect with not-launchable while a launch with
+    resume_from (or a run a launch scheduled) of the process is in progress;
+    the RPC answers it as a typed refusal, not a validation error.
+    Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
+    from optio_core._engine_service import OptioEngineService
+    fake_optio.resurrect = AsyncMock(return_value=ResurrectOutcome(ok=False, reason="not-launchable"))
+    svc = OptioEngineService(fake_optio)
+    res = await svc.resurrect(ResurrectParams.model_validate({"processId": "p1", "sessionId": None}))
+    assert isinstance(res, ResurrectResult)
+    assert res.root.ok is False and res.root.reason == "not-launchable"
+
+
+@pytest.mark.asyncio
+async def test_list_snapshots_ok(fake_optio):
+    """listSnapshots answers Optio.list_snapshots' list, newest first, each
+    capturedAt as the hook gave it.
+    Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
+    from optio_core._engine_service import OptioEngineService
+    snapshots = [
+        {"capturedAt": TS, "endState": "cancelled"},
+        {"capturedAt": "2026-11-19T12:05:00.000Z", "endState": "done"},
+    ]
+    fake_optio.list_snapshots = AsyncMock(return_value=ListSnapshotsOutcome(ok=True, snapshots=snapshots))
+    svc = OptioEngineService(fake_optio)
+    res = await svc.list_snapshots(ListSnapshotsParams.model_validate({"processId": "p1"}))
+    assert isinstance(res, ListSnapshotsResult)
+    fake_optio.list_snapshots.assert_awaited_once_with("p1")
+    assert res.root.ok is True
+    assert res.root.snapshots[0].captured_at == TS
+    assert res.model_dump(by_alias=True, mode="json") == {"ok": True, "snapshots": snapshots}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["not-found", "no-snapshot-support"])
+async def test_list_snapshots_reason(fake_optio, reason):
+    from optio_core._engine_service import OptioEngineService
+    fake_optio.list_snapshots = AsyncMock(return_value=ListSnapshotsOutcome(ok=False, reason=reason))
+    svc = OptioEngineService(fake_optio)
+    res = await svc.list_snapshots(ListSnapshotsParams.model_validate({"processId": "p1"}))
+    assert res.root.ok is False and res.root.reason == reason
 
 
 def test_wire_keys_carry_resurrect_fields():

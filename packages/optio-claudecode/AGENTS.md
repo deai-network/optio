@@ -248,8 +248,9 @@ next start.
 `TaskInstance.discard_snapshots_after` when `config.supports_resume` (else
 both `None`, as `resurrect`), from
 `optio_agents.snapshots.snapshot_hooks(snapshots.SNAPSHOT_LAYOUT,
-capture_pending=pending_captures.has_pending_capture)`. optio-core calls them
-for `listSnapshots` and for a launch with `resume_from` (optio-core's
+capture_pending=pending_captures.has_pending_capture)`. optio-core calls
+`list_snapshots` from `Optio.list_snapshots` (the engine RPC `listSnapshots`)
+and `discard_snapshots_after` for a launch with `resume_from` (optio-core's
 AGENTS.md, "TaskInstance.list_snapshots / discard_snapshots_after"); the
 helper's rules (validity, timestamp matching, which blobs go) are in
 optio-agents' AGENTS.md, "Snapshot history (optio_agents.snapshots)". The

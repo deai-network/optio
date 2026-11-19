@@ -17,7 +17,7 @@ The package hosts two typed contracts that define optio's internal communication
 |------|---------------|---------|
 | `src/api-to-frontend.ts` | ts-rest HTTP contract | What `optio-api` exposes to its REST clients (UI, external integrations). Used by `optio-ui` to construct typed clients and by `optio-api` to register typed handlers. |
 | `src/optio-engine-to-api.ts` | clamator RPC contract | What `optio-core` (the engine) exposes to its RPC callers (typically `optio-api`, plus any consumer app like Excavator). Used to issue typed RPC calls and to implement typed handlers. |
-| `src/schemas/` | Shared Zod schemas | Common types used by both contracts. `common.ts` holds generic primitives (ObjectId, Pagination, Error). `process.ts` holds process-domain types (Process, ProcessState, LogEntry, ProcessMetadataFilter). |
+| `src/schemas/` | Shared Zod schemas | Common types used by both contracts. `common.ts` holds generic primitives (ObjectId, Pagination, Error). `process.ts` holds process-domain types (Process, ProcessState, LogEntry, ProcessSnapshot, ProcessMetadataFilter). |
 
 ### Naming convention
 
@@ -110,6 +110,19 @@ z.enum(['idle', 'scheduled', 'running', 'done', 'failed',
 | `level` | `string` | enum: `event`, `info`, `debug`, `warning`, `error` |
 | `message` | `string` | |
 | `data` | `Record<string, unknown>` | optional |
+
+---
+
+### `ProcessSnapshotSchema`
+
+One of a process's valid snapshots, as `getSnapshots` and the engine RPC `listSnapshots` answer it.
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `capturedAt` | `string` | the capture time as optio-core gave it: UTC, three fraction digits (e.g. `2026-11-19T13:05:12.345Z`); a plain string, not `.datetime()`, so codegen keeps it a Python `str` and the spelling survives. A launch's `resumeFrom` names the snapshot by it |
+| `endState` | `string` | the state the run ended in; `""` when the snapshot has none |
+
+Type: `ProcessSnapshot`.
 
 ---
 
@@ -210,7 +223,8 @@ is `ProcessIdParamSchema` (a non-empty string): either the process `_id` (Object
 | `getLog` | GET | `/processes/:id/log` | `id: string` | `database?`, `prefix?`, `cursor?`, `limit` (1–100, default 20) | 200: `PaginatedResponse<LogEntry>`, 404: `Error` |
 | `getTreeLog` | GET | `/processes/:id/tree/log` | `id: string` | `database?`, `prefix?`, `cursor?`, `limit` (1–100, default 20), `maxDepth?: number` (int, min 0) | 200: `PaginatedResponse<LogEntry & { processId: ObjectId, processLabel: string }>`, 404: `Error` |
 | `getConversation` | GET | `/processes/:id/conversation` | `id: string` | `database?`, `prefix?` | 200: `ConversationRecord` (`{ events: unknown[], capturedAt: string \| null }`), 401: `Error`, 403/404/409/500/503: `{ reason: ConversationFailureReason, message: string }` |
-| `launch` | POST | `/processes/:id/launch` | `id: string` | `database?`, `prefix?` | 200: `Process`, 400/404/409: `{ reason: LaunchFailureReason, message: string }` (body: `{ resume?: boolean; sessionId?: string \| null; params?: Record<string, unknown>; ephemeral?: boolean }` — optional; omitting the body entirely is valid) |
+| `getSnapshots` | GET | `/processes/:id/snapshots` | `id: string` | `database?`, `prefix?` | 200: `{ snapshots: ProcessSnapshot[] }`, 404: `{ reason: ListSnapshotsFailureReason, message: string }` |
+| `launch` | POST | `/processes/:id/launch` | `id: string` | `database?`, `prefix?` | 200: `Process`, 400/404/409: `{ reason: LaunchFailureReason, message: string }` (body: `{ resume?: boolean; resumeFrom?: string; sessionId?: string \| null; params?: Record<string, unknown>; ephemeral?: boolean }` — optional; omitting the body entirely is valid) |
 | `cancel` | POST | `/processes/:id/cancel` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: CancelFailureReason, message: string }` |
 | `dismiss` | POST | `/processes/:id/dismiss` | `id: string` | `database?`, `prefix?` | 200: `Process \| null` (null: dismissing deleted the record, an ended factory launch), 404/409: `{ reason: DismissFailureReason, message: string }` |
 | `resurrect` | POST | `/processes/:id/resurrect` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: ResurrectFailureReason, message: string }` (body: `{ sessionId?: string \| null }` — optional; omitting the body entirely is valid) |
@@ -226,7 +240,8 @@ optio-api mounts the contract under `/api` (`/api/processes/...`). The same file
 - `getResult` — the process's result file (its `result`). The 200 is the file's bytes, with `Content-Type` the result's `contentType` (the contract's `application/octet-stream` is nominal), `Content-Length` its size and `Content-Disposition: inline` with its name. 404 `no-result`: the process has no result; 404 `not-found`: no such process, or one the request may not see (as `getConversation` answers).
 - `getTree` — returns a `ProcessTreeNode`: a `Process` extended with `children: ProcessTreeNode[]` (recursive). `maxDepth` limits traversal depth.
 - `getTreeLog` — returns merged log entries across the process subtree, each augmented with `processId` (ObjectId) and `processLabel` (string) to identify the source process.
-- `launch` — optional body `{ resume?: boolean; sessionId?: string | null; params?: Record<string, unknown>; ephemeral?: boolean }`. Clients may omit the body entirely; setting `resume: true` requests a resume; `sessionId` is the initiating session; `params` are a task factory's parameter values (the record's `parameters`), and a factory's launch answers 200 with the child's record; `ephemeral` overrides the factory's default retention of that record (true: deleted when it ends; false: kept until dismissed), and is refused with `not-a-factory` for a process that is no factory. The body carries no `metadata`: a factory launch's stamp comes only from optio-api's `launchMetadata` hook (the engine RPC `launch`'s `metadata`). 400 is `parameters-required`, `invalid-parameters` (whose `message` is optio-core's `"<id>: <what>"` text, unchanged) or `invalid-metadata` (the stamp collided with the factory's metadata; its `message`, naming the keys, is optio-core's text, unchanged); 404 is `not-found`; 409 is every other reason: a state conflict (`not-launchable`, e.g. launching an already-running process or a factory's launch again), `resume: true` against a task whose `supportsResume` is `false` (`no-resume-support`), `launch-blocked`, `not-a-factory` and `shutting-down`.
+- `launch` — optional body `{ resume?: boolean; resumeFrom?: string; sessionId?: string | null; params?: Record<string, unknown>; ephemeral?: boolean }`. Clients may omit the body entirely; setting `resume: true` requests a resume; `resumeFrom` (non-empty; an empty string fails the body's validation) is a `getSnapshots` `capturedAt` to resume from, with `resume: true` (engine RPC `launch`'s `resumeFrom`); `sessionId` is the initiating session; `params` are a task factory's parameter values (the record's `parameters`), and a factory's launch answers 200 with the child's record; `ephemeral` overrides the factory's default retention of that record (true: deleted when it ends; false: kept until dismissed), and is refused with `not-a-factory` for a process that is no factory. The body carries no `metadata`: a factory launch's stamp comes only from optio-api's `launchMetadata` hook (the engine RPC `launch`'s `metadata`). 400 is `parameters-required`, `invalid-parameters` (whose `message` is optio-core's `"<id>: <what>"` text, unchanged), `invalid-metadata` (the stamp collided with the factory's metadata; its `message`, naming the keys, is optio-core's text, unchanged) or `invalid-request` (`resumeFrom` without `resume: true`); 404 is `not-found`; 409 is every other reason: a state conflict (`not-launchable`, e.g. launching an already-running process or a factory's launch again), `resume: true` against a task whose `supportsResume` is `false` (`no-resume-support`), `launch-blocked`, `not-a-factory`, `shutting-down`, and for `resumeFrom` `no-snapshot-support`, `snapshot-not-found` and `capture-pending` (404 keeps meaning "no such process").
+- `getSnapshots` — the process's valid snapshots, newest first, the newest included (a client offering older ones skips the first); optio-api proxies them from the engine RPC `listSnapshots`. Access is whoever may see the process. 404 `not-found`: no such process, or one the request may not see; 404 `no-snapshot-support`: its task keeps no snapshot history. The route is not in `apiToFrontendRouteErrorReasons` (its errors are not shown, as `getConversation`'s).
 - `cancel` / `dismiss` — no request body. 409 indicates a state conflict. Dismissing an ended factory launch deletes its record: `dismiss` answers 200 with a `null` body (engine RPC: `{ ok: true }` without `process`).
 - `getConversation` — the saved conversation record of a suspended process (a terminal state, `done` | `failed` | `cancelled`, with `supportsResume` and `hasSavedState`), read-only; optio-api proxies it from the engine's conversation archive, which decrypts. `events` are `[seq, event]` pairs (the recent part a resume replays); `capturedAt` is the ISO time of the snapshot, or null. The 401 is optio-api's authentication (`{ message }`); the others carry a `ConversationFailureReason`: 403 `forbidden`; 404 `not-found` / `no-conversation-support` / `no-conversation`; 409 `not-suspended`; 500 `read-failed`; 503 `engine-unavailable`.
 - `resurrect` — saves the work a failed run left on its host, then resumes (engine RPC `resurrect`). Optional body `{ sessionId?: string | null }`, the initiating session. Error responses carry a typed `{ reason, message }` body, `reason` being a `ResurrectFailureReason`.
@@ -239,10 +254,11 @@ clamator RPC contract exported from `optio-engine-to-api.ts` (service `'optio-en
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `launch` | `{ processId, resume?: boolean, sessionId: string \| null, params?: Record<string, unknown>, ephemeral?: boolean, metadata?: Record<string, string \| number \| boolean \| null> }` | `{ ok: true, process } \| { ok: false, reason: LaunchFailureReason, message?: string }` |
+| `launch` | `{ processId, resume?: boolean, resumeFrom?: string, sessionId: string \| null, params?: Record<string, unknown>, ephemeral?: boolean, metadata?: Record<string, string \| number \| boolean \| null> }` | `{ ok: true, process } \| { ok: false, reason: LaunchFailureReason, message?: string }` |
 | `cancel` | `{ processId }` | `{ ok: true, process } \| { ok: false, reason: CancelFailureReason }` |
 | `dismiss` | `{ processId }` | `{ ok: true, process? } (no process: the record was deleted) \| { ok: false, reason: DismissFailureReason }` |
 | `resurrect` | `{ processId, sessionId: string \| null }` | `{ ok: true, process } \| { ok: false, reason: ResurrectFailureReason }` |
+| `listSnapshots` | `{ processId }` | `{ ok: true, snapshots: ProcessSnapshot[] } \| { ok: false, reason: ListSnapshotsFailureReason }` |
 | `groupCancel` / `groupCancelAndWait` | `{ metadataFilter, blockNewLaunches?, persist?, reason?, purgeRecords? }` | `{ ok: true, cancelledCount } \| { ok: false, reason: GroupCancelFailureReason }` |
 | `blockLaunches` | `{ launchFilter, reason? }` | `{ ok: true } \| { ok: false, reason: BlockLaunchesFailureReason }` |
 | `unblockLaunches` | `{ launchFilter }` | `{ removed: number }` |
@@ -257,6 +273,11 @@ server-side only), merged into the new launch's metadata; a key of the factory's
 (with `task_for`, the instance's too) or the reserved `taskFactory` refuses the launch with
 `invalid-metadata`, its `message` naming the keys.
 
+`resumeFrom` on `launch` (a non-empty string: a `capturedAt` that `listSnapshots` gave) resumes
+from that older snapshot; it needs `resume: true` (else `invalid-request`). optio-core deletes the
+newer snapshots only once every launch check has passed. `listSnapshots` answers the task's valid
+snapshots, newest first, the newest included.
+
 ## Failure-reason enums
 
 Zod enums (each also exported as a type of the same name) in `engine-failure-reasons.ts`,
@@ -264,10 +285,11 @@ re-exported from the package root. Browser-safe: they do not pull in `@clamator/
 
 | Enum | Values |
 |------|--------|
-| `LaunchFailureReason` | `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata` (every reason optio-core's `launch` can return; a refusal may carry `message`, the text of `invalid-parameters` or `invalid-metadata`) |
+| `LaunchFailureReason` | `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`, and for `resumeFrom` `invalid-request` (without `resume: true`), `no-snapshot-support`, `snapshot-not-found`, `capture-pending` (every reason optio-core's `launch` can return; a refusal may carry `message`, the text of `invalid-parameters` or `invalid-metadata`) |
 | `CancelFailureReason` | `not-found`, `not-cancellable` |
 | `DismissFailureReason` | `not-found`, `not-dismissable` |
-| `ResurrectFailureReason` | `not-found`, `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, `launch-blocked`, `shutting-down` |
+| `ResurrectFailureReason` | `not-found`, `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, `launch-blocked`, `shutting-down`, `not-launchable` (a launch with `resumeFrom`, or a run a launch scheduled, of the process is in progress) |
+| `ListSnapshotsFailureReason` | `not-found`, `no-snapshot-support` |
 | `GroupCancelFailureReason` | `invalid-persist-without-block` |
 | `BlockLaunchesFailureReason` | `invalid-filter` |
 | `ConversationFailureReason` (in `api-to-frontend.ts`) | `forbidden`, `not-found`, `no-conversation-support`, `no-conversation`, `not-suspended`, `read-failed`, `engine-unavailable` |

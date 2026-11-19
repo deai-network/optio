@@ -66,7 +66,8 @@ With `config.supports_resume`, `create_kimicode_task` sets
 `optio_agents.snapshots.snapshot_hooks(snapshots.SNAPSHOT_LAYOUT)` (else both
 None). The layout is `{prefix}_kimicode_session_snapshots` with two required
 blob fields, `sessionBlobId` and `workdirBlobId`, and no optional ones.
-optio-core calls the hooks for `listSnapshots` and for a launch with
+optio-core calls `list_snapshots` from `Optio.list_snapshots` (the engine RPC
+`listSnapshots`) and `discard_snapshots_after` for a launch with
 `resume_from`; the helper's rules are in optio-agents' AGENTS.md, "Snapshot
 history (`optio_agents.snapshots`)".
 

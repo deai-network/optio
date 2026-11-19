@@ -230,6 +230,8 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 await optio_core.list_snapshots(process_id: str) -> ListSnapshotsOutcome  # ok, reason, snapshots
 # The task's list_snapshots hook, run with a ReadOnlyProcessContext: snapshots = [{capturedAt, endState}],
 # newest first, valid only, the newest included. Refusals: not-found, no-snapshot-support (no task or no hook).
+# Engine RPC: listSnapshots({ processId }) -> { ok: true, snapshots } | { ok: false, reason }
+# (OptioEngineService.list_snapshots); the RPC's launch passes resumeFrom as resume_from.
 await optio_core.cancel(process_id: str) -> CancelOutcome
 # Cancels the named process. Recursively cancels active direct descendants whose
 # TaskInstance has auto_cancel_children=True (default). Opt-out parents handle
@@ -956,7 +958,8 @@ newest first, the newest included) and
 `TaskInstance.discard_snapshots_after(ctx, captured_at)` (the detached
 `ProcessContext`; deletes the snapshots newer than the chosen one and the
 blobs only they name, returns how many documents it deleted). optio-core calls
-them for `listSnapshots` and for a launch with `resume_from`. All seven
+`list_snapshots` from `Optio.list_snapshots` (the engine RPC `listSnapshots`)
+and `discard_snapshots_after` for a launch with `resume_from`. All seven
 wrappers (claudecode, opencode, codex, cursor, grok, kimicode, antigravity)
 declare their collection as `snapshots.SNAPSHOT_LAYOUT`, a
 `SnapshotLayout(suffix, required_blob_fields, optional_blob_fields=())`, and
@@ -1130,6 +1133,10 @@ Package: `optio-contracts`
 - `message`: string
 - `data`: `Record<string, unknown>` (optional)
 
+**`ProcessSnapshotSchema`** — one of a process's valid snapshots (`getSnapshots`, engine RPC `listSnapshots`):
+- `capturedAt`: string — the capture time as optio-core gave it (UTC, three fraction digits, e.g. `2026-11-19T13:05:12.345Z`); a launch's `resumeFrom` names the snapshot by it
+- `endState`: string — the state the run ended in (`""` when the snapshot has none)
+
 **Common schemas:**
 - `ObjectIdSchema`: string matching `/^[a-f\d]{24}$/i`
 - `PaginationQuerySchema`: `{ cursor?: string, limit: number (1–100, default 20) }`
@@ -1143,6 +1150,7 @@ Package: `optio-contracts`
 type Process = z.infer<typeof ProcessSchema>;
 type ProcessState = z.infer<typeof ProcessStateSchema>;
 type LogEntry = z.infer<typeof LogEntrySchema>;
+type ProcessSnapshot = z.infer<typeof ProcessSnapshotSchema>;
 ```
 
 ### Contract Endpoints
@@ -1158,7 +1166,8 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 | `getLog` | GET | `/processes/:id/log` | `id` | `database?, prefix?, cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |
 | `getTreeLog` | GET | `/processes/:id/tree/log` | `id` | `database?, prefix?, cursor?, limit, maxDepth?` | — | `200: PaginatedResponse<LogEntry & {processId, processLabel}>`, `404: Error` |
 | `getConversation` | GET | `/processes/:id/conversation` | `id` | `database?, prefix?` | — | `200: { events: unknown[], capturedAt: string \| null }` (a suspended process's saved conversation record, proxied from the engine's conversation archive; `Cache-Control: no-store`), `401: { message }`, `403`/`404`/`409`/`500`/`503`: `{ reason: ConversationFailureReason, message }` |
-| `launch` | POST | `/processes/:id/launch` | `id` | `database?, prefix?` | `{ resume?: boolean; sessionId?: string \| null; params?: Record<string, unknown> }` (optional; body may be omitted entirely; `params` are a task factory's values) | `200: Process` (a factory's launch: the child's record), `400`/`404`/`409`: `{ reason: LaunchFailureReason, message }` (`parameters-required`, `invalid-parameters` and `invalid-metadata` are 400, `not-found` 404, the others 409; an `invalid-parameters` message is optio-core's `"<id>: <what>"`, an `invalid-metadata` one names the colliding stamp keys, both unchanged) |
+| `getSnapshots` | GET | `/processes/:id/snapshots` | `id` | `database?, prefix?` | — | `200: { snapshots: ProcessSnapshot[] }` (`{ capturedAt, endState }`, newest first, valid snapshots only, the newest included; proxied from the engine RPC `listSnapshots`), `404: { reason: ListSnapshotsFailureReason, message }` (`not-found` also for a process the request may not see; `no-snapshot-support`) |
+| `launch` | POST | `/processes/:id/launch` | `id` | `database?, prefix?` | `{ resume?: boolean; resumeFrom?: string; sessionId?: string \| null; params?: Record<string, unknown> }` (optional; body may be omitted entirely; `resumeFrom`, non-empty, is a `getSnapshots` `capturedAt` to resume from, with `resume: true`; `params` are a task factory's values) | `200: Process` (a factory's launch: the child's record), `400`/`404`/`409`: `{ reason: LaunchFailureReason, message }` (`parameters-required`, `invalid-parameters`, `invalid-metadata` and `invalid-request` are 400, `not-found` 404, the others 409; an `invalid-parameters` message is optio-core's `"<id>: <what>"`, an `invalid-metadata` one names the colliding stamp keys, both unchanged) |
 | `cancel` | POST | `/processes/:id/cancel` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: CancelFailureReason, message }` |
 | `dismiss` | POST | `/processes/:id/dismiss` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: DismissFailureReason, message }` |
 | `resurrect` | POST | `/processes/:id/resurrect` | `id` | `database?, prefix?` | `{ sessionId?: string \| null }` (optional; body may be omitted entirely) | `200: Process`, `404`/`409`: `{ reason: ResurrectFailureReason, message }` |
@@ -1171,21 +1180,30 @@ Note: The adapters mount the contract under `/api` (`pathPrefix: '/api'`), so ef
 ### Engine RPC contract
 
 `optioEngineContract` (clamator, service `optio-engine`): methods `launch`, `cancel`, `dismiss`,
-`resurrect`, `groupCancel`, `groupCancelAndWait`, `blockLaunches`, `unblockLaunches`,
+`resurrect`, `listSnapshots`, `groupCancel`, `groupCancelAndWait`, `blockLaunches`, `unblockLaunches`,
 `materializeUpload`; notification `resync`. `resurrect({ processId, sessionId: string | null })`
 returns `{ ok: true, process } | { ok: false, reason: ResurrectFailureReason }`.
-`launch({ processId, resume?, sessionId: string | null, params?, ephemeral?, metadata? })` returns
+`launch({ processId, resume?, resumeFrom?, sessionId: string | null, params?, ephemeral?, metadata? })` returns
 `{ ok: true, process } | { ok: false, reason: LaunchFailureReason, message? }` (`message` is the
 `"<id>: <what>"` text of an `invalid-parameters` refusal, or names the colliding keys of an
 `invalid-metadata` one); the engine answers every reason optio-core's `launch` can return.
+`resumeFrom` (a non-empty string: a `listSnapshots` `capturedAt`) resumes from that older snapshot,
+with `resume: true` (else `invalid-request`); `OptioEngineService.launch` passes it to `Optio.launch`
+as `resume_from`.
 `metadata` (`Record<string, string | number | boolean | null>`) is a task factory launch's stamp
 from optio-api's `launchMetadata` hook, merged into the new launch's metadata.
+`listSnapshots({ processId })` returns `{ ok: true, snapshots: { capturedAt, endState }[] } |
+{ ok: false, reason: ListSnapshotsFailureReason }`: `OptioEngineService.list_snapshots` answers
+`Optio.list_snapshots` (the task's `list_snapshots` hook: valid snapshots, newest first, the newest
+included).
 
 Failure-reason enums (zod enum + type of the same name, browser-safe, exported from the package
 root): `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`,
-`shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`), `CancelFailureReason`, `DismissFailureReason`,
+`shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`,
+and for `resumeFrom` `invalid-request`, `no-snapshot-support`, `snapshot-not-found`, `capture-pending`), `CancelFailureReason`, `DismissFailureReason`,
 `ResurrectFailureReason` (`not-found`, `not-resurrectable`, `no-resurrect-support`,
-`resurrect-in-progress`, `launch-blocked`, `shutting-down`), `GroupCancelFailureReason`,
+`resurrect-in-progress`, `launch-blocked`, `shutting-down`, `not-launchable`),
+`ListSnapshotsFailureReason` (`not-found`, `no-snapshot-support`), `GroupCancelFailureReason`,
 `BlockLaunchesFailureReason`.
 
 ---

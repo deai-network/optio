@@ -401,6 +401,9 @@ fresh run); `launch-blocked`; `no-snapshot-support` (no registered task, or its
 `discard_snapshots_after` is `None`); `shutting-down` (a shutdown began since the first check;
 the hook is not called); then the hook's own, `capture-pending` (`CapturePending`) and
 `snapshot-not-found` (`SnapshotNotFound`). Nothing is deleted when one of these fails.
+The engine RPC's `launch` (`OptioEngineService.launch`) passes `LaunchParams.resume_from` (the
+wire's `resumeFrom`, a non-empty string) as `resume_from`, and answers these reasons as typed
+refusals.
 
 A launch and a resume from a snapshot never both proceed. What is guarded, and until when:
 
@@ -790,6 +793,12 @@ str}]`, newest first, valid snapshots only, the newest included. Refusals: `not-
 such process) and `no-snapshot-support` (no registered task, or its `list_snapshots` is
 `None`; a TaskFactory's own record has no task). An exception of the hook propagates. See
 "TaskInstance.list_snapshots / discard_snapshots_after".
+
+Engine RPC: `listSnapshots({ processId })` (`OptioEngineService.list_snapshots`; generated
+`ListSnapshotsParams` / `ListSnapshotsResult` in `optio_core._generated.optio_engine`) calls
+`Optio.list_snapshots` and returns `{ ok: true, snapshots: [{ capturedAt, endState }] }` or
+`{ ok: false, reason }` with the two reasons above; an exception of the hook propagates out of
+the handler.
 
 ---
 

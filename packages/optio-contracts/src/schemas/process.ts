@@ -114,6 +114,15 @@ export const ProcessSchema = z.object({
   createdAt: DateSchema,
 });
 
+// One of a process's valid snapshots (listSnapshots, GET /processes/:id/snapshots):
+// capturedAt is its capture time as optio-core gave it (UTC, three fraction
+// digits, e.g. 2026-11-19T13:05:12.345Z; a launch's resumeFrom names it so);
+// endState the state the run ended in ("" when the snapshot has none).
+export const ProcessSnapshotSchema = z.object({
+  capturedAt: z.string(),
+  endState: z.string(),
+});
+
 // Allowed leaf scalar value types in the filter.
 export const FilterScalar = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
@@ -150,3 +159,4 @@ export type LogEntry = z.infer<typeof LogEntrySchema>;
 export type FilterScalar = z.infer<typeof FilterScalar>;
 export type BrowserOpenRequest = z.infer<typeof BrowserOpenRequestSchema>;
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
+export type ProcessSnapshot = z.infer<typeof ProcessSnapshotSchema>;

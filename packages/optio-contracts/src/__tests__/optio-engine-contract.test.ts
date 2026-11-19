@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { optioEngineContract } from '../optio-engine-to-api.js';
-import { LaunchFailureReason, ResurrectFailureReason } from '../engine-failure-reasons.js';
+import {
+  LaunchFailureReason, ListSnapshotsFailureReason, ResurrectFailureReason,
+} from '../engine-failure-reasons.js';
+
+// A listed capturedAt in its wire form (UTC, three fraction digits).
+const TS = '2026-11-19T13:05:12.345Z';
 
 describe('optioEngineContract', () => {
   it('declares the expected service name', () => {
@@ -41,7 +46,36 @@ describe('optioEngineContract', () => {
       'not-found', 'not-launchable', 'no-resume-support', 'launch-blocked',
       'shutting-down', 'parameters-required', 'not-a-factory', 'invalid-parameters',
       'invalid-metadata',
+      'invalid-request', 'no-snapshot-support', 'snapshot-not-found', 'capture-pending',
     ]);
+  });
+
+  it('launch takes an optional resumeFrom beside resume', () => {
+    const launch = optioEngineContract.methods.launch;
+    const parsed = launch.params.parse({ processId: 'p1', sessionId: null, resume: true, resumeFrom: TS });
+    expect(parsed.resumeFrom).toBe(TS);
+    expect(launch.params.parse({ processId: 'p1', sessionId: null }).resumeFrom).toBeUndefined();
+    expect(launch.params.safeParse({ processId: 'p1', sessionId: null, resume: true, resumeFrom: '' }).success).toBe(false);
+    for (const reason of ['invalid-request', 'no-snapshot-support', 'snapshot-not-found', 'capture-pending']) {
+      expect(launch.result.parse({ ok: false, reason }).ok).toBe(false);
+    }
+  });
+
+  it('exposes listSnapshots with the snapshots or a typed reason', () => {
+    const listSnapshots = optioEngineContract.methods.listSnapshots;
+    expect(listSnapshots).toBeDefined();
+    expect(listSnapshots.params.parse({ processId: 'p1' })).toEqual({ processId: 'p1' });
+    const ok = listSnapshots.result.parse({
+      ok: true, snapshots: [{ capturedAt: '2026-11-19T13:05:12.345Z', endState: 'done' }],
+    });
+    expect(ok.ok && ok.snapshots).toEqual([{ capturedAt: '2026-11-19T13:05:12.345Z', endState: 'done' }]);
+    const fail = listSnapshots.result.parse({ ok: false, reason: 'no-snapshot-support' });
+    expect(!fail.ok && fail.reason).toBe('no-snapshot-support');
+    expect(listSnapshots.result.safeParse({ ok: false, reason: 'bogus' }).success).toBe(false);
+  });
+
+  it('knows exactly the listSnapshots failure reasons', () => {
+    expect(ListSnapshotsFailureReason.options).toEqual(['not-found', 'no-snapshot-support']);
   });
 
   it('launch takes optional params and a refusal carries an optional message', () => {
@@ -114,7 +148,7 @@ describe('optioEngineContract', () => {
   it('knows exactly the resurrect failure reasons', () => {
     expect(ResurrectFailureReason.options).toEqual([
       'not-found', 'not-resurrectable', 'no-resurrect-support',
-      'resurrect-in-progress', 'launch-blocked', 'shutting-down',
+      'resurrect-in-progress', 'launch-blocked', 'shutting-down', 'not-launchable',
     ]);
   });
 });
