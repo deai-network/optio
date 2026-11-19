@@ -164,14 +164,19 @@ await optio_core.launch(process_id: str, resume: bool = False, *, session_id: st
 # resume=True; its log (reset by the launch) holds "State changed to scheduled", then "Resuming from the
 # snapshot of <capturedAt>: <n> newer snapshot(s) discarded".
 # Refusals, in this order: shutting-down, invalid-request (resume_from without resume=True), not-found, the
-# factory's and a kept launch's refusals (as for any resume), not-launchable (a resurrect or another resume
-# from a snapshot in progress), not-launchable (state), no-resume-support, not-launchable (no saved state:
-# never downgraded to a fresh run), launch-blocked, no-snapshot-support (no task or no discard_snapshots_after
-# hook), then the hook's capture-pending (CapturePending) and snapshot-not-found (SnapshotNotFound). Nothing is
-# deleted on these refusals. A launch and a resume from a snapshot never both proceed: from before the call's
-# first await until its run is scheduled, launch and resurrect of the process return not-launchable, and a run
-# a launch scheduled earlier that has not returned yet refuses the resume_from (not-launchable). A shutdown
-# begun during the hook refuses the launch after it (shutting-down; the discard line is logged).
+# factory's and a kept launch's refusals (as for any resume), not-launchable (a resurrect, another resume_from,
+# or a run a launch scheduled that has not returned, in progress), not-launchable (state), no-resume-support,
+# not-launchable (no saved state: never downgraded to a fresh run), launch-blocked, no-snapshot-support (no task
+# or no discard_snapshots_after hook), shutting-down (begun since the first check; the hook is not called), then
+# the hook's capture-pending (CapturePending) and snapshot-not-found (SnapshotNotFound). Nothing is deleted on
+# these refusals. A launch and a resume from a snapshot never both proceed. Guarded, and until when: from before
+# the resume_from call's first await until the call returns (its run scheduled, or a refusal), launch and
+# resurrect of the process return not-launchable; a run any launch scheduled counts from then until its
+# executor launch_process returns (after it has written `scheduled`), and meanwhile a resume_from and a
+# resurrect of the process return not-launchable. A plain launch after the resume_from call returned is refused
+# only once the record shows `scheduled` (the existing plain-vs-plain race). launch_and_wait (programmatic)
+# calls the executor directly and bypasses these guards; launch_and_await_result goes through launch().
+# A shutdown begun during the hook refuses the launch after it (shutting-down; the discard line is logged).
 # Another exception of the hook is logged ("Resume from the snapshot of <capturedAt> failed: <error>") and
 # propagates. After a deletion without a launch the chosen snapshot is the newest: a later Resume restores it.
 await optio_core.launch_and_wait(process_id: str, resume: bool = False, *, session_id: str | None, params: dict | None = None, ephemeral: bool | None = None, metadata: Mapping[str, str | int | float | bool | None] | None = None) -> None  # blocks until done; raises LaunchBlocked (a TaskFactory's refused launch: LaunchError, but LaunchBlocked for a launch block)
@@ -203,7 +208,8 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 # ResurrectOutcome(ok=False, reason=...), checked in this order: shutting-down, not-found,
 # no-resurrect-support (no TaskInstance.resurrect hook), resurrect-in-progress, not-launchable
 # (a launch with resume_from of the process is in progress),
-# not-resurrectable (state not launchable, or hasUnsavedWork false), launch-blocked.
+# not-resurrectable (state not launchable, or hasUnsavedWork false), not-launchable (a run of the
+# process a launch scheduled has not returned yet; its record may not show `scheduled`), launch-blocked.
 # On ok=True a background task sets the process's resurrecting marker and runs the hook
 # (ctx.resume=False) under progress "Resurrecting: saving the unsaved work…". Hook returns:
 # hasUnsavedWork cleared, then launch(resume=True, same session_id), whose reset log holds

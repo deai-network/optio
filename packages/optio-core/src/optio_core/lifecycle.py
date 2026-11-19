@@ -593,20 +593,31 @@ class Optio:
         not-launchable (state), no-resume-support, not-launchable (no saved
         state: a picked snapshot never becomes a fresh run), launch-blocked,
         no-snapshot-support (no registered task, or no
-        discard_snapshots_after hook), then the hook's own: capture-pending
-        (CapturePending) and snapshot-not-found (SnapshotNotFound). Nothing
-        is deleted when one of these fails. From before the call's first
-        await until its run is scheduled (or it is refused), a launch and a
-        resurrect of the process are refused (not-launchable); and a run of
-        the process that a launch scheduled earlier and that has not
-        returned yet refuses the resume_from (not-launchable): a launch and
-        a resume from a snapshot never both proceed. Any
-        other exception of the hook is logged ("Resume from the snapshot of
-        <capturedAt> failed: <error>", level error) and propagates. A
-        shutdown begun while the hook ran refuses the launch after it
-        (shutting-down; the discard line is logged): the chosen snapshot is
-        then the newest, so a later resume restores it, as after a launch
-        that fails after the deletion.
+        discard_snapshots_after hook), shutting-down (a shutdown began
+        since the first check; the hook is not called), then the hook's
+        own: capture-pending (CapturePending) and snapshot-not-found
+        (SnapshotNotFound). Nothing is deleted when one of these fails.
+
+        What is guarded, and until when: from before the call's first await
+        until the call returns (its run scheduled, or a refusal), the
+        process is in _resuming_from, and a launch() of it (plain or with
+        resume_from) and a resurrect() of it are refused (not-launchable).
+        A run that _launch_record scheduled (any launch() or resurrect's
+        resume) is in _launching from then until its launch_process
+        returns, which is after it has written `scheduled` (and after the
+        run); meanwhile a resume_from and a resurrect of the process are
+        refused (not-launchable). So a launch and a resume from a snapshot
+        never both proceed. A plain launch after the resume_from call has
+        returned is refused only once the record shows `scheduled` (the
+        existing race between two plain launches). launch_and_wait calls
+        the executor directly and bypasses these guards (and the launch
+        checks); launch_and_await_result goes through launch() and keeps
+        them. Any other exception of the hook is logged ("Resume from the
+        snapshot of <capturedAt> failed: <error>", level error) and
+        propagates. A shutdown begun while the hook ran refuses the launch
+        after it (shutting-down; the discard line is logged): the chosen
+        snapshot is then the newest, so a later resume restores it, as
+        after a launch that fails after the deletion.
         Spec: docs/2026-10-20-task-factory-design.md §1.2,
         docs/2026-10-22-task-factory-launch-options-design.md §1.5,
         docs/2026-10-25-factory-results-design.md §2,
@@ -632,10 +643,12 @@ class Optio:
         none.
 
         With `resume_from`, the call is in _resuming_from from before its
-        first await, so every check decides on a record read after it was
-        set: a launch or a resurrect that checks later is refused, and one
-        that checked earlier shows in that record, in _resurrecting, or in
-        _launching (_launch_record)."""
+        first await until it returns (under the id it was called with until
+        its record is read, then the record's canonical ObjectId hex), so
+        every check decides on a record read after it was set: a launch or
+        a resurrect that checks later is refused, and one that checked
+        earlier shows in that record, in _resurrecting, or in _launching
+        (_launch_record)."""
         # Stop sign: once shutdown has begun, refuse new launches so nothing
         # half-boots into a shutting-down engine. Covers scheduler, RPC, and
         # programmatic launch paths.
@@ -651,6 +664,10 @@ class Optio:
             proc = await self._resolve(process_id)
             if proc is None:
                 return LaunchOutcome(ok=False, reason="not-found")
+            if marker is not None:
+                # From here on the record's canonical id (lower-case hex),
+                # whatever spelling the call resolved.
+                self._resuming_from[marker] = str(proc["_id"])
             if proc.get("taskFactory") or params is not None or ephemeral is not None:
                 # A factory's record never runs: its launch is a child's.
                 try:
@@ -676,11 +693,14 @@ class Optio:
 
     def _resume_from_in_progress(self, proc: dict, own: object | None = None) -> bool:
         """Whether a launch with resume_from (other than the one holding the
-        token `own`) is in progress for the record `proc`: one called with
-        its ObjectId hex or its processId (_resuming_from)."""
-        names = (str(proc["_id"]), proc["processId"])
+        token `own`) is in progress for the record `proc` (_resuming_from):
+        one that resolved it (its canonical ObjectId hex), or, before its
+        read, one called with its processId or its ObjectId hex in any case
+        (as _resolve accepts it)."""
+        oid_hex = str(proc["_id"])
         return any(
-            name in names for token, name in self._resuming_from.items() if token is not own
+            name == proc["processId"] or name.lower() == oid_hex
+            for token, name in self._resuming_from.items() if token is not own
         )
 
     def _relaunch_refusal(self, proc: dict, resume: bool) -> str | None:
@@ -815,16 +835,21 @@ class Optio:
         line for the run's log: "Resuming from the snapshot of <capturedAt>:
         <n> newer snapshot(s) discarded") when the resume may follow, or
         (the refusal's reason, None): no-snapshot-support (no task, or no
-        hook), capture-pending (the hook raised CapturePending),
-        snapshot-not-found (SnapshotNotFound); the hook has deleted nothing
-        then. Any other exception of the hook is logged on the process
-        ("Resume from the snapshot of <capturedAt> failed: <error>", level
-        error; no launch follows to reset the log) and propagates. The hook
-        gets the detached ProcessContext Optio.resurrect uses (it writes).
-        Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
+        hook), shutting-down (a shutdown began since launch() checked; the
+        hook is not called), capture-pending (the hook raised
+        CapturePending), snapshot-not-found (SnapshotNotFound); nothing is
+        deleted then. Any other exception of the hook is logged on the
+        process ("Resume from the snapshot of <capturedAt> failed: <error>",
+        level error; no launch follows to reset the log; a failure of that
+        write is logged on the optio_core_core logger) and propagates. The
+        hook gets the detached ProcessContext Optio.resurrect uses (it
+        writes). Spec: docs/2026-11-19-resume-from-snapshot-design.md"""
         hook = getattr(task, "discard_snapshots_after", None) if task is not None else None
         if hook is None:
             return "no-snapshot-support", None
+        if self._shutting_down:
+            # Nothing deleted yet: refuse as launch() does at its start.
+            return "shutting-down", None
         try:
             discarded = await hook(
                 self._detached_context(proc, session_id=session_id), captured_at,
@@ -834,11 +859,18 @@ class Optio:
         except SnapshotNotFound:
             return "snapshot-not-found", None
         except Exception as exc:
-            await append_log(
-                self._config.mongo_db, self._config.prefix, proc["_id"], "error",
-                f"Resume from the snapshot of {captured_at} failed: {exc}",
-            )
-            raise
+            try:
+                await append_log(
+                    self._config.mongo_db, self._config.prefix, proc["_id"], "error",
+                    f"Resume from the snapshot of {captured_at} failed: {exc}",
+                )
+            except Exception:
+                logger.exception(
+                    "resume of %s from the snapshot of %s: logging its failure failed",
+                    proc["processId"], captured_at,
+                )
+            # The hook's own error, not the log write's.
+            raise exc
         noun = "snapshot" if discarded == 1 else "snapshots"
         return None, (
             f"Resuming from the snapshot of {captured_at}: "
@@ -1004,11 +1036,13 @@ class Optio:
         Fire-and-forget like `launch`: preconditions are answered here with a
         typed reason; the task's resurrect hook and the follow-up resume run
         in a background task, reported through the process's progress and
-        log. While a launch with resume_from of the process is in progress
-        (from before its first await until its run is scheduled or it is
-        refused), a resurrect is refused with not-launchable, after
-        resurrect-in-progress; no await lies between that check and the
-        entry in _resurrecting, which such a launch checks in turn.
+        log. A resurrect is refused with not-launchable while a launch with
+        resume_from of the process is in progress (from before its first
+        await until it returns; checked after resurrect-in-progress), and
+        while a run of it that a launch scheduled has not returned
+        (_launching; checked after not-resurrectable, so a running process
+        stays not-resurrectable). No await lies between these checks and
+        the entry in _resurrecting, which such a launch checks in turn.
         Spec: docs/2026-10-07-resurrect-failed-session-design.md,
         docs/2026-11-19-resume-from-snapshot-design.md
         """
@@ -1032,6 +1066,11 @@ class Optio:
             or not proc.get("hasUnsavedWork", False)
         ):
             return ResurrectOutcome(ok=False, reason="not-resurrectable")
+        if oid in self._launching:
+            # A launch scheduled (e.g. the resume a resume_from just
+            # scheduled) whose run has not returned, and may not have written
+            # `scheduled` yet: its run rebuilds the workdir.
+            return ResurrectOutcome(ok=False, reason="not-launchable")
         if self._matches_block(task.metadata):
             return ResurrectOutcome(ok=False, reason="launch-blocked")
         run = asyncio.create_task(self._run_resurrect(proc, task, session_id))

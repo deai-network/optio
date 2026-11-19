@@ -284,13 +284,20 @@ async def test_the_discard_window_refuses_a_launch_and_a_resurrect(mongo_db):
 
 
 @pytest.mark.asyncio
-async def test_a_launch_during_the_resume_froms_first_await_never_both_proceed(mongo_db):
+@pytest.mark.parametrize("called_with", ["process-id", "upper-object-id"])
+async def test_a_launch_during_the_resume_froms_first_await_never_both_proceed(
+    mongo_db, called_with,
+):
     """The resume_from is held at its first await (the record's read); a plain
-    launch (by the other id form) and a resurrect arrive meanwhile. Exactly one
-    launch runs, and no snapshot is discarded after a competing launch won."""
+    launch (by the record's ObjectId hex) and a resurrect arrive meanwhile.
+    Exactly one launch runs, and no snapshot is discarded after a competing
+    launch won. An upper-case ObjectId resolves as the lower-case one does,
+    and matches it."""
     fw, _, proc, events = await _setup(
-        mongo_db, "rfs14", discard_hook=_discard_none, resurrect=_noop, unsaved=True,
+        mongo_db, f"rfs14-{called_with}", discard_hook=_discard_none,
+        resurrect=_noop, unsaved=True,
     )
+    target = "r1" if called_with == "process-id" else str(proc["_id"]).upper()
     real_resolve = fw._resolve
     gate, at_gate = asyncio.Event(), asyncio.Event()
     calls = []
@@ -303,7 +310,7 @@ async def test_a_launch_during_the_resume_froms_first_await_never_both_proceed(m
         return await real_resolve(id_str)
     fw._resolve = gated_resolve
     pending = asyncio.create_task(
-        fw.launch("r1", resume=True, session_id=None, resume_from=TS),
+        fw.launch(target, resume=True, session_id=None, resume_from=TS),
     )
     try:
         await asyncio.wait_for(at_gate.wait(), 60)
@@ -347,6 +354,118 @@ async def test_a_launch_in_flight_refuses_the_resume_from(mongo_db):
         hold.set()
     await _wait_until(lambda: proc["_id"] not in fw._launching)
     assert fw._resuming_from == {}
+
+
+@pytest.mark.asyncio
+async def test_an_upper_case_object_id_is_matched_during_the_hook(mongo_db):
+    """A resume_from called with the upper-case ObjectId (which _resolve
+    accepts) holds the record's canonical id while its hook runs: a plain
+    launch by processId and a resurrect are refused."""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hook(ctx, captured_at):
+        entered.set()
+        await release.wait()
+        return 1
+    fw, _, proc, events = await _setup(
+        mongo_db, "rfs16", discard_hook=hook, resurrect=_noop, unsaved=True,
+    )
+    pending = asyncio.create_task(fw.launch(
+        str(proc["_id"]).upper(), resume=True, session_id=None, resume_from=TS,
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), 60)
+        plain = await fw.launch("r1", resume=True, session_id=None)
+        assert plain.ok is False and plain.reason == "not-launchable"
+        resurrected = await fw.resurrect("r1", session_id=None)
+        assert resurrected.ok is False and resurrected.reason == "not-launchable"
+    finally:
+        release.set()
+    out = await asyncio.wait_for(pending, 60)
+    assert out.ok
+    await _wait_until(lambda: ("launch", True) in events)
+    assert events == [("discard", TS), ("launch", True)]
+
+
+@pytest.mark.asyncio
+async def test_a_launch_in_flight_refuses_a_resurrect(mongo_db):
+    """A launch scheduled whose run has not written its state yet (e.g. the
+    resume a resume_from just scheduled): a resurrect is refused."""
+    fw, _, proc, events = await _setup(
+        mongo_db, "rfs17", discard_hook=_discard_none, resurrect=_noop, unsaved=True,
+    )
+    hold = asyncio.Event()
+
+    async def _slow_spy(oid, *, resume, session_id, extra_log=()):
+        events.append(("launch", resume))
+        await hold.wait()
+    fw._executor.launch_process = _slow_spy
+    try:
+        out = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
+        assert out.ok
+        assert fw._resuming_from == {}
+        resurrected = await fw.resurrect("r1", session_id=None)
+        assert resurrected.ok is False and resurrected.reason == "not-launchable"
+        assert proc["_id"] not in fw._resurrecting
+    finally:
+        hold.set()
+    await _wait_until(lambda: proc["_id"] not in fw._launching)
+    assert events == [("discard", TS), ("launch", True)]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_before_the_hook_deletes_nothing(mongo_db):
+    """A shutdown begun while the resume_from waits before its hook (here at
+    its record's read) refuses it before the hook runs."""
+    fw, _, _, events = await _setup(mongo_db, "rfs18", discard_hook=_discard_none)
+    real_resolve = fw._resolve
+    gate, at_gate = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def gated_resolve(id_str):
+        calls.append(id_str)
+        if len(calls) == 1:
+            at_gate.set()
+            await gate.wait()
+        return await real_resolve(id_str)
+    fw._resolve = gated_resolve
+    pending = asyncio.create_task(
+        fw.launch("r1", resume=True, session_id=None, resume_from=TS),
+    )
+    try:
+        await asyncio.wait_for(at_gate.wait(), 60)
+        await fw.shutdown(grace_seconds=0.1)
+    finally:
+        gate.set()
+    out = await asyncio.wait_for(pending, 60)
+    assert out.ok is False and out.reason == "shutting-down"
+    assert events == []
+    assert fw._resuming_from == {}
+
+
+@pytest.mark.asyncio
+async def test_a_failing_failure_log_keeps_the_hooks_error(mongo_db, monkeypatch, caplog):
+    """When the failure line cannot be written, that is logged, and the hook's
+    own error propagates."""
+    import logging
+    from optio_core import lifecycle as L
+
+    async def hook(ctx, captured_at):
+        raise RuntimeError("disk full")
+    fw, _, _, events = await _setup(mongo_db, "rfs19", discard_hook=hook)
+
+    async def _boom(*args, **kwargs):
+        raise OSError("mongo down")
+    monkeypatch.setattr(L, "append_log", _boom)
+    caplog.set_level(logging.ERROR)
+    with pytest.raises(RuntimeError, match="disk full"):
+        await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
+    assert events == [("discard", TS)]
+    assert fw._resuming_from == {}
+    assert any(
+        r.name == "optio_core_core" and r.exc_info and "mongo down" in str(r.exc_info[1])
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
 
 
 @pytest.mark.asyncio

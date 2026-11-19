@@ -22,9 +22,16 @@ class LaunchOutcome:
     "invalid-request" (`resume_from` without `resume=True`),
     "no-snapshot-support" (the task has no discard_snapshots_after hook),
     "snapshot-not-found" and "capture-pending" (the hook's refusals:
-    SnapshotNotFound, CapturePending), and answers "not-launchable" also
-    while another resume from a snapshot of the process is deleting its
-    newer snapshots. Nothing is deleted when a check before the hook fails.
+    SnapshotNotFound, CapturePending); "shutting-down" also when a
+    shutdown began before the hook (nothing deleted) or while it ran (the
+    deletion stands). It answers "not-launchable" also while another
+    launch with resume_from of the process is in progress (from before
+    that call's first await until it returns), and while a run of the
+    process that an earlier launch scheduled has not returned (its record
+    may not show `scheduled` yet). While a launch with resume_from is in
+    progress, a plain launch of the process is refused with
+    "not-launchable" too (and a resurrect: ResurrectOutcome). Nothing is
+    deleted when a check before the hook fails.
     Spec: docs/2026-11-19-resume-from-snapshot-design.md
     """
     ok: bool
@@ -70,7 +77,9 @@ class ResurrectOutcome:
     """Result of Optio.resurrect. ok=True means the save was started in the
     background; `proc` is the process doc at that moment. "not-launchable":
     a launch with resume_from of the process (resume from an older
-    snapshot) is in progress."""
+    snapshot) is in progress, or a run of it that a launch scheduled has
+    not returned yet (checked after "not-resurrectable", so a process whose
+    record shows it running stays "not-resurrectable")."""
     ok: bool
     reason: Literal[
         "not-found", "not-resurrectable", "no-resurrect-support",
