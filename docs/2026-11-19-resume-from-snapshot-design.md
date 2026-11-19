@@ -121,8 +121,9 @@ none). The wrappers' capture, prune and restore code is unchanged.
   session blob). One without a pick resumes on the configuration's current default model.
 - What the discarded runs delivered (files the app received through on_deliverable) stays; the resumed
   agent may deliver again.
-- The conversation view after the resume continues from the chosen snapshot's record; the newer turns
-  stay in the process log only.
+- The conversation view after the resume continues from the chosen snapshot's record. The newer turns
+  are gone with the discarded snapshots (every launch resets the process log, so it does not keep them
+  either).
 - Restoring replaces the host workdir with the snapshot's.
 
 ## Testing
