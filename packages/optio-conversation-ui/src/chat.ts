@@ -29,10 +29,15 @@ export type ChatItem =
       pending: boolean;
       seq: number;
       msgId: string | null;
-      // Reducer-private (claudecode): start offset in `text` of the content
-      // block currently streaming via deltas; absent when none is open. Not
-      // rendered.
+      // Reducer-private (claudecode): length of `text` before the content
+      // block currently streaming via deltas (and the separator in front of
+      // it); absent when none is open. Not rendered.
       openPart?: number;
+      // Reducer-private (claudecode): `text` ends with a text block of this
+      // message, only hidden blocks after it, so a next text block of the
+      // message continues it as written (a provider may split one text
+      // around its hidden reasoning). Not rendered.
+      textEnd?: true;
       // The operator interrupted this answer: it keeps its text and renders
       // with a jagged bottom edge.
       interrupted?: boolean;

@@ -21,6 +21,45 @@ const HARNESS_PREFIX = 'System: ';
 // bubble, separated by a blank line.
 const PART_SEPARATOR = '\n\n';
 
+// What a content block adds to the bubble: answer text (a text block) or
+// narration (a text-bearing thinking block, see blockText).
+type PartKind = 'text' | 'narration';
+
+// The separator in front of a new part, after the bubble's finished text
+// `done`. A text block that follows a text block of the same message, with
+// only hidden blocks in between (`textEnd`), continues that text: joined as it
+// is. A provider can split one text that way: Claude Code on DeepSeek through
+// Requesty (2026-11-19) sends "The mirror was", a hidden thinking block, then
+// " actually down …", where an Anthropic model sends one text block. Any other
+// part starts a new paragraph.
+function partSeparator(done: string, textEnd: boolean | undefined, kind: PartKind): string {
+  if (done === '') return '';
+  return kind === 'text' && textEnd === true ? '' : PART_SEPARATOR;
+}
+
+// Record on a bubble whether its text now ends with a text block (see
+// partSeparator).
+function markTextEnd(item: AssistantItem, kind: PartKind): void {
+  if (kind === 'text') item.textEnd = true;
+  else delete item.textEnd;
+}
+
+// The block types a text block may continue across: text itself, and
+// thinking (narration sets its own part; hidden reasoning adds nothing).
+const JOINS_TEXT = new Set<unknown>(['text', 'thinking', 'redacted_thinking']);
+
+// A block of any other type ends the text a later text block of its message
+// could continue.
+function endText(items: ChatItem[]): ChatItem[] {
+  if (!items.some((i) => i.kind === 'assistant' && i.textEnd !== undefined)) return items;
+  return items.map((i) => {
+    if (i.kind !== 'assistant' || i.textEnd === undefined) return i;
+    const next = { ...i };
+    delete next.textEnd;
+    return next;
+  });
+}
+
 // Claude Code's own cancel artefacts (CLI 2.1.270): the user text it adds to
 // an interrupted turn, and the terminal reasons of that turn's error result.
 const INTERRUPT_ECHO = /^\[Request interrupted by user( for tool use)?\]$/;
@@ -489,27 +528,31 @@ function finalizeAt(items: ChatItem[], idx: number): ChatItem[] {
   if (!current.pending) return items;
   const next: AssistantItem = { ...current, pending: false };
   delete next.openPart;
+  delete next.textEnd;
   return replaceAt(items, idx, next);
 }
 
 // A streamed delta (text_delta or thinking_delta) extends the open part of the
-// pending bubble; the first delta of a block opens a new part, separated from
-// earlier parts by a blank line. A pending bubble that is no longer the tail is
-// finalized where it stands and a fresh bubble opens at the end. `start`
+// pending bubble; the first delta of a block opens a new part, after the
+// separator partSeparator gives it (a blank line, or none when a text block
+// continues a text block). The block's final assistant event replaces the
+// part, separator included (applyBlockText). A pending bubble that is no
+// longer the tail is finalized where it stands and a fresh bubble opens at the
+// end. `start`
 // (Fix 12), when given, is this message's resolved START (x-optio-message-start
 // ts, or the lastEventAt fallback — see reduceEvent's `stream_event` case): it
 // is only ever used when this call opens a FRESH bubble (a delta carries no
 // timestamp of its own to backfill with later, unlike applyBlockText).
-function appendDelta(items: ChatItem[], seq: number, delta: string, start?: number): ChatItem[] {
+function appendDelta(items: ChatItem[], seq: number, delta: string, kind: PartKind, start?: number): ChatItem[] {
   const idx = pendingIndex(items);
   if (idx !== -1 && isTail(items, idx)) {
     const cur = items[idx] as AssistantItem;
     if (cur.openPart !== undefined) return replaceAt(items, idx, { ...cur, text: cur.text + delta });
-    const sep = cur.text === '' ? '' : PART_SEPARATOR;
+    const sep = partSeparator(cur.text, cur.textEnd, kind);
     return replaceAt(items, idx, {
       ...cur,
       text: cur.text + sep + delta,
-      openPart: cur.text.length + sep.length,
+      openPart: cur.text.length,
     });
   }
   if (idx !== -1) items = finalizeAt(items, idx);
@@ -520,7 +563,9 @@ function appendDelta(items: ChatItem[], seq: number, delta: string, start?: numb
 
 // A content block's final assistant event (it carries the block's full text).
 // Within the same message it replaces the part its deltas streamed, or appends
-// a new part when nothing streamed (replays hold no stream_events). A different
+// a new part when nothing streamed (replays hold no stream_events); either way
+// after the separator partSeparator gives this block's `kind`, so the text
+// does not depend on what streamed. A different
 // message, or a pending bubble that is no longer the tail, opens a fresh bubble.
 // `ts`, when given, is this event's own wire time: it always becomes (or
 // updates) `endTimestamp` — the LAST one seen for the message — and, only when
@@ -537,21 +582,21 @@ function appendDelta(items: ChatItem[], seq: number, delta: string, start?: numb
 // whether a pending marker may be cleared, since a block that only merged
 // into an already-open bubble never looked at `start` at all.
 function applyBlockText(
-  items: ChatItem[], seq: number, text: string, msgId?: string, ts?: number, start?: number,
+  items: ChatItem[], seq: number, text: string, kind: PartKind, msgId?: string, ts?: number, start?: number,
 ): { items: ChatItem[]; opened: boolean } {
   const idx = pendingIndex(items);
   if (idx !== -1) {
     const cur = items[idx] as AssistantItem;
     const sameMessage = cur.msgId === null || msgId == null || cur.msgId === msgId;
     if (isTail(items, idx) && sameMessage) {
-      const base =
-        cur.openPart !== undefined
-          ? cur.text.slice(0, cur.openPart)
-          : cur.text + (cur.text === '' ? '' : PART_SEPARATOR);
-      const next: AssistantItem = { ...cur, text: base + text, msgId: msgId ?? cur.msgId };
+      const done = cur.openPart !== undefined ? cur.text.slice(0, cur.openPart) : cur.text;
+      const next: AssistantItem = {
+        ...cur, text: done + partSeparator(done, cur.textEnd, kind) + text, msgId: msgId ?? cur.msgId,
+      };
       if (next.timestamp === undefined && ts !== undefined) next.timestamp = ts;
       if (ts !== undefined) next.endTimestamp = ts;
       delete next.openPart;
+      markTextEnd(next, kind);
       return { items: replaceAt(items, idx, next), opened: false };
     }
     items = finalizeAt(items, idx);
@@ -559,6 +604,7 @@ function applyBlockText(
   const fresh: AssistantItem = { kind: 'assistant', text, pending: true, seq, msgId: msgId ?? null };
   if (start !== undefined) fresh.timestamp = start;
   if (ts !== undefined) fresh.endTimestamp = ts;
+  markTextEnd(fresh, kind);
   return { items: appendItems(items, [fresh]), opened: true };
 }
 
@@ -578,6 +624,7 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
   const keep = resultText === null || current.text.trimEnd().endsWith(resultText.trim());
   const next: AssistantItem = { ...current, text: keep ? current.text : resultText, pending: false };
   delete next.openPart;
+  delete next.textEnd;
   return replaceAt(items, idx, next);
 }
 
@@ -642,19 +689,20 @@ function insertBeforeRow(items: ChatItem[], rowSeq: number, rows: ChatItem[]): C
 // (replay holds no deltas). `ts`/`start`: see applyBlockText. `opened`: see
 // applyBlockText.
 function applyInterruptedText(
-  items: ChatItem[], rowSeq: number, seq: number, text: string, msgId?: string, ts?: number, start?: number,
+  items: ChatItem[], rowSeq: number, seq: number, text: string, kind: PartKind, msgId?: string, ts?: number, start?: number,
 ): { items: ChatItem[]; opened: boolean } {
   const r = interruptRowIndex(items, rowSeq);
   const prev = r > 0 ? items[r - 1] : undefined;
   if (prev?.kind === 'assistant' && prev.interrupted && (prev.msgId === null || msgId == null || prev.msgId === msgId)) {
-    const base =
-      prev.openPart !== undefined
-        ? prev.text.slice(0, prev.openPart)
-        : prev.text + (prev.text === '' ? '' : PART_SEPARATOR);
-    const next: AssistantItem = { ...prev, text: base + text, msgId: msgId ?? prev.msgId };
+    const done = prev.openPart !== undefined ? prev.text.slice(0, prev.openPart) : prev.text;
+    const next: AssistantItem = {
+      ...prev, text: done + partSeparator(done, prev.textEnd, kind) + text, msgId: msgId ?? prev.msgId,
+    };
     if (next.timestamp === undefined && ts !== undefined) next.timestamp = ts;
     if (ts !== undefined) next.endTimestamp = ts;
     delete next.openPart;
+    // Its text is complete: no later block extends a cut-off bubble.
+    delete next.textEnd;
     return { items: replaceAt(items, r - 1, next), opened: false };
   }
   const fresh: AssistantItem = { kind: 'assistant', text, pending: false, seq, msgId: msgId ?? null, interrupted: true };
@@ -1143,16 +1191,22 @@ export function reduceEvent(
           ? state.pendingMessageStart.ts
           : undefined;
       const start = marker ?? priorLastEventAt;
+      // The open block's text, cut off: answer text as far as the bubble can
+      // tell (it continues a text block it follows; see partSeparator).
       if (state.interrupt) {
-        const applied = applyInterruptedText(state.items, state.interrupt.rowSeq, seq, text, msgId, undefined, start);
+        const applied = applyInterruptedText(state.items, state.interrupt.rowSeq, seq, text, 'text', msgId, undefined, start);
         let next: ChatState = { ...state, items: applied.items };
         if (applied.opened && marker !== undefined) next = { ...next, pendingMessageStart: undefined };
         return noteInterrupted(next, seq);
       }
-      const applied = applyBlockText(state.items, seq, text, msgId, undefined, start);
+      const applied = applyBlockText(state.items, seq, text, 'text', msgId, undefined, start);
       let items = applied.items;
       const idx = pendingIndex(items);
-      if (idx !== -1) items = replaceAt(items, idx, { ...(items[idx] as AssistantItem), pending: false, interrupted: true });
+      if (idx !== -1) {
+        const cut: AssistantItem = { ...(items[idx] as AssistantItem), pending: false, interrupted: true };
+        delete cut.textEnd;
+        items = replaceAt(items, idx, cut);
+      }
       const next: ChatState = { ...state, items };
       return applied.opened && marker !== undefined ? { ...next, pendingMessageStart: undefined } : next;
     }
@@ -1352,9 +1406,15 @@ export function reduceEvent(
       let items = state.items;
       const narration = narrationIndexes(ev);
       for (const [index, block] of blocks.entries()) {
+        // Only hidden reasoning may stand between two text blocks that join as
+        // one text (partSeparator): any other block (a tool call, a server
+        // tool's result) ends the text, and a text block after it starts a
+        // new paragraph.
+        if (!JOINS_TEXT.has(block?.type)) items = endText(items);
         const text = blockText(block, narration.has(index), opts.thinkingRows);
         const reasoning = opts.thinkingRows ? thinkingText(block) : null;
         if (text !== null) {
+          const kind: PartKind = block?.type === 'text' ? 'text' : 'narration';
           const freshStart = marker !== undefined
             ? marker
             : block?.type === 'thinking' ? ts : priorLastEventAt;
@@ -1365,12 +1425,12 @@ export function reduceEvent(
           // already tracked — or, if none existed yet, a freshly inserted
           // one, tracked here by its own seq, this event's `seq`).
           if (state.interrupt) {
-            const applied = applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId, ts, freshStart);
+            const applied = applyInterruptedText(items, state.interrupt.rowSeq, seq, text, kind, msgId, ts, freshStart);
             items = applied.items;
             if (applied.opened && marker !== undefined) state = { ...state, pendingMessageStart: undefined };
             state = noteInterrupted(state, seq);
           } else {
-            const applied = applyBlockText(items, seq, text, msgId, ts, freshStart);
+            const applied = applyBlockText(items, seq, text, kind, msgId, ts, freshStart);
             items = applied.items;
             if (applied.opened && marker !== undefined) state = { ...state, pendingMessageStart: undefined };
           }
@@ -1440,7 +1500,7 @@ export function reduceEvent(
       let start = state.pendingMessageStart?.ts;
       if (start === undefined && !isThinking) start = state.lastEventAt;
       if (state.pendingMessageStart !== undefined) state = { ...state, pendingMessageStart: undefined };
-      return { ...state, items: appendDelta(state.items, seq, delta, start) };
+      return { ...state, items: appendDelta(state.items, seq, delta, isThinking ? 'narration' : 'text', start) };
     }
 
     case 'result': {
