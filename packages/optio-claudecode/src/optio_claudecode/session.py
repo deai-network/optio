@@ -2614,9 +2614,9 @@ def create_claudecode_task(
     # Snapshot history (resume from an older snapshot): only with resume
     # support, as Resurrect. A cut-off capture's record refuses the discard
     # (CapturePending) until Resurrect or a plain Resume settles it.
-    hooks = (
+    list_hook, discard_hook = (
         snapshot_hooks(SNAPSHOT_LAYOUT, capture_pending=has_pending_capture)
-        if config.supports_resume else None
+        if config.supports_resume else (None, None)
     )
 
     return TaskInstance(
@@ -2639,10 +2639,8 @@ def create_claudecode_task(
             (lambda ctx: _read_conversation(ctx, decrypt=config.session_blob_decrypt))
             if config.conversation_ui else None
         ),
-        list_snapshots=hooks.list_snapshots if hooks is not None else None,
-        discard_snapshots_after=(
-            hooks.discard_snapshots_after if hooks is not None else None
-        ),
+        list_snapshots=list_hook,
+        discard_snapshots_after=discard_hook,
     )
 
 
