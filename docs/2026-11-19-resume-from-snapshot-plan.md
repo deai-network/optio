@@ -514,6 +514,16 @@ Test commands on this host. Write each abbreviation out literally in the actual 
 
 ### Task 9: optio-ui: LaunchControls renders the hook
 
+**Owner's answer (2026-11-19), supersedes question 3 above:** keep the icon-only look. vultus-antd's
+`CombinedActionButton` already has an `iconOnly` prop (vultus-antd 0.8.3: README "CombinedActionButton
+selection"; `CombinedActionButton.tsx`): the main half shows only the active action's icon, its label becomes
+the accessible name and the tooltip (with the reason below while disabled); the opener and the menu rows keep
+their labels. So `LaunchControls` passes `iconOnly` wherever it is icon-only today (list rows, tree nodes,
+the detail view's row), keeps a distinct icon per action, and keeps the green look where it has it today.
+optio resolves vultus-antd 0.7.3, which lacks it: raise optio-ui's vultus-antd peer range to `>=0.8.3` and its
+dev dependency to `^0.8.3` (check vultus-core's matching floor the same way). That changes optio's lockfile:
+find how this repo maintains `pnpm-lock.yaml` (AGENTS.md, release cookbook) and report before committing it.
+
 **Files:**
 - Modify: `packages/optio-ui/src/components/LaunchControls.tsx`.
 - Modify: `packages/optio-ui/src/components/ProcessItem.tsx`, `ProcessList.tsx`, `ProcessTreeView.tsx`, `ProcessFilter.tsx`: the `onLaunch` prop types take `opts?: LaunchOpts`.
