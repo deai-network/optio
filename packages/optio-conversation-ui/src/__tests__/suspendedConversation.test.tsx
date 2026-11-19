@@ -471,8 +471,8 @@ describe('SuspendedConversationWidget: a done or failed run', () => {
   const DONE = { state: 'done', doneAt: '2026-11-19T11:00:00.000Z' };
   const FAILED = { state: 'failed', failedAt: '2026-11-19T12:00:00.000Z', error: 'boom' };
   const rows = [
-    ['done', DONE, '2026-11-19T11:00:00.000Z', 'Session ended', 'This session has ended.'],
-    ['failed', FAILED, '2026-11-19T12:00:00.000Z', 'Session failed', 'This session failed.'],
+    ['done', DONE, '2026-11-19T11:00:00.000Z', 'Session ended: Done', 'This session has ended.'],
+    ['failed', FAILED, '2026-11-19T12:00:00.000Z', 'Session ended: Failed', 'This session failed.'],
   ] as const;
 
   it.each(rows)('a %s run: the record is read under the timestamp its end set', (_state, status, key) => {
@@ -537,7 +537,7 @@ describe('SuspendedConversationWidget: a done or failed run', () => {
       process={{ ...props.process, status: { state: 'running', doneAt: null }, widgetData: null }} />));
     expect(screen.getByTestId('optio-replay-resuming')).toBeTruthy();
     expect(useProcessConversation.mock.calls.at(-1)![1]).toEqual({ enabled: true, stoppedAt: '2026-11-19T11:00:00.000Z' });
-    expect(screen.getByTestId('conversation-closed').textContent).toBe('Session ended');
+    expect(screen.getByTestId('conversation-closed').textContent).toBe('Session ended: Done');
   });
 });
 

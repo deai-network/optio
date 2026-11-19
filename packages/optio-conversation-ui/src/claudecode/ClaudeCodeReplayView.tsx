@@ -56,11 +56,13 @@ export interface ClaudeCodeReplayViewProps {
 }
 
 // How the saved run ended, by its terminal state: the divider's label and the
-// resume question's first sentence. Any other state reads as a suspend.
+// resume question's first sentence. A cancelled run of a resumable task is
+// suspended, not ended; a done or failed one names its end state (owner,
+// 2026-11-19). Any other state reads as a suspend.
 const ENDED: Record<string, { label: string; said: string }> = {
   cancelled: { label: 'Session suspended', said: 'This session is currently suspended.' },
-  done: { label: 'Session ended', said: 'This session has ended.' },
-  failed: { label: 'Session failed', said: 'This session failed.' },
+  done: { label: 'Session ended: Done', said: 'This session has ended.' },
+  failed: { label: 'Session ended: Failed', said: 'This session failed.' },
 };
 const CONFIRM_TITLE = 'Resume the session?';
 const CONFIRM_RESUMES = 'Sending this message will resume it. Is this what you want?';

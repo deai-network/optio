@@ -63,8 +63,8 @@ below).
   folds the saved record through the claudecode reducer with one fixed clock (the record's
   `capturedAt`, else the mount time). It then closes the session as suspended, which stops any
   row still running. The view is `ConversationView`, closed, under a divider that says how the
-  run ended: "Session suspended" (cancelled), "Session ended" (done) or "Session failed"
-  (failed). Interrupt, permission and download do nothing, and it offers no upload
+  run ended: "Session suspended" (cancelled: a resumable task's stop suspends it), "Session
+  ended: Done" or "Session ended: Failed". Interrupt, permission and download do nothing, and it offers no upload
   and no control inputs. A permission request the record left unanswered still shows its
   Approve and Deny buttons, but they are inert. The tool verbosity, the controls and custom
   controls seeds and todos come from `widgetData`, as in the live view. The custom controls
