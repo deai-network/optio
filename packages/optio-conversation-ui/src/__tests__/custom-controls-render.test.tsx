@@ -132,14 +132,21 @@ describe('custom controls in the session toolbar', () => {
     expect(screen.queryByTestId('conversation-error')).toBeNull();
   });
 
+  // Pending, vultus locks the control rather than disabling it (vultus-antd's
+  // Pending lock): it keeps the keyboard focus, says it is unavailable, and a
+  // pick requests nothing.
   it('locked while the pick is in flight', async () => {
     let finish!: (failure: string | null) => void;
     const onCustomControlChange = vi.fn(() => new Promise<string | null>((resolve) => { finish = resolve; }));
     render(<ConversationView {...base({ onCustomControlChange })} />);
+    const segmented = () => screen.getByTestId('custom-control-speed').querySelector('.ant-segmented')!;
     fireEvent.click(screen.getByText('Fast'));
-    await waitFor(() => expect(screen.getByTestId('custom-control-speed').querySelector('.ant-segmented-disabled')).toBeTruthy());
+    await waitFor(() => expect(segmented().getAttribute('aria-disabled')).toBe('true'));
+    expect(segmented().classList.contains('ant-segmented-disabled')).toBe(false);
+    fireEvent.click(screen.getByText('Extensive'));
+    expect(onCustomControlChange).toHaveBeenCalledTimes(1);
     finish(null);
-    await waitFor(() => expect(screen.getByTestId('custom-control-speed').querySelector('.ant-segmented-disabled')).toBeNull());
+    await waitFor(() => expect(segmented().hasAttribute('aria-disabled')).toBe(false));
   });
 
   it("a failed pick shows why in the input bar's error slot", async () => {

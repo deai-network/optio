@@ -352,15 +352,17 @@ describe('ConversationView Interrupt pending and failure', () => {
     expect(onInterrupt).toHaveBeenCalledTimes(1);
     expect(button.textContent).toBe('Interrupt');
     expect(button.classList.contains('ant-btn-loading')).toBe(true);
-    expect(button.disabled).toBe(true);
+    // Pending, vultus locks the button rather than disabling it (vultus-antd's
+    // Pending lock): it keeps the keyboard focus, says it is unavailable, and a
+    // click on it fires nothing.
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(button);
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
 
-    // A second click on the button itself can't exercise the guard for real:
-    // the button is `disabled` (see above), and react-dom/jsdom never
-    // dispatches a click to a disabled native <button> at all. Escape's
-    // window-level handler has no disabled state of its own and calls the
-    // same interrupt(), so a second Escape while the first is still in
-    // flight is a real second entry — this is what interruptingRef guards
-    // against (Fix 27 I7).
+    // Escape's window-level handler has no lock of its own and calls the same
+    // interrupt(), so a second Escape while the first is still in flight is a
+    // real second entry — this is what interruptingRef guards against (Fix 27 I7).
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onInterrupt).toHaveBeenCalledTimes(1);
 
@@ -368,6 +370,7 @@ describe('ConversationView Interrupt pending and failure', () => {
     await waitFor(() => expect(interruptButton().classList.contains('ant-btn-loading')).toBe(false));
     expect(interruptButton().textContent).toBe('Interrupt');
     expect(interruptButton().disabled).toBe(false);
+    expect(interruptButton().hasAttribute('aria-disabled')).toBe(false);
     expect(screen.queryByTestId('conversation-error')).toBeNull();
   });
 
