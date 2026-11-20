@@ -607,9 +607,10 @@ class Optio:
         returns, which is after it has written `scheduled` (and after the
         run); meanwhile a resume_from and a resurrect of the process are
         refused (not-launchable). So a launch and a resume from a snapshot
-        never both proceed. A plain launch after the resume_from call has
-        returned is refused only once the record shows `scheduled` (the
-        existing race between two plain launches). launch_and_wait calls
+        never both proceed, except in the race between two plain launches
+        that existed before (unchanged): a plain launch after the
+        resume_from call has returned is refused only once the record
+        shows `scheduled`. launch_and_wait calls
         the executor directly and bypasses these guards (and the launch
         checks); launch_and_await_result goes through launch() and keeps
         them. Any other exception of the hook is logged ("Resume from the

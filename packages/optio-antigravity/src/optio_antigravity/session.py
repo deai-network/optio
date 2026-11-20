@@ -33,6 +33,7 @@ from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_controls import filter_controls, model_control
 from optio_agents.session_env import session_env_remove
+from optio_agents.snapshots import snapshot_hooks
 from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle
@@ -50,7 +51,6 @@ from optio_antigravity.seed_manifest import (
     ANTIGRAVITY_SEED_MANIFEST,
     ANTIGRAVITY_SEED_SUFFIX,
 )
-from optio_agents.snapshots import snapshot_hooks
 from optio_antigravity.snapshots import (
     SNAPSHOT_LAYOUT,
     insert_snapshot,

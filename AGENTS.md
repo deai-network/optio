@@ -170,13 +170,14 @@ await optio_core.launch(process_id: str, resume: bool = False, *, session_id: st
 # not-launchable (no saved state: never downgraded to a fresh run), launch-blocked, no-snapshot-support (no task
 # or no discard_snapshots_after hook), shutting-down (begun since the first check; the hook is not called), then
 # the hook's capture-pending (CapturePending) and snapshot-not-found (SnapshotNotFound). Nothing is deleted on
-# these refusals. A launch and a resume from a snapshot never both proceed. Guarded, and until when: from before
-# the resume_from call's first await until the call returns (its run scheduled, or a refusal), launch and
-# resurrect of the process return not-launchable; a run any launch scheduled counts from then until its
-# executor launch_process returns (after it has written `scheduled`), and meanwhile a resume_from and a
-# resurrect of the process return not-launchable. A plain launch after the resume_from call returned is refused
-# only once the record shows `scheduled` (the existing plain-vs-plain race). launch_and_wait (programmatic)
-# calls the executor directly and bypasses these guards; launch_and_await_result goes through launch().
+# these refusals. A launch and a resume from a snapshot never both proceed, except in the race between two plain
+# launches that existed before (unchanged, below). Guarded, and until when: from before the resume_from call's
+# first await until the call returns (its run scheduled, or a refusal), launch and resurrect of the process
+# return not-launchable; a run any launch scheduled counts from then until its executor launch_process returns
+# (after it has written `scheduled`), and meanwhile a resume_from and a resurrect of the process return
+# not-launchable. A plain launch after the resume_from call returned is refused only once the record shows
+# `scheduled` (that existing plain-vs-plain race). launch_and_wait (programmatic) calls the executor directly
+# and bypasses these guards; launch_and_await_result goes through launch().
 # A shutdown begun during the hook refuses the launch after it (shutting-down; the discard line is logged).
 # Another exception of the hook is logged ("Resume from the snapshot of <capturedAt> failed: <error>") and
 # propagates. After a deletion without a launch the chosen snapshot is the newest: a later Resume restores it.
@@ -1168,7 +1169,7 @@ type ProcessSnapshot = z.infer<typeof ProcessSnapshotSchema>;
 | `getTreeLog` | GET | `/processes/:id/tree/log` | `id` | `database?, prefix?, cursor?, limit, maxDepth?` | — | `200: PaginatedResponse<LogEntry & {processId, processLabel}>`, `404: Error` |
 | `getConversation` | GET | `/processes/:id/conversation` | `id` | `database?, prefix?` | — | `200: { events: unknown[], capturedAt: string \| null }` (a suspended process's saved conversation record, proxied from the engine's conversation archive; `Cache-Control: no-store`), `401: { message }`, `403`/`404`/`409`/`500`/`503`: `{ reason: ConversationFailureReason, message }` |
 | `getSnapshots` | GET | `/processes/:id/snapshots` | `id` | `database?, prefix?` | — | `200: { snapshots: ProcessSnapshot[] }` (`{ capturedAt, endState }`, newest first, valid snapshots only, the newest included; proxied from the engine RPC `listSnapshots`), `404: { reason: ListSnapshotsFailureReason, message }` (`not-found` also for a process the request may not see; `no-snapshot-support`) |
-| `launch` | POST | `/processes/:id/launch` | `id` | `database?, prefix?` | `{ resume?: boolean; resumeFrom?: string; sessionId?: string \| null; params?: Record<string, unknown> }` (optional; body may be omitted entirely; `resumeFrom`, non-empty, is a `getSnapshots` `capturedAt` to resume from, with `resume: true`; `params` are a task factory's values) | `200: Process` (a factory's launch: the child's record), `400`/`404`/`409`: `{ reason: LaunchFailureReason, message }` (`parameters-required`, `invalid-parameters`, `invalid-metadata` and `invalid-request` are 400, `not-found` 404, the others 409; an `invalid-parameters` message is optio-core's `"<id>: <what>"`, an `invalid-metadata` one names the colliding stamp keys, both unchanged) |
+| `launch` | POST | `/processes/:id/launch` | `id` | `database?, prefix?` | `{ resume?: boolean; resumeFrom?: string; sessionId?: string \| null; params?: Record<string, unknown>; ephemeral?: boolean }` (optional; body may be omitted entirely; `resumeFrom`, non-empty, is a `getSnapshots` `capturedAt` to resume from, with `resume: true`; `params` are a task factory's values; `ephemeral` overrides the factory's retention of the launch's record) | `200: Process` (a factory's launch: the child's record), `400`/`404`/`409`: `{ reason: LaunchFailureReason, message }` (`parameters-required`, `invalid-parameters`, `invalid-metadata` and `invalid-request` are 400, `not-found` 404, the others 409; an `invalid-parameters` message is optio-core's `"<id>: <what>"`, an `invalid-metadata` one names the colliding stamp keys, both unchanged) |
 | `cancel` | POST | `/processes/:id/cancel` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: CancelFailureReason, message }` |
 | `dismiss` | POST | `/processes/:id/dismiss` | `id` | `database?, prefix?` | (none) | `200: Process`, `404`/`409`: `{ reason: DismissFailureReason, message }` |
 | `resurrect` | POST | `/processes/:id/resurrect` | `id` | `database?, prefix?` | `{ sessionId?: string \| null }` (optional; body may be omitted entirely) | `200: Process`, `404`/`409`: `{ reason: ResurrectFailureReason, message }` |
@@ -1496,8 +1497,9 @@ async function getProcessTreeLog(ctx: OptioContext, query: TreeLogQuery & Instan
 async function getProcessConversation(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<ConversationResult>
 async function getProcessSnapshots(ctx: OptioContext, query: InstanceQuery, id: string, access?: Access): Promise<SnapshotsResult>
 // GET /processes/:id/snapshots: the engine's listSnapshots, asked by the document's _id (either id
-// form accepted). Gated as GET /processes/:id is (findReadableProcess: scope and visibility; authorize
-// is not asked). SnapshotsResult = { status: 200; body: { snapshots: ProcessSnapshot[] } } (newest
+// form accepted; address it by _id, as a launch with resumeFrom is: a processId names the first
+// document it finds, while a launch acts on the newest). Gated as GET /processes/:id is
+// (findReadableProcess: scope and visibility; authorize is not asked). SnapshotsResult = { status: 200; body: { snapshots: ProcessSnapshot[] } } (newest
 // first, valid snapshots only, the newest included) | { status: 404; body: { reason:
 // ListSnapshotsFailureReason, message } }: not-found (also out of scope or hidden; the engine is not
 // called) and no-snapshot-support ("This task keeps no snapshot history").
@@ -1723,8 +1725,9 @@ all but Resurrect behind a confirmation naming the unsaved work they discard; wh
 action with its reason (the menu still opens). The items come from `useProcessSnapshots(process._id,
 { enabled, runEndedAt: runEndedAt(process) })`, read only for a launchable, resumable process that is
 not a task factory (never held back by `denyReason`); while the list loads or fails the menu is Resume
-and Restart. A task's `warning` is asked (a confirm modal) before a fresh run, Launch and Restart (after
-Restart's own confirmation), never before a resume. All hooks run before the early returns, so a
+and Restart. A task's `warning` is asked (a confirm modal) before a fresh run only: Launch, and Restart
+(in the resurrect case after Restart's own confirmation); never before Resume, the previous-snapshot
+items or Resurrect. All hooks run before the early returns, so a
 LaunchControls needs the `OptioProvider` and its `QueryClientProvider` even when it renders nothing.
 Used by `ProcessItem` (so `ProcessList`) and `ProcessTreeView`, which mount it only when given
 `onLaunch`, and `ProcessDetailView`.
@@ -2245,10 +2248,10 @@ All components use `react-i18next`. Required keys:
 | `processes.restart` | useProcessLaunchActions, so LaunchControls (Restart, a menu item; in the resurrect case its confirmation's title and OK); default "Restart (discard saved state)" |
 | `processes.resurrect` | useProcessLaunchActions, so LaunchControls (Resurrect); default "Resurrect" |
 | `processes.resumeFromSnapshot` | useProcessLaunchActions, so LaunchControls (Resume in the resurrect case: a menu item, its confirmation's title and OK); default "Resume from last snapshot" |
-| `processes.discardUnsavedWork` | useProcessLaunchActions, so LaunchControls (the resurrect case's confirmation body); default "This discards the unsaved work the failed run left behind." |
+| `processes.discardUnsavedWork` | useProcessLaunchActions, so LaunchControls (the resurrect case's confirmation body; in a previous-snapshot item's, after the deliveries sentence); default "This discards the unsaved work the failed run left behind." |
 | `processes.resurrecting` | useProcessLaunchActions, so LaunchControls (the disabled Resurrecting indicator's label); default "Resurrecting…" |
 | `processes.resurrectingReason` | useProcessLaunchActions, so LaunchControls (why Resurrecting is disabled); default "Saving the work the failed run left behind; the process resumes afterwards." |
-| `processes.resumeFromPrevious` | useProcessLaunchActions, so LaunchControls (a previous-snapshot item, `{{time}}`); default "Resume from previous snapshot ({{time}})" |
+| `processes.resumeFromPrevious` | useProcessLaunchActions, so LaunchControls (a previous-snapshot item and its confirmation's OK, `{{time}}`); default "Resume from previous snapshot ({{time}})" |
 | `processes.resumeFromPreviousConfirm_one` / `_other` | useProcessLaunchActions, so LaunchControls (its confirmation title, `{{time}}`, `{{count}}` newer snapshots); defaults "Resume from {{time}}? This discards {{count}} newer snapshot." / "… snapshots."; other plural forms default to the `_other` text |
 | `processes.resumeFromPreviousKeepsDeliveries` | useProcessLaunchActions, so LaunchControls (its confirmation body); default "What the discarded runs delivered stays in the app." |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |

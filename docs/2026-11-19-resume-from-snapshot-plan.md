@@ -1,5 +1,7 @@
 # Resume from a previous snapshot: implementation plan
 
+**Status (2026-11-20):** Tasks 1-10 are implemented on optio `main` (local commits, not pushed or released). Task 11 (excavator) follows an optio release. `LaunchControls`' look awaits the owner's decision.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Next to Resume and Restart, the launch menu of a suspended process offers "Resume from previous snapshot (<time>)" for each older valid snapshot; choosing one deletes the newer snapshots and resumes as usual.

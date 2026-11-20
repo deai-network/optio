@@ -23,6 +23,7 @@ from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_controls import filter_controls
 from optio_agents.session_env import session_env_remove
+from optio_agents.snapshots import snapshot_hooks
 from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
@@ -44,7 +45,6 @@ from optio_codex.fs_allowlist import (
 )
 from optio_codex.prompt import compose_agents_md
 from optio_codex.seed_manifest import CODEX_SEED_MANIFEST, CODEX_SEED_SUFFIX
-from optio_agents.snapshots import snapshot_hooks
 from optio_codex.snapshots import (
     SNAPSHOT_LAYOUT,
     effective_workdir_exclude,

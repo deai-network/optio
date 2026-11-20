@@ -415,6 +415,29 @@ store to be fully flushed *before* capture (the snapshot-flush race in
 A relaunch that reaches `running` but shows an empty conversation is a resume
 *failure*, not a pass.
 
+**Snapshot history.** The launch menu's "Resume from previous snapshot (<time>)"
+items need two `TaskInstance` hooks, `list_snapshots` and
+`discard_snapshots_after`; `optio_agents.snapshots` implements both from a
+declaration of your snapshot collection. In your `snapshots.py`, declare
+`SNAPSHOT_LAYOUT = SnapshotLayout(<collection suffix>, required_blob_fields=(...),
+optional_blob_fields=(...))`: the required fields are the blobs a resume cannot
+do without (a snapshot missing one is not listed and cannot be chosen), the
+optional ones every other field of a document that names a blob (a discard
+deletes those blobs with their document; leave one out and its blob is
+orphaned). In `create_<agent>_task`, when `config.supports_resume`, set both
+hooks from `snapshot_hooks(SNAPSHOT_LAYOUT)`, else both `None`. If the wrapper
+keeps a pending-capture store (a capture cut off part-way, settled later by
+Resurrect or a resume), pass `capture_pending=`, an `async (ctx) -> bool` that
+says whether the process has such a record: the discard hook then raises
+`CapturePending` before it reads or deletes anything, and the launch is refused
+with `capture-pending`. **Reference.** `optio-opencode` (`snapshots.SNAPSHOT_LAYOUT`
+and `create_opencode_task`); `optio-claudecode` for `capture_pending`
+(`pending_captures.has_pending_capture`); the rules (validity, the `capturedAt`
+wire form, which blobs go) in `packages/optio-agents/AGENTS.md`, "Snapshot history
+(`optio_agents.snapshots`)". **Done when.** The wrapper's `tests/test_snapshots.py`
+checks `SNAPSHOT_LAYOUT`, lists and discards snapshots through the hooks the task
+carries, and finds neither hook on a task without `supports_resume`.
+
 ### Stage 3 — Seeds
 **Goal.** Start a *fresh* session that is already logged-in/configured — the axis
 resume can't give, and the answer to headless login. **Touches.** A per-agent seed

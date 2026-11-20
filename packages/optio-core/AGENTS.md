@@ -405,7 +405,8 @@ The engine RPC's `launch` (`OptioEngineService.launch`) passes `LaunchParams.res
 wire's `resumeFrom`, a non-empty string) as `resume_from`, and answers these reasons as typed
 refusals.
 
-A launch and a resume from a snapshot never both proceed. What is guarded, and until when:
+A launch and a resume from a snapshot never both proceed, except in the race between two plain
+launches that existed before (unchanged; the third point below). What is guarded, and until when:
 
 - From before the call's first await (before it reads the record) until the call returns (its
   run scheduled, or a refusal), the call is in `Optio._resuming_from`: under the id it was

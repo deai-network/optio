@@ -32,6 +32,17 @@ The body below still describes `4aebde18` (2026-09-13). Since then:
   "All poll Mongo at 1000 ms" and the polling threads in §11 describe the old behaviour.
 - **`checkAuth` is exported** from optio-api's root, with `AuthCallback`, `OptioRole` and the
   access helpers (since 0.2.10); §5.12's list of missing exports is partly out of date.
+- **A suspended process can resume from an older snapshot** (bullet added 2026-11-20; on main, not
+  yet released; spec `docs/2026-11-19-resume-from-snapshot-design.md`). `TaskInstance` has two new
+  optional hooks, `list_snapshots` and `discard_snapshots_after`, which `optio_agents.snapshots`
+  implements for all seven engine wrappers. The engine RPC gains `listSnapshots({ processId })`
+  (reasons `not-found`, `no-snapshot-support`), and its `launch` takes `resumeFrom` (a listed
+  `capturedAt`, with `resume: true`): the newer snapshots are deleted, then the process resumes.
+  Four new launch reasons go with it: `invalid-request`, `no-snapshot-support`,
+  `snapshot-not-found`, `capture-pending`. optio-api adds `GET /api/processes/:id/snapshots` and
+  passes the launch body's `resumeFrom` on. optio-ui adds `useProcessSnapshots` and
+  `useProcessLaunchActions` (the launch menu, moved from excavator), which `LaunchControls`
+  renders: "Resume from previous snapshot (<time>)" items between Resume and Restart.
 - **Line references are from the old revision.** Every `file:line` points into `4aebde18`.
 - Versions now: `optio-core` 0.6.1, `optio-contracts` 0.6.1, `optio-host` 0.4.0, `optio-agents`
   0.7.1, `optio-agents-all` 0.3.0, `optio-api` 0.3.0, `optio-ui` 0.8.2, `optio-conversation-ui` 0.9.4.

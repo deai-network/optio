@@ -40,6 +40,7 @@ from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.session_controls import filter_controls
 from optio_agents.session_env import session_env_remove
+from optio_agents.snapshots import snapshot_hooks
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.todos import TodoTracker, extract_acp_todo
 from optio_agents.uploads import materialize, upload_url_token
@@ -54,7 +55,6 @@ from optio_kimicode.conversation import KimiCodeConversation
 from optio_kimicode.conversation_listener import ConversationListener
 from optio_kimicode.prompt import compose_agents_md
 from optio_kimicode.seed_manifest import KIMI_SEED_MANIFEST, KIMI_SEED_SUFFIX
-from optio_agents.snapshots import snapshot_hooks
 from optio_kimicode.snapshots import (
     SNAPSHOT_LAYOUT,
     capture_snapshot,
