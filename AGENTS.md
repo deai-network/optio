@@ -1691,12 +1691,12 @@ Wrap your application (or subtree):
 ```typescript
 interface LaunchControlsProps {
   process: any;
-  onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (id: string, opts?: LaunchOpts) => void;  // { resume?, resumeFrom? } | undefined
   onLaunched?: (child: Process) => void;  // a task factory's launch form launched it: the child it made
   onResurrect?: (id: string) => void;  // save a failed run's host work, then resume
   size?: ButtonProps['size'];
   iconFontSize?: number;               // pixel size of the buttons' icons
-  denyReason?: string | null;          // set + non-empty: launch button disabled, this as its tooltip
+  denyReason?: string | null;          // set + non-empty: every launch action disabled, this as its reason
 }
 ```
 
@@ -1704,21 +1704,26 @@ Smart launch button. Renders nothing when not launchable or `onLaunch` is absent
 is a launchable state and not a task factory's launch (`isTaskFactoryLaunch(process)`: `metadata.taskFactory`
 names the factory; it is never launched again, e.g. one a TTL keeps; both exported from `optio-ui`).
 An ended one renders a Remove button (dismissing deletes it) and, when `isResumable(process)`, before
-it the Resume button of a task's split button (`onLaunch(id, { resume: true })`; no play button, no
-Restart; a non-empty `denyReason` disables it). While `isResurrecting(process)` (`resurrecting` true) it renders a single disabled "Resurrecting" indicator
-(spinning icon, tooltip "Resurrecting: saving the unsaved work…") and nothing clickable.
+it a Resume icon button (`onLaunch(id, { resume: true })`; no play button, no Restart; a non-empty
+`denyReason` disables it).
 For a task factory's record (`isTaskFactory(process)`: `taskFactory: true`; exported from `optio-ui`) it
 renders a single play button that opens the factory's `TaskFactoryLaunchModal` (below) instead of calling
-`onLaunch`, which only allows it; no `Popconfirm` (the form shows the `warning`); the form's launch hands
-the child to `onLaunched`.
-When `onResurrect` is given and `isResurrectable(process)` (launchable, not resurrecting, and `supportsResurrect`
-and `hasUnsavedWork` both true; `isResurrectable` and `isResurrecting` are exported from `optio-ui`),
-renders a split button: primary = Resurrect (calls `onResurrect(id)`), menu = Resume from last snapshot (only
-when resumable) and Restart; both menu items first confirm "This discards the unsaved work left by the failed
-run." (OK = "Discard and continue", via `Modal.useModal()`) before calling `onLaunch`. Otherwise:
-Renders a single play button when `supportsResume=false` or `hasSavedState=false`.
-Renders an Ant Design `Dropdown.Button` (primary = Resume, menu = Restart) when both flags are true.
-Used by `ProcessList` and `ProcessDetailView`.
+`onLaunch`, which only allows it; no confirmation of its own (the form shows the `warning`); the form's
+launch hands the child to `onLaunched`; a non-empty `denyReason` disables it.
+Otherwise it renders `useProcessLaunchActions` (below) in vultus-antd's `CombinedActionButton`, icon-only
+(`iconOnly`: the main half shows the active action's icon, its label the accessible name and tooltip;
+the `⋯` opener is as without it, the menu rows show icon and label): Launch alone when not resumable; Resume, the
+"Resume from previous snapshot (<time>)" items and Restart when resumable; with `onResurrect` and
+`isResurrectable(process)` (launchable, not resurrecting, `supportsResurrect` and `hasUnsavedWork`;
+both predicates exported from `optio-ui`) Resurrect, Resume from last snapshot, the items and Restart,
+all but Resurrect behind a confirmation naming the unsaved work they discard; while
+`isResurrecting(process)` the disabled Resurrecting… alone. A non-empty `denyReason` disables every
+action with its reason (the menu still opens). The items come from `useProcessSnapshots(process._id,
+{ enabled, runEndedAt: runEndedAt(process) })`, read only for a launchable, resumable process that is
+not a task factory (never held back by `denyReason`); while the list loads or fails the menu is Resume
+and Restart. A task's `warning` is asked (a confirm modal) before a fresh run, Launch and Restart (after
+Restart's own confirmation), never before a resume. All hooks run before the early returns.
+Used by `ProcessItem` (so `ProcessList`), `ProcessTreeView` and `ProcessDetailView`.
 
 **`ProcessList`**
 
@@ -1726,7 +1731,7 @@ Used by `ProcessList` and `ProcessDetailView`.
 interface ProcessListProps {
   processes: any[];
   loading: boolean;
-  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (processId: string, opts?: LaunchOpts) => void;  // LaunchOpts: useProcessLaunchActions
   onLaunched?: (child: Process) => void;  // forwarded to each ProcessItem
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
@@ -1741,7 +1746,7 @@ Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set)
 ```typescript
 interface ProcessItemProps {
   process: any;
-  onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (id: string, opts?: LaunchOpts) => void;  // forwarded to LaunchControls
   onLaunched?: (child: Process) => void;  // forwarded to LaunchControls (a task factory's launch)
   onResurrect?: (id: string) => void;  // forwarded to LaunchControls
   onCancel?: (id: string) => void;
@@ -1754,8 +1759,9 @@ interface ProcessItemProps {
 }
 ```
 
-Single process row. Launch button shows `Popconfirm` when `process.warning` is set (a task
-factory's opens its launch form instead, which shows the warning). The progress
+Single process row. Its `LaunchControls` ask `process.warning` before a fresh run (Launch,
+Restart), in a confirm modal (a task factory's opens its launch form instead, which shows the
+warning). The progress
 message is shown while the process is active or resurrecting (`isResurrecting`).
 
 **`ProcessStatusBadge`**
@@ -1792,7 +1798,7 @@ interface ProcessTreeViewProps {
   treeData: ProcessNode | null;
   sseState: { connected: boolean };
   onCancel?: (processId: string) => void;
-  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (processId: string, opts?: LaunchOpts) => void;  // forwarded to each node's LaunchControls
   onLaunched?: (child: Process) => void;      // forwarded to each node's LaunchControls
   onResurrect?: (processId: string) => void;  // forwarded to each node's LaunchControls
 }
@@ -2108,12 +2114,12 @@ work" confirmation; launchable and resumable: Resume, the items, Restart; launch
 Slot `s` shows `snapshots[s + 1]` as "Resume from previous snapshot (<time>)" behind a confirmation
 naming its `s + 1` newer snapshots, and fires `triggerLaunch({ resume: true, resumeFrom: capturedAt })`;
 with no list or no older snapshot the slots are invisible. The `useAction` calls are unconditional,
-always the same number. A task's `warning` is the caller's: `triggerLaunch` must ask the process's
-warning first for every launching action the hook returns (Resume, Restart, Launch, the resurrect
-case's Resume from last snapshot and Restart, and the previous-snapshot items), and launch exactly
-once after OK. Resurrect starts the run again too: `triggerResurrect` must ask the process's
-warning first as well, and resurrect exactly once after OK. Details: `packages/optio-ui/AGENTS.md`
-"useProcessLaunchActions".
+always the same number. A task's `warning` is the caller's, and it describes what a fresh run does
+(e.g. wiping data): `triggerLaunch` must ask it before the actions that start a fresh run, Launch
+(`opts` undefined) and Restart (`resume: false`, after Restart's own confirmation in the resurrect
+case), and launch exactly once after OK; a cancel launches nothing. A resume asks no warning: Resume,
+the previous-snapshot items and Resurrect (`triggerResurrect`) go ahead. Details:
+`packages/optio-ui/AGENTS.md` "useProcessLaunchActions".
 
 **`useProcessList(options?)`**
 
@@ -2229,24 +2235,19 @@ All components use `react-i18next`. Required keys:
 
 | Key | Used by |
 |-----|---------|
-| `processes.launch` | ProcessItem (launch button tooltip); useProcessLaunchActions (Launch; default "Launch") |
-| `processes.resume` | LaunchControls (primary button label when hasSavedState=true; default "Resume"); useProcessLaunchActions (Resume) |
-| `processes.restart` | LaunchControls (dropdown menu item; default "Restart (discard saved state)"); useProcessLaunchActions (Restart) |
-| `processes.resurrect` | LaunchControls (Resurrect button aria-label; default "Resurrect"); useProcessLaunchActions (Resurrect) |
-| `processes.resurrectHint` | LaunchControls (Resurrect button tooltip; default "Save the work left by the failed run, then resume") |
-| `processes.resumeFromSnapshot` | LaunchControls (Resurrect menu item + confirmation title; default "Resume from last snapshot"); useProcessLaunchActions (Resume in the resurrect case) |
-| `processes.restartDiscarding` | LaunchControls (Resurrect menu item + confirmation title; default "Restart") |
-| `processes.discardUnsavedWork` | LaunchControls (confirmation body; default "This discards the unsaved work left by the failed run."); useProcessLaunchActions (resurrect-case confirmation body; default "This discards the unsaved work the failed run left behind.") |
-| `processes.discardAndContinue` | LaunchControls (confirmation OK button; default "Discard and continue") |
-| `processes.resurrecting` | LaunchControls (Resurrecting indicator tooltip; default "Resurrecting: saving the unsaved work…"); useProcessLaunchActions (Resurrecting label; default "Resurrecting…") |
-| `processes.resurrectingLabel` | LaunchControls (Resurrecting indicator aria-label; default "Resurrecting") |
-| `processes.resurrectingReason` | useProcessLaunchActions (why Resurrecting is disabled; default "Saving the work the failed run left behind; the process resumes afterwards.") |
-| `processes.resumeFromPrevious` | useProcessLaunchActions (a previous-snapshot item, `{{time}}`; default "Resume from previous snapshot ({{time}})") |
-| `processes.resumeFromPreviousConfirm_one` / `_other` | useProcessLaunchActions (its confirmation title, `{{time}}`, `{{count}}` newer snapshots; defaults "Resume from {{time}}? This discards {{count}} newer snapshot." / "… snapshots."; other plural forms default to the `_other` text) |
-| `processes.resumeFromPreviousKeepsDeliveries` | useProcessLaunchActions (its confirmation body; default "What the discarded runs delivered stays in the app.") |
+| `processes.launch` | useTaskFactory (a factory's launch action: LaunchControls' factory play button) and useProcessLaunchActions (Launch: LaunchControls' play button); default "Launch" |
+| `processes.resume` | LaunchControls (a kept launch's Resume button); useProcessLaunchActions (Resume); default "Resume" |
+| `processes.restart` | useProcessLaunchActions, so LaunchControls (Restart, a menu item; in the resurrect case its confirmation's title and OK); default "Restart (discard saved state)" |
+| `processes.resurrect` | useProcessLaunchActions, so LaunchControls (Resurrect); default "Resurrect" |
+| `processes.resumeFromSnapshot` | useProcessLaunchActions, so LaunchControls (Resume in the resurrect case: a menu item, its confirmation's title and OK); default "Resume from last snapshot" |
+| `processes.discardUnsavedWork` | useProcessLaunchActions, so LaunchControls (the resurrect case's confirmation body); default "This discards the unsaved work the failed run left behind." |
+| `processes.resurrecting` | useProcessLaunchActions, so LaunchControls (the disabled Resurrecting indicator's label); default "Resurrecting…" |
+| `processes.resurrectingReason` | useProcessLaunchActions, so LaunchControls (why Resurrecting is disabled); default "Saving the work the failed run left behind; the process resumes afterwards." |
+| `processes.resumeFromPrevious` | useProcessLaunchActions, so LaunchControls (a previous-snapshot item, `{{time}}`); default "Resume from previous snapshot ({{time}})" |
+| `processes.resumeFromPreviousConfirm_one` / `_other` | useProcessLaunchActions, so LaunchControls (its confirmation title, `{{time}}`, `{{count}}` newer snapshots); defaults "Resume from {{time}}? This discards {{count}} newer snapshot." / "… snapshots."; other plural forms default to the `_other` text |
+| `processes.resumeFromPreviousKeepsDeliveries` | useProcessLaunchActions, so LaunchControls (its confirmation body); default "What the discarded runs delivered stays in the app." |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |
 | `processes.suspend` | ProcessItem, ProcessTreeView (stop button tooltip for a resumable process; default "Suspend") |
-| `processes.moreOptions` | LaunchControls (split-button menu tooltip; default "More options") |
 | `processes.search` | ProcessFilters (the search field's label and placeholder) |
 | `processes.filterAll` | ProcessFilters (a choice of the filter group) |
 | `processes.filterActive` | ProcessFilters (a choice of the filter group) |
@@ -2270,7 +2271,7 @@ All components use `react-i18next`. Required keys:
 | `processes.factoryTitle` | TaskFactoryLaunchModal (title, `{{name}}` the factory's; default "Launch “{{name}}”") |
 | `processes.factoryLaunch` / `processes.factoryCancel` | TaskFactoryLaunchModal (buttons; defaults "Launch" / "Cancel") |
 | `processes.factoryRequired` / `processes.factoryMaxLength` | TaskFactoryLaunchModal (a required value missing, a text over `maxLength` with `{{count}}`; defaults "Required" / "At most {{count}} characters") |
-| `errors.processes.launch.<reason>` | TaskFactoryLaunchModal via `optioErrorRoutes`, one per `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`, and for a resume from an older snapshot `invalid-request`, `no-snapshot-support`, `snapshot-not-found`, `capture-pending`); no default (vultus-core's `routeApiError` reads `t(key)`) |
+| `errors.processes.launch.<reason>` | TaskFactoryLaunchModal via `optioErrorRoutes`, so LaunchControls' factory play button (LaunchControls' other launches call the caller's `onLaunch`, whose refusals are the caller's to show), one per `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`, and for a resume from an older snapshot `invalid-request`, `no-snapshot-support`, `snapshot-not-found`, `capture-pending`); no default (vultus-core's `routeApiError` reads `t(key)`) |
 
 ---
 

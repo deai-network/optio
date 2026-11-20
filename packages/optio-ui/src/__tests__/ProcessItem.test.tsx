@@ -8,6 +8,10 @@ const mockLaunchAsync = vi.fn();
 vi.mock('../hooks/useProcessActions.js', () => ({
   useProcessActions: () => ({ launchAsync: mockLaunchAsync }),
 }));
+// LaunchControls reads the process's snapshot list: none here.
+vi.mock('../hooks/useProcessSnapshots.js', () => ({
+  useProcessSnapshots: vi.fn(() => undefined),
+}));
 
 import { ProcessItem } from '../components/ProcessItem.js';
 

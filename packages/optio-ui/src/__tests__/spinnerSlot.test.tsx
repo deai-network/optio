@@ -21,6 +21,10 @@ vi.mock('../context/useOptioContext.js', () => ({
   useOptioClient: () => undefined,
   useOptioLive: () => false,
 }));
+// LaunchControls reads the process's snapshot list: none here.
+vi.mock('../hooks/useProcessSnapshots.js', () => ({
+  useProcessSnapshots: vi.fn(() => undefined),
+}));
 
 // Import after mocks.
 const { ProcessList } = await import('../components/ProcessList.js');
@@ -151,7 +155,7 @@ describe('LaunchControls — spinner slot', () => {
     const { container } = render(wrap(
       <LaunchControls process={resurrecting} onLaunch={vi.fn()} onResurrect={vi.fn()} size="small" />,
     ));
-    const btn = screen.getByRole('button', { name: 'Resurrecting' });
+    const btn = screen.getByRole('button', { name: /resurrecting/i });
     expect((btn as HTMLButtonElement).disabled).toBe(true);
     expect(within(btn).getByTestId('rec-spinner').getAttribute('data-key')).toBe('optio:process:9:resurrecting');
     // Exactly its own props: nothing injected by antd (className, style, percent).
@@ -171,7 +175,7 @@ describe('LaunchControls — spinner slot', () => {
       <LaunchControls process={resurrecting} onLaunch={vi.fn()} onResurrect={vi.fn()} size="small" />, false,
     ));
     expect(screen.queryByTestId('rec-spinner')).toBeNull();
-    const btn = screen.getByRole('button', { name: 'Resurrecting' });
+    const btn = screen.getByRole('button', { name: /resurrecting/i });
     expect(btn.querySelector('.anticon-loading.anticon-spin')).not.toBeNull();
   });
 });

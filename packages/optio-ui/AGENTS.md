@@ -112,7 +112,7 @@ unchanged antd code otherwise.
 | Site | Local key | Size | Lent Spinner |
 |------|-----------|------|--------------|
 | `ProcessList` | `optio:process-list` | `'default'` | `List loading={{ spinning: loading, indicator: <SpinnerSlotIndicator><Spinner …/></SpinnerSlotIndicator> }}`; the wrapper (`span.optio-spinner-slot-indicator`) takes the `className`/`style`/`percent` antd's Spin injects into its indicator and undoes `.ant-spin-dot`'s 1em box, so the Spinner receives only `spinnerKey` and `size` |
-| `LaunchControls` (resurrecting) | `optio:process:${process._id}:resurrecting` | `'small'` | the disabled button's `icon`, in place of `LoadingOutlined` |
+| `LaunchControls` (resurrecting; the site is `useProcessLaunchActions`) | `optio:process:${process._id}:resurrecting` | `'small'` | the disabled Resurrecting action's `icon` (the icon-only button `LaunchControls` renders), in place of `LoadingOutlined` |
 | `ProcessDetailView` (no tree yet) | `optio:process:${processId}:detail` | `'small'` | before the "Loading…" text (test id `optio-detail-loading` unchanged) |
 | `IframeWidget` (no `widgetData` yet) | `optio:process:${process._id}:widget` | `'small'` | before the "Loading…" text (test id `optio-widget-loading` unchanged) |
 
@@ -174,33 +174,33 @@ no consumer unless the poll changed what it reads. Test: `src/__tests__/OptioPro
 ```ts
 interface LaunchControlsProps {
   process: any;
-  onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (id: string, opts?: LaunchOpts) => void;  // LaunchOpts: useProcessLaunchActions'
   onLaunched?: (child: Process) => void;  // a task factory's form launched it: the child it made
   launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // by a factory's processId
   onResurrect?: (id: string) => void;  // save a failed run's host work, then resume
   size?: ButtonProps['size'];          // default 'small'
   iconFontSize?: number;               // pixel size of the button icons
-  denyReason?: string | null;          // non-empty: a disabled play button with this tooltip
+  denyReason?: string | null;          // non-empty: every launch action disabled, this as its reason
 }
 ```
 
-Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`).
+Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`). Its hooks run
+unconditionally, before any early return: `Modal.useModal()`, `useProcessSnapshots` and
+`useProcessLaunchActions` (below).
 
 Rendering rules:
 - Renders **nothing** when `onLaunch` is not provided (a read-only view), or when the process is not launchable (`isLaunchable`: not in a launchable state, `idle | done | failed | cancelled`, or a task factory's launch, `isTaskFactoryLaunch`, which is never launched again) and is not removable (next rule).
-- An **ended launch** (`isTaskFactoryLaunchItself` and `isTerminal`: one a TTL keeps, or a non-ephemeral one, which stays until dismissed) gets a **Remove** icon button instead (trash icon, tooltip and `aria-label` `processes.removeLaunch`, default "Remove"): a vultus action (`useAction`) that asks first (`confirmation` of kind `popconfirm`, its question `processes.removeLaunchConfirm`, default "Remove this launch? Its record and log are deleted.": the deletion cannot be undone) and whose `fire` calls `useProcessActions().dismissAsync(id)` (dismissing an ended launch deletes it); a refusal goes through `optioErrorRoutes`, route `processes.dismiss`. A running launch, a factory, an ordinary task and a record under a launch (a sub-task, `isTaskFactoryLaunch` but not the launch itself: optio-core refuses its dismiss) have none; an ephemeral launch is deleted when it ends, so it never shows one. A **resumable** ended launch (`isResumable`: its task saved its state; optio-core rebuilds its task after an engine restart) also gets, before Remove, the **Resume** button of the split button below (calls `onLaunch(id, { resume: true })`), alone: no play button and no Restart (a launch is never launched afresh). A non-empty `denyReason` renders the disabled play button in its place.
-- Renders a single disabled **Resurrecting** indicator while `isResurrecting(process)` (spinning loading icon, or the app's lent Spinner — see "Spinner slot"; `aria-label` "Resurrecting", tooltip "Resurrecting: saving the unsaved work…"); clicking it does nothing. It takes precedence over all the cases below (a non-empty `denyReason` still wins).
-- For a task factory's record (`isTaskFactory(process)`), a single play button (an icon `ActionButton` of `useTaskFactoryOf`, the record-in-hand form of `useTaskFactory`; tooltip `processes.launch`) that opens the factory's `TaskFactoryLaunchModal` (with `launchOverrides[process.processId]` as its `overrides`) instead of calling `onLaunch` (which only allows it, as for any process); no `Popconfirm`, the form shows the `warning`. The form's launch hands the child to `onLaunched`. It takes precedence over the cases below (`denyReason` and Resurrecting still win).
-- Renders a **Resurrect** split button when `onResurrect` is provided and `isResurrectable(process)` (`supportsResurrect=true` and `hasUnsavedWork=true`); it takes precedence over the two cases below (a non-empty `denyReason` still wins):
-  - Primary button: **Resurrect** (medicine-box icon, `aria-label` "Resurrect") — calls `onResurrect(id)`.
-  - Menu item **Resume from last snapshot**, only when `isResumable(process)` — calls `onLaunch(id, { resume: true })`.
-  - Menu item **Restart** — calls `onLaunch(id, { resume: false })`.
-  - Both menu items first open a confirmation modal ("This discards the unsaved work left by the failed run.", danger OK button **Discard and continue**); `onLaunch` runs only on OK. The modal comes from `Modal.useModal()`, so it is themed without an antd `<App>` ancestor.
-  - Without `onResurrect`, a resurrectable process falls through to the cases below.
-- Renders a single play button (calls `onLaunch(id)` with no opts) when `supportsResume=false` **or** `hasSavedState=false`.
-- Renders a split button (`Space.Compact`: a button and a `Dropdown` arrow) when both `supportsResume=true` and `hasSavedState=true`:
-  - Primary button: **Resume** (tooltip and `aria-label` `processes.resume`) — calls `onLaunch(id, { resume: true })`.
-  - Dropdown menu item: **Restart (discard saved state)** — calls `onLaunch(id, { resume: false })`.
+- An **ended launch** (`isTaskFactoryLaunchItself` and `isTerminal`: one a TTL keeps, or a non-ephemeral one, which stays until dismissed) gets a **Remove** icon button instead (trash icon, tooltip and `aria-label` `processes.removeLaunch`, default "Remove"): a vultus action (`useAction`) that asks first (`confirmation` of kind `popconfirm`, its question `processes.removeLaunchConfirm`, default "Remove this launch? Its record and log are deleted.": the deletion cannot be undone) and whose `fire` calls `useProcessActions().dismissAsync(id)` (dismissing an ended launch deletes it); a refusal goes through `optioErrorRoutes`, route `processes.dismiss`. A running launch, a factory, an ordinary task and a record under a launch (a sub-task, `isTaskFactoryLaunch` but not the launch itself: optio-core refuses its dismiss) have none; an ephemeral launch is deleted when it ends, so it never shows one. A **resumable** ended launch (`isResumable`: its task saved its state; optio-core rebuilds its task after an engine restart) also gets, before Remove, a green **Resume** icon button (tooltip and `aria-label` `processes.resume`; calls `onLaunch(id, { resume: true })`), alone: no play button and no Restart (a launch is never launched afresh). A non-empty `denyReason` renders the disabled play button in its place.
+- For a task factory's record (`isTaskFactory(process)`), a single play button (an icon `ActionButton` of `useTaskFactoryOf`, the record-in-hand form of `useTaskFactory`; tooltip `processes.launch`) that opens the factory's `TaskFactoryLaunchModal` (with `launchOverrides[process.processId]` as its `overrides`) instead of calling `onLaunch` (which only allows it, as for any process); no confirmation of its own, the form shows the `warning`. The form's launch hands the child to `onLaunched`. A non-empty `denyReason` renders the disabled play button (its reason the tooltip) in its place.
+- Otherwise the actions of `useProcessLaunchActions(process, triggerLaunch, triggerResurrect, denyReason ? deny(denyReason) : true, snapshots)`, in vultus-antd's `CombinedActionButton` with `iconOnly`: the main half shows the active action's icon only, its label the accessible name and the tooltip (the reason below it while disabled); the `⋯` opener is as without `iconOnly`, and the menu's rows show icon and label; a menu pick becomes the main action (vultus' default). The hook decides the shape:
+  - not resumable (`supportsResume` or `hasSavedState` false): **Launch** alone (play icon), `onLaunch(id)` with no opts;
+  - resumable: **Resume** (play icon, `onLaunch(id, { resume: true })`), then in the menu the previous-snapshot items (history icon; "Resume from previous snapshot (<time>)", behind a confirmation naming the newer snapshots it discards, whose OK carries the item's label; `onLaunch(id, { resume: true, resumeFrom: capturedAt })`) and **Restart (discard saved state)** (reload icon, `onLaunch(id, { resume: false })`);
+  - `onResurrect` given and `isResurrectable(process)`: **Resurrect** (medicine-box icon, `onResurrect(id)`), then **Resume from last snapshot** (when resumable), the previous-snapshot items and Restart, each behind a confirmation that names the unsaved work it discards (`processes.discardUnsavedWork`; vultus' cascade modal, its OK carrying the action's label); without `onResurrect` such a process shows the resumable shape;
+  - while `isResurrecting(process)`: the disabled **Resurrecting…** alone (spinning loading icon, or the app's lent Spinner — see "Spinner slot"; tooltip the label and `processes.resurrectingReason`), clicking it does nothing; without `onResurrect` too (LaunchControls then passes a no-op `triggerResurrect`).
+  - A non-empty `denyReason` (the launch gate) disables every action with its reason; the opener still opens, its rows disabled (`aria-disabled`) with the reason. Resurrecting keeps its own reason.
+  - `iconFontSize`: each action's icon is wrapped in a `span` with that `fontSize`.
+- **Snapshots.** `useProcessSnapshots(process._id, { enabled, runEndedAt: runEndedAt(process) })`, `enabled` only for a process with `onLaunch` that is launchable, resumable and not a task factory (the state only, never `denyReason`: gated items show disabled with the reason, not hidden). The items appear once the list holds older valid snapshots; while it loads or cannot be read, Resume and Restart as before, with no error.
+- **The warning.** A task's `warning` describes what a fresh run does, so `triggerLaunch` asks it (a confirm modal from `Modal.useModal()`, themed without an antd `<App>` ancestor; its title the warning) before Launch and Restart (in the resurrect case after Restart's own confirmation); OK launches once, Cancel nothing. A resume asks no warning: Resume, the previous-snapshot items, Resurrect and a kept launch's Resume launch at once.
 
 Used by `ProcessItem` (so `ProcessList`), `ProcessTreeView`, and `ProcessDetailView` (the suspended widget's Resume row). Not exported from the package root.
 
@@ -212,7 +212,7 @@ Used by `ProcessItem` (so `ProcessList`), `ProcessTreeView`, and `ProcessDetailV
 interface ProcessListProps {
   processes: any[];
   loading: boolean;
-  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (processId: string, opts?: LaunchOpts) => void;  // LaunchOpts: useProcessLaunchActions
   onLaunched?: (child: Process) => void;  // forwarded to each ProcessItem
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
@@ -235,7 +235,7 @@ type ProcessItemSize = 'small' | 'default' | 'big';
 
 interface ProcessItemProps {
   process: any;
-  onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (id: string, opts?: LaunchOpts) => void;  // forwarded to LaunchControls
   onLaunched?: (child: Process) => void;  // forwarded to LaunchControls (a task factory's launch)
   launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;  // forwarded to LaunchControls
   onResurrect?: (id: string) => void;  // forwarded to LaunchControls
@@ -251,7 +251,7 @@ interface ProcessItemProps {
 
 Single process row. Behavioral rules:
 - Launch button visible when `!readonly && state in LAUNCHABLE_STATES && onLaunch provided`.
-- If `process.warning` is set, launch button is wrapped in `Popconfirm` requiring confirmation (a task factory's shows it in its launch form instead).
+- If `process.warning` is set, its `LaunchControls` ask it in a confirm modal before a fresh run (Launch, Restart), not before a resume (a task factory's shows it in its launch form instead).
 - A task factory's launch button opens its `TaskFactoryLaunchModal` (see `LaunchControls`).
 - Cancel button visible when `!readonly && isCancellable(process) && onCancel provided` — i.e. state is `scheduled | running` AND `process.cancellable === true`. Hidden during `cancel_requested`/`cancelling` (cancel already in flight; re-click is a no-op). When `process.supportsResume` it is a **Suspend** button (pause icon, not `danger`, `processes.suspend`), otherwise **Cancel** (`processes.cancel`); `ProcessTreeView` does the same.
 - Progress bar: active + `progress.percent != null` → determinate bar; active + no percent → indeterminate animated gradient bar; not active → hidden.
@@ -343,7 +343,7 @@ interface ProcessTreeViewProps {
   treeData: ProcessNode | null;   // root node; renders null when treeData is null
   sseState: SseState;             // used to show 'Live' / 'Disconnected' label
   onCancel?: (processId: string) => void;
-  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (processId: string, opts?: LaunchOpts) => void;  // forwarded to each node's LaunchControls
   onLaunched?: (child: Process) => void;  // forwarded to each node's LaunchControls
   onResurrect?: (processId: string) => void;
   onProcessClick?: (id: string) => void;  // a node's name becomes a link button calling this with the node's _id
@@ -1108,12 +1108,12 @@ that launches, Resurrect and the previous-snapshot items included, with its reas
 calls are unconditional and always the same number, so the hook can run before a page's early
 returns.
 
-**A task's `warning` is the caller's.** The hook asks none: `triggerLaunch` must ask the process's
-`warning` first for every launching action the hook returns (Resume, Restart, Launch, the
-resurrect case's Resume from last snapshot and Restart, and the previous-snapshot items), after
-the action's own confirmation, and launch exactly once after OK; a cancel launches nothing.
-Resurrect starts the task's run again too: `triggerResurrect` must ask the process's `warning`
-first as well, and resurrect exactly once after OK; a cancel resurrects nothing.
+**A task's `warning` is the caller's.** The hook asks none. The warning describes what a fresh run
+does (e.g. wiping data), so `triggerLaunch` must ask it before the actions that start a fresh run:
+Launch (`opts` undefined) and Restart (`resume: false`; in the resurrect case after Restart's own
+confirmation), and launch exactly once after OK; a cancel launches nothing. A resume asks no
+warning: Resume (the resurrect case's Resume from last snapshot included), the previous-snapshot
+items and Resurrect (`triggerResurrect`) go ahead. `LaunchControls` does exactly this.
 
 ---
 
@@ -1329,7 +1329,7 @@ no inline default (the app must translate them); the second carries an English d
 
 | Key | Component | Usage |
 |-----|-----------|-------|
-| `processes.launch` | `LaunchControls`, `useTaskFactory`, `useProcessLaunchActions` | Tooltip on the single launch button; the label of a task factory's launch action and of the hook's Launch (default: "Launch") |
+| `processes.launch` | `useTaskFactory`, `useProcessLaunchActions` (both through `LaunchControls`) | The label of a task factory's launch action (`LaunchControls`' factory play button: its tooltip) and of the hook's Launch (`LaunchControls`' play button: its tooltip and accessible name) (default: "Launch") |
 | `processes.deleted` | `ProcessDetailView` | The notice over the last view of a process deleted while open (default: "Process deleted.") |
 | `processes.notFound` | `ProcessDetailView` | A process the stream reports gone that the view never showed (default: "Process not found.") |
 | `processes.removeLaunch` | `LaunchControls` | Tooltip / `aria-label` of the remove button of an ended launch (default: "Remove") |
@@ -1348,22 +1348,17 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.showSpecial` | `ProcessFilters` | The "show special" field's label (checkbox) |
 | `common.noData` | `ProcessLogPanel` | Empty state description |
 | `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
-| `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`) | A launch refusal in the form, one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names), `invalid-metadata` (the server's launch stamp, optio-api's `launchMetadata`, collides with the factory's metadata), and those of a resume from an older snapshot (`resumeFrom`): `invalid-request` (no `resume: true`), `no-snapshot-support`, `snapshot-not-found`, `capture-pending` (an unfinished capture is pending). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
+| `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`), so `LaunchControls`' factory play button | A launch refusal in the form (`LaunchControls`' other launches call the caller's `onLaunch`, whose refusals are the caller's to show), one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names), `invalid-metadata` (the server's launch stamp, optio-api's `launchMetadata`, collides with the factory's metadata), and those of a resume from an older snapshot (`resumeFrom`): `invalid-request` (no `resume: true`), `no-snapshot-support`, `snapshot-not-found`, `capture-pending` (an unfinished capture is pending). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
 | `processes.suspend` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` | Tooltip / `aria-label` of the stop button when the task can resume (default: "Suspend") |
-| `processes.resume` | `LaunchControls`, `useProcessLaunchActions` | Resume button tooltip and `aria-label` when `supportsResume` and `hasSavedState`, a task's or a kept launch's; the hook's Resume label (default: "Resume") |
-| `processes.restart` | `LaunchControls`, `useProcessLaunchActions` | Dropdown menu item label; the hook's Restart label, and in the resurrect case its confirmation title (default: "Restart (discard saved state)") |
-| `processes.moreOptions` | `LaunchControls` | Tooltip on the dropdown arrow of the Resume and Resurrect split buttons (default: "More options") |
-| `processes.resurrect` | `LaunchControls`, `useProcessLaunchActions` | Resurrect button `aria-label`; the hook's Resurrect label (default: "Resurrect") |
-| `processes.resurrectHint` | `LaunchControls` | Resurrect button tooltip (default: "Save the work left by the failed run, then resume") |
-| `processes.resumeFromSnapshot` | `LaunchControls`, `useProcessLaunchActions` | Resurrect menu item and confirmation title; the hook's Resume label and confirmation title in the resurrect case (default: "Resume from last snapshot") |
-| `processes.restartDiscarding` | `LaunchControls` | Resurrect menu item and confirmation title (default: "Restart") |
-| `processes.discardUnsavedWork` | `LaunchControls`, `useProcessLaunchActions` | Confirmation body (LaunchControls' default: "This discards the unsaved work left by the failed run."); the hook's resurrect-case confirmation body, in a previous-snapshot item's after the deliveries sentence (its default: "This discards the unsaved work the failed run left behind.") |
-| `processes.discardAndContinue` | `LaunchControls` | Confirmation OK button (default: "Discard and continue") |
-| `processes.resurrecting` | `LaunchControls`, `useProcessLaunchActions` | Resurrecting indicator tooltip (LaunchControls' default: "Resurrecting: saving the unsaved work…"); the hook's Resurrecting label (its default: "Resurrecting…") |
-| `processes.resurrectingLabel` | `LaunchControls` | Resurrecting indicator `aria-label` (default: "Resurrecting") |
-| `processes.resurrectingReason` | `useProcessLaunchActions` | Why Resurrecting is disabled (default: "Saving the work the failed run left behind; the process resumes afterwards.") |
-| `processes.resumeFromPrevious` | `useProcessLaunchActions` | A previous-snapshot item's label, `{{time}}` its snapshot's time (default: "Resume from previous snapshot ({{time}})") |
-| `processes.resumeFromPreviousConfirm_one` / `_other` | `useProcessLaunchActions` | A previous-snapshot item's confirmation title, `{{time}}`, `{{count}}` the newer snapshots it discards (defaults: "Resume from {{time}}? This discards {{count}} newer snapshot." / "Resume from {{time}}? This discards {{count}} newer snapshots."; a language's other forms, `_few`, `_many`, ..., default to the `_other` text) |
+| `processes.resume` | `LaunchControls`, `useProcessLaunchActions` | A kept launch's Resume button: its tooltip and `aria-label`; the hook's Resume label (`LaunchControls`' main half: its tooltip and accessible name) (default: "Resume") |
+| `processes.restart` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Restart label (a menu item), and in the resurrect case its confirmation's title and OK button (default: "Restart (discard saved state)") |
+| `processes.resurrect` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resurrect label (`LaunchControls`' main half: its tooltip and accessible name) (default: "Resurrect") |
+| `processes.resumeFromSnapshot` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resume label in the resurrect case (a menu item), its confirmation's title and OK button (default: "Resume from last snapshot") |
+| `processes.discardUnsavedWork` | `useProcessLaunchActions` (through `LaunchControls`) | The resurrect case's confirmation body; in a previous-snapshot item's, after the deliveries sentence (default: "This discards the unsaved work the failed run left behind.") |
+| `processes.resurrecting` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resurrecting label (`LaunchControls`' disabled indicator: its accessible name and its tooltip's first line) (default: "Resurrecting…") |
+| `processes.resurrectingReason` | `useProcessLaunchActions` (through `LaunchControls`) | Why Resurrecting is disabled (the indicator's tooltip, below the label) (default: "Saving the work the failed run left behind; the process resumes afterwards.") |
+| `processes.resumeFromPrevious` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's label (a menu item, and its confirmation's OK button), `{{time}}` its snapshot's time (default: "Resume from previous snapshot ({{time}})") |
+| `processes.resumeFromPreviousConfirm_one` / `_other` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's confirmation title, `{{time}}`, `{{count}}` the newer snapshots it discards (defaults: "Resume from {{time}}? This discards {{count}} newer snapshot." / "Resume from {{time}}? This discards {{count}} newer snapshots."; a language's other forms, `_few`, `_many`, ..., default to the `_other` text) |
 | `processes.resumeFromPreviousKeepsDeliveries` | `useProcessLaunchActions` | A previous-snapshot item's confirmation body (default: "What the discarded runs delivered stays in the app.") |
 | `processes.showEarlierLines` | `ProcessLogPanel` | The link on top that shows 500 more earlier lines (default: "Show earlier lines") |
 | `processes.olderLinesNotKept` | `ProcessLogPanel` | The note on top once every kept line shows and the buffer dropped older ones (default: "Older lines are not kept here") |

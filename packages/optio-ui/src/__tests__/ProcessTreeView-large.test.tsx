@@ -14,6 +14,10 @@ vi.mock('antd', async (importOriginal) => {
   }
   return { ...actual, Tree };
 });
+// A node's LaunchControls reads the process's snapshot list: none here.
+vi.mock('../hooks/useProcessSnapshots.js', () => ({
+  useProcessSnapshots: vi.fn(() => undefined),
+}));
 
 const { ProcessTreeView, LARGE_TREE_THRESHOLD, LARGE_TREE_HEIGHT } = await import('../components/ProcessTreeView.js');
 

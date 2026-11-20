@@ -7,6 +7,7 @@ import type { Process } from 'optio-contracts';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
 import { isActive as isProcessActive, isResurrecting } from '../process-state.js';
+import type { LaunchOpts } from '../hooks/useProcessLaunchActions.js';
 import type { DataNode } from 'antd/es/tree';
 
 const { Text } = Typography;
@@ -42,7 +43,7 @@ interface SseState {
 /** What a node's controls call. */
 interface NodeActions {
   onCancel?: (processId: string) => void;
-  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (processId: string, opts?: LaunchOpts) => void;
   onLaunched?: (child: Process) => void;
   onResurrect?: (processId: string) => void;
   /** A node's name is a link button calling this with the node's `_id`; without it, plain text. */

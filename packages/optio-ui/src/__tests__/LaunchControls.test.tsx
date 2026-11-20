@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { I18nextProvider } from 'react-i18next';
 import i18next from 'i18next';
+import type { ProcessSnapshot } from 'optio-contracts';
 
 // A task factory's form launches through useProcessActions().launchAsync.
 const mockLaunchAsync = vi.fn();
@@ -10,10 +11,43 @@ vi.mock('../hooks/useProcessActions.js', () => ({
   useProcessActions: () => ({ launchAsync: mockLaunchAsync, dismissAsync: mockDismissAsync }),
 }));
 
+// The snapshot list LaunchControls reads (before its early returns): none unless a test gives one.
+const mockUseProcessSnapshots = vi.fn<(...args: any[]) => ProcessSnapshot[] | undefined>();
+vi.mock('../hooks/useProcessSnapshots.js', () => ({
+  useProcessSnapshots: (...args: any[]) => mockUseProcessSnapshots(...args),
+}));
+
 import { LaunchControls } from '../components/LaunchControls.js';
 
 const i18n = i18next.createInstance();
 i18n.init({ lng: 'en', resources: { en: { translation: {} } } });
+
+const TS = '2026-11-19T13:05:12.345Z';
+
+beforeEach(() => {
+  mockUseProcessSnapshots.mockReset();
+  mockUseProcessSnapshots.mockReturnValue(undefined);
+});
+
+// antd's confirm modal locks body scroll and measures the scrollbar via
+// getComputedStyle(el, '::-webkit-scrollbar'). jsdom ignores the
+// pseudo-element and logs "Not implemented" to stderr; drop the argument
+// (same result) to keep the test output clean.
+function quietComputedStyle() {
+  beforeAll(() => {
+    const real = globalThis.getComputedStyle.bind(globalThis);
+    vi.spyOn(globalThis, 'getComputedStyle').mockImplementation((elt) => real(elt));
+  });
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+}
+
+/** Opens the split button's menu: its opener is the last button. */
+function openMenu() {
+  const buttons = screen.getAllByRole('button');
+  fireEvent.click(buttons[buttons.length - 1]);
+}
 
 function renderWith(process: any, onLaunch = vi.fn(), onResurrect?: (processId: string) => void) {
   return {
@@ -97,7 +131,7 @@ describe('LaunchControls', () => {
     expect(onLaunch).not.toHaveBeenCalled();
   });
 
-  it('renders disabled button when denyReason is set (split-button branch suppressed)', () => {
+  it('denyReason disables every action with its reason', async () => {
     const onLaunch = vi.fn();
     render(
       <I18nextProvider i18n={i18n}>
@@ -109,9 +143,17 @@ describe('LaunchControls', () => {
         />
       </I18nextProvider>,
     );
-    const buttons = screen.getAllByRole('button');
-    expect(buttons.length).toBe(1);
-    expect((buttons[0] as HTMLButtonElement).disabled).toBe(true);
+    const main = screen.getAllByRole('button')[0];
+    expect((main as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(main);
+    // Icon-only: the tooltip is the label, the reason below it.
+    fireEvent.mouseEnter(main.parentElement as HTMLElement);
+    expect((await screen.findByRole('tooltip', {}, { timeout: 60_000 })).textContent).toBe('Resumenot ready');
+    openMenu();
+    const restart = await screen.findByRole('menuitem', { name: /restart/i }, { timeout: 60_000 });
+    expect(restart.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(restart);
+    expect(onLaunch).not.toHaveBeenCalled();
   });
 
   it('ignores empty / null denyReason — renders the usual launch affordance', () => {
@@ -132,6 +174,94 @@ describe('LaunchControls', () => {
     expect(onLaunch).toHaveBeenCalledWith('8', undefined);
   });
 });
+
+describe('LaunchControls: snapshots, the warning, the icon size', () => {
+  quietComputedStyle();
+
+  const resumable = { _id: '3', status: { state: 'idle' }, supportsResume: true, hasSavedState: true };
+
+  it('previous-snapshot items: read the list for a launchable resumable process and offer its older snapshots', async () => {
+    const snapshots: ProcessSnapshot[] = [
+      { capturedAt: TS, endState: 'cancelled' },
+      { capturedAt: '2026-11-19T12:05:00.000Z', endState: 'cancelled' },
+      { capturedAt: '2026-11-19T11:05:00.000Z', endState: 'cancelled' },
+    ];
+    mockUseProcessSnapshots.mockReturnValue(snapshots);
+    const { onLaunch } = renderWith(resumable);
+    expect(mockUseProcessSnapshots).toHaveBeenCalledWith('3', { enabled: true, runEndedAt: null });
+
+    openMenu();
+    const items = await screen.findAllByRole(
+      'menuitem', { name: /Resume from previous snapshot \(.+\)$/ }, { timeout: 60_000 });
+    expect(items).toHaveLength(2);
+    const label = items[0].textContent!;
+    fireEvent.click(items[0]);
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+    // The confirmation renders its title twice (the modal's header and the confirm body).
+    expect(within(dialog).getAllByText(/This discards 1 newer snapshot\.$/).length).toBeGreaterThan(0);
+    expect(onLaunch).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: label }));
+    await waitFor(() => expect(onLaunch).toHaveBeenCalledWith(
+      '3', { resume: true, resumeFrom: snapshots[1].capturedAt }), { timeout: 60_000 });
+    expect(onLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  it('the list read is keyed by the end of the last run', () => {
+    const doneAt = '2026-11-19T13:06:00.000Z';
+    renderWith({ ...resumable, status: { state: 'done', doneAt } });
+    expect(mockUseProcessSnapshots).toHaveBeenCalledWith('3', { enabled: true, runEndedAt: doneAt });
+  });
+
+  it('no list read for a process that is not resumable, not launchable, a factory, or without onLaunch', () => {
+    const cases: Array<{ process: any; withLaunch: boolean }> = [
+      { process: { _id: 'a', status: { state: 'idle' }, supportsResume: true, hasSavedState: false }, withLaunch: true },
+      { process: { ...resumable, _id: 'b', status: { state: 'running' } }, withLaunch: true },
+      { process: { ...resumable, _id: 'c', taskFactory: true, parameters: [] }, withLaunch: true },
+      { process: { ...resumable, _id: 'd' }, withLaunch: false },
+    ];
+    for (const { process, withLaunch } of cases) {
+      mockUseProcessSnapshots.mockClear();
+      const view = render(
+        <I18nextProvider i18n={i18n}>
+          <LaunchControls process={process} onLaunch={withLaunch ? vi.fn() : undefined} size="small" />
+        </I18nextProvider>,
+      );
+      expect(mockUseProcessSnapshots).toHaveBeenCalled();
+      for (const call of mockUseProcessSnapshots.mock.calls) {
+        expect(call).toEqual([process._id, { enabled: false, runEndedAt: null }]);
+      }
+      view.unmount();
+    }
+  });
+
+  it("a task's warning is asked before a fresh launch, not before a resume", async () => {
+    const fresh = renderWith({ _id: 'x', status: { state: 'idle' }, warning: 'Careful' });
+    fireEvent.click(screen.getByRole('button'));
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+    // antd's confirm renders its title twice (the modal's header and the confirm body).
+    expect(within(dialog).getAllByText('Careful').length).toBeGreaterThan(0);
+    expect(fresh.onLaunch).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'OK' }));
+    await waitFor(() => expect(fresh.onLaunch).toHaveBeenCalledWith('x', undefined), { timeout: 60_000 });
+    expect(fresh.onLaunch).toHaveBeenCalledTimes(1);
+    fresh.unmount();
+
+    const resuming = renderWith({ ...resumable, _id: 'y', warning: 'Careful' });
+    fireEvent.click(screen.getAllByRole('button')[0]);
+    await waitFor(() => expect(resuming.onLaunch).toHaveBeenCalledWith('y', { resume: true }), { timeout: 60_000 });
+    expect(resuming.onLaunch).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it("iconFontSize sizes each action's icon", () => {
+    const { container } = render(
+      <I18nextProvider i18n={i18n}>
+        <LaunchControls process={resumable} onLaunch={vi.fn()} size="small" iconFontSize={20} />
+      </I18nextProvider>,
+    );
+    const icon = container.querySelector('.anticon-play-circle') as HTMLElement;
+    expect((icon.parentElement as HTMLElement).style.fontSize).toBe('20px');
+  });});
 
 function renderResurrect(process: any) {
   const onLaunch = vi.fn();
@@ -171,29 +301,30 @@ describe('LaunchControls resurrect', () => {
 
   it('resume from last snapshot asks for confirmation first', async () => {
     const { onLaunch } = renderResurrect(failedWithWork);
-    const buttons = screen.getAllByRole('button');
-    fireEvent.click(buttons[buttons.length - 1]);
+    openMenu();
     fireEvent.click(await screen.findByText(/resume from last snapshot/i, {}, { timeout: 60_000 }));
     expect(onLaunch).not.toHaveBeenCalled();
-    expect(await screen.findByText(/discards the unsaved work/i, {}, { timeout: 60_000 })).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }, { timeout: 60_000 }));
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+    expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
     await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: true }), { timeout: 60_000 });
   });
 
   it('restart asks for confirmation first', async () => {
     const { onLaunch } = renderResurrect(failedWithWork);
-    const buttons = screen.getAllByRole('button');
-    fireEvent.click(buttons[buttons.length - 1]);
-    fireEvent.click(await screen.findByText(/^restart$/i, {}, { timeout: 60_000 }));
-    fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }, { timeout: 60_000 }));
+    openMenu();
+    fireEvent.click(await screen.findByText(/restart \(discard saved state\)/i, {}, { timeout: 60_000 }));
+    expect(onLaunch).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+    expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restart (discard saved state)' }));
     await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: false }), { timeout: 60_000 });
   });
 
   it('no resume item without saved state', async () => {
     renderResurrect({ ...failedWithWork, hasSavedState: false });
-    const buttons = screen.getAllByRole('button');
-    fireEvent.click(buttons[buttons.length - 1]);
-    await screen.findByText(/^restart$/i, {}, { timeout: 60_000 });
+    openMenu();
+    await screen.findByText(/restart \(discard saved state\)/i, {}, { timeout: 60_000 });
     expect(screen.queryByText(/resume from last snapshot/i)).toBeNull();
   });
 
@@ -213,22 +344,23 @@ describe('LaunchControls resurrect', () => {
     const { onLaunch, onResurrect } = renderResurrect({ ...failedWithWork, resurrecting: true });
     const buttons = screen.getAllByRole('button');
     expect(buttons).toHaveLength(1);
-    const btn = screen.getByRole('button', { name: 'Resurrecting' });
+    const btn = screen.getByRole('button', { name: /resurrecting/i });
     expect(buttons[0]).toBe(btn);
     expect((btn as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(btn);
     expect(onResurrect).not.toHaveBeenCalled();
     expect(onLaunch).not.toHaveBeenCalled();
     fireEvent.mouseEnter(btn.parentElement as HTMLElement);
+    // Icon-only: the tooltip is the label, the reason below it.
     const tip = await screen.findByRole('tooltip', {}, { timeout: 60_000 });
-    expect(tip.textContent).toBe('Resurrecting: saving the unsaved work…');
+    expect(tip.textContent).toBe('Resurrecting…Saving the work the failed run left behind; the process resumes afterwards.');
   });
 
-  it('the Resurrecting indicator is named through i18n (processes.resurrectingLabel)', () => {
+  it('the Resurrecting indicator is named through i18n (processes.resurrecting)', () => {
     const hu = i18next.createInstance();
     hu.init({
       lng: 'hu',
-      resources: { hu: { translation: { processes: { resurrectingLabel: 'Feltámasztás' } } } },
+      resources: { hu: { translation: { processes: { resurrecting: 'Feltámasztás…' } } } },
     });
     render(
       <I18nextProvider i18n={hu}>
@@ -238,7 +370,7 @@ describe('LaunchControls resurrect', () => {
         />
       </I18nextProvider>,
     );
-    expect(screen.getByRole('button', { name: 'Feltámasztás' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Feltámasztás…/ })).toBeTruthy();
   });
 });
 

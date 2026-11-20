@@ -13,6 +13,10 @@ const mockUseProcess = vi.fn();
 vi.mock('../hooks/useProcessQueries.js', () => ({
   useProcess: (id: string | undefined) => mockUseProcess(id),
 }));
+// ProcessItem's LaunchControls reads the process's snapshot list: none here.
+vi.mock('../hooks/useProcessSnapshots.js', () => ({
+  useProcessSnapshots: vi.fn(() => undefined),
+}));
 
 import { useTaskFactory } from '../hooks/useTaskFactory.js';
 import { TaskFactoryLaunchButton } from '../components/TaskFactoryLaunchButton.js';

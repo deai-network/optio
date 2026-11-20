@@ -3,11 +3,12 @@ import { List } from 'antd';
 import { useSpinnerKey, useVultusComponents } from 'vultus-core';
 import type { Process } from 'optio-contracts';
 import { ProcessItem } from './ProcessItem.js';
+import type { LaunchOpts } from '../hooks/useProcessLaunchActions.js';
 
 interface ProcessListProps {
   processes: any[];
   loading: boolean;
-  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (processId: string, opts?: LaunchOpts) => void;
   /** A task factory's launch form launched it (forwarded to each ProcessItem): the child it made. */
   onLaunched?: (child: Process) => void;
   onResurrect?: (processId: string) => void;

@@ -10,6 +10,7 @@ import { Field } from 'vultus-antd';
 import { toPredicate } from 'vultus-filtrum';
 import type { Process, ProcessMetadataFilter } from 'optio-contracts';
 import { ProcessList } from './ProcessList.js';
+import type { LaunchOpts } from '../hooks/useProcessLaunchActions.js';
 
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 
@@ -280,7 +281,7 @@ export function ProcessFilters({ className, style }: { className?: string; style
 interface FilteredProcessListProps {
   processes: any[];
   loading: boolean;
-  onLaunch?: (processId: string) => void;
+  onLaunch?: (processId: string, opts?: LaunchOpts) => void;
   onLaunched?: (child: Process) => void;
   onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;

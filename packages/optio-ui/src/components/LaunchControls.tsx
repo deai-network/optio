@@ -1,44 +1,48 @@
-import { Button, Dropdown, Modal, Space, Tooltip, Popconfirm } from 'antd';
-import type { MenuProps, ButtonProps } from 'antd';
-import {
-  DeleteOutlined, DownOutlined, LoadingOutlined, MedicineBoxOutlined, PlayCircleOutlined, ReloadOutlined,
-} from '@ant-design/icons';
+import { Button, Modal, Tooltip } from 'antd';
+import type { ButtonProps } from 'antd';
+import { DeleteOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { Process } from 'optio-contracts';
-import { useAction, useSpinnerKey, useVultusComponents } from 'vultus-core';
-import { ActionButton } from 'vultus-antd';
+import { deny, useAction } from 'vultus-core';
+import { ActionButton, CombinedActionButton } from 'vultus-antd';
 import { optioErrorRoutes, type OptioErrorRouteId } from '../error-routes.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
+import { runEndedAt } from '../hooks/useProcessConversation.js';
+import { useProcessLaunchActions, type LaunchOpts } from '../hooks/useProcessLaunchActions.js';
+import { useProcessSnapshots } from '../hooks/useProcessSnapshots.js';
 import { useTaskFactoryOf } from '../hooks/useTaskFactory.js';
 import {
-  isLaunchable, isResumable, isResurrectable, isResurrecting, isTaskFactory, isTaskFactoryLaunchItself, isTerminal,
+  isLaunchable, isResumable, isResurrecting, isTaskFactory, isTaskFactoryLaunchItself, isTerminal,
 } from '../process-state.js';
 import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
 
 export interface LaunchControlsProps {
   process: any;
-  /** Launches the process. A task factory's play button opens its launch form
-   *  instead, which launches it itself; `onLaunch` only allows it there. */
-  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  /** Launches the process: a fresh run (no opts, or `resume: false`), a resume
+   *  (`resume: true`), or a resume from an older snapshot (`resume: true` and its
+   *  `capturedAt` as `resumeFrom`). A task factory's play button opens its launch
+   *  form instead, which launches it itself; `onLaunch` only allows it there. */
+  onLaunch?: (processId: string, opts?: LaunchOpts) => void;
   /** A task factory's launch form launched it: the child it made. */
   onLaunched?: (child: Process) => void;
   /** Overrides of a task factory's launch form, by the factory's `processId`; its play button takes its entry. */
   launchOverrides?: Readonly<Record<string, TaskFactoryOverrides>>;
   /** Save the work a failed run left on its host, then resume. When given
    *  and the process is resurrectable, Resurrect becomes the primary action;
-   *  Resume-from-snapshot and Restart move to the menu behind a confirmation. */
+   *  the resumes and Restart move to the menu behind a confirmation. */
   onResurrect?: (processId: string) => void;
   size?: ButtonProps['size'];
   /** Optional pixel size for the inner icons of all the buttons rendered
    *  here. When unset, the icons inherit antd's default sizing for the
    *  chosen button size. */
   iconFontSize?: number;
-  /** When set + non-empty, the launch button is rendered disabled with this
-   *  string as the hover tooltip. Domain-specific launch gate: the caller
-   *  decides launchability beyond the process state machine (e.g., from
-   *  task metadata) and renders the operator-facing reason. Suppresses all
-   *  the launch branches (single, split/resume, resurrect, resurrecting);
-   *  cancel/etc. are unaffected. */
+  /** When set + non-empty, every launch action is rendered disabled with this
+   *  string as its reason (the hover tooltip; the menu's items stay listed,
+   *  disabled). Domain-specific launch gate: the caller decides launchability
+   *  beyond the process state machine (e.g., from task metadata) and renders
+   *  the operator-facing reason. Resurrecting keeps its own reason; a task
+   *  factory's play button and a kept launch's Resume are replaced by a
+   *  disabled play button. Cancel/etc. are unaffected. */
   denyReason?: string | null;
 }
 
@@ -47,22 +51,20 @@ export interface LaunchControlsProps {
  *   * Nothing when the process is not launchable (`isLaunchable`: a
  *     non-launchable state, or a task factory's launch, never launched again).
  *   * For a task factory's ended launch, a Remove button; before it, when the
- *     launch is resumable, the Resume button a task's split button has (no
- *     play button and no Restart: a launch is never launched afresh), or the
- *     disabled play button of a non-empty `denyReason`.
- *   * A single disabled "Resurrecting" indicator while a resurrect of the
- *     process saves its unsaved work (`resurrecting`); nothing is clickable.
- *   * Split button (primary = Resurrect, menu = Resume from last snapshot /
- *     Restart, each behind a "discards the unsaved work" confirmation) when
- *     `onResurrect` is given and the process is resurrectable
- *     (supportsResurrect AND hasUnsavedWork). The resume item is shown only
- *     when the process is also resumable.
- *   * Single play button when the task does not support resume (or has no
- *     saved state yet).
- *   * Split button (primary = Resume, menu = Restart) when supportsResume
- *     AND hasSavedState are both true.
+ *     launch is resumable, a Resume button (no play button and no Restart: a
+ *     launch is never launched afresh), or the disabled play button of a
+ *     non-empty `denyReason`.
  *   * For a task factory's record, a single play button that opens its
  *     launch form (TaskFactoryLaunchModal), which shows the warning itself.
+ *   * Otherwise the actions of `useProcessLaunchActions` in vultus-antd's
+ *     icon-only `CombinedActionButton`: Launch alone; Resume, the
+ *     previous-snapshot items (from `useProcessSnapshots`) and Restart; in the
+ *     resurrect case (`onResurrect` given) Resurrect, the resumes and Restart;
+ *     while a resurrect runs, the disabled Resurrecting only.
+ *
+ * A task's `warning` describes what a fresh run does: it is asked before
+ * Launch and Restart (after Restart's own confirmation, if any), never before
+ * a resume (Resume, a previous-snapshot item, Resurrect).
  *
  * Defensive defaults: missing fields on the process document are treated
  * as false so the UI works against an unmigrated DB.
@@ -70,9 +72,29 @@ export interface LaunchControlsProps {
 export function LaunchControls({
   process, onLaunch, onLaunched, launchOverrides, onResurrect, size = 'small', iconFontSize, denyReason,
 }: LaunchControlsProps) {
-  const { t } = useTranslation();
-  const { Spinner } = useVultusComponents();
-  const resurrectingKey = useSpinnerKey(`optio:process:${process?._id}:resurrecting`);
+  // Every hook runs before the early returns.
+  const [modal, contextHolder] = Modal.useModal();
+  const snapshots = useProcessSnapshots(process?._id, {
+    enabled: !!onLaunch && isLaunchable(process) && isResumable(process) && !isTaskFactory(process),
+    runEndedAt: runEndedAt(process),
+  });
+  const triggerLaunch = (opts?: LaunchOpts) => {
+    if (!onLaunch) return;
+    // A fresh run (Launch, Restart) asks the task's warning first; a resume does not.
+    if (process.warning && !opts?.resume) {
+      modal.confirm({ title: process.warning, onOk: () => onLaunch(process._id, opts) });
+    } else {
+      onLaunch(process._id, opts);
+    }
+  };
+  // Without onResurrect, a resurrecting process still shows the disabled Resurrecting.
+  const triggerResurrect = onResurrect
+    ? () => onResurrect(process._id)
+    : (isResurrecting(process) ? () => {} : undefined);
+  const actions = useProcessLaunchActions(
+    process, triggerLaunch, triggerResurrect, denyReason ? deny(denyReason) : true, snapshots,
+  );
+
   if (!onLaunch) return null;
   const iconStyle = iconFontSize ? { fontSize: iconFontSize } : undefined;
 
@@ -94,105 +116,26 @@ export function LaunchControls({
   }
   if (!isLaunchable(process)) return null;
 
-  // Caller-injected gate: launchable per state machine but domain-denied.
-  if (denyReason) {
-    return <DeniedLaunchButton reason={denyReason} size={size} iconStyle={iconStyle} />;
-  }
-
-  // A resurrect is saving the unsaved work: launching is locked until it
-  // ends. Disabled button, so the tooltip needs the span wrapper (as DeniedLaunchButton's).
-  if (isResurrecting(process)) {
-    return (
-      <Tooltip title={t('processes.resurrecting', {
-        defaultValue: 'Resurrecting: saving the unsaved work…',
-      })}>
-        <span style={{ display: 'inline-block', cursor: 'not-allowed' }}>
-          <Button
-            type="text"
-            size={size}
-            aria-label={t('processes.resurrectingLabel', { defaultValue: 'Resurrecting' })}
-            icon={Spinner
-              ? <Spinner spinnerKey={resurrectingKey} size="small" />
-              : <LoadingOutlined spin style={iconStyle} />}
-            disabled
-            style={{ pointerEvents: 'none' }}
-          />
-        </span>
-      </Tooltip>
-    );
-  }
-
   // A task factory: its launch takes the values of its parameters first.
   if (isTaskFactory(process)) {
-    return (
-      <FactoryPlayButton
-        process={process} overrides={launchOverrides?.[process.processId]}
-        onLaunched={onLaunched} size={size} iconStyle={iconStyle}
-      />
-    );
+    return denyReason
+      ? <DeniedLaunchButton reason={denyReason} size={size} iconStyle={iconStyle} />
+      : (
+        <FactoryPlayButton
+          process={process} overrides={launchOverrides?.[process.processId]}
+          onLaunched={onLaunched} size={size} iconStyle={iconStyle}
+        />
+      );
   }
 
-  // Case 0: resurrect — the host still holds a failed run's unsaved work.
-  if (onResurrect && isResurrectable(process)) {
-    return (
-      <ResurrectControls
-        process={process} onLaunch={onLaunch} onResurrect={onResurrect}
-        size={size} iconStyle={iconStyle}
-      />
-    );
-  }
-
-  // Case 1: single play button (fresh start semantics — no opts).
-  if (!isResumable(process)) {
-    const launchFresh = () => onLaunch(process._id, undefined);
-    const button = (
-      <Button
-        type="text"
-        size={size}
-        icon={<PlayCircleOutlined style={iconStyle} />}
-        style={{ color: '#52c41a' }}
-        onClick={(e) => {
-          e.preventDefault();
-          // With a warning, the click only opens the Popconfirm: its OK launches.
-          if (!process.warning) launchFresh();
-        }}
-      />
-    );
-    const wrapped = process.warning ? (
-      <Popconfirm title={process.warning} onConfirm={launchFresh}>
-        {button}
-      </Popconfirm>
-    ) : button;
-    return (
-      <Tooltip title={t('processes.launch')}>{wrapped}</Tooltip>
-    );
-  }
-
-  // Case 2: split button — primary = Resume, menu = Restart.
-  const menu: MenuProps = {
-    items: [
-      {
-        key: 'restart',
-        icon: <ReloadOutlined />,
-        label: t('processes.restart', { defaultValue: 'Restart (discard saved state)' }),
-        onClick: () => onLaunch(process._id, { resume: false }),
-      },
-    ],
-  };
-
+  const styled = iconFontSize
+    ? actions.map((a) => ({ ...a, icon: <span style={{ fontSize: iconFontSize }}>{a.icon}</span> }))
+    : actions;
   return (
-    <Space.Compact>
-      <ResumeButton process={process} onLaunch={onLaunch} size={size} iconStyle={iconStyle} />
-      <Dropdown menu={menu} trigger={['click']}>
-        <Tooltip title={t('processes.moreOptions', { defaultValue: 'More options' })}>
-          <Button
-            type="text"
-            size={size}
-            icon={<DownOutlined style={iconStyle} />}
-          />
-        </Tooltip>
-      </Dropdown>
-    </Space.Compact>
+    <>
+      {contextHolder}
+      <CombinedActionButton actions={styled} size={size} iconOnly />
+    </>
   );
 }
 
@@ -218,11 +161,10 @@ function DeniedLaunchButton({ reason, size, iconStyle }: {
   );
 }
 
-// Resumes the process from its saved state: the primary of a resumable task's split button, a
-// resumable kept launch's own control.
+// Resumes a resumable kept launch from its saved state: its own control.
 function ResumeButton({ process, onLaunch, size, iconStyle }: {
   process: any;
-  onLaunch: (processId: string, opts?: { resume?: boolean }) => void;
+  onLaunch: (processId: string, opts?: LaunchOpts) => void;
   size: ButtonProps['size'];
   iconStyle: { fontSize: number } | undefined;
 }) {
@@ -293,70 +235,4 @@ function RemoveLaunchButton({ process, size, iconStyle }: {
     optioErrorRoutes,
   );
   return <ActionButton action={remove} size={size} iconOnly buttonVariant="text" />;
-}
-
-function ResurrectControls({ process, onLaunch, onResurrect, size, iconStyle }: {
-  process: any;
-  onLaunch: (processId: string, opts?: { resume?: boolean }) => void;
-  onResurrect: (processId: string) => void;
-  size: ButtonProps['size'];
-  iconStyle: { fontSize: number } | undefined;
-}) {
-  const { t } = useTranslation();
-  const [modal, contextHolder] = Modal.useModal();
-  const confirmDiscard = (title: string, action: () => void) => {
-    modal.confirm({
-      title,
-      content: t('processes.discardUnsavedWork', {
-        defaultValue: 'This discards the unsaved work left by the failed run.',
-      }),
-      okText: t('processes.discardAndContinue', { defaultValue: 'Discard and continue' }),
-      okButtonProps: { danger: true },
-      onOk: action,
-    });
-  };
-  const resumeLabel = t('processes.resumeFromSnapshot', { defaultValue: 'Resume from last snapshot' });
-  const restartLabel = t('processes.restartDiscarding', { defaultValue: 'Restart' });
-  const items: MenuProps['items'] = [];
-  if (isResumable(process)) {
-    items.push({
-      key: 'resume',
-      icon: <PlayCircleOutlined />,
-      label: resumeLabel,
-      onClick: () => confirmDiscard(resumeLabel, () => onLaunch(process._id, { resume: true })),
-    });
-  }
-  items.push({
-    key: 'restart',
-    icon: <ReloadOutlined />,
-    label: restartLabel,
-    onClick: () => confirmDiscard(restartLabel, () => onLaunch(process._id, { resume: false })),
-  });
-  return (
-    <>
-      {contextHolder}
-      <Space.Compact>
-        <Tooltip title={t('processes.resurrectHint', {
-          defaultValue: 'Save the work left by the failed run, then resume',
-        })}>
-          <Button
-            type="text"
-            size={size}
-            aria-label={t('processes.resurrect', { defaultValue: 'Resurrect' })}
-            icon={<MedicineBoxOutlined style={iconStyle} />}
-            style={{ color: '#fa8c16' }}
-            onClick={(e) => {
-              e.preventDefault();
-              onResurrect(process._id);
-            }}
-          />
-        </Tooltip>
-        <Dropdown menu={{ items }} trigger={['click']}>
-          <Tooltip title={t('processes.moreOptions', { defaultValue: 'More options' })}>
-            <Button type="text" size={size} icon={<DownOutlined style={iconStyle} />} />
-          </Tooltip>
-        </Dropdown>
-      </Space.Compact>
-    </>
-  );
 }

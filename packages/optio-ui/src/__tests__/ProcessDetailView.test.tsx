@@ -42,6 +42,11 @@ vi.mock('../context/useOptioContext.js', () => ({
   useOptioLive: () => false,
 }));
 
+// LaunchControls reads the process's snapshot list: none here.
+vi.mock('../hooks/useProcessSnapshots.js', () => ({
+  useProcessSnapshots: vi.fn(() => undefined),
+}));
+
 // Import after mocks.
 const { ProcessDetailView } = await import('../components/ProcessDetailView.js');
 const { forgetAllProcesses } = await import('../components/lastSeenProcesses.js');
@@ -402,7 +407,7 @@ describe('ProcessDetailView', () => {
         expect(screen.getByTestId('suspended-widget').textContent).toBe('suspended:abc');
         expect(screen.queryByTestId('optio-detail-default')).toBeNull();
         const actions = screen.getByTestId('optio-widget-suspended-actions');
-        fireEvent.click(within(actions).getByRole('button', { name: 'Resume' }));
+        fireEvent.click(within(actions).getByRole('button', { name: /resume$/i }));
         expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true });
       },
     );
@@ -503,14 +508,16 @@ describe('ProcessDetailView', () => {
 
       it('Resume from last snapshot asks to discard the unsaved work first', async () => {
         renderUnsaved();
-        // The menu trigger is the Resurrect button's sibling in the split button.
-        const split = screen.getByRole('button', { name: /resurrect/i }).parentElement!;
+        // The menu trigger is the last button of the split button around Resurrect.
+        const split = screen.getByRole('button', { name: /resurrect/i })
+          .closest('.vultus-combined-action-button') as HTMLElement;
         const splitButtons = within(split).getAllByRole('button');
         fireEvent.click(splitButtons[splitButtons.length - 1]);
         fireEvent.click(await screen.findByText(/resume from last snapshot/i, {}, { timeout: 60_000 }));
         expect(mockLaunch).not.toHaveBeenCalled();
-        expect(await screen.findByText(/discards the unsaved work/i, {}, { timeout: 60_000 })).toBeTruthy();
-        fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }, { timeout: 60_000 }));
+        const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+        expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
         await vi.waitFor(() => expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true }), { timeout: 60_000 });
         expect(mockResurrect).not.toHaveBeenCalled();
       });

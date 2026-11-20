@@ -52,12 +52,13 @@ const RAW = { escapeValue: false };
  * passed) or no older snapshot, the slots are invisible: the menu is Resume and Restart.
  *
  * Every action that launches fires the caller's `triggerLaunch`: Resume, Restart, Launch, the
- * resurrect case's Resume from last snapshot and Restart, and the previous-snapshot items. The
- * hook does not ask a task's `warning`: `triggerLaunch` must ask the process's warning first, for
- * each of them (after the action's own confirmation, if it has one), and launch exactly once after
- * OK; a cancel launches nothing. Resurrect fires `triggerResurrect`, and it starts the task's run
- * again too: `triggerResurrect` must ask the process's warning first as well, and resurrect exactly
- * once after OK; a cancel resurrects nothing.
+ * resurrect case's Resume from last snapshot and Restart, and the previous-snapshot items;
+ * Resurrect fires `triggerResurrect`. The hook does not ask a task's `warning`. The warning
+ * describes what a fresh run does (e.g. wiping data), so `triggerLaunch` must ask it before the
+ * actions that start a fresh run: Launch (`opts` undefined) and Restart (`resume: false`; in the
+ * resurrect case after Restart's own confirmation), and launch exactly once after OK; a cancel
+ * launches nothing. A resume asks no warning: Resume, the previous-snapshot items and Resurrect go
+ * ahead.
  *
  * `launchGate` (default: allowed) holds every action that launches -- Resurrect resumes after
  * saving -- back with its reason, e.g. while no seed is free; Resurrecting keeps its own. The

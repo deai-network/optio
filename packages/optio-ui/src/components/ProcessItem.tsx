@@ -11,6 +11,7 @@ import {
   isActive as isProcessActive, isCancellable as isProcessCancellable, isResurrecting,
 } from '../process-state.js';
 import type { TaskFactoryOverrides } from '../task-factory-overrides.js';
+import type { LaunchOpts } from '../hooks/useProcessLaunchActions.js';
 
 const { Text } = Typography;
 
@@ -33,7 +34,7 @@ const SIZE_TOKENS: Record<ProcessItemSize, SizeTokens> = {
 
 export interface ProcessItemProps {
   process: any;
-  onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onLaunch?: (id: string, opts?: LaunchOpts) => void;
   /** A task factory's launch form launched it (forwarded to LaunchControls): the child it made. */
   onLaunched?: (child: Process) => void;
   /** Overrides of a task factory's launch form, by the factory's `processId` (forwarded to LaunchControls). */
