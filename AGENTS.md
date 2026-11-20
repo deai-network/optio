@@ -1677,6 +1677,7 @@ interface OptioProviderProps {
   onAttention?: (processId: string, reason: string) => void;                     // ctx.need_attention events of processes this tab's session launched
   onClientMessage?: (processId: string, keyword: string, data: unknown) => void; // ctx.client_message events, likewise
   onBrowserOpen?: BrowserOpenHandler;  // overrides the default handler for agent "open this URL" requests (window.open + notification fallback)
+  messageSink?: MessageSink;           // vultus-core's, for everything under it (a refusal shown outside a form); omitted: the enclosing one (a VultusProvider's antd message)
   children: ReactNode;
 }
 ```
@@ -1753,7 +1754,7 @@ interface ProcessListProps {
 }
 ```
 
-Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls` (`onResurrect` and `onLaunched` forwarded to it). `FilteredProcessList` takes the same callbacks, including `onResurrect` and `onLaunched`. optio-dashboard passes `useProcessActions()`'s `launch`, `resurrect` and `cancel` to its `FilteredProcessList` as `onLaunch` / `onResurrect` / `onCancel` when the selected instance is live (none for an offline one).
+Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls` (`onResurrect` and `onLaunched` forwarded to it). `FilteredProcessList` takes the same callbacks, including `onResurrect` and `onLaunched`. optio-dashboard passes `useLaunchShowingRefusals()` and `useProcessActions()`'s `resurrect` and `cancel` to its `FilteredProcessList` as `onLaunch` / `onResurrect` / `onCancel` when the selected instance is live (none for an offline one); a refused launch shows its reason's text as an antd message (its `OptioProvider`'s `messageSink`).
 
 **`ProcessItem`**
 
@@ -2054,6 +2055,11 @@ useProcessActions(options?: ProcessActionsOptions): {
 // resurrect POSTs /processes/:id/resurrect with body: { sessionId: getSessionId() }.
 // launch, launchAsync and resurrect invalidate ['process-snapshots', database, prefix, id] (any
 // runEndedAt) once settled, success or refusal: a snapshot written without a run end is re-read.
+
+useLaunchShowingRefusals(): (processId: string, opts?: LaunchOptions) => void
+// launch for an onLaunch that shows a refusal: launchAsync, and a rejection through optioErrorRoutes
+// (route processes.launch, vultus-core's routeApiError) to vultus-core's MessageSink. Nothing on
+// success; returns nothing. ProcessDetailView and optio-dashboard launch with it.
 ```
 
 Note: `processId` arguments are MongoDB `_id` strings (ObjectId hex), not `processId` strings.
@@ -2281,12 +2287,13 @@ All components use `react-i18next`. Required keys:
 | `status.suspending` / `status.suspended` | ProcessStatusBadge (resumable process stopping / stopped with saved state; defaults "Suspending" / "Suspended") |
 | `status.autoResumeScheduled` | ProcessStatusBadge (auto-resume clock icon label; default "Scheduled for auto-restart") |
 | `common.noData` | ProcessLogPanel (empty state) |
+| `common.error` | `useLaunchShowingRefusals` (vultus-core's `routeApiError`): a launch error with neither a reason nor a message; no default |
 | `processes.showEarlierLines` | ProcessLogPanel (the link on top that shows 500 more lines; default "Show earlier lines") |
 | `processes.olderLinesNotKept` | ProcessLogPanel (the note on top once every kept line shows; default "Older lines are not kept here") |
 | `processes.factoryTitle` | TaskFactoryLaunchModal (title, `{{name}}` the factory's; default "Launch “{{name}}”") |
 | `processes.factoryLaunch` / `processes.factoryCancel` | TaskFactoryLaunchModal (buttons; defaults "Launch" / "Cancel") |
 | `processes.factoryRequired` / `processes.factoryMaxLength` | TaskFactoryLaunchModal (a required value missing, a text over `maxLength` with `{{count}}`; defaults "Required" / "At most {{count}} characters") |
-| `errors.processes.launch.<reason>` | TaskFactoryLaunchModal via `optioErrorRoutes`, so LaunchControls' factory play button (LaunchControls' other launches call the caller's `onLaunch`, whose refusals are the caller's to show), one per `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`, and for a resume from an older snapshot `invalid-request`, `no-snapshot-support`, `snapshot-not-found`, `capture-pending`); no default (vultus-core's `routeApiError` reads `t(key)`) |
+| `errors.processes.launch.<reason>` | TaskFactoryLaunchModal via `optioErrorRoutes`, so LaunchControls' factory play button; `useLaunchShowingRefusals` (through vultus-core's MessageSink), so ProcessDetailView (LaunchControls' other launches call the caller's `onLaunch`, whose refusals are the caller's to show), one per `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`, and for a resume from an older snapshot `invalid-request`, `no-snapshot-support`, `snapshot-not-found`, `capture-pending`); no default (vultus-core's `routeApiError` reads `t(key)`) |
 
 ---
 

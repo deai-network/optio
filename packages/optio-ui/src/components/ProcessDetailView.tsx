@@ -12,6 +12,7 @@ import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
 import { useProcessWidgetState } from './ProcessWidget.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
+import { useLaunchShowingRefusals } from '../hooks/useLaunchShowingRefusals.js';
 import { LaunchControls } from './LaunchControls.js';
 import { lastSeenProcess, rememberProcess } from './lastSeenProcesses.js';
 
@@ -120,7 +121,10 @@ export function ProcessDetailView({
       rememberProcess(processId, { tree: node, logs: logsOfSubtree(stream.logs, node) });
     }
   }, [processId, stream.tree, stream.logs]);
-  const { launch, cancel, resurrect } = useProcessActions();
+  const { cancel, resurrect } = useProcessActions();
+  // A refused launch (e.g. a resume from an older snapshot while a capture is pending) shows its
+  // reason's text, through vultus-core's MessageSink.
+  const launch = useLaunchShowingRefusals();
   // readOnly reaches the widget too: a suspended conversation's composer
   // would otherwise resume the process.
   const widgetResult = useProcessWidgetState(tree, { readOnly });
@@ -216,7 +220,7 @@ export function ProcessDetailView({
           >
             <LaunchControls
               process={tree}
-              onLaunch={(id, opts) => launch(id, opts)}
+              onLaunch={launch}
               onLaunched={onLaunched}
               onResurrect={(id) => resurrect(id)}
             />
@@ -245,7 +249,7 @@ export function ProcessDetailView({
       <ProcessTreeView
         treeData={tree}
         sseState={{ connected }}
-        onLaunch={readOnly ? undefined : (id, opts) => launch(id, opts)}
+        onLaunch={readOnly ? undefined : launch}
         onLaunched={onLaunched}
         onResurrect={readOnly ? undefined : (id) => resurrect(id)}
         onCancel={readOnly ? undefined : (id) => cancel(id)}

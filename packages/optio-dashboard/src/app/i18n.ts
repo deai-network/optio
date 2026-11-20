@@ -27,7 +27,10 @@ i18n.use(initReactI18next).init({
         'status.suspending': 'Suspending',
         'status.suspended': 'Suspended',
         'common.noData': 'No data',
-        // A task factory's launch refused (optio-ui's optioErrorRoutes, route processes.launch).
+        // An error with neither a reason nor a message (vultus-core's routeApiError).
+        'common.error': 'Something went wrong.',
+        // A launch refused (optio-ui's optioErrorRoutes, route processes.launch): in a task
+        // factory's form, else a message (App's messageSink).
         'errors.processes.launch.not-found': 'This process no longer exists.',
         'errors.processes.launch.not-launchable': 'This process cannot be launched now.',
         'errors.processes.launch.no-resume-support': 'This task cannot resume.',
@@ -37,6 +40,13 @@ i18n.use(initReactI18next).init({
         'errors.processes.launch.not-a-factory': 'This task takes no parameters.',
         'errors.processes.launch.invalid-parameters': 'A value was refused: see its field.',
         'errors.processes.launch.invalid-metadata': 'The server could not stamp this launch: its stamp collides with the task\'s metadata.',
+        'errors.processes.launch.invalid-request': 'A resume from an older snapshot needs resume: true.',
+        'errors.processes.launch.no-snapshot-support': 'This task keeps no snapshot history.',
+        'errors.processes.launch.snapshot-not-found': 'That snapshot no longer exists. Open the menu again for the current list.',
+        'errors.processes.launch.capture-pending': 'An unfinished snapshot capture of this process must be settled first: Resurrect, or a plain Resume.',
+        // A removal of an ended launch refused (route processes.dismiss).
+        'errors.processes.dismiss.not-found': 'This launch no longer exists.',
+        'errors.processes.dismiss.not-dismissable': 'This launch cannot be removed now.',
       },
     },
   },

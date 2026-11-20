@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
+import { useEffect } from 'react';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MessageSinkContext, useMessageSink } from 'vultus-core';
 import { useOptioPrefix, useOptioDatabase, useOptioLive } from '../context/useOptioContext.js';
 
 let mockDiscoveryResult = {
@@ -99,5 +101,44 @@ describe('OptioProvider browser-open fallback notification', () => {
       expect(document.body.querySelector('.vx-notification')?.textContent).toContain('A task wants to open a page');
     });
     open.mockRestore();
+  });
+});
+
+// For an app without a vultus-antd VultusProvider (optio-dashboard): where vultus-core's messages
+// under the provider go, e.g. a launch refusal useLaunchShowingRefusals shows.
+describe('OptioProvider messageSink', () => {
+  /** Sends `text` to the MessageSink it finds, once. */
+  function Say({ text }: { text: string }) {
+    const sink = useMessageSink();
+    useEffect(() => { sink(text, 'error'); }, [sink, text]);
+    return null;
+  }
+
+  it('is the MessageSink of everything under it', () => {
+    mockDiscoveryResult = { instance: null, instances: [], isLoading: false };
+    const sink = vi.fn();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <OptioProvider prefix="p" database="d" messageSink={sink}>
+          <Say text="refused" />
+        </OptioProvider>
+      </QueryClientProvider>,
+    );
+    expect(sink).toHaveBeenCalledWith('refused', 'error');
+  });
+
+  it('left out, the enclosing sink stays (a VultusProvider\'s)', () => {
+    mockDiscoveryResult = { instance: null, instances: [], isLoading: false };
+    const outer = vi.fn();
+    render(
+      <MessageSinkContext.Provider value={outer}>
+        <QueryClientProvider client={new QueryClient()}>
+          <OptioProvider prefix="p" database="d">
+            <Say text="refused" />
+          </OptioProvider>
+        </QueryClientProvider>
+      </MessageSinkContext.Provider>,
+    );
+    expect(outer).toHaveBeenCalledWith('refused', 'error');
   });
 });

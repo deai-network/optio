@@ -27,7 +27,8 @@
 - `vultus-core: >=0.5.10` — a peer so the app has one copy and one components context
   (see "Spinner slot"), the copy vultus-antd uses too (vultus-antd 0.8.3 depends on
   `^0.5.9`): the task factory form's action finds its form through vultus-core's
-  `ActionErrorContext`, which vultus-antd's `FormPanel` provides.
+  `ActionErrorContext`, which vultus-antd's `FormPanel` provides, and a refusal shown outside a
+  form goes to its `MessageSinkContext` (see "OptioProvider", `messageSink`).
 - `vultus-antd: >=0.8.3` — the task factory form's widgets (`Field`, `FormPanel`,
   `FormSubmitButton`, `ActionButton`; see "TaskFactoryLaunchModal").
 
@@ -130,11 +131,20 @@ interface OptioProviderProps {
   onAttention?: (processId: string, reason: string) => void;
   onClientMessage?: (processId: string, keyword: string, data: unknown) => void;
   onBrowserOpen?: BrowserOpenHandler;  // undefined: window.open + notification fallback
+  messageSink?: MessageSink;           // vultus-core's; undefined: the enclosing one
   children: ReactNode;
 }
 ```
 
 Creates a React context containing `{ prefix, database, live, baseUrl, client, resetSession }`.
+
+`messageSink` is vultus-core's `MessageSink` (`(text, severity?) => void`) for everything under the
+provider (`MessageSinkContext.Provider`): where optio-ui's refusals shown outside a form go (a
+launch's through `useLaunchShowingRefusals`, a removal's from `LaunchControls`' Remove), and any
+vultus action's messages. Left out, the enclosing sink stays: a vultus-antd `VultusProvider`'s (antd's
+hook-based message), else vultus-core's default, which shows nothing. For an app without
+`VultusProvider`; optio-dashboard passes one over antd's `message.useMessage()`. Test:
+`src/__tests__/OptioProvider.test.tsx`.
 Must wrap all components and hooks from this package. Requires `QueryClientProvider` from
 `@tanstack/react-query` to be present higher in the tree.
 
@@ -205,6 +215,8 @@ Rendering rules:
 - **The warning.** A task's `warning` describes what a fresh run does, so `triggerLaunch` asks it (a confirm modal from `Modal.useModal()`, themed without an antd `<App>` ancestor; its title the warning) before Launch and Restart (in the resurrect case after Restart's own confirmation); OK launches once, Cancel nothing. A resume asks no warning: Resume, the previous-snapshot items, Resurrect and a kept launch's Resume launch at once.
 
 Used by `ProcessItem` (so `ProcessList`), `ProcessTreeView`, and `ProcessDetailView` (the suspended widget's Resume row). Not exported from the package root.
+
+`onLaunch` returns nothing to LaunchControls: a refusal of the launch it makes is the caller's to show. `useLaunchShowingRefusals()` is an `onLaunch` that shows it (`ProcessDetailView` and optio-dashboard pass it); `useProcessActions().launch` shows nothing.
 
 ---
 
@@ -599,7 +611,8 @@ names with what is under it, or null), `logsOfSubtree(logs, subtree)` (the entri
   itself). In suspended mode, also
   renders a `LaunchControls` (Resume) row above the widget unless `readOnly` is set, with
   `onLaunch` and `onResurrect` wired as in the default layout (a process left with
-  `hasUnsavedWork` gets Resurrect, and Resume asks before it discards the unsaved work).
+  `hasUnsavedWork` gets Resurrect, and Resume asks before it discards the unsaved work;
+  a refused launch shows its reason's text, below).
   A running process (`isCancellable`: `scheduled | running` and `cancellable`) gets, in the
   same place and unless `readOnly` is set, its own stop row (test id
   `optio-widget-stop-actions`): **Suspend** when it `supportsResume` (pause icon, not
@@ -614,7 +627,13 @@ names with what is under it, or null), `logsOfSubtree(logs, subtree)` (the entri
 - **`tree.uiWidget` is set, the process `isSuspended`, but no suspended variant is
   registered** — falls back to the default tree+log view, silently (no warning — this is the
   normal case for a widget that doesn't support a read-only suspended view yet).
-- **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set, `onLaunched` passed on) + `ProcessLogPanel` (given the stream's `droppedLogCount`, as the widget layout's log strip is; a deleted process's last log is not). A task factory's record (the root of its launches) gets the play button that opens its `TaskFactoryLaunchModal`; the launch then shows under it in the tree, with no play button of its own (`isTaskFactoryLaunch`).
+- **No `uiWidget`** — renders `ProcessTreeView` (unless the `readOnly` prop is set, its `onLaunch` wired to `useLaunchShowingRefusals()` and its `onResurrect` and `onCancel` to `useProcessActions()`; `onLaunched` passed on) + `ProcessLogPanel` (given the stream's `droppedLogCount`, as the widget layout's log strip is; a deleted process's last log is not). A task factory's record (the root of its launches) gets the play button that opens its `TaskFactoryLaunchModal`; the launch then shows under it in the tree, with no play button of its own (`isTaskFactoryLaunch`).
+- **A refused launch** from either layout's `LaunchControls` (Launch, Resume, a previous-snapshot
+  item, Restart; a kept launch's Resume) — its reason's text (`errors.processes.launch.<reason>`,
+  e.g. `capture-pending` for a resume from an older snapshot while an unfinished capture is
+  pending) goes to vultus-core's MessageSink (`useLaunchShowingRefusals`); an accepted launch shows
+  nothing. A task factory's form shows its own refusals (see "TaskFactoryLaunchModal"). Tests:
+  `src/__tests__/ProcessDetailView.test.tsx`, "a launch refused".
 
 `widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${database}/${prefix}/${process._id}/`
 (database and prefix URI-encoded; trailing slash is load-bearing for relative URLs inside iframes).
@@ -765,7 +784,8 @@ The error routes of optio-ui's own actions (`src/error-routes.ts`): for `process
 `LaunchFailureReason` (optio-contracts; typed `Record<LaunchFailureReason, RegistryEntry>`, so a
 reason added there fails the typecheck until it has an entry) → `{ i18nKey:
 'errors.processes.launch.<reason>' }`. vultus-core's `routeApiError` shows `t(i18nKey)`: the app
-translates these keys (no inline default; see "i18n Keys"). `processes.dismiss` (removing an ended
+translates these keys (no inline default; see "i18n Keys"). `processes.launch` is the route of the
+task factory form's launch and of `useLaunchShowingRefusals` (any other launch). `processes.dismiss` (removing an ended
 launch) likewise maps every `DismissFailureReason` to `errors.processes.dismiss.<reason>`. Exported from `optio-ui`, for apps that
 reuse or merge it.
 
@@ -958,11 +978,30 @@ true, `resumeFrom` when `opts.resumeFrom` is set (a resume from an older snapsho
 `capturedAt` of one `useProcessSnapshots` listed: the engine discards the newer snapshots, then
 resumes; it is sent as given, and without `resume: true` the launch is refused,
 `invalid-request`), `params` when `opts.params` is given (a task factory's launch: the API makes
-and launches its child) and `ephemeral` when `opts.ephemeral` is given. It reports nothing.
+and launches its child) and `ephemeral` when `opts.ephemeral` is given. It reports nothing
+(`useLaunchShowingRefusals`, below, shows a refusal).
 `launchAsync` sends the same, for an action that shows the outcome (a vultus `useAction`, as the
 task factory form's): it resolves with the launched record (a factory's: its child) and rejects
 with ts-rest's `{ status, body: { reason, message } }` on a refusal.
 `resurrect` POSTs `/processes/:id/resurrect` with `body: { sessionId: getSessionId() }`.
+
+---
+
+### useLaunchShowingRefusals
+
+```ts
+function useLaunchShowingRefusals(): (processId: string, opts?: LaunchOptions) => void
+```
+
+`useProcessActions().launch`, showing a refusal (`src/hooks/useLaunchShowingRefusals.ts`): it
+launches with `launchAsync`, and a rejection goes through `optioErrorRoutes` (route
+`processes.launch`, vultus-core's `routeApiError`) to vultus-core's MessageSink (`useMessageSink()`;
+see "OptioProvider", `messageSink`): `t('errors.processes.launch.<reason>')`, else the error's
+message, else `t('common.error')`. An accepted launch shows nothing. It returns nothing, so a
+confirmation that launches (`LaunchControls`' warning modal) closes at once, as with `launch`.
+Made for an `onLaunch` (`LaunchControls`, `ProcessItem`, `ProcessList`, `ProcessTreeView`);
+`ProcessDetailView` and optio-dashboard use it. Exported from the package root. Tests:
+`src/__tests__/ProcessDetailView.test.tsx` ("a launch refused").
 
 ---
 
@@ -1340,7 +1379,8 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.factoryLoading` | `useTaskFactory` | Why `launch` is disabled while the record loads (default: "Loading…") |
 | `processes.factoryNotAFactory` | `useTaskFactory` | Why `launch` is disabled for a process that is no task factory (default: "Not a task factory") |
 | `processes.factoryLaunching` | `useTaskFactory` | Why `launch` is disabled while a launch is pending (default: "Launching…") |
-| `errors.processes.dismiss.<reason>` | `LaunchControls` (`optioErrorRoutes`) | A refused removal, one key per `DismissFailureReason`: `not-found`, `not-dismissable`. No default: without the app's text the key shows |
+| `errors.processes.dismiss.<reason>` | `LaunchControls` (`optioErrorRoutes`) | A refused removal, shown through vultus-core's MessageSink, one key per `DismissFailureReason`: `not-found`, `not-dismissable`. No default: without the app's text the key shows |
+| `common.error` | `useLaunchShowingRefusals` (vultus-core's `routeApiError`) | A launch error with neither a reason nor a message. No default: without the app's text the key shows |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` | Tooltip / `aria-label` of the stop button when the task cannot resume (the detail view's: its widget layout's stop row) |
 | `processes.search` | `ProcessFilters` | The search field's label (its accessible name) and placeholder |
 | `processes.filterAll` | `ProcessFilters` | A choice of the group field (select) |
@@ -1351,7 +1391,7 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.showSpecial` | `ProcessFilters` | The "show special" field's label (checkbox) |
 | `common.noData` | `ProcessLogPanel` | Empty state description |
 | `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
-| `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`), so `LaunchControls`' factory play button | A launch refusal in the form (`LaunchControls`' other launches call the caller's `onLaunch`, whose refusals are the caller's to show), one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names), `invalid-metadata` (the server's launch stamp, optio-api's `launchMetadata`, collides with the factory's metadata), and those of a resume from an older snapshot (`resumeFrom`): `invalid-request` (no `resume: true`), `no-snapshot-support`, `snapshot-not-found`, `capture-pending` (an unfinished capture is pending). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
+| `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`), so `LaunchControls`' factory play button; `useLaunchShowingRefusals`, so `ProcessDetailView` | A launch refusal: in the form, or, for any other launch made through `useLaunchShowingRefusals`, through vultus-core's MessageSink (`LaunchControls`' other launches call the caller's `onLaunch`, whose refusals are the caller's to show), one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names), `invalid-metadata` (the server's launch stamp, optio-api's `launchMetadata`, collides with the factory's metadata), and those of a resume from an older snapshot (`resumeFrom`): `invalid-request` (no `resume: true`), `no-snapshot-support`, `snapshot-not-found`, `capture-pending` (an unfinished capture is pending). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
 | `processes.suspend` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` | Tooltip / `aria-label` of the stop button when the task can resume (default: "Suspend") |
 | `processes.resume` | `LaunchControls`, `useProcessLaunchActions` | A kept launch's Resume button: its tooltip and `aria-label`; the hook's Resume label (`LaunchControls`' main half: its tooltip and accessible name) (default: "Resume") |
 | `processes.restart` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Restart label (a menu item), and in the resurrect case its confirmation's title and OK button (default: "Restart (discard saved state)") |

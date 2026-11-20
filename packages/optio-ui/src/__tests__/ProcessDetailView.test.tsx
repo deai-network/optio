@@ -3,11 +3,22 @@ import { act, render as rtlRender, cleanup, screen, fireEvent, within, waitFor }
 import React, { type ReactElement, type ReactNode } from 'react';
 import { I18nextProvider } from 'react-i18next';
 import i18next from 'i18next';
+import type { ProcessSnapshot } from 'optio-contracts';
+import type { MessageSink } from 'vultus-core';
+import { VultusProvider } from 'vultus-antd';
 import { registerWidget, _clearWidgetRegistry } from '../widgets/registry.js';
+
+// The app's text of one launch refusal (optioErrorRoutes, route processes.launch).
+const CAPTURE_PENDING_TEXT = 'Settle the unfinished capture first (Resurrect or Resume).';
 
 // The view's texts come from an i18n instance (react-i18next warns without one).
 const i18n = i18next.createInstance();
-i18n.init({ lng: 'en', resources: { en: { translation: {} } } });
+i18n.init({
+  lng: 'en',
+  resources: {
+    en: { translation: { errors: { processes: { launch: { 'capture-pending': CAPTURE_PENDING_TEXT } } } } },
+  },
+});
 const WithI18n = ({ children }: { children: ReactNode }) => <I18nextProvider i18n={i18n}>{children}</I18nextProvider>;
 // Every render (and its rerenders) under the instance.
 const render = (ui: ReactElement) => rtlRender(ui, { wrapper: WithI18n });
@@ -46,9 +57,10 @@ vi.mock('../context/useOptioContext.js', () => ({
   useOptioLive: () => false,
 }));
 
-// LaunchControls reads the process's snapshot list: none here.
+// LaunchControls reads the process's snapshot list: none unless a test gives one.
+const mockSnapshots = vi.fn<(...args: any[]) => ProcessSnapshot[] | undefined>();
 vi.mock('../hooks/useProcessSnapshots.js', () => ({
-  useProcessSnapshots: vi.fn(() => undefined),
+  useProcessSnapshots: (...args: any[]) => mockSnapshots(...args),
 }));
 
 // Import after mocks.
@@ -61,8 +73,13 @@ describe('ProcessDetailView', () => {
     forgetAllProcesses();
     mockProcessStream.mockReset();
     mockLaunch.mockReset();
+    // The view launches through launchAsync (a refusal shows): accepted unless a test says otherwise.
+    mockLaunchAsync.mockReset();
+    mockLaunchAsync.mockResolvedValue({});
     mockCancel.mockReset();
     mockResurrect.mockReset();
+    mockSnapshots.mockReset();
+    mockSnapshots.mockReturnValue(undefined);
     mockBaseUrl.mockReturnValue('http://host');
     mockPrefix.mockReturnValue('optio');
     mockDatabase.mockReturnValue('mydb');
@@ -412,7 +429,7 @@ describe('ProcessDetailView', () => {
         expect(screen.queryByTestId('optio-detail-default')).toBeNull();
         const actions = screen.getByTestId('optio-widget-suspended-actions');
         await click(within(actions).getByRole('button', { name: /resume$/i }));
-        expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true });
+        expect(mockLaunchAsync).toHaveBeenCalledWith('abc', { resume: true });
       },
     );
 
@@ -426,7 +443,7 @@ describe('ProcessDetailView', () => {
       const { container } = render(<ProcessDetailView processId="abc" />);
       const button = container.querySelector('.anticon-play-circle')!.closest('button')!;
       await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
-      expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true });
+      expect(mockLaunchAsync).toHaveBeenCalledWith('abc', { resume: true });
     });
 
     it('hides the Resume control when readOnly is true', () => {
@@ -507,7 +524,7 @@ describe('ProcessDetailView', () => {
         renderUnsaved();
         await click(screen.getByRole('button', { name: /resurrect/i }));
         expect(mockResurrect).toHaveBeenCalledWith('abc');
-        expect(mockLaunch).not.toHaveBeenCalled();
+        expect(mockLaunchAsync).not.toHaveBeenCalled();
       });
 
       it('Resume from last snapshot asks to discard the unsaved work first', async () => {
@@ -518,11 +535,11 @@ describe('ProcessDetailView', () => {
         const splitButtons = within(split).getAllByRole('button');
         fireEvent.click(splitButtons[splitButtons.length - 1]);
         await click(await screen.findByText(/resume from last snapshot/i, {}, { timeout: 60_000 }));
-        expect(mockLaunch).not.toHaveBeenCalled();
+        expect(mockLaunchAsync).not.toHaveBeenCalled();
         const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
         expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
         await click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
-        await vi.waitFor(() => expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true }), { timeout: 60_000 });
+        await vi.waitFor(() => expect(mockLaunchAsync).toHaveBeenCalledWith('abc', { resume: true }), { timeout: 60_000 });
         expect(mockResurrect).not.toHaveBeenCalled();
       });
     });
@@ -580,7 +597,7 @@ describe('ProcessDetailView', () => {
       fireEvent.click(within(row).getByRole('button', { name: 'Suspend' }));
       await waitFor(() => expect(mockCancel).toHaveBeenCalledWith('abc'), { timeout: 60_000 });
       expect(mockCancel).toHaveBeenCalledTimes(1);
-      expect(mockLaunch).not.toHaveBeenCalled();
+      expect(mockLaunchAsync).not.toHaveBeenCalled();
     });
 
     it('one that cannot: Cancel, which cancels it', async () => {
@@ -732,11 +749,12 @@ describe('ProcessDetailView', () => {
       const play = container.querySelector('.anticon-play-circle')!.closest('button')!;
       fireEvent.click(play);
       const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
-      expect(mockLaunch).not.toHaveBeenCalled();
+      // Opening the form launches nothing.
+      expect(mockLaunchAsync).not.toHaveBeenCalled();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Launch' }));
       await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(child), { timeout: 60_000 });
       expect(mockLaunchAsync).toHaveBeenCalledWith('f1', { params: { limit: 3 }, ephemeral: true });
-      expect(mockLaunch).not.toHaveBeenCalled();
+      expect(mockLaunchAsync).toHaveBeenCalledTimes(1);
     });
 
     it('read-only, it offers no launch', () => {
@@ -1005,6 +1023,94 @@ describe('ProcessDetailView', () => {
       show('p6');
       expect(lookUp('p2')).toBe(false);
       expect(lookUp('p1')).toBe(true);
+    });
+  });
+
+  // A launch from the view shows its refusal (final review, ruling R17): its reason's text, routed
+  // through optioErrorRoutes to vultus-core's MessageSink (here a VultusProvider's antd message).
+  describe('a launch refused', () => {
+    // antd's confirm modal measures the scrollbar via getComputedStyle(el, '::-webkit-scrollbar');
+    // jsdom logs "Not implemented" for the pseudo-element, so drop the argument.
+    beforeAll(() => {
+      const real = globalThis.getComputedStyle.bind(globalThis);
+      vi.spyOn(globalThis, 'getComputedStyle').mockImplementation((elt) => real(elt));
+    });
+    afterAll(() => {
+      vi.restoreAllMocks();
+    });
+
+    const SNAPSHOTS: ProcessSnapshot[] = [
+      { capturedAt: '2026-11-19T13:05:12.345Z', endState: 'cancelled' },
+      { capturedAt: '2026-11-19T12:05:00.000Z', endState: 'cancelled' },
+    ];
+    const CAPTURE_PENDING = {
+      status: 409,
+      body: {
+        reason: 'capture-pending',
+        message: 'An unfinished snapshot capture of this process must be resolved first (Resurrect or Resume)',
+      },
+    };
+    // The two places the view launches from: the suspended widget's Resume row and the tree.
+    const layouts = [['the suspended widget layout', true], ['the default layout', false]] as const;
+
+    function renderResumable(withWidget: boolean, messageSink?: MessageSink) {
+      if (withWidget) {
+        registerWidget('my-widget', () => <div />, { suspended: () => <div data-testid="suspended-widget" /> });
+      }
+      mockSnapshots.mockReturnValue(SNAPSHOTS);
+      mockProcessStream.mockReturnValue({
+        tree: {
+          _id: 'abc', name: 'P', status: { state: 'cancelled' },
+          supportsResume: true, hasSavedState: true,
+          progress: { percent: null }, cancellable: false,
+          depth: 0, order: 0, parentId: null, children: [],
+          ...(withWidget ? { uiWidget: 'my-widget', widgetData: {} } : {}),
+        },
+        logs: [],
+        connected: true,
+      });
+      render(<VultusProvider messageSink={messageSink}><ProcessDetailView processId="abc" /></VultusProvider>);
+      expect(screen.getByTestId(withWidget ? 'optio-widget-layout' : 'optio-detail-default')).toBeTruthy();
+    }
+
+    // Each wait well inside the test's own timeout, so a failure says which step it was.
+    const WAIT = { timeout: 20_000 };
+
+    /** Picks "Resume from previous snapshot (<time>)" and confirms it. */
+    async function resumeFromPrevious() {
+      const split = screen.getByRole('button', { name: 'Resume' })
+        .closest('.vultus-combined-action-button') as HTMLElement;
+      const buttons = within(split).getAllByRole('button');
+      fireEvent.click(buttons[buttons.length - 1]);
+      // The row's accessible name starts with its icon's: no anchor at the start.
+      const item = await screen.findByRole('menuitem', { name: /Resume from previous snapshot \(.+\)$/ }, WAIT);
+      const label = item.textContent!;
+      await click(item);
+      const dialog = await screen.findByRole('dialog', {}, WAIT);
+      await click(within(dialog).getByRole('button', { name: label }));
+      await waitFor(() => expect(mockLaunchAsync).toHaveBeenCalledWith(
+        'abc', { resume: true, resumeFrom: SNAPSHOTS[1].capturedAt }), WAIT);
+      expect(mockLaunchAsync).toHaveBeenCalledTimes(1);
+      expect(mockLaunch).not.toHaveBeenCalled();
+    }
+
+    it.each(layouts)('in %s, a resume from an older snapshot refused (capture-pending) shows its reason\'s text',
+      async (_layout, withWidget) => {
+        mockLaunchAsync.mockRejectedValue(CAPTURE_PENDING);
+        renderResumable(withWidget);
+        await resumeFromPrevious();
+        expect(await screen.findByText(CAPTURE_PENDING_TEXT, {}, WAIT)).toBeTruthy();
+      });
+
+    it.each(layouts)('in %s, a launch that is accepted shows nothing', async (_layout, withWidget) => {
+      mockLaunchAsync.mockResolvedValue({ _id: 'abc' });
+      const sink = vi.fn();
+      renderResumable(withWidget, sink);
+      await resumeFromPrevious();
+      // The accepted launch settles.
+      await act(async () => { await Promise.resolve(); });
+      expect(sink).not.toHaveBeenCalled();
+      expect(screen.queryByText(CAPTURE_PENDING_TEXT)).toBeNull();
     });
   });
 

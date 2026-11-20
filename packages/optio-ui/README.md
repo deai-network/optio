@@ -112,6 +112,7 @@ wires a complete app (providers, i18n, proxy) this way.
 | `useProcessTree` | Polls the tree endpoint for a process; returns the tree body or `null` |
 | `useProcessTreeLog` | Polls the tree log endpoint for a process; returns an array of log entries |
 | `useProcessActions` | Returns imperative action functions: `launch` (with a task factory's `params`), `launchAsync` (the same, resolving with the launched record, rejecting with the refusal), `cancel`, `dismiss`, `resurrect`, `resync`, `resyncClean` |
+| `useLaunchShowingRefusals` | `launch` for an `onLaunch` that shows a refusal: its reason's text (`errors.processes.launch.<reason>`, via `optioErrorRoutes`) goes to vultus-core's MessageSink, a vultus-antd `VultusProvider`'s antd message or the `messageSink` passed to `OptioProvider` (for an app without `VultusProvider`). `ProcessDetailView` launches with it |
 | `useProcessConversation` | Reads a suspended process's saved conversation record (`GET /processes/:id/conversation`); returns the ts-rest react-query result (`data.body` is `{ events, capturedAt }` on 200; non-2xx responses surface as `error`). Never retries a 4xx. |
 | `useProcessStream` | Opens an SSE connection to a single process tree stream; returns live `{ processes, tree, rootProcess, logs, connected, processNotFound, error }` |
 | `useProcessListStream` | Opens a module-level singleton SSE connection with optional metadata filtering; returns `{ processes, connected }`. Only one filter active at a time. |

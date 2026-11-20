@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Alert, Button, Layout, Select, Typography, notification } from 'antd';
+import { Alert, Button, Layout, Select, Typography, message, notification } from 'antd';
 import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
 import {
   OptioProvider,
@@ -7,6 +7,7 @@ import {
   ProcessFilters,
   FilteredProcessList,
   ProcessDetailView,
+  useLaunchShowingRefusals,
   useProcessActions,
   useProcessListStream,
   useInstances,
@@ -47,7 +48,10 @@ function Dashboard({
   siderCollapsed: boolean;
 }) {
   const { processes, connected: listConnected } = useProcessListStream();
-  const { launch, resurrect, cancel, dismiss } = useProcessActions();
+  const { resurrect, cancel } = useProcessActions();
+  // A refused launch (e.g. a resume from an older snapshot while a capture is pending) shows its
+  // reason's text, through the provider's messageSink.
+  const launch = useLaunchShowingRefusals();
   const live = useOptioLive();
 
   return (
@@ -97,6 +101,15 @@ function AppContent() {
   // Hook-based notifications (not antd's static `notification`): they render
   // through `notificationHolder` in this tree, so they follow ConfigProvider.
   const [notificationApi, notificationHolder] = notification.useNotification();
+  // Where optio-ui's messages go (the dashboard has no vultus-antd VultusProvider): a refusal
+  // shown outside a form (a launch's, a removal's), as an antd message, hook-based as above.
+  const [messageApi, messageHolder] = message.useMessage();
+  const messageSink = useCallback(
+    (text: string, severity: 'info' | 'warning' | 'error' = 'error') => {
+      messageApi.open({ type: severity, content: text });
+    },
+    [messageApi],
+  );
 
   // Initiator-scoped attention: navigate to the process that asked for it.
   const onAttention = (processId: string, reason: string) => {
@@ -180,8 +193,10 @@ function AppContent() {
       live={selected.live}
       onAttention={onAttention}
       onClientMessage={onClientMessage}
+      messageSink={messageSink}
     >
       {notificationHolder}
+      {messageHolder}
       <Layout style={{ height: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

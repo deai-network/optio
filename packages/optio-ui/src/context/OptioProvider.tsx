@@ -1,5 +1,6 @@
 import { createContext, useMemo, useEffect, type ReactNode } from 'react';
 import { notification } from 'antd';
+import { MessageSinkContext, useMessageSink, type MessageSink } from 'vultus-core';
 import { createOptioClient, type OptioClient } from '../client.js';
 import { useInstanceDiscovery } from '../hooks/useInstanceDiscovery.js';
 import { startSessionEvents, resetSession, type SessionEventCallbacks } from '../session/sessionEvents.js';
@@ -33,6 +34,10 @@ interface OptioProviderProps {
   // Override the browser-open handler (agent OAuth "open this URL" requests).
   // undefined -> optio-ui's default (window.open + notification fallback).
   onBrowserOpen?: BrowserOpenHandler;
+  // vultus-core's MessageSink for everything under the provider: where optio-ui's refusals shown
+  // outside a form go (useLaunchShowingRefusals, LaunchControls' Remove), and any vultus action's
+  // messages. For an app without a vultus-antd VultusProvider. undefined -> the enclosing sink.
+  messageSink?: MessageSink;
   children: ReactNode;
 }
 
@@ -57,8 +62,10 @@ function OptioProviderInner({ explicitPrefix, explicitDatabase, explicitLive, ba
   );
 }
 
-export function OptioProvider({ prefix, database, live, baseUrl = '', onAttention, onClientMessage, onBrowserOpen, children }: OptioProviderProps) {
+export function OptioProvider({ prefix, database, live, baseUrl = '', onAttention, onClientMessage, onBrowserOpen, messageSink, children }: OptioProviderProps) {
   const client = useMemo(() => createOptioClient(baseUrl), [baseUrl]);
+  // Always the same tree shape, so giving or taking away messageSink remounts nothing.
+  const enclosingSink = useMessageSink();
 
   // Mount the always-on session-events manager once. Re-runs when the
   // callbacks or baseUrl change; startSessionEvents updates callbacks in
@@ -87,11 +94,13 @@ export function OptioProvider({ prefix, database, live, baseUrl = '', onAttentio
   const value = useOptioContextValue(prefix ?? 'optio', database, live ?? false, baseUrl, client);
 
   return (
-    <OptioContext.Provider value={value}>
-      {notificationHolder}
-      <OptioProviderInner explicitPrefix={prefix} explicitDatabase={database} explicitLive={live} baseUrl={baseUrl} client={client}>
-        {children}
-      </OptioProviderInner>
-    </OptioContext.Provider>
+    <MessageSinkContext.Provider value={messageSink ?? enclosingSink}>
+      <OptioContext.Provider value={value}>
+        {notificationHolder}
+        <OptioProviderInner explicitPrefix={prefix} explicitDatabase={database} explicitLive={live} baseUrl={baseUrl} client={client}>
+          {children}
+        </OptioProviderInner>
+      </OptioContext.Provider>
+    </MessageSinkContext.Provider>
   );
 }
