@@ -8,10 +8,16 @@ const mockLaunchAsync = vi.fn();
 vi.mock('../hooks/useProcessActions.js', () => ({
   useProcessActions: () => ({ launchAsync: mockLaunchAsync }),
 }));
-// LaunchControls reads the process's snapshot list: none here.
-vi.mock('../hooks/useProcessSnapshots.js', () => ({
-  useProcessSnapshots: vi.fn(() => undefined),
-}));
+// LaunchControls reads the process's snapshot list, which needs an OptioProvider. The real hook
+// runs (and throws here, with no provider) unless a test with `onLaunch` stubs it.
+const snapshotsStub = vi.hoisted(() => ({ active: false }));
+vi.mock('../hooks/useProcessSnapshots.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useProcessSnapshots.js')>();
+  return {
+    useProcessSnapshots: (...args: Parameters<typeof actual.useProcessSnapshots>) =>
+      (snapshotsStub.active ? undefined : actual.useProcessSnapshots(...args)),
+  };
+});
 
 import { ProcessItem } from '../components/ProcessItem.js';
 
@@ -61,12 +67,25 @@ describe('ProcessItem: the stop button', () => {
   });
 });
 
+describe('ProcessItem without onLaunch', () => {
+  it('renders outside any provider: no launch controls, so no snapshot read', () => {
+    const { container } = renderItem({
+      name: 'A suspended run', status: { state: 'cancelled' }, progress: { percent: null },
+      supportsResume: true, hasSavedState: true,
+    });
+    expect(container.textContent).toContain('A suspended run');
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+});
+
 describe('ProcessItem of a task factory', () => {
   beforeAll(() => {
+    snapshotsStub.active = true;
     const real = globalThis.getComputedStyle.bind(globalThis);
     vi.spyOn(globalThis, 'getComputedStyle').mockImplementation((elt) => real(elt));
   });
   afterAll(() => {
+    snapshotsStub.active = false;
     vi.restoreAllMocks();
   });
 

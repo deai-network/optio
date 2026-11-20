@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { I18nextProvider } from 'react-i18next';
 import i18next from 'i18next';
 import type { ProcessSnapshot } from 'optio-contracts';
@@ -43,6 +43,11 @@ function quietComputedStyle() {
   });
 }
 
+/** A click that fires a vultus action: its state updates (pending, the main half) settle in act. */
+async function click(element: Element) {
+  await act(async () => { fireEvent.click(element); });
+}
+
 /** Opens the split button's menu: its opener is the last button. */
 function openMenu() {
   const buttons = screen.getAllByRole('button');
@@ -66,31 +71,31 @@ describe('LaunchControls', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders a single play button when supportsResume=false', () => {
+  it('renders a single play button when supportsResume=false', async () => {
     const { onLaunch } = renderWith({
       _id: '1', status: { state: 'idle' }, supportsResume: false, hasSavedState: false,
     });
     const btn = screen.getByRole('button');
-    fireEvent.click(btn);
+    await click(btn);
     expect(onLaunch).toHaveBeenCalledWith('1', undefined);
   });
 
-  it('renders a single play button when supportsResume=true but hasSavedState=false', () => {
+  it('renders a single play button when supportsResume=true but hasSavedState=false', async () => {
     const { onLaunch } = renderWith({
       _id: '2', status: { state: 'idle' }, supportsResume: true, hasSavedState: false,
     });
     const btns = screen.getAllByRole('button');
     expect(btns.length).toBe(1);
-    fireEvent.click(btns[0]);
+    await click(btns[0]);
     expect(onLaunch).toHaveBeenCalledWith('2', undefined);
   });
 
-  it('renders a split button when supportsResume=true AND hasSavedState=true', () => {
+  it('renders a split button when supportsResume=true AND hasSavedState=true', async () => {
     const { onLaunch } = renderWith({
       _id: '3', status: { state: 'idle' }, supportsResume: true, hasSavedState: true,
     });
     const primary = screen.getAllByRole('button')[0];
-    fireEvent.click(primary);
+    await click(primary);
     expect(onLaunch).toHaveBeenCalledWith('3', { resume: true });
   });
 
@@ -102,14 +107,14 @@ describe('LaunchControls', () => {
     const dropdownTrigger = buttons[buttons.length - 1];
     fireEvent.click(dropdownTrigger);
     const restart = await screen.findByText(/restart/i);
-    fireEvent.click(restart);
+    await click(restart);
     expect(onLaunch).toHaveBeenCalledWith('4', { resume: false });
   });
 
-  it('treats missing supportsResume / hasSavedState as false', () => {
+  it('treats missing supportsResume / hasSavedState as false', async () => {
     const { onLaunch } = renderWith({ _id: '5', status: { state: 'idle' } });
     const btn = screen.getByRole('button');
-    fireEvent.click(btn);
+    await click(btn);
     expect(onLaunch).toHaveBeenCalledWith('5', undefined);
   });
 
@@ -132,6 +137,12 @@ describe('LaunchControls', () => {
   });
 
   it('denyReason disables every action with its reason', async () => {
+    // The list is read under the gate too: its items show, disabled with the reason.
+    mockUseProcessSnapshots.mockReturnValue([
+      { capturedAt: TS, endState: 'cancelled' },
+      { capturedAt: '2026-11-19T12:05:00.000Z', endState: 'cancelled' },
+      { capturedAt: '2026-11-19T11:05:00.000Z', endState: 'cancelled' },
+    ]);
     const onLaunch = vi.fn();
     render(
       <I18nextProvider i18n={i18n}>
@@ -143,20 +154,26 @@ describe('LaunchControls', () => {
         />
       </I18nextProvider>,
     );
+    expect(mockUseProcessSnapshots).toHaveBeenCalledWith('7', { enabled: true, runEndedAt: null });
     const main = screen.getAllByRole('button')[0];
     expect((main as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(main);
+    await click(main);
     // Icon-only: the tooltip is the label, the reason below it.
     fireEvent.mouseEnter(main.parentElement as HTMLElement);
     expect((await screen.findByRole('tooltip', {}, { timeout: 60_000 })).textContent).toBe('Resumenot ready');
     openMenu();
     const restart = await screen.findByRole('menuitem', { name: /restart/i }, { timeout: 60_000 });
     expect(restart.getAttribute('aria-disabled')).toBe('true');
-    fireEvent.click(restart);
+    const items = screen.getAllByRole('menuitem', { name: /Resume from previous snapshot \(.+\)$/ });
+    expect(items).toHaveLength(2);
+    for (const item of items) expect(item.getAttribute('aria-disabled')).toBe('true');
+    await click(restart);
+    await click(items[0]);
     expect(onLaunch).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('ignores empty / null denyReason — renders the usual launch affordance', () => {
+  it('ignores empty / null denyReason — renders the usual launch affordance', async () => {
     const onLaunch = vi.fn();
     render(
       <I18nextProvider i18n={i18n}>
@@ -170,7 +187,7 @@ describe('LaunchControls', () => {
     );
     const btn = screen.getByRole('button');
     expect((btn as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(btn);
+    await click(btn);
     expect(onLaunch).toHaveBeenCalledWith('8', undefined);
   });
 });
@@ -195,12 +212,12 @@ describe('LaunchControls: snapshots, the warning, the icon size', () => {
       'menuitem', { name: /Resume from previous snapshot \(.+\)$/ }, { timeout: 60_000 });
     expect(items).toHaveLength(2);
     const label = items[0].textContent!;
-    fireEvent.click(items[0]);
+    await click(items[0]);
     const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
     // The confirmation renders its title twice (the modal's header and the confirm body).
     expect(within(dialog).getAllByText(/This discards 1 newer snapshot\.$/).length).toBeGreaterThan(0);
     expect(onLaunch).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: label }));
+    await click(within(dialog).getByRole('button', { name: label }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalledWith(
       '3', { resume: true, resumeFrom: snapshots[1].capturedAt }), { timeout: 60_000 });
     expect(onLaunch).toHaveBeenCalledTimes(1);
@@ -222,9 +239,9 @@ describe('LaunchControls: snapshots, the warning, the icon size', () => {
     const [item] = await screen.findAllByRole(
       'menuitem', { name: /Resume from previous snapshot \(.+\)$/ }, { timeout: 60_000 });
     const label = item.textContent!;
-    fireEvent.click(item);
+    await click(item);
     const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
-    fireEvent.click(within(dialog).getByRole('button', { name: label }));
+    await click(within(dialog).getByRole('button', { name: label }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalledTimes(1), { timeout: 60_000 });
     await waitFor(() => expect(mainHalf()).toBe('Resume'), { timeout: 60_000 });
   });
@@ -235,9 +252,9 @@ describe('LaunchControls: snapshots, the warning, the icon size', () => {
     openMenu();
     const [item] = await screen.findAllByRole(
       'menuitem', { name: /Resume from previous snapshot \(.+\)$/ }, { timeout: 60_000 });
-    fireEvent.click(item);
+    await click(item);
     const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(mainHalf()).toBe('Resume'), { timeout: 60_000 });
     expect(onLaunch).not.toHaveBeenCalled();
   });
@@ -272,32 +289,37 @@ describe('LaunchControls: snapshots, the warning, the icon size', () => {
 
   it("a task's warning is asked before a fresh launch, not before a resume", async () => {
     const fresh = renderWith({ _id: 'x', status: { state: 'idle' }, warning: 'Careful' });
-    fireEvent.click(screen.getByRole('button'));
+    await click(screen.getByRole('button'));
     const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
     // antd's confirm renders its title twice (the modal's header and the confirm body).
     expect(within(dialog).getAllByText('Careful').length).toBeGreaterThan(0);
     expect(fresh.onLaunch).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'OK' }));
+    await click(within(dialog).getByRole('button', { name: 'OK' }));
     await waitFor(() => expect(fresh.onLaunch).toHaveBeenCalledWith('x', undefined), { timeout: 60_000 });
     expect(fresh.onLaunch).toHaveBeenCalledTimes(1);
     fresh.unmount();
 
     const resuming = renderWith({ ...resumable, _id: 'y', warning: 'Careful' });
-    fireEvent.click(screen.getAllByRole('button')[0]);
+    await click(screen.getAllByRole('button')[0]);
     await waitFor(() => expect(resuming.onLaunch).toHaveBeenCalledWith('y', { resume: true }), { timeout: 60_000 });
     expect(resuming.onLaunch).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it("iconFontSize sizes each action's icon", () => {
+  it("iconFontSize sizes each action's icon, and the sized action still fires", async () => {
+    const onLaunch = vi.fn();
     const { container } = render(
       <I18nextProvider i18n={i18n}>
-        <LaunchControls process={resumable} onLaunch={vi.fn()} size="small" iconFontSize={20} />
+        <LaunchControls process={resumable} onLaunch={onLaunch} size="small" iconFontSize={20} />
       </I18nextProvider>,
     );
     const icon = container.querySelector('.anticon-play-circle') as HTMLElement;
     expect((icon.parentElement as HTMLElement).style.fontSize).toBe('20px');
-  });});
+    await click(screen.getAllByRole('button')[0]);
+    expect(onLaunch).toHaveBeenCalledTimes(1);
+    expect(onLaunch).toHaveBeenCalledWith('3', { resume: true });
+  });
+});
 
 function renderResurrect(process: any) {
   const onLaunch = vi.fn();
@@ -328,9 +350,9 @@ describe('LaunchControls resurrect', () => {
     vi.restoreAllMocks();
   });
 
-  it('primary button resurrects', () => {
+  it('primary button resurrects', async () => {
     const { onResurrect, onLaunch } = renderResurrect(failedWithWork);
-    fireEvent.click(screen.getByRole('button', { name: /resurrect/i }));
+    await click(screen.getByRole('button', { name: /resurrect/i }));
     expect(onResurrect).toHaveBeenCalledWith('9');
     expect(onLaunch).not.toHaveBeenCalled();
   });
@@ -338,23 +360,88 @@ describe('LaunchControls resurrect', () => {
   it('resume from last snapshot asks for confirmation first', async () => {
     const { onLaunch } = renderResurrect(failedWithWork);
     openMenu();
-    fireEvent.click(await screen.findByText(/resume from last snapshot/i, {}, { timeout: 60_000 }));
+    await click(await screen.findByText(/resume from last snapshot/i, {}, { timeout: 60_000 }));
     expect(onLaunch).not.toHaveBeenCalled();
     const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
     expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
+    await click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
     await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: true }), { timeout: 60_000 });
   });
 
   it('restart asks for confirmation first', async () => {
     const { onLaunch } = renderResurrect(failedWithWork);
     openMenu();
-    fireEvent.click(await screen.findByText(/restart \(discard saved state\)/i, {}, { timeout: 60_000 }));
+    await click(await screen.findByText(/restart \(discard saved state\)/i, {}, { timeout: 60_000 }));
     expect(onLaunch).not.toHaveBeenCalled();
     const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
     expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Restart (discard saved state)' }));
+    await click(within(dialog).getByRole('button', { name: 'Restart (discard saved state)' }));
     await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: false }), { timeout: 60_000 });
+  });
+
+  // Review Focus 4: the previous-snapshot items in the resurrect case, with a task's warning.
+  it('resurrect case with older snapshots and a warning: the menu order, the confirmation, one resume', async () => {
+    const snapshots: ProcessSnapshot[] = [
+      { capturedAt: TS, endState: 'failed' },
+      { capturedAt: '2026-11-19T12:05:00.000Z', endState: 'cancelled' },
+      { capturedAt: '2026-11-19T11:05:00.000Z', endState: 'cancelled' },
+    ];
+    mockUseProcessSnapshots.mockReturnValue(snapshots);
+    const warning = 'This wipes the data.';
+    const process = { ...failedWithWork, warning };
+    const { onLaunch, onResurrect } = renderResurrect(process);
+    expect(mockUseProcessSnapshots).toHaveBeenCalledWith('9', { enabled: true, runEndedAt: null });
+    expect(screen.getAllByRole('button')[0].getAttribute('aria-label')).toBe('Resurrect');
+
+    openMenu();
+    await screen.findByRole('menuitem', { name: /restart \(discard saved state\)/i }, { timeout: 60_000 });
+    // vultus' open list lists every visible action, the main one (Resurrect) first.
+    const rows = screen.getAllByRole('menuitem').map((row) => row.textContent);
+    expect(rows).toHaveLength(5);
+    expect(rows[0]).toBe('Resurrect');
+    expect(rows[1]).toBe('Resume from last snapshot');
+    expect(rows[2]).toMatch(/^Resume from previous snapshot \(.+\)$/);
+    expect(rows[3]).toMatch(/^Resume from previous snapshot \(.+\)$/);
+    expect(rows[4]).toBe('Restart (discard saved state)');
+
+    await click(screen.getAllByRole('menuitem')[2]);
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+    // The confirmation renders its title twice (the modal's header and the confirm body).
+    expect(within(dialog).getAllByText(/This discards 1 newer snapshot\.$/).length).toBeGreaterThan(0);
+    expect(dialog.textContent).toContain('What the discarded runs delivered stays in the app.');
+    expect(dialog.textContent).toMatch(/discards the unsaved work/);
+    expect(onLaunch).not.toHaveBeenCalled();
+    await click(within(dialog).getByRole('button', { name: rows[2]! }));
+    await waitFor(() => expect(onLaunch).toHaveBeenCalled(), { timeout: 60_000 });
+    expect(onLaunch).toHaveBeenCalledTimes(1);
+    expect(onLaunch).toHaveBeenCalledWith('9', { resume: true, resumeFrom: snapshots[1].capturedAt });
+    expect(onResurrect).not.toHaveBeenCalled();
+    // A resume asks no warning.
+    expect(screen.queryByText(warning)).toBeNull();
+  });
+
+  it('resurrect case with older snapshots, while resurrecting: the one Resurrecting button', () => {
+    mockUseProcessSnapshots.mockReturnValue([
+      { capturedAt: TS, endState: 'failed' },
+      { capturedAt: '2026-11-19T12:05:00.000Z', endState: 'cancelled' },
+      { capturedAt: '2026-11-19T11:05:00.000Z', endState: 'cancelled' },
+    ]);
+    renderResurrect({ ...failedWithWork, warning: 'This wipes the data.', resurrecting: true });
+    const buttons = screen.getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].getAttribute('aria-label')).toMatch(/resurrecting/i);
+    expect((buttons[0] as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // F10: without onResurrect, a resurrecting process still shows the disabled Resurrecting.
+  it('resurrecting without onResurrect: the disabled Resurrecting button still shows', async () => {
+    const { onLaunch } = renderWith({ ...failedWithWork, resurrecting: true });
+    const buttons = screen.getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].getAttribute('aria-label')).toMatch(/resurrecting/i);
+    expect((buttons[0] as HTMLButtonElement).disabled).toBe(true);
+    await click(buttons[0]);
+    expect(onLaunch).not.toHaveBeenCalled();
   });
 
   it('no resume item without saved state', async () => {
@@ -364,14 +451,14 @@ describe('LaunchControls resurrect', () => {
     expect(screen.queryByText(/resume from last snapshot/i)).toBeNull();
   });
 
-  it('falls back to the resume split button without onResurrect or without the flag', () => {
+  it('falls back to the resume split button without onResurrect or without the flag', async () => {
     const { onLaunch } = renderWith({ ...failedWithWork });
-    fireEvent.click(screen.getAllByRole('button')[0]);
+    await click(screen.getAllByRole('button')[0]);
     expect(onLaunch).toHaveBeenCalledWith('9', { resume: true });
 
     const onResurrect = vi.fn();
     const flagless = renderWith({ ...failedWithWork, supportsResurrect: false }, vi.fn(), onResurrect);
-    fireEvent.click(within(flagless.container).getAllByRole('button')[0]);
+    await click(within(flagless.container).getAllByRole('button')[0]);
     expect(flagless.onLaunch).toHaveBeenCalledWith('9', { resume: true });
     expect(onResurrect).not.toHaveBeenCalled();
   });
@@ -383,7 +470,7 @@ describe('LaunchControls resurrect', () => {
     const btn = screen.getByRole('button', { name: /resurrecting/i });
     expect(buttons[0]).toBe(btn);
     expect((btn as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(btn);
+    await click(btn);
     expect(onResurrect).not.toHaveBeenCalled();
     expect(onLaunch).not.toHaveBeenCalled();
     fireEvent.mouseEnter(btn.parentElement as HTMLElement);
@@ -465,11 +552,11 @@ describe('LaunchControls of a task factory', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("a record that is not a factory's launches as before, whatever it carries", () => {
+  it("a record that is not a factory's launches as before, whatever it carries", async () => {
     const { onLaunch } = renderWith({
       _id: 't1', status: { state: 'idle' }, parameters: [{ kind: 'text', id: 'note' }],
     });
-    fireEvent.click(screen.getByRole('button'));
+    await click(screen.getByRole('button'));
     expect(onLaunch).toHaveBeenCalledWith('t1', undefined);
     expect(screen.queryByRole('dialog')).toBeNull();
   });

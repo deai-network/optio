@@ -103,8 +103,8 @@ If in doubt: add a predicate, don't inline the check.
 An app lends a spinner through vultus-core's components context
 (`useVultusComponents().Spinner`, set with `VultusComponentsContext.Provider` or vultus-antd's
 `VultusProvider components={{ Spinner }}`). optio-ui shows it in place of antd's spinners in
-`ProcessList` and `LaunchControls`, and before the "Loading…" text in `ProcessDetailView` and
-`IframeWidget`. Each site calls
+`ProcessList` and `LaunchControls` (whose site is now `useProcessLaunchActions`: the Resurrecting
+action's icon), and before the "Loading…" text in `ProcessDetailView` and `IframeWidget`. Each site calls
 `useVultusComponents()` and `useSpinnerKey(localKey)` unconditionally (before any early
 return) and renders `<Spinner spinnerKey={key} size=… />` when a Spinner is lent, its
 unchanged antd code otherwise.
@@ -186,7 +186,9 @@ interface LaunchControlsProps {
 
 Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`). Its hooks run
 unconditionally, before any early return: `Modal.useModal()`, `useProcessSnapshots` and
-`useProcessLaunchActions` (below).
+`useProcessLaunchActions` (below). So a LaunchControls needs the `OptioProvider` and its
+`QueryClientProvider` above it even when it renders nothing; `ProcessItem` and `ProcessTreeView` mount
+it only when given `onLaunch`, so a row or a tree without `onLaunch` needs neither.
 
 Rendering rules:
 - Renders **nothing** when `onLaunch` is not provided (a read-only view), or when the process is not launchable (`isLaunchable`: not in a launchable state, `idle | done | failed | cancelled`, or a task factory's launch, `isTaskFactoryLaunch`, which is never launched again) and is not removable (next rule).
@@ -250,7 +252,7 @@ interface ProcessItemProps {
 ```
 
 Single process row. Behavioral rules:
-- Launch button visible when `!readonly && state in LAUNCHABLE_STATES && onLaunch provided`.
+- Launch button visible when `!readonly && state in LAUNCHABLE_STATES && onLaunch provided`. Its `LaunchControls` is mounted only when `!readonly` and `onLaunch` is given; a row with `onLaunch` needs the `OptioProvider` and its `QueryClientProvider` (LaunchControls reads the process's snapshot list), one without needs neither.
 - If `process.warning` is set, its `LaunchControls` ask it in a confirm modal before a fresh run (Launch, Restart), not before a resume (a task factory's shows it in its launch form instead).
 - A task factory's launch button opens its `TaskFactoryLaunchModal` (see `LaunchControls`).
 - Cancel button visible when `!readonly && isCancellable(process) && onCancel provided` — i.e. state is `scheduled | running` AND `process.cancellable === true`. Hidden during `cancel_requested`/`cancelling` (cancel already in flight; re-click is a no-op). When `process.supportsResume` it is a **Suspend** button (pause icon, not `danger`, `processes.suspend`), otherwise **Cancel** (`processes.cancel`); `ProcessTreeView` does the same.
@@ -1360,7 +1362,7 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.resurrectingReason` | `useProcessLaunchActions` (through `LaunchControls`) | Why Resurrecting is disabled (the indicator's tooltip, below the label) (default: "Saving the work the failed run left behind; the process resumes afterwards.") |
 | `processes.resumeFromPrevious` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's label (a menu item, and its confirmation's OK button), `{{time}}` its snapshot's time (default: "Resume from previous snapshot ({{time}})") |
 | `processes.resumeFromPreviousConfirm_one` / `_other` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's confirmation title, `{{time}}`, `{{count}}` the newer snapshots it discards (defaults: "Resume from {{time}}? This discards {{count}} newer snapshot." / "Resume from {{time}}? This discards {{count}} newer snapshots."; a language's other forms, `_few`, `_many`, ..., default to the `_other` text) |
-| `processes.resumeFromPreviousKeepsDeliveries` | `useProcessLaunchActions` | A previous-snapshot item's confirmation body (default: "What the discarded runs delivered stays in the app.") |
+| `processes.resumeFromPreviousKeepsDeliveries` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's confirmation body (default: "What the discarded runs delivered stays in the app.") |
 | `processes.showEarlierLines` | `ProcessLogPanel` | The link on top that shows 500 more earlier lines (default: "Show earlier lines") |
 | `processes.olderLinesNotKept` | `ProcessLogPanel` | The note on top once every kept line shows and the buffer dropped older ones (default: "Older lines are not kept here") |
 | `status.suspending` | `ProcessStatusBadge` | `cancel_requested` / `cancelling` label when `supportsResume` (default: "Suspending") |

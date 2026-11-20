@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { I18nextProvider } from 'react-i18next';
 import i18next from 'i18next';
 import type { ProcessSnapshot } from 'optio-contracts';
@@ -47,11 +47,16 @@ function renderWith(process: any, onResurrect?: (id: string) => void) {
   return onLaunch;
 }
 
+/** A click that fires a vultus action (or closes a confirmation): its state updates settle in act. */
+async function click(element: Element) {
+  await act(async () => { fireEvent.click(element); });
+}
+
 /** Opens the split button's menu (its opener is the last button) and picks the item. */
 async function pick(name: RegExp) {
   const buttons = screen.getAllByRole('button');
   fireEvent.click(buttons[buttons.length - 1]);
-  fireEvent.click(await screen.findByRole('menuitem', { name }, { timeout: 60_000 }));
+  await click(await screen.findByRole('menuitem', { name }, { timeout: 60_000 }));
 }
 
 /** The open dialog that shows `text` (antd's confirm renders its title twice: header and body). */
@@ -65,22 +70,22 @@ async function dialogWith(text: string | RegExp) {
 describe('LaunchControls: a task with a warning', () => {
   const process = { _id: '1', status: { state: 'idle' }, warning: WARNING };
 
-  function clickPlay() {
-    fireEvent.click(screen.getByRole('button'));
+  async function clickPlay() {
+    await click(screen.getByRole('button'));
   }
 
   it('the click asks and launches nothing', async () => {
     const onLaunch = renderWith(process);
-    clickPlay();
+    await clickPlay();
     expect(await dialogWith(WARNING)).toBeTruthy();
     expect(onLaunch).not.toHaveBeenCalled();
   });
 
   it('OK launches once', async () => {
     const onLaunch = renderWith(process);
-    clickPlay();
+    await clickPlay();
     await dialogWith(WARNING);
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+    await click(screen.getByRole('button', { name: 'OK' }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalled());
     expect(onLaunch).toHaveBeenCalledTimes(1);
     expect(onLaunch).toHaveBeenCalledWith('1', undefined);
@@ -88,15 +93,15 @@ describe('LaunchControls: a task with a warning', () => {
 
   it('Cancel launches nothing', async () => {
     const onLaunch = renderWith(process);
-    clickPlay();
+    await clickPlay();
     await dialogWith(WARNING);
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await click(screen.getByRole('button', { name: 'Cancel' }));
     expect(onLaunch).not.toHaveBeenCalled();
   });
 
-  it('without a warning the click launches at once', () => {
+  it('without a warning the click launches at once', async () => {
     const onLaunch = renderWith({ _id: '2', status: { state: 'idle' } });
-    clickPlay();
+    await clickPlay();
     expect(onLaunch).toHaveBeenCalledTimes(1);
     expect(onLaunch).toHaveBeenCalledWith('2', undefined);
     expect(screen.queryByRole('button', { name: 'OK' })).toBeNull();
@@ -116,7 +121,7 @@ describe('LaunchControls: the warning of a resumable task', () => {
     await pick(/restart \(discard saved state\)/i);
     const dialog = await dialogWith(WARNING);
     expect(onLaunch).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'OK' }));
+    await click(within(dialog).getByRole('button', { name: 'OK' }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalled(), { timeout: 60_000 });
     expect(onLaunch).toHaveBeenCalledTimes(1);
     expect(onLaunch).toHaveBeenCalledWith('r', { resume: false });
@@ -127,10 +132,10 @@ describe('LaunchControls: the warning of a resumable task', () => {
     await pick(/restart \(discard saved state\)/i);
     const discard = await dialogWith(/discards the unsaved work/i);
     expect(screen.queryByText(WARNING)).toBeNull();
-    fireEvent.click(within(discard).getByRole('button', { name: 'Restart (discard saved state)' }));
+    await click(within(discard).getByRole('button', { name: 'Restart (discard saved state)' }));
     const dialog = await dialogWith(WARNING);
     expect(onLaunch).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'OK' }));
+    await click(within(dialog).getByRole('button', { name: 'OK' }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalled(), { timeout: 60_000 });
     expect(onLaunch).toHaveBeenCalledTimes(1);
     expect(onLaunch).toHaveBeenCalledWith('r', { resume: false });
@@ -140,7 +145,7 @@ describe('LaunchControls: the warning of a resumable task', () => {
     const onLaunch = renderWith(resumable);
     await pick(/restart \(discard saved state\)/i);
     const dialog = await dialogWith(WARNING);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(onLaunch).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getAllByRole('button')[0].getAttribute('aria-label')).toBe('Resume'),
       { timeout: 60_000 });
@@ -148,7 +153,7 @@ describe('LaunchControls: the warning of a resumable task', () => {
 
   it('Resume does not ask it', async () => {
     const onLaunch = renderWith(resumable);
-    fireEvent.click(screen.getAllByRole('button')[0]);
+    await click(screen.getAllByRole('button')[0]);
     await waitFor(() => expect(onLaunch).toHaveBeenCalled(), { timeout: 60_000 });
     expect(onLaunch).toHaveBeenCalledTimes(1);
     expect(onLaunch).toHaveBeenCalledWith('r', { resume: true });
@@ -163,7 +168,7 @@ describe('LaunchControls: the warning of a resumable task', () => {
     const onLaunch = renderWith(resumable);
     await pick(/Resume from previous snapshot/);
     const dialog = await dialogWith(/This discards 1 newer snapshot\.$/);
-    fireEvent.click(within(dialog).getByRole('button', { name: /Resume from previous snapshot/ }));
+    await click(within(dialog).getByRole('button', { name: /Resume from previous snapshot/ }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalled(), { timeout: 60_000 });
     expect(onLaunch).toHaveBeenCalledTimes(1);
     expect(onLaunch).toHaveBeenCalledWith('r', { resume: true, resumeFrom: older });
@@ -173,7 +178,7 @@ describe('LaunchControls: the warning of a resumable task', () => {
   it('Resurrect does not ask it', async () => {
     const onResurrect = vi.fn();
     const onLaunch = renderWith(resurrectable, onResurrect);
-    fireEvent.click(screen.getByRole('button', { name: /^resurrect$/i }));
+    await click(screen.getByRole('button', { name: /^resurrect$/i }));
     await waitFor(() => expect(onResurrect).toHaveBeenCalled(), { timeout: 60_000 });
     expect(onResurrect).toHaveBeenCalledTimes(1);
     expect(onResurrect).toHaveBeenCalledWith('r');

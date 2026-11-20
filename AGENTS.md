@@ -1724,8 +1724,10 @@ action with its reason (the menu still opens). The items come from `useProcessSn
 { enabled, runEndedAt: runEndedAt(process) })`, read only for a launchable, resumable process that is
 not a task factory (never held back by `denyReason`); while the list loads or fails the menu is Resume
 and Restart. A task's `warning` is asked (a confirm modal) before a fresh run, Launch and Restart (after
-Restart's own confirmation), never before a resume. All hooks run before the early returns.
-Used by `ProcessItem` (so `ProcessList`), `ProcessTreeView` and `ProcessDetailView`.
+Restart's own confirmation), never before a resume. All hooks run before the early returns, so a
+LaunchControls needs the `OptioProvider` and its `QueryClientProvider` even when it renders nothing.
+Used by `ProcessItem` (so `ProcessList`) and `ProcessTreeView`, which mount it only when given
+`onLaunch`, and `ProcessDetailView`.
 
 **`ProcessList`**
 
@@ -1761,9 +1763,10 @@ interface ProcessItemProps {
 }
 ```
 
-Single process row. Its `LaunchControls` ask `process.warning` before a fresh run (Launch,
-Restart), in a confirm modal (a task factory's opens its launch form instead, which shows the
-warning). The progress
+Single process row. Its `LaunchControls` (mounted only when `onLaunch` is given and not `readonly`;
+a row with `onLaunch` needs the `OptioProvider` and its `QueryClientProvider`, one without needs
+neither) ask `process.warning` before a fresh run (Launch, Restart), in a confirm modal (a task
+factory's opens its launch form instead, which shows the warning). The progress
 message is shown while the process is active or resurrecting (`isResurrecting`).
 
 **`ProcessStatusBadge`**

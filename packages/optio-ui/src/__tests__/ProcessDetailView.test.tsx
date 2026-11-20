@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, afterAll, beforeAll, vi, beforeEach } from 'vitest';
-import { render as rtlRender, cleanup, screen, fireEvent, within, waitFor } from '@testing-library/react';
+import { act, render as rtlRender, cleanup, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import React, { type ReactElement, type ReactNode } from 'react';
 import { I18nextProvider } from 'react-i18next';
 import i18next from 'i18next';
@@ -11,6 +11,10 @@ i18n.init({ lng: 'en', resources: { en: { translation: {} } } });
 const WithI18n = ({ children }: { children: ReactNode }) => <I18nextProvider i18n={i18n}>{children}</I18nextProvider>;
 // Every render (and its rerenders) under the instance.
 const render = (ui: ReactElement) => rtlRender(ui, { wrapper: WithI18n });
+/** A click that fires a vultus action: its state updates (pending, the main half) settle in act. */
+async function click(element: Element) {
+  await act(async () => { fireEvent.click(element); });
+}
 
 // Mock the hooks ProcessDetailView uses, BEFORE importing ProcessDetailView.
 const mockProcessStream = vi.fn();
@@ -396,7 +400,7 @@ describe('ProcessDetailView', () => {
 
     it.each(['done', 'failed'])(
       'a %s process with saved state shows the suspended widget variant and a Resume control',
-      (state) => {
+      async (state) => {
         registerWidget(
           'my-widget',
           () => <div data-testid="my-widget">live</div>,
@@ -407,12 +411,12 @@ describe('ProcessDetailView', () => {
         expect(screen.getByTestId('suspended-widget').textContent).toBe('suspended:abc');
         expect(screen.queryByTestId('optio-detail-default')).toBeNull();
         const actions = screen.getByTestId('optio-widget-suspended-actions');
-        fireEvent.click(within(actions).getByRole('button', { name: /resume$/i }));
+        await click(within(actions).getByRole('button', { name: /resume$/i }));
         expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true });
       },
     );
 
-    it('Resume calls launch with resume: true', () => {
+    it('Resume calls launch with resume: true', async () => {
       registerWidget(
         'my-widget',
         () => <div data-testid="my-widget">live</div>,
@@ -421,7 +425,7 @@ describe('ProcessDetailView', () => {
       mockProcessStream.mockReturnValue({ tree: suspendedTree(), logs: [], connected: true });
       const { container } = render(<ProcessDetailView processId="abc" />);
       const button = container.querySelector('.anticon-play-circle')!.closest('button')!;
-      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
       expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true });
     });
 
@@ -499,9 +503,9 @@ describe('ProcessDetailView', () => {
         expect(screen.getByTestId(layoutTestId)).toBeTruthy();
       }
 
-      it('primary button resurrects', () => {
+      it('primary button resurrects', async () => {
         renderUnsaved();
-        fireEvent.click(screen.getByRole('button', { name: /resurrect/i }));
+        await click(screen.getByRole('button', { name: /resurrect/i }));
         expect(mockResurrect).toHaveBeenCalledWith('abc');
         expect(mockLaunch).not.toHaveBeenCalled();
       });
@@ -513,11 +517,11 @@ describe('ProcessDetailView', () => {
           .closest('.vultus-combined-action-button') as HTMLElement;
         const splitButtons = within(split).getAllByRole('button');
         fireEvent.click(splitButtons[splitButtons.length - 1]);
-        fireEvent.click(await screen.findByText(/resume from last snapshot/i, {}, { timeout: 60_000 }));
+        await click(await screen.findByText(/resume from last snapshot/i, {}, { timeout: 60_000 }));
         expect(mockLaunch).not.toHaveBeenCalled();
         const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
         expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
-        fireEvent.click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
+        await click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
         await vi.waitFor(() => expect(mockLaunch).toHaveBeenCalledWith('abc', { resume: true }), { timeout: 60_000 });
         expect(mockResurrect).not.toHaveBeenCalled();
       });

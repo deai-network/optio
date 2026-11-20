@@ -126,7 +126,8 @@ export function ProcessItem({
         supportsResume={process.supportsResume}
         hasSavedState={process.hasSavedState}
       />
-      {!readonly && (
+      {/* Only with onLaunch: LaunchControls reads the snapshot list (OptioProvider and its QueryClient). */}
+      {!readonly && onLaunch && (
         <LaunchControls
           process={process}
           onLaunch={onLaunch}
