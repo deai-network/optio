@@ -2083,6 +2083,35 @@ resumes from one of them. `undefined` while disabled (nothing fetched), loading,
 launch or resurrect (`useProcessActions`) invalidates the process's lists, for a snapshot written
 without a run end.
 
+**`useProcessLaunchActions(process, triggerLaunch, triggerResurrect?, launchGate?, snapshots?)`**
+
+```typescript
+type LaunchOpts = { resume?: boolean; resumeFrom?: string } | undefined;
+
+useProcessLaunchActions(
+  process: (ProcessStateLike & { _id: string }) | null | undefined,
+  triggerLaunch: (opts?: LaunchOpts) => void,
+  triggerResurrect?: () => void,
+  launchGate: Decision = true,              // vultus-core: holds every launching action back with its reason
+  snapshots?: readonly ProcessSnapshot[],   // useProcessSnapshots' list, newest first
+): ActionStatus[]   // always 8: Resurrect, Resume, 4 previous-snapshot slots, Restart, Launch
+```
+
+A process's launch controls as vultus `useAction` statuses, for vultus-antd's
+`CombinedActionButton` (moved from excavator; ids `process.resurrect:<id>`, `process.resume:<id>`,
+`process.resumeFrom:<id>:<0..3>`, `process.restart:<id>`, `process.launch:<id>`). Visibility: while
+resurrecting, Resurrecting only (disabled, its own reason; only with `triggerResurrect`);
+resurrectable with `triggerResurrect`: Resurrect, Resume from last snapshot (if resumable), the
+previous-snapshot items (if resumable), Restart, all but Resurrect behind a "discards the unsaved
+work" confirmation; launchable and resumable: Resume, the items, Restart; launchable only: Launch.
+Slot `s` shows `snapshots[s + 1]` as "Resume from previous snapshot (<time>)" behind a confirmation
+naming its `s + 1` newer snapshots, and fires `triggerLaunch({ resume: true, resumeFrom: capturedAt })`;
+with no list or no older snapshot the slots are invisible. The `useAction` calls are unconditional,
+always the same number. A task's `warning` is the caller's: `triggerLaunch` must ask the process's
+warning first for every launching action the hook returns (Resume, Restart, Launch, the resurrect
+case's Resume from last snapshot and Restart, and the previous-snapshot items), and launch exactly
+once after OK. Details: `packages/optio-ui/AGENTS.md` "useProcessLaunchActions".
+
 **`useProcessList(options?)`**
 
 ```typescript
@@ -2196,17 +2225,21 @@ All components use `react-i18next`. Required keys:
 
 | Key | Used by |
 |-----|---------|
-| `processes.launch` | ProcessItem (launch button tooltip) |
-| `processes.resume` | LaunchControls (primary button label when hasSavedState=true; default "Resume") |
-| `processes.restart` | LaunchControls (dropdown menu item; default "Restart (discard saved state)") |
-| `processes.resurrect` | LaunchControls (Resurrect button aria-label; default "Resurrect") |
+| `processes.launch` | ProcessItem (launch button tooltip); useProcessLaunchActions (Launch; default "Launch") |
+| `processes.resume` | LaunchControls (primary button label when hasSavedState=true; default "Resume"); useProcessLaunchActions (Resume) |
+| `processes.restart` | LaunchControls (dropdown menu item; default "Restart (discard saved state)"); useProcessLaunchActions (Restart) |
+| `processes.resurrect` | LaunchControls (Resurrect button aria-label; default "Resurrect"); useProcessLaunchActions (Resurrect) |
 | `processes.resurrectHint` | LaunchControls (Resurrect button tooltip; default "Save the work left by the failed run, then resume") |
-| `processes.resumeFromSnapshot` | LaunchControls (Resurrect menu item + confirmation title; default "Resume from last snapshot") |
+| `processes.resumeFromSnapshot` | LaunchControls (Resurrect menu item + confirmation title; default "Resume from last snapshot"); useProcessLaunchActions (Resume in the resurrect case) |
 | `processes.restartDiscarding` | LaunchControls (Resurrect menu item + confirmation title; default "Restart") |
-| `processes.discardUnsavedWork` | LaunchControls (confirmation body; default "This discards the unsaved work left by the failed run.") |
+| `processes.discardUnsavedWork` | LaunchControls (confirmation body; default "This discards the unsaved work left by the failed run."); useProcessLaunchActions (resurrect-case confirmation body; default "This discards the unsaved work the failed run left behind.") |
 | `processes.discardAndContinue` | LaunchControls (confirmation OK button; default "Discard and continue") |
-| `processes.resurrecting` | LaunchControls (Resurrecting indicator tooltip; default "Resurrecting: saving the unsaved work…") |
+| `processes.resurrecting` | LaunchControls (Resurrecting indicator tooltip; default "Resurrecting: saving the unsaved work…"); useProcessLaunchActions (Resurrecting label; default "Resurrecting…") |
 | `processes.resurrectingLabel` | LaunchControls (Resurrecting indicator aria-label; default "Resurrecting") |
+| `processes.resurrectingReason` | useProcessLaunchActions (why Resurrecting is disabled; default "Saving the work the failed run left behind; the process resumes afterwards.") |
+| `processes.resumeFromPrevious` | useProcessLaunchActions (a previous-snapshot item, `{{time}}`; default "Resume from previous snapshot ({{time}})") |
+| `processes.resumeFromPreviousConfirm_one` / `_other` | useProcessLaunchActions (its confirmation title, `{{time}}`, `{{count}}` newer snapshots; defaults "Resume from {{time}}? This discards {{count}} newer snapshot." / "… snapshots.") |
+| `processes.resumeFromPreviousKeepsDeliveries` | useProcessLaunchActions (its confirmation body; default "What the discarded runs delivered stays in the app.") |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |
 | `processes.suspend` | ProcessItem, ProcessTreeView (stop button tooltip for a resumable process; default "Suspend") |
 | `processes.moreOptions` | LaunchControls (split-button menu tooltip; default "More options") |

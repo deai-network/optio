@@ -1031,6 +1031,64 @@ they settle. `structuralSharing: shareTsRestResponse`, as the other queries.
 
 ---
 
+### useProcessLaunchActions
+
+```ts
+type LaunchOpts = { resume?: boolean; resumeFrom?: string } | undefined;
+
+function useProcessLaunchActions(
+  process: (ProcessStateLike & { _id: string }) | null | undefined,
+  triggerLaunch: (opts?: LaunchOpts) => void,
+  triggerResurrect?: () => void,
+  launchGate: Decision = true,                 // vultus-core
+  snapshots?: readonly ProcessSnapshot[],      // useProcessSnapshots' list
+): ActionStatus[]                              // always 8, for vultus-antd's CombinedActionButton
+```
+
+A process's launch controls as vultus `useAction` statuses (moved from excavator), always eight,
+in this order: Resurrect, Resume, four previous-snapshot slots, Restart, Launch. Their `invisible`
+encodes the matrix:
+
+- resurrecting: Resurrecting… only, disabled with its own reason (`processes.resurrectingReason`,
+  not the gate's); shown only when the caller passes `triggerResurrect`. Its icon is the lent
+  `Spinner` (`spinnerKey` from `useSpinnerKey('optio:process:<id>:resurrecting')`, `size="small"`),
+  else `<LoadingOutlined spin />`; otherwise Resurrect's icon is `<MedicineBoxOutlined />`.
+- resurrectable (`isResurrectable` and `triggerResurrect` given): Resurrect (primary, fires
+  `triggerResurrect`), then "Resume from last snapshot" and the previous-snapshot items (when
+  resumable), then Restart. All but Resurrect discard the unsaved work and ask first
+  (`cascade-modal`, `processes.discardUnsavedWork`).
+- launchable and resumable: Resume (primary), the previous-snapshot items, Restart.
+- launchable, not resumable: Launch (primary) only.
+- not launchable, or no process: all invisible.
+
+The previous-snapshot slots: `older = snapshots?.slice(1, 5) ?? []` (the list is newest first,
+the newest included, which Resume reads). Slot `s` (id `process.resumeFrom:<id>:<s>`, icon
+`<HistoryOutlined />`, `variant: 'default'`) shows `older[s]` as "Resume from previous snapshot
+(<time>)" when it exists and the process is launchable and resumable and not resurrecting. Its
+`cascade-modal` confirmation names the `s + 1` newer snapshots the resume discards
+(`processes.resumeFromPreviousConfirm`) and says what the discarded runs delivered stays
+(`processes.resumeFromPreviousKeepsDeliveries`; in the resurrect case followed by
+`processes.discardUnsavedWork`). It fires `triggerLaunch({ resume: true, resumeFrom:
+older[s].capturedAt })`. Without a list (loading, failed, left out) or without an older snapshot
+the slots are invisible: Resume and Restart, as before. `<time>` is `formatSnapshotTimes`
+(`snapshot-time.ts`) in the i18n language (`i18n.resolvedLanguage ?? i18n.language`): `dateStyle:
+'medium'`, `timeStyle: 'short'`, and `timeStyle: 'medium'` (the seconds) for the times whose short
+forms collide.
+
+The other ids are `process.resurrect:<id>`, `process.resume:<id>`, `process.restart:<id>` and
+`process.launch:<id>`. Resume fires `triggerLaunch({ resume: true })`, Restart `triggerLaunch({
+resume: false })`, Launch `triggerLaunch()`. `launchGate` (default: allowed) disables every action
+that launches, Resurrect and the previous-snapshot items included, with its reason. The `useAction`
+calls are unconditional and always the same number, so the hook can run before a page's early
+returns.
+
+**A task's `warning` is the caller's.** The hook asks none: `triggerLaunch` must ask the process's
+`warning` first for every launching action the hook returns (Resume, Restart, Launch, the
+resurrect case's Resume from last snapshot and Restart, and the previous-snapshot items), after
+the action's own confirmation, and launch exactly once after OK; a cancel launches nothing.
+
+---
+
 ### useProcessList
 
 ```ts
@@ -1230,7 +1288,7 @@ no inline default (the app must translate them); the second carries an English d
 
 | Key | Component | Usage |
 |-----|-----------|-------|
-| `processes.launch` | `LaunchControls`, `useTaskFactory` | Tooltip on the single launch button; the label of a task factory's launch action (default: "Launch") |
+| `processes.launch` | `LaunchControls`, `useTaskFactory`, `useProcessLaunchActions` | Tooltip on the single launch button; the label of a task factory's launch action and of the hook's Launch (default: "Launch") |
 | `processes.deleted` | `ProcessDetailView` | The notice over the last view of a process deleted while open (default: "Process deleted.") |
 | `processes.notFound` | `ProcessDetailView` | A process the stream reports gone that the view never showed (default: "Process not found.") |
 | `processes.removeLaunch` | `LaunchControls` | Tooltip / `aria-label` of the remove button of an ended launch (default: "Remove") |
@@ -1251,17 +1309,21 @@ no inline default (the app must translate them); the second carries an English d
 | `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
 | `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`) | A launch refusal in the form, one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names), `invalid-metadata` (the server's launch stamp, optio-api's `launchMetadata`, collides with the factory's metadata), and those of a resume from an older snapshot (`resumeFrom`): `invalid-request` (no `resume: true`), `no-snapshot-support`, `snapshot-not-found`, `capture-pending` (an unfinished capture is pending). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
 | `processes.suspend` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` | Tooltip / `aria-label` of the stop button when the task can resume (default: "Suspend") |
-| `processes.resume` | `LaunchControls` | Resume button tooltip and `aria-label` when `supportsResume` and `hasSavedState`, a task's or a kept launch's (default: "Resume") |
-| `processes.restart` | `LaunchControls` | Dropdown menu item label (default: "Restart (discard saved state)") |
+| `processes.resume` | `LaunchControls`, `useProcessLaunchActions` | Resume button tooltip and `aria-label` when `supportsResume` and `hasSavedState`, a task's or a kept launch's; the hook's Resume label (default: "Resume") |
+| `processes.restart` | `LaunchControls`, `useProcessLaunchActions` | Dropdown menu item label; the hook's Restart label, and in the resurrect case its confirmation title (default: "Restart (discard saved state)") |
 | `processes.moreOptions` | `LaunchControls` | Tooltip on the dropdown arrow of the Resume and Resurrect split buttons (default: "More options") |
-| `processes.resurrect` | `LaunchControls` | Resurrect button `aria-label` (default: "Resurrect") |
+| `processes.resurrect` | `LaunchControls`, `useProcessLaunchActions` | Resurrect button `aria-label`; the hook's Resurrect label (default: "Resurrect") |
 | `processes.resurrectHint` | `LaunchControls` | Resurrect button tooltip (default: "Save the work left by the failed run, then resume") |
-| `processes.resumeFromSnapshot` | `LaunchControls` | Resurrect menu item and confirmation title (default: "Resume from last snapshot") |
+| `processes.resumeFromSnapshot` | `LaunchControls`, `useProcessLaunchActions` | Resurrect menu item and confirmation title; the hook's Resume label and confirmation title in the resurrect case (default: "Resume from last snapshot") |
 | `processes.restartDiscarding` | `LaunchControls` | Resurrect menu item and confirmation title (default: "Restart") |
-| `processes.discardUnsavedWork` | `LaunchControls` | Confirmation body (default: "This discards the unsaved work left by the failed run.") |
+| `processes.discardUnsavedWork` | `LaunchControls`, `useProcessLaunchActions` | Confirmation body (LaunchControls' default: "This discards the unsaved work left by the failed run."); the hook's resurrect-case confirmation body, in a previous-snapshot item's after the deliveries sentence (its default: "This discards the unsaved work the failed run left behind.") |
 | `processes.discardAndContinue` | `LaunchControls` | Confirmation OK button (default: "Discard and continue") |
-| `processes.resurrecting` | `LaunchControls` | Resurrecting indicator tooltip (default: "Resurrecting: saving the unsaved work…") |
+| `processes.resurrecting` | `LaunchControls`, `useProcessLaunchActions` | Resurrecting indicator tooltip (LaunchControls' default: "Resurrecting: saving the unsaved work…"); the hook's Resurrecting label (its default: "Resurrecting…") |
 | `processes.resurrectingLabel` | `LaunchControls` | Resurrecting indicator `aria-label` (default: "Resurrecting") |
+| `processes.resurrectingReason` | `useProcessLaunchActions` | Why Resurrecting is disabled (default: "Saving the work the failed run left behind; the process resumes afterwards.") |
+| `processes.resumeFromPrevious` | `useProcessLaunchActions` | A previous-snapshot item's label, `{{time}}` its snapshot's time (default: "Resume from previous snapshot ({{time}})") |
+| `processes.resumeFromPreviousConfirm_one` / `_other` | `useProcessLaunchActions` | A previous-snapshot item's confirmation title, `{{time}}`, `{{count}}` the newer snapshots it discards (defaults: "Resume from {{time}}? This discards {{count}} newer snapshot." / "Resume from {{time}}? This discards {{count}} newer snapshots.") |
+| `processes.resumeFromPreviousKeepsDeliveries` | `useProcessLaunchActions` | A previous-snapshot item's confirmation body (default: "What the discarded runs delivered stays in the app.") |
 | `status.suspending` | `ProcessStatusBadge` | `cancel_requested` / `cancelling` label when `supportsResume` (default: "Suspending") |
 | `status.suspended` | `ProcessStatusBadge` | `cancelled` label when `supportsResume` and `hasSavedState` (default: "Suspended") |
 | `status.autoResumeScheduled` | `ProcessStatusBadge` | Tooltip / `aria-label` of the auto-resume stopwatch icon (default: "Scheduled for auto-restart") |
