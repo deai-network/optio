@@ -351,7 +351,21 @@ interface ProcessTreeViewProps {
 ```
 
 Renders an Ant Design `Tree` (non-selectable, with lines) from a nested `ProcessNode`
-hierarchy. All nodes are expanded by default.
+hierarchy. All nodes are expanded (the switchers do not collapse them), except in a large tree.
+
+A **large tree**, more than `LARGE_TREE_THRESHOLD` (500) nodes shown (counted after the
+"Hide finished sub-tasks" filter), renders in antd's virtual mode: the `Tree` gets
+`height={LARGE_TREE_HEIGHT}` (600; with rc-tree's `fullHeight: false` it is the box's most, a
+short list stays short), so only the rows in view are in the DOM. It opens with only the root
+expanded (its children shown); the switchers expand and collapse nodes (`onExpand`, kept per
+root `_id`). Crossing the threshold while shown switches the mode, and its expansion, then and
+there. Both constants are exported from the package root.
+
+The filtered tree, the node count, the expanded keys and the antd nodes are memoized on
+`treeData` and the checkbox: a re-render with the same `treeData` rebuilds nothing. The node
+controls call the latest callbacks given (stored after each render, read when they fire), so a
+caller's new inline callbacks on each render do not rebuild the nodes; giving or taking away a
+callback does (it shows or hides controls).
 
 Process names show a tooltip with the `description` text when hovering, if `description` is set.
 
@@ -395,13 +409,23 @@ interface ProcessLogPanelProps {
   logs: LogEntry[];
   tree: ProcessTreeNode | null;  // indents and colours each row by its process; null: no bars
   fillParent?: boolean;          // fill the parent's height instead of maxHeight 400
+  droppedLogCount?: number;      // older entries the buffer dropped (useProcessStream's); default 0
 }
 ```
 
 Monospace scrolling log container (`maxHeight: 400px`, or the parent's height with
-`fillParent`). Auto-scrolls to bottom on new entries, but only when the user was already at
-the bottom (within 30px). Renders
+`fillParent`). Auto-scrolls to bottom on each new `logs` array (so also when a full buffer keeps
+its length), but only when the user was already at the bottom (within 30px). Renders
 `Empty` with `t('common.noData')` when `logs` is empty.
+
+It renders the most recent `LOG_PANEL_WINDOW` (500, exported) lines of `logs`. With more, a link
+button on top, `t('processes.showEarlierLines', 'Show earlier lines')`, adds 500 more each time.
+Once every line of `logs` shows and `droppedLogCount` is above 0, the top says
+`t('processes.olderLinesNotKept', 'Older lines are not kept here')` instead. Scrolled up (not
+following), the panel keeps its first line (found by identity in each new `logs`), so the lines
+read stay put while new ones are added below; back at the bottom it follows again, rendering as
+many lines as it showed. The first line shown names its process, as a transition does. Rows are
+memoized (`React.memo`, keyed `droppedLogCount + index`), so a batch renders the rows it adds.
 
 Level-to-color mapping:
 
@@ -587,7 +611,7 @@ names with what is under it, or null), `logsOfSubtree(logs, subtree)` (the entri
 - **`tree.uiWidget` is set, the process `isSuspended`, but no suspended variant is
   registered** — falls back to the default tree+log view, silently (no warning — this is the
   normal case for a widget that doesn't support a read-only suspended view yet).
-- **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set, `onLaunched` passed on) + `ProcessLogPanel`. A task factory's record (the root of its launches) gets the play button that opens its `TaskFactoryLaunchModal`; the launch then shows under it in the tree, with no play button of its own (`isTaskFactoryLaunch`).
+- **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set, `onLaunched` passed on) + `ProcessLogPanel` (given the stream's `droppedLogCount`, as the widget layout's log strip is; a deleted process's last log is not). A task factory's record (the root of its launches) gets the play button that opens its `TaskFactoryLaunchModal`; the launch then shows under it in the tree, with no play button of its own (`isTaskFactoryLaunch`).
 
 `widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${database}/${prefix}/${process._id}/`
 (database and prefix URI-encoded; trailing slash is load-bearing for relative URLs inside iframes).
@@ -1176,17 +1200,30 @@ Test: `src/__tests__/ts-rest-sharing.test.tsx`.
 ```ts
 function useProcessStream(
   processId: string | undefined,
-  maxDepth?: number  // default 10
+  maxDepth?: number,  // default 10
+  options?: UseProcessStreamOptions,
 ): {
   processes: ProcessUpdate[];
   connected: boolean;
   tree: ProcessTreeNode | null;
   rootProcess: ProcessUpdate | null;
-  logs: LogEntry[];
+  logs: LogEntry[];          // the most recent entries, at most maxLogEntries, oldest first
+  droppedLogCount: number;   // older entries dropped since the stream (or its last log-clear) began
   processNotFound: boolean;  // the probe got a 404, or an update no longer holds the process: terminal, no retry
   error: Error | null;       // probe or network failure; retrying continues
 }
+
+interface UseProcessStreamOptions {
+  maxLogEntries?: number;    // default DEFAULT_MAX_LOG_ENTRIES (2000)
+}
 ```
+
+The log buffer keeps the most recent `maxLogEntries` entries: a batch past it drops the oldest
+and adds their number to `droppedLogCount`; a batch copies at most `maxLogEntries` entries,
+however long the stream has run. `DEFAULT_MAX_LOG_ENTRIES` and `UseProcessStreamOptions` are
+exported from the package root. A changed `maxLogEntries` reconnects, as `maxDepth` does. The
+slice of a `MultiProcessStreamProvider` is returned as the provider keeps it (`droppedLogCount`
+0): the provider's own log buffer has no cap.
 
 SSE endpoint: `{baseUrl}/api/processes/{processId}/tree/stream?prefix={prefix}&maxDepth={maxDepth}[&database={database}]`,
 opened after a probe `GET {baseUrl}/api/processes/{processId}?prefix=…[&database=…]`. The stream
@@ -1202,8 +1239,8 @@ own `EventSource`, unless a `MultiProcessStreamProvider` ancestor streams the pr
 
 SSE message types:
 - `{ type: 'update', processes: ProcessUpdate[] }` — replaces full process list.
-- `{ type: 'log', entries: LogEntry[] }` — appends log entries.
-- `{ type: 'log-clear' }` — clears log buffer.
+- `{ type: 'log', entries: LogEntry[] }` — appends log entries (up to the cap above).
+- `{ type: 'log-clear' }` — clears log buffer (and `droppedLogCount`).
 
 `tree` is derived via `buildTree(processes)` — constructs a `ProcessTreeNode` hierarchy
 from the flat `processes` array using `parentId` linkage; root is the node with `depth === 0`.
@@ -1324,6 +1361,8 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.resumeFromPrevious` | `useProcessLaunchActions` | A previous-snapshot item's label, `{{time}}` its snapshot's time (default: "Resume from previous snapshot ({{time}})") |
 | `processes.resumeFromPreviousConfirm_one` / `_other` | `useProcessLaunchActions` | A previous-snapshot item's confirmation title, `{{time}}`, `{{count}}` the newer snapshots it discards (defaults: "Resume from {{time}}? This discards {{count}} newer snapshot." / "Resume from {{time}}? This discards {{count}} newer snapshots.") |
 | `processes.resumeFromPreviousKeepsDeliveries` | `useProcessLaunchActions` | A previous-snapshot item's confirmation body (default: "What the discarded runs delivered stays in the app.") |
+| `processes.showEarlierLines` | `ProcessLogPanel` | The link on top that shows 500 more earlier lines (default: "Show earlier lines") |
+| `processes.olderLinesNotKept` | `ProcessLogPanel` | The note on top once every kept line shows and the buffer dropped older ones (default: "Older lines are not kept here") |
 | `status.suspending` | `ProcessStatusBadge` | `cancel_requested` / `cancelling` label when `supportsResume` (default: "Suspending") |
 | `status.suspended` | `ProcessStatusBadge` | `cancelled` label when `supportsResume` and `hasSavedState` (default: "Suspended") |
 | `status.autoResumeScheduled` | `ProcessStatusBadge` | Tooltip / `aria-label` of the auto-resume stopwatch icon (default: "Scheduled for auto-restart") |

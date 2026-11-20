@@ -1798,7 +1798,7 @@ interface ProcessTreeViewProps {
 }
 ```
 
-Ant Design `Tree` rendering process hierarchy with status badges, progress bars, cancel buttons, and (when `onLaunch` is given) `LaunchControls`. A node's progress message is shown while it is active or resurrecting (`isResurrecting`). Has built-in "Hide finished sub-tasks" toggle (default: on).
+Ant Design `Tree` rendering process hierarchy with status badges, progress bars, cancel buttons, and (when `onLaunch` is given) `LaunchControls`. A node's progress message is shown while it is active or resurrecting (`isResurrecting`). Has built-in "Hide finished sub-tasks" toggle (default: on). Every node is expanded; above `LARGE_TREE_THRESHOLD` (500) nodes shown it renders virtualized (`height` `LARGE_TREE_HEIGHT`, 600px at most) and opens with the root's children only, the switchers expanding nodes. Its nodes are memoized on `treeData` and the toggle (the controls call the latest callbacks given). Details: `packages/optio-ui/AGENTS.md` "ProcessTreeView".
 
 `ProcessNode` shape expected by this component:
 ```typescript
@@ -1829,10 +1829,11 @@ interface ProcessLogPanelProps {
   logs: LogEntry[];  // { timestamp: string; level: string; message: string; data?; processId: string; processLabel: string }
   tree: ProcessTreeNode | null;  // gives each process's lines a stable color and indent; null: no bar
   fillParent?: boolean;          // fill the parent's height instead of max-height 400px
+  droppedLogCount?: number;      // older entries the buffer dropped (useProcessStream's); default 0
 }
 ```
 
-Scrollable log viewer (max-height 400px, monospace). Auto-scrolls to bottom unless user has scrolled up. Level → color: `event`→cyan, `info`→blue, `debug`→default, `warning`→gold, `error`→red.
+Scrollable log viewer (max-height 400px, monospace). Auto-scrolls to bottom unless user has scrolled up (scrolled up, the lines read stay put). Renders the last `LOG_PANEL_WINDOW` (500) lines; "Show earlier lines" on top adds 500 more; once all show and `droppedLogCount > 0`, "Older lines are not kept here". Level → color: `event`→cyan, `info`→blue, `debug`→default, `warning`→gold, `error`→red.
 
 **`ProcessFilters`**
 
@@ -2153,15 +2154,16 @@ useProcessTreeLog(
 // Default refetchInterval: 5000ms, limit: 100.
 ```
 
-**`useProcessStream(processId, maxDepth?)`**
+**`useProcessStream(processId, maxDepth?, options?)`**
 
 ```typescript
-useProcessStream(processId: string | undefined, maxDepth?: number): {
+useProcessStream(processId: string | undefined, maxDepth?: number, options?: { maxLogEntries?: number }): {
   processes: ProcessUpdate[];
   connected: boolean;
   tree: ProcessTreeNode | null;
   rootProcess: ProcessUpdate | null;
-  logs: LogEntry[];
+  logs: LogEntry[];          // the most recent maxLogEntries (default DEFAULT_MAX_LOG_ENTRIES, 2000)
+  droppedLogCount: number;   // older entries dropped since the stream (or its last log-clear) began
   processNotFound: boolean;  // the pre-flight GET returned 404; terminal, no retry
   error: Error | null;       // other API errors; the retry loop keeps running
 }
@@ -2261,6 +2263,8 @@ All components use `react-i18next`. Required keys:
 | `status.suspending` / `status.suspended` | ProcessStatusBadge (resumable process stopping / stopped with saved state; defaults "Suspending" / "Suspended") |
 | `status.autoResumeScheduled` | ProcessStatusBadge (auto-resume clock icon label; default "Scheduled for auto-restart") |
 | `common.noData` | ProcessLogPanel (empty state) |
+| `processes.showEarlierLines` | ProcessLogPanel (the link on top that shows 500 more lines; default "Show earlier lines") |
+| `processes.olderLinesNotKept` | ProcessLogPanel (the note on top once every kept line shows; default "Older lines are not kept here") |
 | `processes.factoryTitle` | TaskFactoryLaunchModal (title, `{{name}}` the factory's; default "Launch “{{name}}”") |
 | `processes.factoryLaunch` / `processes.factoryCancel` | TaskFactoryLaunchModal (buttons; defaults "Launch" / "Cancel") |
 | `processes.factoryRequired` / `processes.factoryMaxLength` | TaskFactoryLaunchModal (a required value missing, a text over `maxLength` with `{{count}}`; defaults "Required" / "At most {{count}} characters") |
