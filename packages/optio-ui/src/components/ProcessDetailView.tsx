@@ -206,7 +206,7 @@ export function ProcessDetailView({
       >
         {showLogs && (
           <div style={{ flex: '0 0 20%', minHeight: 0, overflow: 'hidden' }}>
-            <ProcessLogPanel logs={logs} tree={tree} fillParent />
+            <ProcessLogPanel logs={logs} tree={tree} droppedLogCount={stream.droppedLogCount} fillParent />
           </div>
         )}
         {mode === 'suspended' && !readOnly && (
@@ -250,7 +250,7 @@ export function ProcessDetailView({
         onResurrect={readOnly ? undefined : (id) => resurrect(id)}
         onCancel={readOnly ? undefined : (id) => cancel(id)}
       />
-      {showLogs && <ProcessLogPanel logs={logs} tree={tree} />}
+      {showLogs && <ProcessLogPanel logs={logs} tree={tree} droppedLogCount={stream.droppedLogCount} />}
     </div>
   );
 }

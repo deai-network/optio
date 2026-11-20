@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, cleanup, screen, within } from '@testing-library/react';
+import { render, cleanup, screen, within, fireEvent } from '@testing-library/react';
 import React from 'react';
-import { ProcessLogPanel } from '../components/ProcessLogPanel.js';
+import { ProcessLogPanel, LOG_PANEL_WINDOW } from '../components/ProcessLogPanel.js';
 import type { LogEntry, ProcessTreeNode } from '../hooks/useProcessStream.js';
 import { PALETTE, STRIDE } from '../log-visuals.js';
 
@@ -125,5 +125,110 @@ describe('ProcessLogPanel', () => {
     const row = container.querySelector('[data-testid="log-row"]') as HTMLElement;
     expect(row.style.paddingLeft).toBe('0px');
     expect(row.querySelector('[data-testid="log-bar"]')).toBeNull();
+  });
+});
+
+describe('ProcessLogPanel: only the most recent lines render', () => {
+  const lines = (from: number, count: number) =>
+    Array.from({ length: count }, (_, i) => entry('a', 'alpha', `line ${from + i}`));
+  const rows = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('[data-testid="log-row"]'));
+  const text = (row: Element | undefined) => row?.textContent ?? '';
+  const showEarlier = () => screen.queryByRole('button', { name: 'Show earlier lines' });
+
+  /** jsdom lays nothing out: give the scroll box a geometry (400px tall, 10,000px of content). */
+  function scrollBox(container: HTMLElement) {
+    const box = container.firstElementChild as HTMLElement;
+    let top = 0;
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => 10_000 });
+    Object.defineProperty(box, 'clientHeight', { configurable: true, get: () => 400 });
+    Object.defineProperty(box, 'scrollTop', {
+      configurable: true, get: () => top, set: (v: number) => { top = v; },
+    });
+    return {
+      get top() { return top; },
+      scrollTo(v: number) { top = v; fireEvent.scroll(box); },
+      reset(v: number) { top = v; }, // moves it without a scroll event
+    };
+  }
+
+  it('the window is 500 lines', () => {
+    expect(LOG_PANEL_WINDOW).toBe(500);
+  });
+
+  it('5,000 entries render the last 500 rows, oldest first', () => {
+    const { container } = render(<ProcessLogPanel logs={lines(0, 5000)} tree={tree2level()} />);
+    const shown = rows(container);
+    expect(shown).toHaveLength(LOG_PANEL_WINDOW);
+    expect(text(shown[0])).toContain('line 4500');
+    expect(text(shown[shown.length - 1])).toContain('line 4999');
+    // The first row shown names its process, as the first row of a log does.
+    expect(within(shown[0] as HTMLElement).getByText('alpha')).toBeTruthy();
+  });
+
+  it('the control at the top shows 500 more, until every line shows', () => {
+    const { container } = render(<ProcessLogPanel logs={lines(0, 1200)} tree={tree2level()} />);
+    const control = showEarlier()!;
+    expect(control).toBeTruthy();
+    // On top: before the first row.
+    expect(control.compareDocumentPosition(rows(container)[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(control);
+    expect(rows(container)).toHaveLength(1000);
+    expect(text(rows(container)[0])).toContain('line 200');
+
+    fireEvent.click(showEarlier()!);
+    expect(rows(container)).toHaveLength(1200);
+    expect(text(rows(container)[0])).toContain('line 0');
+    expect(showEarlier()).toBeNull();
+  });
+
+  it('a short log: every line, no control, no note', () => {
+    const { container } = render(<ProcessLogPanel logs={lines(0, 3)} tree={tree2level()} />);
+    expect(rows(container)).toHaveLength(3);
+    expect(showEarlier()).toBeNull();
+    expect(screen.queryByText('Older lines are not kept here')).toBeNull();
+  });
+
+  it('the buffer dropped older entries: the note on top, once every kept line shows', () => {
+    const { container } = render(
+      <ProcessLogPanel logs={lines(100, 600)} tree={tree2level()} droppedLogCount={100} />,
+    );
+    expect(showEarlier()).toBeTruthy();
+    expect(screen.queryByText('Older lines are not kept here')).toBeNull();
+    fireEvent.click(showEarlier()!);
+    expect(rows(container)).toHaveLength(600);
+    const note = screen.getByText('Older lines are not kept here');
+    expect(note.compareDocumentPosition(rows(container)[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('follows the bottom as new entries come, also when the buffer is full (its length unchanged)', () => {
+    const { container, rerender } = render(<ProcessLogPanel logs={lines(0, 2000)} tree={tree2level()} />);
+    const box = scrollBox(container);
+    box.reset(0);
+    rerender(<ProcessLogPanel logs={lines(5, 2000)} tree={tree2level()} />);
+    expect(box.top).toBe(10_000);
+    const shown = rows(container);
+    expect(shown).toHaveLength(LOG_PANEL_WINDOW);
+    expect(text(shown[shown.length - 1])).toContain('line 2004');
+  });
+
+  it('scrolled up: no auto-scroll, and the lines read stay (none removed above them)', () => {
+    const logs = lines(0, 5000);
+    const { container, rerender } = render(<ProcessLogPanel logs={logs} tree={tree2level()} />);
+    const box = scrollBox(container);
+    box.scrollTo(100);
+    rerender(<ProcessLogPanel logs={[...logs, ...lines(5000, 10)]} tree={tree2level()} />);
+    expect(box.top).toBe(100);
+    const shown = rows(container);
+    expect(text(shown[0])).toContain('line 4500');
+    expect(shown).toHaveLength(510);
+
+    // Back at the bottom: it follows again.
+    box.scrollTo(10_000 - 400);
+    rerender(<ProcessLogPanel logs={[...logs, ...lines(5000, 20)]} tree={tree2level()} />);
+    expect(box.top).toBe(10_000);
+    const after = rows(container);
+    expect(text(after[after.length - 1])).toContain('line 5019');
   });
 });
