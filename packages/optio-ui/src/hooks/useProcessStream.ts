@@ -52,12 +52,24 @@ export interface LogEntry {
   processLabel: string;
 }
 
+/** How many log entries `useProcessStream` keeps by default: the most recent ones. */
+export const DEFAULT_MAX_LOG_ENTRIES = 2000;
+
+export interface UseProcessStreamOptions {
+  /** How many log entries to keep, the most recent ones (default `DEFAULT_MAX_LOG_ENTRIES`). */
+  maxLogEntries?: number;
+}
+
 interface ProcessStreamResult {
   processes: ProcessUpdate[];
   connected: boolean;
   tree: ProcessTreeNode | null;
   rootProcess: ProcessUpdate | null;
+  /** The most recent log entries, at most `maxLogEntries`, oldest first. */
   logs: LogEntry[];
+  /** How many older entries the buffer dropped since the stream (or its last `log-clear`)
+   *  began. Always 0 for a `MultiProcessStreamProvider` slice (the provider keeps its own). */
+  droppedLogCount: number;
   /** True when the process exists check returned 404, or when an update of the open stream no
    *  longer holds the process (deleted while shown; matched by `processId` or `_id`, a hex one
    *  in any case: `namesProcess`). Terminal: the stream is closed, no retry. */
@@ -84,20 +96,39 @@ function buildTree(flat: ProcessUpdate[]): ProcessTreeNode | null {
   return root;
 }
 
+/**
+ * `kept` followed by `batch`, but only the last `max` entries of the two. Copies at most `max`
+ * entries, however long the stream has run: the batch's last entries, and the newest of `kept`
+ * that still fit.
+ */
+function appendCapped<T>(kept: T[], batch: T[], max: number): { entries: T[]; dropped: number } {
+  const total = kept.length + batch.length;
+  if (total <= max) return { entries: kept.concat(batch), dropped: 0 };
+  const fromBatch = batch.length > max ? batch.slice(batch.length - max) : batch;
+  const entries = kept.slice(kept.length - (max - fromBatch.length)).concat(fromBatch);
+  return { entries, dropped: total - entries.length };
+}
+
 interface InternalState {
   processes: ProcessUpdate[];
   connected: boolean;
   logs: LogEntry[];
+  droppedLogCount: number;
   processNotFound: boolean;
   error: Error | null;
 }
 
 const INITIAL_STATE: InternalState = {
-  processes: [], connected: false, logs: [],
+  processes: [], connected: false, logs: [], droppedLogCount: 0,
   processNotFound: false, error: null,
 };
 
-export function useProcessStream(processId: string | undefined, maxDepth = 10): ProcessStreamResult {
+export function useProcessStream(
+  processId: string | undefined,
+  maxDepth = 10,
+  options?: UseProcessStreamOptions,
+): ProcessStreamResult {
+  const maxLogEntries = Math.max(0, options?.maxLogEntries ?? DEFAULT_MAX_LOG_ENTRIES);
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
   const baseUrl = useOptioBaseUrl();
@@ -166,8 +197,14 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
             }
             setState((s) => ({ ...s, processes }));
           }
-          else if (data.type === 'log-clear') setState((s) => ({ ...s, logs: [] }));
-          else if (data.type === 'log') setState((s) => ({ ...s, logs: [...s.logs, ...data.entries] }));
+          else if (data.type === 'log-clear') setState((s) => ({ ...s, logs: [], droppedLogCount: 0 }));
+          else if (data.type === 'log' && Array.isArray(data.entries)) {
+            const batch: LogEntry[] = data.entries;
+            setState((s) => {
+              const { entries, dropped } = appendCapped(s.logs, batch, maxLogEntries);
+              return { ...s, logs: entries, droppedLogCount: s.droppedLogCount + dropped };
+            });
+          }
         } catch { /* ignore */ }
       };
       es.onerror = () => {
@@ -210,7 +247,7 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
         }));
         retryTimeoutRef.current = setTimeout(() => connect(), 3000);
       });
-  }, [processId, maxDepth, prefix, database, baseUrl]);
+  }, [processId, maxDepth, maxLogEntries, prefix, database, baseUrl]);
 
   useEffect(() => {
     // When the provider slice is active for this pid, skip the per-PID
@@ -249,6 +286,7 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
       processes: slice.processes as unknown as ProcessUpdate[],
       tree: slice.tree as unknown as ProcessTreeNode | null,
       logs: slice.logs as unknown as LogEntry[],
+      droppedLogCount: 0,
       connected: slice.connected,
       rootProcess: slice.rootProcess as unknown as ProcessUpdate | null,
       processNotFound: slice.processNotFound,

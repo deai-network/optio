@@ -39,7 +39,8 @@ export { useProcessActions } from './hooks/useProcessActions.js';
 export { useProcessList, useProcess, useProcesses, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
 export { useProcessConversation, runEndedAt } from './hooks/useProcessConversation.js';
 export { useProcessSnapshots } from './hooks/useProcessSnapshots.js';
-export { useProcessStream } from './hooks/useProcessStream.js';
+export { useProcessStream, DEFAULT_MAX_LOG_ENTRIES } from './hooks/useProcessStream.js';
+export type { UseProcessStreamOptions } from './hooks/useProcessStream.js';
 export { useProcessListStream } from './hooks/useProcessListStream.js';
 export { usePrefixes, usePrefixDiscovery } from './hooks/usePrefixDiscovery.js';
 
