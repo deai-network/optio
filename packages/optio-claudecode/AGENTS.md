@@ -254,7 +254,8 @@ and `discard_snapshots_after` for a launch with `resume_from` (optio-core's
 AGENTS.md, "TaskInstance.list_snapshots / discard_snapshots_after"); the
 helper's rules (validity, timestamp matching, which blobs go) are in
 optio-agents' AGENTS.md, "Snapshot history (optio_agents.snapshots)". The
-capture, prune and restore code above is unchanged.
+capture, prune and restore code above is unchanged; only the crash-orphan
+rescue treats a run resuming from a picked snapshot differently (below).
 
 `snapshots.SNAPSHOT_LAYOUT` is `SnapshotLayout(SESSION_SNAPSHOT_COLLECTION_SUFFIX,
 required_blob_fields=("sessionBlobId", "workdirBlobId"),
@@ -273,6 +274,23 @@ before any read or deletion: the launch is refused with `capture-pending` and
 nothing is deleted. Resurrect, or a plain Resume, settles it first
 (`settle_pending_capture`); after that an older snapshot can be chosen.
 Listing ignores the record.
+
+A crash orphan (a tmux/ttyd/claude tree that outlived its engine, or the
+rescue marker of a rescue cut off before its capture recorded anything) is
+known on the host only. The database holds `hasUnsavedWork` (set once claude
+came up; the engine's restart reconcile leaves it) and, for a capture cut off
+after recording its blobs, the pending record above, which refuses the discard.
+`hasUnsavedWork` does not refuse it: such a process is the resurrect case in
+the UI (optio-ui `isResurrectable`), and its previous-snapshot items' confirmation
+says they discard the unsaved work. So the run decides: in a run that
+optio-core launched with `resume_from` (`ctx.resume_from`, the chosen
+`capturedAt`), `_rescue_orphan_if_present` kills the orphan tree and removes a
+leftover marker without capturing (it writes no marker), and logs the warning
+"An orphaned session was stopped without capture: resuming from the snapshot
+of <capturedAt>" (`ctx.report_progress`). `_prepare` then restores the chosen
+snapshot, the newest after the discard; a rescued snapshot would have been newer
+and restored instead. A plain Resume still rescues (see Resurrect, the
+rescue paragraph).
 
 The model pick lives inside the session blob (`home/.claude/optio-picks.json`,
 see Public API), so each snapshot carries its own: a resume from an older
@@ -365,6 +383,10 @@ leftover rescue marker still triggers a rescue, minus the tmux-tree
 teardown). Its capture uses the same excludes as the hook
 (`_excludes_with_rescue_marker`), so with `workdir_exclude` unset a rescued
 snapshot leaves out `.git`, `node_modules`, `.venv` etc. like a normal one.
+In a resume from a picked snapshot (`ctx.resume_from` set) the rescue
+captures nothing: it kills the tree (`_kill_orphan_tree`, shared with the
+capturing path), removes a leftover marker, writes none, and logs that the
+orphan was stopped without capture (see Snapshot history).
 
 `hasUnsavedWork` is set by `_on_agent_live` and cleared by a completed save
 or the credentials guard (above), and by the hook's step-3 short-circuit;

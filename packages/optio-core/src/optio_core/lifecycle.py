@@ -585,7 +585,9 @@ class Optio:
         snapshots newer than it, and the process is resumed as by
         `resume=True` (the chosen snapshot is now the newest); the run's log
         starts with "State changed to scheduled", then "Resuming from the
-        snapshot of <capturedAt>: <n> newer snapshot(s) discarded". Its
+        snapshot of <capturedAt>: <n> newer snapshot(s) discarded". The run's
+        ctx.resume_from is that capturedAt (None in every other run), so the
+        task knows the snapshot was picked. Its
         refusals, in this order: shutting-down, invalid-request
         (`resume_from` without `resume=True`), not-found, the factory's and
         a kept launch's refusals as for any resume, not-launchable (a
@@ -740,7 +742,8 @@ class Optio:
         _resuming_from since before it read `proc`), the snapshots newer
         than that one are discarded after the last refusal, before the run
         (_discard_newer_snapshots), and the discard's line follows
-        `extra_log`; a run of the process still counted in _launching
+        `extra_log`; the run gets `resume_from` as its ctx.resume_from
+        (_run_launch); a run of the process still counted in _launching
         refuses it (not-launchable), and a shutdown begun during the hook
         refuses the launch after it (shutting-down)."""
         if proc["_id"] in self._resurrecting or self._resume_from_in_progress(proc, own=marker):
@@ -791,7 +794,7 @@ class Optio:
                 return LaunchOutcome(ok=False, reason="shutting-down")
             log.append(("event", line))
         self._launching[oid] = self._launching.get(oid, 0) + 1
-        asyncio.create_task(self._run_launch(oid, resume, session_id, tuple(log)))
+        asyncio.create_task(self._run_launch(oid, resume, session_id, tuple(log), resume_from))
         # A launch (manual or timer-driven) supersedes any pending auto-resume
         # stamp on this process — clear it so the post-boot sweep won't
         # double-launch it.
@@ -811,13 +814,18 @@ class Optio:
     async def _run_launch(
         self, oid: ObjectId, resume: bool, session_id: str | None,
         extra_log: tuple[tuple[str, str], ...],
+        resume_from: str | None = None,
     ) -> str | None:
         """The background run _launch_record schedules: the executor's
         launch_process, counted in _launching (by _launch_record, before
-        this task was made) until it returns."""
+        this task was made) until it returns. A resume from a snapshot
+        passes its `resume_from` on (the run's ctx.resume_from); every
+        other launch calls launch_process without it, as before."""
+        picked = {} if resume_from is None else {"resume_from": resume_from}
         try:
             return await self._executor.launch_process(
                 str(oid), resume=resume, session_id=session_id, extra_log=extra_log,
+                **picked,
             )
         finally:
             left = self._launching.get(oid, 0) - 1

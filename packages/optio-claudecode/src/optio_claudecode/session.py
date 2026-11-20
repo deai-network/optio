@@ -256,6 +256,8 @@ async def run_claudecode_session(
     # Crash-orphan rescue: if a non-graceful host death left this task's
     # tmux/ttyd/claude tree running with unsaved state, harvest it into a fresh
     # snapshot and kill it BEFORE the driver wipes the workdir. No-op otherwise.
+    # A resume from a picked snapshot (ctx.resume_from) kills it without a
+    # snapshot, so _prepare restores the chosen one.
     await _rescue_orphan_if_present(ctx, config=config, host=host)
 
     async def _prepare(host: Host, hook_ctx: HookContext) -> None:
@@ -2072,6 +2074,25 @@ async def _workdir_present(host: "Host") -> bool:
     return "YES" in r.stdout
 
 
+async def _kill_orphan_tree(
+    host: Host, tmux_path: str | None, socket: str, session: str,
+) -> None:
+    """Kill a crash orphan's tmux/ttyd/claude tree (handle-less: the orphan
+    ttyd is reaped by its socket). Without tmux there is no tree (a marker
+    alone brought the rescue here)."""
+    if tmux_path is None:
+        return
+    await host_actions.teardown_session_tree(
+        host,
+        tmux_path=tmux_path,
+        tmux_socket=socket,
+        tmux_session=session,
+        claude_path=_claude_bin_path(host),
+        ttyd_handle=None,
+        aggressive=True,
+    )
+
+
 async def _rescue_orphan_if_present(
     ctx: ProcessContext, host: Host, config: ClaudeCodeTaskConfig,
 ) -> None:
@@ -2087,7 +2108,19 @@ async def _rescue_orphan_if_present(
 
     Kill-before-capture is deliberate: a dead, static workdir prevents a live
     claude from repopulating ``home/.claude`` into the plaintext workdir blob
-    after the expunge, and yields a race-free tar. See spec decisions D3/D4."""
+    after the expunge, and yields a race-free tar. See spec decisions D3/D4.
+
+    A resume from a picked snapshot (``ctx.resume_from``, optio-core's
+    ``launch(resume_from=...)``) captures nothing: the launch discarded the
+    snapshots newer than the chosen one, so it is the newest and ``_prepare``
+    restores it, and a rescued snapshot would be newer still and be restored
+    instead. The orphan is killed, a leftover marker removed (none is
+    written), and the process log gets the warning "An orphaned session was
+    stopped without capture: resuming from the snapshot of <capturedAt>".
+    The orphan's state is lost with the workdir wipe that follows; when the
+    run left ``hasUnsavedWork`` (a crash after claude came up), the UI shows
+    the resurrect case, whose confirmation names that loss.
+    Spec: docs/2026-11-19-resume-from-snapshot-design.md, Known behaviour."""
     if not getattr(config, "supports_resume", True):
         return
     if not bool(getattr(ctx, "resume", False)):
@@ -2111,6 +2144,24 @@ async def _rescue_orphan_if_present(
     if not alive and not await _marker_present(host, marker_path):
         return  # normal resume; nothing to rescue
 
+    resume_from = getattr(ctx, "resume_from", None)
+    if resume_from is not None:
+        # The user picked an older snapshot: stop the orphan, capture nothing.
+        _LOG.warning(
+            "crash-orphan rescue: live=%s socket=%s — resume from the snapshot of %s: "
+            "stopping the orphan without capture",
+            alive, socket, resume_from,
+        )
+        await _kill_orphan_tree(host, tmux_path, socket, session)
+        await host.run_command(f"rm -f {shlex.quote(marker_path)}")
+        ctx.report_progress(
+            None,
+            "An orphaned session was stopped without capture: "
+            f"resuming from the snapshot of {resume_from}",
+            level="warning",
+        )
+        return
+
     _LOG.warning(
         "crash-orphan rescue: live=%s socket=%s — capturing live state before wipe",
         alive, socket,
@@ -2119,19 +2170,8 @@ async def _rescue_orphan_if_present(
     # 1. Durable marker (retry guard: kill removes the has-session signal).
     await host.write_text(_RESCUE_MARKER, "")
 
-    # 2. Kill the orphan tree (handle-less: orphan ttyd reaped by socket).
-    #    Without tmux there is no tree (a marker alone brought us here).
-    if tmux_path is not None:
-        claude_path = _claude_bin_path(host)
-        await host_actions.teardown_session_tree(
-            host,
-            tmux_path=tmux_path,
-            tmux_socket=socket,
-            tmux_session=session,
-            claude_path=claude_path,
-            ttyd_handle=None,
-            aggressive=True,
-        )
+    # 2. Kill the orphan tree.
+    await _kill_orphan_tree(host, tmux_path, socket, session)
 
     # 3. Capture the now-static workdir — identical artifacts to a normal
     #    teardown capture, behind the same guard (the credentials, or the

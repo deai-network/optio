@@ -204,12 +204,18 @@ class Executor:
     async def launch_process(
         self, process_id: str, resume: bool = False, *, session_id: str | None,
         extra_log: Sequence[tuple[str, str]] = (),
+        resume_from: str | None = None,
     ) -> str | None:
         """Launch a top-level process by processId OR OID hex (dual-form).
 
         If resume is True, ctx.resume will be True inside the execute function,
         signalling that the task should restore previous state rather than start fresh.
         A TaskFactory's record is never launched (returns None).
+
+        `resume_from` becomes the run's ctx.resume_from: the capturedAt of
+        the snapshot a resume from a snapshot picked (Optio._launch_record
+        passes it, after its discard made that snapshot the newest; no other
+        launch passes it).
 
         `extra_log` ((level, message) entries) follows "State changed to
         scheduled" in the run's new log (store.relaunch_reset): the caller's
@@ -273,7 +279,7 @@ class Executor:
             task = self._task_registry.get(proc["processId"])
             state, _ = await self._execute_process(
                 proc, task.execute if task else None, resume=resume,
-                session_id=session_id,
+                session_id=session_id, resume_from=resume_from,
             )
         finally:
             # In the run's own task (the one force_cancel cancels): every
@@ -407,8 +413,10 @@ class Executor:
         parent_ctx: ProcessContext | None = None,
         resume: bool = False,
         *, session_id: str | None = None,
+        resume_from: str | None = None,
     ) -> tuple[str, BaseException | None]:
-        """Execute a process."""
+        """Execute a process. `resume_from` goes to the ProcessContext
+        (launch_process's; a child's run has none)."""
         oid = proc["_id"]
         root_oid = proc.get("rootId", oid)
 
@@ -482,6 +490,7 @@ class Executor:
                 child_counter={"next": 0},
                 resume=resume,
                 session_id=effective_session_id,
+                resume_from=resume_from,
             )
             ctx._executor = self
             ctx._ttl_seconds = ttl_seconds

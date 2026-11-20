@@ -68,7 +68,7 @@ async def _setup(
     }})
 
     if spy:
-        async def _spy(oid, *, resume, session_id, extra_log=()):
+        async def _spy(oid, *, resume, session_id, extra_log=(), resume_from=None):
             events.append(("launch", resume))
             if extra_logs is not None:
                 extra_logs.extend(extra_log)
@@ -251,6 +251,39 @@ async def test_the_line_survives_the_real_launch(mongo_db):
 
 
 @pytest.mark.asyncio
+async def test_only_a_resume_from_a_snapshot_tells_the_run_its_snapshot(mongo_db):
+    """ctx.resume_from: the picked capturedAt in the run a resume_from launch
+    starts (real executor), None in a plain resume's run and a fresh one's."""
+    seen = []
+
+    async def execute(ctx):
+        seen.append((ctx.resume, ctx.resume_from))
+
+    async def hook(ctx, captured_at):
+        return 1
+    fw, coll, proc, _ = await _setup(
+        mongo_db, "rfs18", discard_hook=hook, execute=execute, spy=False,
+    )
+
+    async def ended(n):
+        doc = await coll.find_one({"_id": proc["_id"]})
+        return len(seen) >= n or doc["status"]["state"] == "failed"
+
+    out = await fw.launch("r1", resume=True, session_id=None, resume_from=TS)
+    assert out.ok
+    await _wait_until(lambda: ended(1))
+    await _wait_until(lambda: proc["_id"] not in fw._launching)
+    out = await fw.launch("r1", resume=True, session_id=None)
+    assert out.ok
+    await _wait_until(lambda: ended(2))
+    await _wait_until(lambda: proc["_id"] not in fw._launching)
+    out = await fw.launch("r1", session_id=None)
+    assert out.ok
+    await _wait_until(lambda: ended(3))
+    assert seen == [(True, TS), (True, None), (False, None)]
+
+
+@pytest.mark.asyncio
 async def test_the_discard_window_refuses_a_launch_and_a_resurrect(mongo_db):
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -396,7 +429,7 @@ async def test_a_launch_in_flight_refuses_a_resurrect(mongo_db):
     )
     hold = asyncio.Event()
 
-    async def _slow_spy(oid, *, resume, session_id, extra_log=()):
+    async def _slow_spy(oid, *, resume, session_id, extra_log=(), resume_from=None):
         events.append(("launch", resume))
         await hold.wait()
     fw._executor.launch_process = _slow_spy
@@ -555,7 +588,7 @@ async def test_resume_from_a_kept_launch(mongo_db):
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="rfs13", get_task_definitions=get_defs)
 
-    async def _spy(oid, *, resume, session_id, extra_log=()):
+    async def _spy(oid, *, resume, session_id, extra_log=(), resume_from=None):
         events.append(("launch", resume))
     fw._executor.launch_process = _spy
     first = await fw.launch("fac", session_id=None, params={"dry": True})

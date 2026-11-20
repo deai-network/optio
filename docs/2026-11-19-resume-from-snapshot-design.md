@@ -125,6 +125,15 @@ none). The wrappers' capture, prune and restore code is unchanged.
   are gone with the discarded snapshots (every launch resets the process log, so it does not keep them
   either).
 - Restoring replaces the host workdir with the snapshot's.
+- A crash that left a claudecode session behind on the host (its tmux/claude tree outliving the
+  engine, or the marker of a rescue cut off before its capture recorded anything): a plain Resume
+  first saves that state into a new snapshot (crash-orphan rescue) and resumes from it. A resume
+  from a previous snapshot stops it without saving, logs "An orphaned session was stopped without
+  capture: resuming from the snapshot of <capturedAt>" (warning), and restores the chosen snapshot.
+  The orphan itself is visible on the host only; a crash after claude came up leaves
+  `hasUnsavedWork`, so the process shows as resurrectable and the item's confirmation names the
+  unsaved work it discards (Resurrect saves it instead). A cut-off capture's pending record refuses
+  the resume from a snapshot (`capture-pending`).
 
 ## Testing
 

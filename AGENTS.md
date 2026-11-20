@@ -162,8 +162,8 @@ await optio_core.launch(process_id: str, resume: bool = False, *, session_id: st
 # resume_from: a snapshot's capturedAt (from list_snapshots); resumes from that older snapshot. After every
 # check, the task's discard_snapshots_after hook deletes the newer snapshots, then the resume runs as with
 # resume=True; its log (reset by the launch) holds "State changed to scheduled", then "Resuming from the
-# snapshot of <capturedAt>: <n> newer snapshot(s) discarded". The engine RPC's launch passes resumeFrom as
-# resume_from.
+# snapshot of <capturedAt>: <n> newer snapshot(s) discarded"; the run's ctx.resume_from is that capturedAt
+# (None in every other run). The engine RPC's launch passes resumeFrom as resume_from.
 # Refusals, in this order: shutting-down, invalid-request (resume_from without resume=True), not-found, the
 # factory's and a kept launch's refusals (as for any resume), not-launchable (a resurrect, another resume_from,
 # or a run a launch scheduled that has not returned, in progress), not-launchable (state), no-resume-support,
@@ -607,6 +607,7 @@ ctx.params: dict[str, Any]
 ctx.metadata: dict[str, Any]
 ctx.services: dict[str, Any]
 ctx.resume: bool  # True when this execution was triggered with resume=True
+ctx.resume_from: str | None  # the capturedAt a launch with resume_from picked (now the newest snapshot), else None; the task must not make a newer snapshot before restoring
 ctx.session_id: str | None  # the launch's session_id (children inherit the parent's)
 
 # Resume / checkpoint support
@@ -985,7 +986,13 @@ Only claudecode passes `capture_pending` (`pending_captures.has_pending_capture`
 while the process has a cut-off capture's record, its discard hook raises
 `CapturePending` before any read or deletion, so the launch is refused with
 `capture-pending` and nothing is deleted. Resurrect, or a plain Resume, settles
-the record first. The wrappers' capture, prune and restore code is unchanged.
+the record first. A crash orphan (a claude tree that outlived its engine, or a
+cut-off rescue's marker) is known on the host only, so claudecode's run decides:
+with `ctx.resume_from` set, its crash-orphan rescue kills the orphan without
+capturing it and logs the warning "An orphaned session was stopped without
+capture: resuming from the snapshot of <capturedAt>", and the run restores the
+chosen snapshot (a plain Resume still rescues into a new snapshot). The
+wrappers' capture, prune and restore code is unchanged.
 Details (validity, the `capturedAt` wire form and its matching, which blobs
 go): `packages/optio-agents/AGENTS.md`, "Snapshot history
 (`optio_agents.snapshots`)"; the core side: `packages/optio-core/AGENTS.md`,

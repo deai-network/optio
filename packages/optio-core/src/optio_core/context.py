@@ -120,6 +120,7 @@ class ProcessContext:
         metadata: dict[str, Any] | None = None,
         resume: bool = False,
         session_id: str | None = None,
+        resume_from: str | None = None,
     ):
         self.process_id = process_id
         self.params = params
@@ -127,6 +128,13 @@ class ProcessContext:
         self.services = services
         self.resume = resume
         self.session_id = session_id
+        # The capturedAt of the snapshot this run resumes from when its launch
+        # picked one (Optio.launch's resume_from, which discarded the newer
+        # snapshots first, so it is the newest now), else None. A task restores
+        # the newest snapshot as on any resume; this tells it the user chose
+        # that one, so it must not make a newer snapshot before restoring
+        # (claudecode's crash-orphan rescue).
+        self.resume_from = resume_from
         self._process_oid = process_oid
         self._root_oid = root_oid
         self._depth = depth

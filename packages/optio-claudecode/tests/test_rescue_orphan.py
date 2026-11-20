@@ -52,8 +52,30 @@ class _Config:
 
 
 class _Ctx:
+    """A plain resume (no picked snapshot): the tests below that rescue are
+    the plain-resume case."""
     process_id = "pid-1"
     resume = True
+    resume_from = None
+
+
+PICKED = "2026-11-19T13:05:12.345Z"
+STOPPED_LINE = (
+    "An orphaned session was stopped without capture: "
+    "resuming from the snapshot of 2026-11-19T13:05:12.345Z"
+)
+
+
+class _PickedCtx(_Ctx):
+    """A resume from a picked snapshot (ctx.resume_from); records the
+    (message, level) of each process-log line."""
+    resume_from = PICKED
+
+    def __init__(self):
+        self.lines = []
+
+    def report_progress(self, percent, message=None, *, level="info"):
+        self.lines.append((message, level))
 
 
 @pytest.fixture
@@ -217,6 +239,77 @@ async def test_skipped_when_not_resuming(patched, tmp_path):
     await S._rescue_orphan_if_present(_FreshCtx(), host, _Config())
     assert patched["teardown"] == []
     assert patched["capture"] == []
+
+
+# --------------------------------------------------------------------------
+# A resume from a picked snapshot (ctx.resume_from): the launch has discarded
+# the newer snapshots, so the chosen one is the newest and _prepare restores
+# it. A rescued snapshot would be newer still and be restored instead, so the
+# orphan is stopped without capture and the process log says so.
+# Spec: docs/2026-11-19-resume-from-snapshot-design.md, Known behaviour.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resume_from_stops_a_live_orphan_without_capture(patched, tmp_path):
+    patched["alive"] = True
+    host = _Host(str(tmp_path))
+    ctx = _PickedCtx()
+    await S._rescue_orphan_if_present(ctx, host, _Config())
+    assert len(patched["teardown"]) == 1
+    assert patched["teardown"][0]["ttyd_handle"] is None
+    assert patched["teardown"][0]["aggressive"] is True
+    assert patched["capture"] == []
+    # No marker is written: a later plain resume must not capture the state
+    # the user chose to drop.
+    assert host.written == []
+    assert ctx.lines == [(STOPPED_LINE, "warning")]
+
+
+@pytest.mark.asyncio
+async def test_resume_from_clears_a_leftover_marker_without_capture(patched, tmp_path):
+    marker = f"{str(tmp_path).rstrip('/')}/.optio-rescue-pending"
+    host = _Host(str(tmp_path), existing={marker})
+    ctx = _PickedCtx()
+    await S._rescue_orphan_if_present(ctx, host, _Config())
+    assert len(patched["teardown"]) == 1
+    assert patched["capture"] == []
+    assert marker in host.removed
+    assert ctx.lines == [(STOPPED_LINE, "warning")]
+
+
+@pytest.mark.asyncio
+async def test_resume_from_with_a_marker_and_no_tmux(patched, tmp_path):
+    patched["tmux"] = None
+    marker = f"{str(tmp_path).rstrip('/')}/.optio-rescue-pending"
+    host = _Host(str(tmp_path), existing={marker})
+    ctx = _PickedCtx()
+    await S._rescue_orphan_if_present(ctx, host, _Config())
+    assert patched["teardown"] == []
+    assert patched["capture"] == []
+    assert marker in host.removed
+    assert ctx.lines == [(STOPPED_LINE, "warning")]
+
+
+@pytest.mark.asyncio
+async def test_resume_from_without_an_orphan_does_nothing(patched, tmp_path):
+    host = _Host(str(tmp_path))
+    ctx = _PickedCtx()
+    await S._rescue_orphan_if_present(ctx, host, _Config())
+    assert patched["teardown"] == []
+    assert patched["capture"] == []
+    assert host.written == [] and host.removed == []
+    assert ctx.lines == []
+
+
+@pytest.mark.asyncio
+async def test_the_same_orphan_is_rescued_by_a_plain_resume(patched, tmp_path):
+    """The contrast: what a picked snapshot stops, a plain resume captures."""
+    patched["alive"] = True
+    await S._rescue_orphan_if_present(_PickedCtx(), _Host(str(tmp_path)), _Config())
+    assert patched["capture"] == []
+    await S._rescue_orphan_if_present(_Ctx(), _Host(str(tmp_path)), _Config())
+    assert [c["end_state"] for c in patched["capture"]] == ["rescued"]
 
 
 class _RemoteLikeHost:
@@ -407,3 +500,81 @@ async def test_rescue_end_to_end_kills_orphan_and_snapshots(
         f"test -e {marker} && echo Y || true"
     )
     assert "Y" not in r.stdout
+
+
+@pytest.mark.skipif(_NO_TMUX, reason="tmux not installed on the worker")
+@pytest.mark.asyncio
+async def test_resume_from_end_to_end_kills_the_orphan_and_snapshots_nothing(
+    mongo_db, tmp_path, ctx_and_captures,
+):
+    """The real tree teardown, for a resume from a picked snapshot: the orphan
+    is gone, the chosen snapshot is still the newest (the one _prepare
+    restores), no 'rescued' snapshot was inserted, no marker is left, and the
+    stop is in the process log."""
+    import asyncio
+    import time
+
+    from bson import ObjectId
+    from optio_core.context import ProcessContext
+    from optio_claudecode.snapshots import (
+        SESSION_SNAPSHOT_COLLECTION_SUFFIX, insert_snapshot, load_latest_snapshot,
+    )
+    from optio_host.host import LocalHost
+
+    ctx, _cap, _flag = ctx_and_captures
+    ctx.resume = True
+    ctx.resume_from = PICKED
+    lines = []
+
+    def _report(percent, message=None, *, level="info"):
+        lines.append((message, level))
+        ProcessContext.report_progress(ctx, percent, message, level=level)
+    ctx.report_progress = _report  # type: ignore[method-assign]
+
+    # The chosen snapshot: the newest once the launch discarded the newer ones.
+    await insert_snapshot(
+        mongo_db, prefix=ctx._prefix, process_id=ctx.process_id, end_state="done",
+        session_blob_id=ObjectId(), workdir_blob_id=ObjectId(), deliverables_emitted=[],
+    )
+    chosen = await load_latest_snapshot(mongo_db, prefix=ctx._prefix, process_id=ctx.process_id)
+
+    taskdir = str(tmp_path / "task")
+    os.makedirs(taskdir, exist_ok=True)
+    host = LocalHost(taskdir=taskdir)
+    os.makedirs(host.workdir, exist_ok=True)
+    tmux_path, socket = await _launch_orphan_session(host)
+    assert await H.tmux_session_alive(host, tmux_path, socket, "optio")
+    pid_file = f"{host.workdir}/claude.pid"
+    for _ in range(30):
+        if os.path.exists(pid_file):
+            break
+        await asyncio.sleep(0.1)
+    assert os.path.exists(pid_file)
+    child_pid = int(open(pid_file).read().strip())
+
+    config = ClaudeCodeTaskConfig(
+        consumer_instructions="(rescue e2e, resume from)",
+        fs_isolation=False,
+        supports_resume=True,
+        session_blob_encrypt=lambda b: b,
+        session_blob_decrypt=lambda b: b,
+    )
+    await S._rescue_orphan_if_present(ctx, host, config)
+
+    assert (await H.tmux_session_alive(host, tmux_path, socket, "optio")) is False
+    end = time.monotonic() + 60
+    while time.monotonic() < end:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+
+    latest = await load_latest_snapshot(mongo_db, prefix=ctx._prefix, process_id=ctx.process_id)
+    assert latest["_id"] == chosen["_id"]
+    coll = mongo_db[f"{ctx._prefix}{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"]
+    assert await coll.count_documents({"processId": ctx.process_id}) == 1
+    assert not os.path.exists(f"{host.workdir.rstrip('/')}/.optio-rescue-pending")
+    assert lines == [(STOPPED_LINE, "warning")]

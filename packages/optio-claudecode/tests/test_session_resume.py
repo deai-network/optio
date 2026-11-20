@@ -363,9 +363,13 @@ async def test_resume_relocates_old_root_claude_json(
 _WORK_MARKER = "UNSAVED-WORK.txt"
 
 
-async def _resurrectable_ctx(mongo_db, process_id: str, *, resume: bool, state: str = "running"):
+async def _resurrectable_ctx(
+    mongo_db, process_id: str, *, resume: bool, state: str = "running",
+    resume_from: str | None = None,
+):
     """Like _make_ctx, for a task that has a resurrect hook (supportsResurrect),
-    so mark_unsaved_work is honoured as in production."""
+    so mark_unsaved_work is honoured as in production. `resume_from`: the
+    snapshot a resume from a snapshot picked (ctx.resume_from)."""
     async def _hook(ctx):  # never called: the test calls the real hook
         raise AssertionError("not used")
     task = TaskInstance(
@@ -389,6 +393,7 @@ async def _resurrectable_ctx(mongo_db, process_id: str, *, resume: bool, state: 
         cancellation_flag=asyncio.Event(),
         child_counter={"next": 0},
         resume=resume,
+        resume_from=resume_from,
     )
 
 
@@ -500,6 +505,87 @@ async def test_resume_after_resurrect_restores_the_cut_off_runs_work(
     assert "--continue" not in launches[0]
     assert "--continue" in launches[1]
     assert "--continue" in launches[2]
+
+
+async def test_resume_from_a_picked_snapshot_drops_a_crash_orphan(
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
+):
+    """Resume from a previous snapshot when a crash left an orphan's trace:
+    the launch discarded the newer snapshot, then the run finds the trace
+    (here the rescue marker, beside work no snapshot holds and live
+    credentials). It stops it without capture: no 'rescued' snapshot, the run
+    restores the chosen snapshot, and the process log says so.
+    Spec: docs/2026-11-19-resume-from-snapshot-design.md, Known behaviour."""
+    import optio_claudecode.session as S
+    from optio_claudecode import create_claudecode_task
+
+    pid = "cc_resume_from_orphan"
+    scenario = "idempotent_done"
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", scenario)
+    cfg = _cfg(shim_install_dir, claude_cache_dir, scenario)
+    _taskdir, workdir = _local_taskdir(pid)
+
+    def _plant(name: str):
+        async def _hook(hook_ctx):
+            await hook_ctx.run_on_host(f"echo {name} > {hook_ctx._host.workdir}/{name}.txt")
+        return _hook
+
+    # 1) Snapshot A holds CHOSEN.txt; a resumed run adds NEWER.txt in snapshot B.
+    await run_claudecode_session(
+        await _resurrectable_ctx(mongo_db, pid, resume=False),
+        dataclasses.replace(cfg, after_execute=_plant("CHOSEN")),
+    )
+    await run_claudecode_session(
+        await _resurrectable_ctx(mongo_db, pid, resume=True),
+        dataclasses.replace(cfg, after_execute=_plant("NEWER")),
+    )
+
+    # 2) The user picks A: optio-core's launch calls the discard hook first.
+    task = create_claudecode_task(pid, pid, cfg)
+    discard_ctx = await _resurrectable_ctx(mongo_db, pid, resume=False, state="failed")
+    listed = await task.list_snapshots(discard_ctx)
+    assert len(listed) == 2
+    picked = listed[1]["capturedAt"]
+    assert await task.discard_snapshots_after(discard_ctx, picked) == 1
+
+    # 3) A crash left the workdir behind: everything so far plus work no
+    #    snapshot holds, live credentials, and the rescue marker.
+    os.makedirs(os.path.join(workdir, "home", ".claude"))
+    for name in ("CHOSEN", "NEWER", "CRASHED"):
+        with open(os.path.join(workdir, f"{name}.txt"), "w") as f:
+            f.write(name)
+    with open(os.path.join(workdir, "home", ".claude", ".credentials.json"), "w") as f:
+        f.write('{"token": "test"}')
+    with open(os.path.join(workdir, S._RESCUE_MARKER), "w") as f:
+        f.write("")
+
+    # 4) The resume the launch starts.
+    observed: dict[str, bool] = {}
+
+    async def _observe(hook_ctx):
+        wd = hook_ctx._host.workdir
+        for name in ("CHOSEN", "NEWER", "CRASHED"):
+            observed[name] = os.path.isfile(f"{wd}/{name}.txt")
+
+    ctx = await _resurrectable_ctx(mongo_db, pid, resume=True, resume_from=picked)
+    lines: list[tuple[str | None, str]] = []
+    real_report = ctx.report_progress
+
+    def _report(percent, message=None, *, level="info"):
+        lines.append((message, level))
+        real_report(percent, message, level=level)
+    ctx.report_progress = _report  # type: ignore[method-assign]
+    await run_claudecode_session(ctx, dataclasses.replace(cfg, before_execute=_observe))
+
+    assert observed == {"CHOSEN": True, "NEWER": False, "CRASHED": False}, observed
+    coll = mongo_db[f"test{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"]
+    end_states = [d["endState"] async for d in coll.find({"processId": pid}).sort("capturedAt", 1)]
+    assert end_states == ["done", "done"], end_states  # A, then this run's own
+    assert (
+        "An orphaned session was stopped without capture: "
+        f"resuming from the snapshot of {picked}",
+        "warning",
+    ) in lines
 
 
 async def test_teardown_keeps_the_taskdir_when_the_capture_raises(

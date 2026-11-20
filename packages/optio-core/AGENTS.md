@@ -86,8 +86,9 @@ snapshot helper implements them for the engine wrappers.
 - `discard_snapshots_after(ctx, captured_at)` deletes every snapshot of the process newer than
   the one whose `capturedAt` is exactly `captured_at` (documents and their blobs), and returns
   how many it deleted. The chosen snapshot is then the newest, so the ordinary resume restores
-  it. It raises `optio_core.SnapshotNotFound` when no valid snapshot has that `capturedAt`
-  (millisecond precision), and `optio_core.CapturePending` when the task holds an unfinished
+  it (the run knows it was picked: `ctx.resume_from`). It raises `optio_core.SnapshotNotFound`
+  when no valid snapshot has that `capturedAt` (millisecond precision), and
+  `optio_core.CapturePending` when the task holds an unfinished
   capture for the process (a Resurrect would make a newer snapshot), in both cases having
   deleted nothing. `Optio.launch(..., resume=True, resume_from=...)` calls it after every
   launch check has passed (see "Optio.launch"), with the detached `ProcessContext` that
@@ -248,6 +249,15 @@ URL. `HeaderAuth` adds an arbitrary request header.
 # Read-only attribute — True when this execution was triggered with resume=True
 ctx.resume: bool
 
+# Read-only attribute — the capturedAt of the snapshot this run resumes from when its launch
+# picked one (Optio.launch(..., resume_from=...), which discarded the newer snapshots before
+# the run, so the chosen one is the newest), else None (a plain resume, a fresh run, a child).
+# The task restores the newest snapshot as on any resume; this tells it the user picked that
+# one, so it must not make a newer snapshot first (claudecode's crash-orphan rescue kills the
+# orphan without capture). Executor.launch_process(..., resume_from=) sets it; only
+# Optio._launch_record passes it.
+ctx.resume_from: str | None
+
 # Mark that the process has a valid checkpoint saved.
 # Idempotent; warn-and-noop when the task's supports_resume=False.
 await ctx.mark_has_saved_state() -> None
@@ -391,9 +401,12 @@ concurrency limit).
 older snapshot. After every check has passed, the task's `discard_snapshots_after` hook deletes
 the snapshots newer than it, and the process is resumed as by `resume=True`. The run's log (a
 launch resets it) starts with "State changed to scheduled", then the event "Resuming from the
-snapshot of <capturedAt>: <n> newer snapshot(s) discarded" ("snapshot" for 1). The refusals, in
-this order: `shutting-down`; `invalid-request` (`resume_from` without `resume=True`);
-`not-found`; a TaskFactory's and a kept launch's refusals, as for any resume; `not-launchable`
+snapshot of <capturedAt>: <n> newer snapshot(s) discarded" ("snapshot" for 1). The run's
+`ctx.resume_from` is that `capturedAt` (None in every other run; see "ProcessContext resume
+methods"), so a task that would otherwise make a newer snapshot before restoring knows not
+to. The refusals, in this order: `shutting-down`; `invalid-request` (`resume_from` without
+`resume=True`); `not-found`; a TaskFactory's and a kept launch's refusals, as for any resume;
+`not-launchable`
 (a resurrect, another launch with `resume_from`, or a run a launch scheduled that has not
 returned, in progress); `not-launchable` (state); `no-resume-support`; `not-launchable` (no
 saved state: unlike a plain resume, which then launches fresh, a picked snapshot never becomes a
