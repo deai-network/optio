@@ -29,7 +29,7 @@ export { ProcessList } from './components/ProcessList.js';
 export { ProcessItem } from './components/ProcessItem.js';
 export type { ProcessItemProps } from './components/ProcessItem.js';
 export { ProcessStatusBadge } from './components/ProcessStatusBadge.js';
-export { ProcessTreeView } from './components/ProcessTreeView.js';
+export { ProcessTreeView, LARGE_TREE_THRESHOLD, LARGE_TREE_HEIGHT } from './components/ProcessTreeView.js';
 export { ProcessLogPanel, LOG_PANEL_WINDOW } from './components/ProcessLogPanel.js';
 export { WithFilteredProcesses, ProcessFilters, FilteredProcessList, useProcessFilter } from './components/ProcessFilter.js';
 

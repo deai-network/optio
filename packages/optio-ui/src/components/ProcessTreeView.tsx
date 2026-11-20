@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type Key } from 'react';
 import { Tree, Progress, Button, Tooltip, Typography, Checkbox } from 'antd';
 import { CloseCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -10,6 +10,11 @@ import { isActive as isProcessActive, isResurrecting } from '../process-state.js
 import type { DataNode } from 'antd/es/tree';
 
 const { Text } = Typography;
+
+/** Above this many nodes shown (after "Hide finished sub-tasks"), the tree renders virtualized. */
+export const LARGE_TREE_THRESHOLD = 500;
+/** The most a large tree's box takes (px): antd Tree's virtual mode renders the rows in view. */
+export const LARGE_TREE_HEIGHT = 600;
 
 interface ProcessNode {
   _id: string;
@@ -54,6 +59,12 @@ function filterDoneChildren(node: ProcessNode): ProcessNode {
     ?.filter((child) => child.status.state !== 'done')
     .map((child) => filterDoneChildren(child));
   return { ...node, children };
+}
+
+function countNodes(node: ProcessNode): number {
+  let count = 1;
+  for (const child of node.children ?? []) count += countNodes(child);
+  return count;
 }
 
 function collectKeys(node: ProcessNode): string[] {
@@ -166,13 +177,52 @@ export function ProcessTreeView({
 }: ProcessTreeViewProps) {
   const { t } = useTranslation();
   const [hideFinishedLeaves, setHideFinishedLeaves] = useState(true);
+  // A large tree's expanded nodes as the user left them, for that tree's root only.
+  const [opened, setOpened] = useState<{ root: string; keys: Key[] } | null>(null);
 
-  const filtered = treeData ? (hideFinishedLeaves ? filterDoneChildren(treeData) : treeData) : null;
-  const expandedKeys = useMemo(() => filtered ? collectKeys(filtered) : [], [filtered]);
+  // The controls call the latest callbacks given. So the nodes are rebuilt when which
+  // callbacks are given changes, not for a caller's new inline functions on each render.
+  const latest = useRef<NodeActions>({});
+  useLayoutEffect(() => {
+    latest.current = { onCancel, onLaunch, onLaunched, onResurrect, onProcessClick };
+  });
+  const hasCancel = Boolean(onCancel);
+  const hasLaunch = Boolean(onLaunch);
+  const hasLaunched = Boolean(onLaunched);
+  const hasResurrect = Boolean(onResurrect);
+  const hasProcessClick = Boolean(onProcessClick);
+  const actions = useMemo<NodeActions>(() => ({
+    onCancel: hasCancel ? (id) => latest.current.onCancel?.(id) : undefined,
+    onLaunch: hasLaunch ? (id, opts) => latest.current.onLaunch?.(id, opts) : undefined,
+    onLaunched: hasLaunched ? (child) => latest.current.onLaunched?.(child) : undefined,
+    onResurrect: hasResurrect ? (id) => latest.current.onResurrect?.(id) : undefined,
+    onProcessClick: hasProcessClick ? (id) => latest.current.onProcessClick?.(id) : undefined,
+  }), [hasCancel, hasLaunch, hasLaunched, hasResurrect, hasProcessClick]);
+
+  const filtered = useMemo(
+    () => (treeData ? (hideFinishedLeaves ? filterDoneChildren(treeData) : treeData) : null),
+    [treeData, hideFinishedLeaves],
+  );
+  const large = useMemo(() => (filtered ? countNodes(filtered) : 0), [filtered]) > LARGE_TREE_THRESHOLD;
+  // Every node expanded, as before; a large tree opens with its root's children only.
+  const expandedKeys = useMemo<Key[]>(() => {
+    if (!filtered) return [];
+    if (!large) return collectKeys(filtered);
+    return opened?.root === filtered._id ? opened.keys : [filtered._id];
+  }, [filtered, large, opened]);
+  const treeNodes = useMemo(
+    () => (filtered ? [treeNodeToDataNode(filtered, actions, t)] : []),
+    [filtered, actions, t],
+  );
 
   if (!treeData || !filtered) return null;
 
-  const treeNodes = [treeNodeToDataNode(filtered, { onCancel, onLaunch, onLaunched, onResurrect, onProcessClick }, t)];
+  const virtual = large
+    ? {
+        height: LARGE_TREE_HEIGHT,
+        onExpand: (keys: Key[]) => setOpened({ root: filtered._id, keys }),
+      }
+    : {};
 
   return (
     <div>
@@ -195,6 +245,7 @@ export function ProcessTreeView({
         expandedKeys={expandedKeys}
         selectable={false}
         showLine
+        {...virtual}
       />
     </div>
   );
