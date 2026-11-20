@@ -1165,6 +1165,14 @@ forms collide. It throws nothing during render: an empty list builds no formatte
 cannot read (a `RangeError`) falls back to the runtime's default, and a `capturedAt` that does not
 parse shows as it is.
 
+The confirmations' OK buttons say a short word, the confirmation's `okLabel`, not the action's
+long label (which wrapped below Cancel and ran past the dialog's edge): "Resume"
+(`processes.resume`) on the previous-snapshot items and on the resurrect case's "Resume from last
+snapshot", "Restart" (`processes.restartOk`) on the resurrect case's Restart. `okLabel` needs
+vultus-core and vultus-antd with it: the releases after vultus-core 0.5.10 and vultus-antd 0.8.3.
+With 0.5.10 / 0.8.3 the field is not in the type (a type error), and the OK buttons would show the
+long labels.
+
 The other ids are `process.resurrect:<id>`, `process.resume:<id>`, `process.restart:<id>` and
 `process.launch:<id>`. Resume fires `triggerLaunch({ resume: true })`, Restart `triggerLaunch({
 resume: false })`, Launch `triggerLaunch()`. `launchGate` (default: allowed) disables every action
@@ -1416,14 +1424,15 @@ no inline default (the app must translate them); the second carries an English d
 | `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
 | `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`), so `LaunchControls`' factory play button; `useLaunchShowingRefusals`, so `ProcessDetailView` | A launch refusal: in the form, or, for any other launch made through `useLaunchShowingRefusals`, through vultus-core's MessageSink (`LaunchControls`' other launches call the caller's `onLaunch`, whose refusals are the caller's to show), one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names), `invalid-metadata` (the server's launch stamp, optio-api's `launchMetadata`, collides with the factory's metadata), and those of a resume from an older snapshot (`resumeFrom`): `invalid-request` (no `resume: true`), `no-snapshot-support`, `snapshot-not-found`, `capture-pending` (an unfinished capture is pending). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
 | `processes.suspend` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` | Tooltip / `aria-label` of the stop button when the task can resume (default: "Suspend") |
-| `processes.resume` | `LaunchControls`, `useProcessLaunchActions` | A kept launch's Resume button: its tooltip and `aria-label`; the hook's Resume label (`LaunchControls`' main half: its tooltip and accessible name) (default: "Resume") |
-| `processes.restart` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Restart label (a menu item), and in the resurrect case its confirmation's title and OK button (default: "Restart (discard saved state)") |
+| `processes.resume` | `LaunchControls`, `useProcessLaunchActions` | A kept launch's Resume button: its tooltip and `aria-label`; the hook's Resume label (`LaunchControls`' main half: its tooltip and accessible name); the OK button of the previous-snapshot items' confirmation and of the resurrect case's Resume from last snapshot (default: "Resume") |
+| `processes.restart` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Restart label (a menu item), and in the resurrect case its confirmation's title (default: "Restart (discard saved state)") |
+| `processes.restartOk` | `useProcessLaunchActions` (through `LaunchControls`) | The OK button of Restart's confirmation in the resurrect case (default: "Restart") |
 | `processes.resurrect` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resurrect label (`LaunchControls`' main half: its tooltip and accessible name) (default: "Resurrect") |
-| `processes.resumeFromSnapshot` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resume label in the resurrect case (a menu item), its confirmation's title and OK button (default: "Resume from last snapshot") |
+| `processes.resumeFromSnapshot` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resume label in the resurrect case (a menu item) and its confirmation's title (default: "Resume from last snapshot") |
 | `processes.discardUnsavedWork` | `useProcessLaunchActions` (through `LaunchControls`) | The resurrect case's confirmation body; in a previous-snapshot item's, after the deliveries sentence, whenever the process holds unsaved work (with or without `triggerResurrect`) (default: "This discards the unsaved work the failed run left behind.") |
 | `processes.resurrecting` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resurrecting label (`LaunchControls`' disabled indicator: its accessible name and its tooltip's first line) (default: "Resurrecting…") |
 | `processes.resurrectingReason` | `useProcessLaunchActions` (through `LaunchControls`) | Why Resurrecting is disabled (the indicator's tooltip, below the label) (default: "Saving the work the failed run left behind; the process resumes afterwards.") |
-| `processes.resumeFromPrevious` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's label (a menu item, and its confirmation's OK button), `{{time}}` its snapshot's time (default: "Resume from previous snapshot ({{time}})") |
+| `processes.resumeFromPrevious` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's label (a menu item), `{{time}}` its snapshot's time (default: "Resume from previous snapshot ({{time}})") |
 | `processes.resumeFromPreviousConfirm_one` / `_other` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's confirmation title, `{{time}}`, `{{count}}` the newer snapshots it discards (defaults: "Resume from {{time}}? This discards {{count}} newer snapshot." / "Resume from {{time}}? This discards {{count}} newer snapshots."; a language's other forms, `_few`, `_many`, ..., default to the `_other` text) |
 | `processes.resumeFromPreviousKeepsDeliveries` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's confirmation body (default: "What the discarded runs delivered stays in the app.") |
 | `processes.showEarlierLines` | `ProcessLogPanel` | The link on top that shows 500 more earlier lines (default: "Show earlier lines") |

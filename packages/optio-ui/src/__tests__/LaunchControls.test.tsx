@@ -217,7 +217,9 @@ describe('LaunchControls: snapshots, the warning, the icon size', () => {
     // The confirmation renders its title twice (the modal's header and the confirm body).
     expect(within(dialog).getAllByText(/This discards 1 newer snapshot\.$/).length).toBeGreaterThan(0);
     expect(onLaunch).not.toHaveBeenCalled();
-    await click(within(dialog).getByRole('button', { name: label }));
+    // The OK button says Resume (the confirmation's okLabel), not the item's long label.
+    expect(within(dialog).queryByRole('button', { name: label })).toBeNull();
+    await click(within(dialog).getByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalledWith(
       '3', { resume: true, resumeFrom: snapshots[1].capturedAt }), { timeout: 60_000 });
     expect(onLaunch).toHaveBeenCalledTimes(1);
@@ -238,10 +240,9 @@ describe('LaunchControls: snapshots, the warning, the icon size', () => {
     openMenu();
     const [item] = await screen.findAllByRole(
       'menuitem', { name: /Resume from previous snapshot \(.+\)$/ }, { timeout: 60_000 });
-    const label = item.textContent!;
     await click(item);
     const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
-    await click(within(dialog).getByRole('button', { name: label }));
+    await click(within(dialog).getByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalledTimes(1), { timeout: 60_000 });
     await waitFor(() => expect(mainHalf()).toBe('Resume'), { timeout: 60_000 });
   });
@@ -364,7 +365,9 @@ describe('LaunchControls resurrect', () => {
     expect(onLaunch).not.toHaveBeenCalled();
     const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
     expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
-    await click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
+    // The OK button says Resume (the confirmation's okLabel), not the item's label.
+    expect(within(dialog).queryByRole('button', { name: 'Resume from last snapshot' })).toBeNull();
+    await click(within(dialog).getByRole('button', { name: 'Resume' }));
     await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: true }), { timeout: 60_000 });
   });
 
@@ -375,7 +378,9 @@ describe('LaunchControls resurrect', () => {
     expect(onLaunch).not.toHaveBeenCalled();
     const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
     expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
-    await click(within(dialog).getByRole('button', { name: 'Restart (discard saved state)' }));
+    // The OK button says Restart (the confirmation's okLabel), not the item's label.
+    expect(within(dialog).queryByRole('button', { name: 'Restart (discard saved state)' })).toBeNull();
+    await click(within(dialog).getByRole('button', { name: 'Restart' }));
     await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: false }), { timeout: 60_000 });
   });
 
@@ -411,7 +416,7 @@ describe('LaunchControls resurrect', () => {
     expect(dialog.textContent).toContain('What the discarded runs delivered stays in the app.');
     expect(dialog.textContent).toMatch(/discards the unsaved work/);
     expect(onLaunch).not.toHaveBeenCalled();
-    await click(within(dialog).getByRole('button', { name: rows[2]! }));
+    await click(within(dialog).getByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalled(), { timeout: 60_000 });
     expect(onLaunch).toHaveBeenCalledTimes(1);
     expect(onLaunch).toHaveBeenCalledWith('9', { resume: true, resumeFrom: snapshots[1].capturedAt });

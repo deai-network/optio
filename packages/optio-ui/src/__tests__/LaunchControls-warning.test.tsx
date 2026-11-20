@@ -132,7 +132,7 @@ describe('LaunchControls: the warning of a resumable task', () => {
     await pick(/restart \(discard saved state\)/i);
     const discard = await dialogWith(/discards the unsaved work/i);
     expect(screen.queryByText(WARNING)).toBeNull();
-    await click(within(discard).getByRole('button', { name: 'Restart (discard saved state)' }));
+    await click(within(discard).getByRole('button', { name: 'Restart' }));
     const dialog = await dialogWith(WARNING);
     expect(onLaunch).not.toHaveBeenCalled();
     await click(within(dialog).getByRole('button', { name: 'OK' }));
@@ -168,7 +168,7 @@ describe('LaunchControls: the warning of a resumable task', () => {
     const onLaunch = renderWith(resumable);
     await pick(/Resume from previous snapshot/);
     const dialog = await dialogWith(/This discards 1 newer snapshot\.$/);
-    await click(within(dialog).getByRole('button', { name: /Resume from previous snapshot/ }));
+    await click(within(dialog).getByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(onLaunch).toHaveBeenCalled(), { timeout: 60_000 });
     expect(onLaunch).toHaveBeenCalledTimes(1);
     expect(onLaunch).toHaveBeenCalledWith('r', { resume: true, resumeFrom: older });

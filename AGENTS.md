@@ -2265,14 +2265,15 @@ All components use `react-i18next`. Required keys:
 | Key | Used by |
 |-----|---------|
 | `processes.launch` | useTaskFactory (a factory's launch action: LaunchControls' factory play button) and useProcessLaunchActions (Launch: LaunchControls' play button); default "Launch" |
-| `processes.resume` | LaunchControls (a kept launch's Resume button); useProcessLaunchActions (Resume); default "Resume" |
-| `processes.restart` | useProcessLaunchActions, so LaunchControls (Restart, a menu item; in the resurrect case its confirmation's title and OK); default "Restart (discard saved state)" |
+| `processes.resume` | LaunchControls (a kept launch's Resume button); useProcessLaunchActions (Resume; the OK of the previous-snapshot items' and the resurrect case's Resume from last snapshot confirmations, vultus `okLabel`); default "Resume" |
+| `processes.restart` | useProcessLaunchActions, so LaunchControls (Restart, a menu item; in the resurrect case its confirmation's title); default "Restart (discard saved state)" |
+| `processes.restartOk` | useProcessLaunchActions, so LaunchControls (the OK of Restart's confirmation in the resurrect case, vultus `okLabel`); default "Restart" |
 | `processes.resurrect` | useProcessLaunchActions, so LaunchControls (Resurrect); default "Resurrect" |
-| `processes.resumeFromSnapshot` | useProcessLaunchActions, so LaunchControls (Resume in the resurrect case: a menu item, its confirmation's title and OK); default "Resume from last snapshot" |
+| `processes.resumeFromSnapshot` | useProcessLaunchActions, so LaunchControls (Resume in the resurrect case: a menu item and its confirmation's title); default "Resume from last snapshot" |
 | `processes.discardUnsavedWork` | useProcessLaunchActions, so LaunchControls (the resurrect case's confirmation body; in a previous-snapshot item's, after the deliveries sentence, whenever the process holds unsaved work, with or without `onResurrect`); default "This discards the unsaved work the failed run left behind." |
 | `processes.resurrecting` | useProcessLaunchActions, so LaunchControls (the disabled Resurrecting indicator's label); default "Resurrecting…" |
 | `processes.resurrectingReason` | useProcessLaunchActions, so LaunchControls (why Resurrecting is disabled); default "Saving the work the failed run left behind; the process resumes afterwards." |
-| `processes.resumeFromPrevious` | useProcessLaunchActions, so LaunchControls (a previous-snapshot item and its confirmation's OK, `{{time}}`); default "Resume from previous snapshot ({{time}})" |
+| `processes.resumeFromPrevious` | useProcessLaunchActions, so LaunchControls (a previous-snapshot item, `{{time}}`); default "Resume from previous snapshot ({{time}})" |
 | `processes.resumeFromPreviousConfirm_one` / `_other` | useProcessLaunchActions, so LaunchControls (its confirmation title, `{{time}}`, `{{count}}` newer snapshots); defaults "Resume from {{time}}? This discards {{count}} newer snapshot." / "… snapshots."; other plural forms default to the `_other` text |
 | `processes.resumeFromPreviousKeepsDeliveries` | useProcessLaunchActions, so LaunchControls (its confirmation body); default "What the discarded runs delivered stays in the app." |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |

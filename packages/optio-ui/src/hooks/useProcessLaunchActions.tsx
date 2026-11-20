@@ -52,6 +52,10 @@ const RAW = { escapeValue: false };
  * `triggerLaunch({ resume: true, resumeFrom: capturedAt })`. With no list (loading, failed, not
  * passed) or no older snapshot, the slots are invisible: the menu is Resume and Restart.
  *
+ * The confirmations' OK buttons are short (vultus' `okLabel`): "Resume" (`processes.resume`) on
+ * the previous-snapshot items' and the resurrect case's Resume from last snapshot, "Restart"
+ * (`processes.restartOk`) on the resurrect case's Restart.
+ *
  * Every action that launches fires the caller's `triggerLaunch`: Resume, Restart, Launch, the
  * resurrect case's Resume from last snapshot and Restart, and the previous-snapshot items;
  * Resurrect fires `triggerResurrect`. The hook does not ask a task's `warning`. The warning
@@ -89,8 +93,12 @@ export function useProcessLaunchActions(
   const discardUnsavedWork = t('processes.discardUnsavedWork', {
     defaultValue: 'This discards the unsaved work the failed run left behind.',
   });
-  const discardsUnsavedWork = (label: string): ConfirmationSpec | undefined =>
-    resurrectable ? { kind: 'cascade-modal', title: label, content: discardUnsavedWork } : undefined;
+  // The confirmations' OK buttons say a short word (vultus' okLabel), not the long labels, which
+  // would wrap below Cancel.
+  const resumeOk = t('processes.resume', { defaultValue: 'Resume' });
+  const restartOk = t('processes.restartOk', { defaultValue: 'Restart' });
+  const discardsUnsavedWork = (label: string, okLabel: string): ConfirmationSpec | undefined =>
+    resurrectable ? { kind: 'cascade-modal', title: label, content: discardUnsavedWork, okLabel } : undefined;
 
   const resurrect = useAction({
     id: `process.resurrect:${id}`,
@@ -123,7 +131,7 @@ export function useProcessLaunchActions(
     variant: resurrectable ? 'default' : 'primary',
     enabled: launchGate,
     invisible: resurrecting || !(launchable && resumable),
-    confirmation: discardsUnsavedWork(resumeLabel),
+    confirmation: discardsUnsavedWork(resumeLabel, resumeOk),
     fire: () => triggerLaunch({ resume: true }),
   });
 
@@ -159,6 +167,7 @@ export function useProcessLaunchActions(
             interpolation: RAW,
           }),
           content: holdsUnsavedWork ? `${keepsDeliveries} ${discardUnsavedWork}` : keepsDeliveries,
+          okLabel: resumeOk,
         }
         : undefined,
       fire: () => {
@@ -178,7 +187,7 @@ export function useProcessLaunchActions(
     icon: <ReloadOutlined />,
     enabled: launchGate,
     invisible: resurrecting || !(launchable && (resumable || resurrectable)),
-    confirmation: discardsUnsavedWork(restartLabel),
+    confirmation: discardsUnsavedWork(restartLabel, restartOk),
     fire: () => triggerLaunch({ resume: false }),
   });
 

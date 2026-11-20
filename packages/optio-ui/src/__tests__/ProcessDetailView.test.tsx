@@ -555,7 +555,7 @@ describe('ProcessDetailView', () => {
         expect(mockLaunchAsync).not.toHaveBeenCalled();
         const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
         expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
-        await click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
+        await click(within(dialog).getByRole('button', { name: 'Resume' }));
         await vi.waitFor(() => expect(mockLaunchAsync).toHaveBeenCalledWith('abc', { resume: true }), { timeout: 60_000 });
         expect(mockResurrectAsync).not.toHaveBeenCalled();
       });
@@ -1101,10 +1101,9 @@ describe('ProcessDetailView', () => {
       fireEvent.click(buttons[buttons.length - 1]);
       // The row's accessible name starts with its icon's: no anchor at the start.
       const item = await screen.findByRole('menuitem', { name: /Resume from previous snapshot \(.+\)$/ }, WAIT);
-      const label = item.textContent!;
       await click(item);
       const dialog = await screen.findByRole('dialog', {}, WAIT);
-      await click(within(dialog).getByRole('button', { name: label }));
+      await click(within(dialog).getByRole('button', { name: 'Resume' }));
       await waitFor(() => expect(mockLaunchAsync).toHaveBeenCalledWith(
         'abc', { resume: true, resumeFrom: SNAPSHOTS[1].capturedAt }), WAIT);
       expect(mockLaunchAsync).toHaveBeenCalledTimes(1);

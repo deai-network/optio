@@ -197,6 +197,19 @@ describe('useProcessLaunchActions', () => {
     }
   });
 
+  // vultus' okLabel: the long labels would fill the confirmations' OK buttons (and wrap below Cancel).
+  it('the confirmations\' OK buttons are short: Resume, Restart', () => {
+    const { actions, all } = visible(FAILED_WITH_UNSAVED_WORK, vi.fn(), undefined, SNAPS);
+    const labelled = (label: string) => actions.find((a) => a.label === label)!;
+
+    expect(labelled('Resume from last snapshot').confirmation?.okLabel).toBe('Resume');
+    expect(labelled('Restart (discard saved state)').confirmation?.okLabel).toBe('Restart');
+    for (const s of [0, 1, 2, 3]) expect(slot(all, s).confirmation?.okLabel).toBe('Resume');
+
+    const resumable = visible(RESUMABLE, undefined, undefined, SNAPS);
+    for (const s of [0, 1, 2, 3]) expect(slot(resumable.all, s).confirmation?.okLabel).toBe('Resume');
+  });
+
   it('resurrecting: Resurrecting only', () => {
     const { actions } = visible({ ...FAILED_WITH_UNSAVED_WORK, resurrecting: true }, vi.fn(), undefined, SNAPS);
 
