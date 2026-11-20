@@ -2003,9 +2003,17 @@ interface ProcessActionsOptions {
   onResyncSuccess?: (clean: boolean) => void;
 }
 
+interface LaunchOptions {
+  resume?: boolean;
+  resumeFrom?: string;               // a useProcessSnapshots capturedAt; needs resume: true
+  params?: Record<string, unknown>;  // a task factory's values, by parameter id
+  ephemeral?: boolean;               // a factory launch: removed at its end (true) or kept (false);
+                                     // else the factory's default
+}
+
 useProcessActions(options?: ProcessActionsOptions): {
-  launch: (processId: string, opts?: { resume?: boolean; resumeFrom?: string; params?: Record<string, unknown> }) => void;
-  launchAsync: (processId: string, opts?: { resume?: boolean; resumeFrom?: string; params?: Record<string, unknown> }) => Promise<Process>;
+  launch: (processId: string, opts?: LaunchOptions) => void;
+  launchAsync: (processId: string, opts?: LaunchOptions) => Promise<Process>;
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resurrect: (processId: string) => void;
@@ -2016,11 +2024,14 @@ useProcessActions(options?: ProcessActionsOptions): {
 // Every call sends the provider's ?database=&prefix=.
 // launch sends body: { sessionId: getSessionId() }, plus resume: true when opts.resume is true,
 // resumeFrom when opts.resumeFrom is set (a useProcessSnapshots capturedAt: the newer snapshots are
-// discarded, then it resumes; needs resume: true, else invalid-request) and params when opts.params
-// is given (a task factory's values: the API makes and launches its child).
+// discarded, then it resumes; sent as given: without resume: true the server answers
+// invalid-request), params when opts.params is given (a task factory's values: the API makes and
+// launches its child) and ephemeral when opts.ephemeral is given.
 // launchAsync sends the same, for an action that shows the outcome: it resolves with the launched
 // record (a factory's: the child) and rejects with ts-rest's { status, body: { reason, message } }.
 // resurrect POSTs /processes/:id/resurrect with body: { sessionId: getSessionId() }.
+// launch, launchAsync and resurrect invalidate ['process-snapshots', database, prefix, id] (any
+// runEndedAt) once settled, success or refusal: a snapshot written without a run end is re-read.
 ```
 
 Note: `processId` arguments are MongoDB `_id` strings (ObjectId hex), not `processId` strings.
@@ -2059,7 +2070,7 @@ fetch and 5 s poll entirely; omit it to fall back to that internal lookup.
 ```typescript
 useProcessSnapshots(
   processId: string | undefined,                        // the process's _id
-  opts: { enabled: boolean; runEndedAt?: string | null },
+  opts: { enabled: boolean; runEndedAt: string | null },
 ): ProcessSnapshot[] | undefined                        // { capturedAt, endState }, newest first
 ```
 
@@ -2067,8 +2078,10 @@ A process's valid snapshots, the newest included: `GET /processes/:id/snapshots`
 (`api.processes.getSnapshots.useQuery`). `launch(id, { resume: true, resumeFrom: capturedAt })`
 resumes from one of them. `undefined` while disabled (nothing fetched), loading, or failed (a 404:
 `not-found`, `no-snapshot-support`); a failure throws nothing and is not retried. Query key
-`['process-snapshots', database, prefix, processId, runEndedAt ?? null]` (pass `runEndedAt(process)`:
-each end of a run reads the list again); `staleTime: Infinity`.
+`['process-snapshots', database, prefix, processId, runEndedAt]` (`runEndedAt` required: pass
+`runEndedAt(process)`, so each end of a run reads the list again); `staleTime: Infinity`. A settled
+launch or resurrect (`useProcessActions`) invalidates the process's lists, for a snapshot written
+without a run end.
 
 **`useProcessList(options?)`**
 

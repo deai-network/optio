@@ -900,6 +900,8 @@ interface LaunchOptions {
   resume?: boolean;
   resumeFrom?: string;               // resume from an older snapshot: a useProcessSnapshots capturedAt
   params?: Record<string, unknown>;  // a task factory's values, by parameter id
+  ephemeral?: boolean;               // a factory launch: removed at its end (true) or kept (false);
+                                     // else the factory's default
 }
 
 function useProcessActions(options?: {
@@ -916,17 +918,23 @@ function useProcessActions(options?: {
 }
 ```
 
-All mutations invalidate the `['processes']` query key on success.
+All mutations invalidate the `['processes']` query key on success. `launch`, `launchAsync` and
+`resurrect` also invalidate the acted-on process's snapshot lists
+(`['process-snapshots', database, prefix, id]`, any `runEndedAt`) once they settle, success or
+refusal: a snapshot written without a run end (a resurrect's capture whose resume was refused) is
+read again.
 `resync` sends `body: {}`, `resyncClean` sends `body: { clean: true }`; a `metadataFilter`
 is added to the body when given.
 `onResyncSuccess(clean)` is called after a successful resync with the `clean` flag value.
-`launch` sends `body: { sessionId: getSessionId() }`, plus `resume: true` when `opts.resume` is true,
-`resumeFrom` when `opts.resumeFrom` is set (a resume from an older snapshot, the `capturedAt` of one
-`useProcessSnapshots` listed: the engine discards the newer snapshots, then resumes; without
-`resume: true` the launch is refused, `invalid-request`) and `params` when `opts.params` is given (a
-task factory's launch: the API makes and launches its child). It reports nothing. `launchAsync` sends the same, for an action that shows the outcome (a
-vultus `useAction`, as the task factory form's): it resolves with the launched record (a factory's:
-its child) and rejects with ts-rest's `{ status, body: { reason, message } }` on a refusal.
+`launch` sends `body: { sessionId: getSessionId() }`, plus `resume: true` when `opts.resume` is
+true, `resumeFrom` when `opts.resumeFrom` is set (a resume from an older snapshot, the
+`capturedAt` of one `useProcessSnapshots` listed: the engine discards the newer snapshots, then
+resumes; it is sent as given, and without `resume: true` the launch is refused,
+`invalid-request`), `params` when `opts.params` is given (a task factory's launch: the API makes
+and launches its child) and `ephemeral` when `opts.ephemeral` is given. It reports nothing.
+`launchAsync` sends the same, for an action that shows the outcome (a vultus `useAction`, as the
+task factory form's): it resolves with the launched record (a factory's: its child) and rejects
+with ts-rest's `{ status, body: { reason, message } }` on a refusal.
 `resurrect` POSTs `/processes/:id/resurrect` with `body: { sessionId: getSessionId() }`.
 
 ---
@@ -999,7 +1007,7 @@ same way (the same query, one request) passes it as `opts.stoppedAt`.
 ```ts
 function useProcessSnapshots(
   processId: string | undefined,                        // the process's _id
-  opts: { enabled: boolean; runEndedAt?: string | null },
+  opts: { enabled: boolean; runEndedAt: string | null },
 ): ProcessSnapshot[] | undefined                        // optio-contracts: { capturedAt, endState }
 ```
 
@@ -1013,10 +1021,13 @@ while loading, and when the read failed (a 404, `not-found` or `no-snapshot-supp
 throws nothing and is never retried (`retry: false`): the caller offers what it offers without the
 list.
 
-The query key is `['process-snapshots', database, prefix, processId, runEndedAt ?? null]`: pass
-`runEndedAt(process)`, so each end of a run (which may add a snapshot) reads the list again.
+The query key is `['process-snapshots', database, prefix, processId, runEndedAt]`. `runEndedAt` is
+required: pass `runEndedAt(process)`, so each end of a run (which may add a snapshot) reads the list
+again; left out, a resume-then-suspend would keep the old list and the confirmation would undercount.
 `staleTime: Infinity`: for a given end the list is fixed, so a refocus or a remount does not ask the
-engine again. `structuralSharing: shareTsRestResponse`, as the other queries.
+engine again. A snapshot written without a run end (a resurrect's capture whose resume was refused)
+is picked up because `useProcessActions`' launch and resurrect invalidate the process's lists once
+they settle. `structuralSharing: shareTsRestResponse`, as the other queries.
 
 ---
 

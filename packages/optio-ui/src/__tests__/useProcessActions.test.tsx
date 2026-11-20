@@ -3,6 +3,9 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { OptioProvider } from '../context/OptioProvider.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
+import { useProcessSnapshots } from '../hooks/useProcessSnapshots.js';
+
+const TS = '2026-11-19T13:05:12.345Z';
 
 vi.mock('../hooks/useInstanceDiscovery.js', () => ({
   useInstanceDiscovery: () => ({
@@ -47,11 +50,17 @@ describe('useProcessActions().launch', () => {
   });
 
   it('launch sends resumeFrom beside resume', async () => {
-    const TS = '2026-11-19T13:05:12.345Z';
     const { result } = renderHook(() => useProcessActions(), { wrapper: wrap });
     result.current.launch('p1', { resume: true, resumeFrom: TS });
     await waitFor(() => expect(bodies).toHaveLength(1), { timeout: 60_000 });
     expect(bodies[0]).toEqual({ sessionId: expect.any(String), resume: true, resumeFrom: TS });
+  });
+
+  it('resumeFrom without resume is sent as given (the server refuses it: invalid-request)', async () => {
+    const { result } = renderHook(() => useProcessActions(), { wrapper: wrap });
+    result.current.launch('p1', { resumeFrom: TS });
+    await waitFor(() => expect(bodies).toHaveLength(1), { timeout: 60_000 });
+    expect(bodies[0]).toEqual({ sessionId: expect.any(String), resumeFrom: TS });
   });
 
   it("sends a task factory's values as params", async () => {
@@ -104,5 +113,54 @@ describe('useProcessActions().launchAsync', () => {
     await expect(result.current.launchAsync('f1')).rejects.toMatchObject({
       status: 400, body: { reason: 'parameters-required' },
     });
+  });
+});
+
+describe('useProcessActions: a settled launch or resurrect reads the snapshot list again', () => {
+  // A snapshot can be written without a run end (a resurrect's capture whose resume is refused),
+  // which the list's runEndedAt key does not see.
+  type Actions = ReturnType<typeof useProcessActions>;
+  it.each<[string, number, (a: Actions) => void]>([
+    ['a launch', 200, (a) => a.launch('p1', { resume: true, resumeFrom: TS })],
+    ['a refused launch', 409, (a) => a.launch('p1', { resume: true, resumeFrom: TS })],
+    ['a resurrect', 200, (a) => a.resurrect('p1')],
+    ['a refused resurrect', 409, (a) => a.resurrect('p1')],
+  ])('%s', async (_label, status, run) => {
+    const listReads: Record<string, number> = {};
+    let answered = 0;
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : String(input);
+      const list = /\/processes\/([^/]+)\/snapshots(\?|$)/.exec(url);
+      if (list) {
+        listReads[list[1]] = (listReads[list[1]] ?? 0) + 1;
+        return new Response(JSON.stringify({ snapshots: [{ capturedAt: TS, endState: 'done' }] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      answered += 1;
+      const body = status === 200 ? { _id: 'p1', name: 'P' } : { reason: 'not-launchable', message: 'refused' };
+      return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const own = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <OptioProvider prefix="test" database="test-db">{children}</OptioProvider>
+      </QueryClientProvider>
+    );
+
+    const { result } = renderHook(() => ({
+      actions: useProcessActions(),
+      p1: useProcessSnapshots('p1', { enabled: true, runEndedAt: TS }),
+      p2: useProcessSnapshots('p2', { enabled: true, runEndedAt: TS }),
+    }), { wrapper: own });
+    await waitFor(() => expect(result.current.p1).toBeDefined(), { timeout: 60_000 });
+    await waitFor(() => expect(result.current.p2).toBeDefined(), { timeout: 60_000 });
+    expect(listReads).toEqual({ p1: 1, p2: 1 });
+
+    run(result.current.actions);
+    await waitFor(() => expect(listReads.p1).toBe(2), { timeout: 60_000 });
+    expect(answered).toBe(1);
+    // Only the acted-on process's list.
+    expect(listReads.p2).toBe(1);
   });
 });

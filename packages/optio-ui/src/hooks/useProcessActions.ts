@@ -37,11 +37,16 @@ export function useProcessActions(options?: ProcessActionsOptions) {
   const queryClient = useQueryClient();
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['processes'] });
+  // A launch or resurrect may have written a snapshot without ending a run (a resurrect's capture
+  // whose resume was refused), which useProcessSnapshots' runEndedAt key does not see: once it has
+  // settled, success or refusal, the process's lists (any runEndedAt) are read again.
+  const invalidateSnapshots = (_data: unknown, _error: unknown, variables: { params: { id: string } }) =>
+    queryClient.invalidateQueries({ queryKey: ['process-snapshots', database, prefix, variables.params.id] });
 
-  const launchMutation = api.processes.launch.useMutation({ onSuccess: invalidate });
+  const launchMutation = api.processes.launch.useMutation({ onSuccess: invalidate, onSettled: invalidateSnapshots });
   const cancelMutation = api.processes.cancel.useMutation({ onSuccess: invalidate });
   const dismissMutation = api.processes.dismiss.useMutation({ onSuccess: invalidate });
-  const resurrectMutation = api.processes.resurrect.useMutation({ onSuccess: invalidate });
+  const resurrectMutation = api.processes.resurrect.useMutation({ onSuccess: invalidate, onSettled: invalidateSnapshots });
   const resyncMutation = api.processes.resync.useMutation({
     onSuccess: (_data: any, variables: any) => {
       options?.onResyncSuccess?.(variables.body?.clean ?? false);

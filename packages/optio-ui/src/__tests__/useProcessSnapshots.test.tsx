@@ -57,7 +57,7 @@ describe('useProcessSnapshots', () => {
     });
 
     const { result } = renderHook(
-      () => useProcessSnapshots('p1', { enabled: true }),
+      () => useProcessSnapshots('p1', { enabled: true, runEndedAt: S1.capturedAt }),
       { wrapper: wrapper(new QueryClient()) },
     );
     await waitFor(() => expect(result.current).toEqual([S1, S2]), { timeout: 60_000 });
@@ -80,7 +80,7 @@ describe('useProcessSnapshots', () => {
     const snapshotsQuery = () => queryClient.getQueryCache().findAll({ queryKey: ['process-snapshots'] })[0];
 
     const { result } = renderHook(
-      () => useProcessSnapshots('p1', { enabled: true }),
+      () => useProcessSnapshots('p1', { enabled: true, runEndedAt: null }),
       { wrapper: wrapper(queryClient) },
     );
     // The read has failed (and settled: not retried).
@@ -104,8 +104,8 @@ describe('useProcessSnapshots', () => {
     // snapshot hooks would have made has been made.
     const { result } = renderHook(
       () => ({
-        disabled: useProcessSnapshots('p1', { enabled: false }),
-        noId: useProcessSnapshots(undefined, { enabled: true }),
+        disabled: useProcessSnapshots('p1', { enabled: false, runEndedAt: S1.capturedAt }),
+        noId: useProcessSnapshots(undefined, { enabled: true, runEndedAt: null }),
         sentinel: useProcess('p9', { refetchInterval: false }),
       }),
       { wrapper: wrapper(new QueryClient()) },
