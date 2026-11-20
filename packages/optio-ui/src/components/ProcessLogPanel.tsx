@@ -61,6 +61,22 @@ interface LogRowProps {
   showBar: boolean;
 }
 
+/**
+ * A row's key: its entry's identity, never its index. A full buffer drops its oldest entries as new
+ * ones come (every index shifts), and "Show earlier lines" adds rows on top; each entry keeps its key
+ * either way, so its memoized row does not render again.
+ */
+const entryKeys = new WeakMap<LogEntry, number>();
+let nextEntryKey = 0;
+function entryKey(entry: LogEntry): number {
+  let key = entryKeys.get(entry);
+  if (key === undefined) {
+    key = nextEntryKey++;
+    entryKeys.set(entry, key);
+  }
+  return key;
+}
+
 /** One line; memoized, so a new batch renders only the rows it adds. */
 const LogRow = memo(function LogRow({ entry, depth, color, label, transition, showBar }: LogRowProps) {
   const indent = Math.min(depth, MAX_INDENT_DEPTH) * INDENT_PX;
@@ -159,12 +175,17 @@ export function ProcessLogPanel({ logs, tree, fillParent, droppedLogCount = 0 }:
 
   const showBar = tree !== null;
   const rows = [];
+  const usedKeys = new Set<number>();
   for (let i = start; i < logs.length; i++) {
     const entry = logs[i];
     const v = visualFor(visuals, entry);
+    const id = entryKey(entry);
+    // The same entry object twice in `logs` still gets a row each.
+    const key = usedKeys.has(id) ? `${id}@${i}` : id;
+    usedKeys.add(id);
     rows.push(
       <LogRow
-        key={droppedLogCount + i}
+        key={key}
         entry={entry}
         depth={v.depth}
         color={v.color}

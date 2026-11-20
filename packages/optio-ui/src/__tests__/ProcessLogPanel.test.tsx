@@ -1,9 +1,25 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, screen, within, fireEvent } from '@testing-library/react';
 import React from 'react';
 import { ProcessLogPanel, LOG_PANEL_WINDOW } from '../components/ProcessLogPanel.js';
 import type { LogEntry, ProcessTreeNode } from '../hooks/useProcessStream.js';
 import { PALETTE, STRIDE } from '../log-visuals.js';
+
+// A render-counting double: antd's Text, which also records each message "line <n>" it renders. A
+// row renders its message once per render, so `renderedLines` lists the rows that rendered.
+const renderedLines = vi.hoisted(() => [] as string[]);
+vi.mock('antd', async (importOriginal) => {
+  const antd = await importOriginal<typeof import('antd')>();
+  const { createElement } = await import('react');
+  const RealText = antd.Typography.Text;
+  function CountingText(props: React.ComponentProps<typeof RealText>) {
+    if (typeof props.children === 'string' && props.children.startsWith('line ')) {
+      renderedLines.push(props.children);
+    }
+    return createElement(RealText, props);
+  }
+  return { ...antd, Typography: { ...antd.Typography, Text: CountingText } };
+});
 
 function leaf(id: string, depth: number, name = id): ProcessTreeNode {
   return {
@@ -230,5 +246,53 @@ describe('ProcessLogPanel: only the most recent lines render', () => {
     expect(box.top).toBe(10_000);
     const after = rows(container);
     expect(text(after[after.length - 1])).toContain('line 5019');
+  });
+});
+
+describe('ProcessLogPanel: a row renders again only when what it shows changes', () => {
+  const lines = (from: number, count: number) =>
+    Array.from({ length: count }, (_, i) => entry('a', 'alpha', `line ${from + i}`));
+  const rows = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('[data-testid="log-row"]'));
+  const lineNo = (message: string) => Number(message.slice('line '.length));
+
+  it('"Show earlier lines" renders the 500 rows it adds; of the rows shown already only the old first one, which stops naming its process', () => {
+    const tree = tree2level();
+    const { container } = render(<ProcessLogPanel logs={lines(0, 2000)} tree={tree} droppedLogCount={3000} />);
+    renderedLines.length = 0;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show earlier lines' }));
+
+    expect(rows(container)).toHaveLength(1000);
+    expect(renderedLines.filter((m) => lineNo(m) < 1500)).toHaveLength(LOG_PANEL_WINDOW);
+    expect(renderedLines.filter((m) => lineNo(m) >= 1500)).toEqual(['line 1500']);
+  });
+
+  it('a batch into a full buffer renders only its rows and the new first row, whatever droppedLogCount the caller passes', () => {
+    const logs = lines(0, 2000);
+    const { container, rerender } = render(<ProcessLogPanel logs={logs} tree={tree2level()} />);
+    renderedLines.length = 0;
+
+    // The buffer keeps 2,000 entries: 5 new ones push the oldest 5 out, every index shifts by 5.
+    // The new tree object is another update message of the same tree.
+    rerender(<ProcessLogPanel logs={[...logs.slice(5), ...lines(2000, 5)]} tree={tree2level()} />);
+
+    const shown = rows(container);
+    expect(shown).toHaveLength(LOG_PANEL_WINDOW);
+    expect(shown[0].textContent).toContain('line 1505');
+    expect(renderedLines).toEqual(['line 1505', 'line 2000', 'line 2001', 'line 2002', 'line 2003', 'line 2004']);
+  });
+
+  it('the same entry object twice in the log still gets a row each, and React sees no duplicate key', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const twice = entry('a', 'alpha', 'line 1');
+      const { container, rerender } = render(<ProcessLogPanel logs={[twice, twice]} tree={tree2level()} />);
+      rerender(<ProcessLogPanel logs={[twice, twice, entry('a', 'alpha', 'line 2')]} tree={tree2level()} />);
+      expect(rows(container).map((row) => row.textContent?.includes('line 1'))).toEqual([true, true, false]);
+      expect(errors.mock.calls.filter((call) => String(call[0]).includes('same key'))).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
   });
 });
