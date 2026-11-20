@@ -8,6 +8,7 @@ import {
   FilteredProcessList,
   ProcessDetailView,
   useLaunchShowingRefusals,
+  useResurrectShowingRefusals,
   useProcessActions,
   useProcessListStream,
   useInstances,
@@ -48,10 +49,11 @@ function Dashboard({
   siderCollapsed: boolean;
 }) {
   const { processes, connected: listConnected } = useProcessListStream();
-  const { resurrect, cancel } = useProcessActions();
-  // A refused launch (e.g. a resume from an older snapshot while a capture is pending) shows its
-  // reason's text, through the provider's messageSink.
+  const { cancel } = useProcessActions();
+  // A refused launch (e.g. a resume from an older snapshot while a capture is pending) or
+  // resurrect shows its reason's text, through the provider's messageSink.
   const launch = useLaunchShowingRefusals();
+  const resurrect = useResurrectShowingRefusals();
   const live = useOptioLive();
 
   return (

@@ -47,6 +47,14 @@ i18n.use(initReactI18next).init({
         // A removal of an ended launch refused (route processes.dismiss).
         'errors.processes.dismiss.not-found': 'This launch no longer exists.',
         'errors.processes.dismiss.not-dismissable': 'This launch cannot be removed now.',
+        // A resurrect refused (route processes.resurrect).
+        'errors.processes.resurrect.not-found': 'This process no longer exists.',
+        'errors.processes.resurrect.not-resurrectable': 'There is no unsaved work to save for this process now.',
+        'errors.processes.resurrect.no-resurrect-support': 'This task cannot save the work a failed run left behind.',
+        'errors.processes.resurrect.resurrect-in-progress': 'A resurrect of this process is already running.',
+        'errors.processes.resurrect.launch-blocked': 'Launches of this task are blocked for now.',
+        'errors.processes.resurrect.shutting-down': 'The engine is shutting down. Try again once it is back.',
+        'errors.processes.resurrect.not-launchable': 'Another launch of this process is in progress. Try again shortly.',
       },
     },
   },

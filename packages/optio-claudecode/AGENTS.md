@@ -282,7 +282,7 @@ came up; the engine's restart reconcile leaves it) and, for a capture cut off
 after recording its blobs, the pending record above, which refuses the discard.
 `hasUnsavedWork` does not refuse it: such a process is the resurrect case in
 the UI (optio-ui `isResurrectable`), and its previous-snapshot items' confirmation
-says they discard the unsaved work. So the run decides: in a run that
+says they discard the unsaved work (with or without a Resurrect control). So the run decides: in a run that
 optio-core launched with `resume_from` (`ctx.resume_from`, the chosen
 `capturedAt`), `_rescue_orphan_if_present` kills the orphan tree and removes a
 leftover marker without capturing (it writes no marker), and logs the warning
@@ -291,6 +291,17 @@ of <capturedAt>" (`ctx.report_progress`). `_prepare` then restores the chosen
 snapshot, the newest after the discard; a rescued snapshot would have been newer
 and restored instead. A plain Resume still rescues (see Resurrect, the
 rescue paragraph).
+
+Known behaviour (documented, not changed):
+
+- A rescue cut off before it recorded its blobs leaves only its marker on the
+  host, with no database trace. A resume from a previous snapshot then stops
+  that state without capture (the warning above, in the process log), and its
+  confirmation names only the snapshot count.
+- A resume from a previous snapshot refused after the deletion (`shutting-down`),
+  or whose run fails before the rescue, leaves a live orphan in place: the next
+  plain Resume rescues it and continues from the crash state (a plain Resume's
+  rule), not from the chosen snapshot.
 
 The model pick lives inside the session blob (`home/.claude/optio-picks.json`,
 see Public API), so each snapshot carries its own: a resume from an older

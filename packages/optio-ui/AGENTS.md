@@ -140,7 +140,8 @@ Creates a React context containing `{ prefix, database, live, baseUrl, client, r
 
 `messageSink` is vultus-core's `MessageSink` (`(text, severity?) => void`) for everything under the
 provider (`MessageSinkContext.Provider`): where optio-ui's refusals shown outside a form go (a
-launch's through `useLaunchShowingRefusals`, a removal's from `LaunchControls`' Remove), and any
+launch's through `useLaunchShowingRefusals`, a resurrect's through `useResurrectShowingRefusals`,
+a removal's from `LaunchControls`' Remove), and any
 vultus action's messages. Left out, the enclosing sink stays: a vultus-antd `VultusProvider`'s (antd's
 hook-based message), else vultus-core's default, which shows nothing. For an app without
 `VultusProvider`; optio-dashboard passes one over antd's `message.useMessage()`. Test:
@@ -206,7 +207,7 @@ Rendering rules:
 - For a task factory's record (`isTaskFactory(process)`), a single play button (an icon `ActionButton` of `useTaskFactoryOf`, the record-in-hand form of `useTaskFactory`; tooltip `processes.launch`) that opens the factory's `TaskFactoryLaunchModal` (with `launchOverrides[process.processId]` as its `overrides`) instead of calling `onLaunch` (which only allows it, as for any process); no confirmation of its own, the form shows the `warning`. The form's launch hands the child to `onLaunched`. A non-empty `denyReason` renders the disabled play button (its reason the tooltip) in its place.
 - Otherwise the actions of `useProcessLaunchActions(process, triggerLaunch, triggerResurrect, denyReason ? deny(denyReason) : true, snapshots)`, in vultus-antd's `CombinedActionButton` with `iconOnly`: the main half shows the active action's icon only, its label the accessible name and the tooltip (the reason below it while disabled); the `⋯` opener is as without `iconOnly`, and the menu's rows show icon and label. With `keepOriginalDefault`, the main half goes back to the first enabled action (Resume, or Resurrect in the resurrect case) once a menu pick fires or its confirmation is dismissed (a dismissed warning too: the pick fired before it asks). The hook decides the shape:
   - not resumable (`supportsResume` or `hasSavedState` false): **Launch** alone (play icon), `onLaunch(id)` with no opts;
-  - resumable: **Resume** (play icon, `onLaunch(id, { resume: true })`), then in the menu the previous-snapshot items (history icon; "Resume from previous snapshot (<time>)", behind a confirmation naming the newer snapshots it discards, whose OK carries the item's label; `onLaunch(id, { resume: true, resumeFrom: capturedAt })`) and **Restart (discard saved state)** (reload icon, `onLaunch(id, { resume: false })`);
+  - resumable: **Resume** (play icon, `onLaunch(id, { resume: true })`), then in the menu the previous-snapshot items (history icon; "Resume from previous snapshot (<time>)", behind a confirmation naming the newer snapshots it discards, and the unsaved work whenever the process holds it (`isResurrectable`, with or without `onResurrect`), whose OK carries the item's label; `onLaunch(id, { resume: true, resumeFrom: capturedAt })`) and **Restart (discard saved state)** (reload icon, `onLaunch(id, { resume: false })`);
   - `onResurrect` given and `isResurrectable(process)`: **Resurrect** (medicine-box icon, `onResurrect(id)`), then **Resume from last snapshot** (when resumable), the previous-snapshot items and Restart, each behind a confirmation that names the unsaved work it discards (`processes.discardUnsavedWork`; vultus' cascade modal, its OK carrying the action's label); without `onResurrect` such a process shows the resumable shape;
   - while `isResurrecting(process)`: the disabled **Resurrecting…** alone (spinning loading icon, or the app's lent Spinner — see "Spinner slot"; tooltip the label and `processes.resurrectingReason`), clicking it does nothing; without `onResurrect` too (LaunchControls then passes a no-op `triggerResurrect`).
   - A non-empty `denyReason` (the launch gate) disables every action with its reason; the opener still opens, its rows disabled (`aria-disabled`) with the reason. Resurrecting keeps its own reason.
@@ -216,7 +217,7 @@ Rendering rules:
 
 Used by `ProcessItem` (so `ProcessList`), `ProcessTreeView`, and `ProcessDetailView` (the suspended widget's Resume row). Not exported from the package root.
 
-`onLaunch` returns nothing to LaunchControls: a refusal of the launch it makes is the caller's to show. `useLaunchShowingRefusals()` is an `onLaunch` that shows it (`ProcessDetailView` and optio-dashboard pass it); `useProcessActions().launch` shows nothing.
+`onLaunch` and `onResurrect` return nothing to LaunchControls: a refusal of the launch or resurrect they make is the caller's to show. `useLaunchShowingRefusals()` and `useResurrectShowingRefusals()` show it (`ProcessDetailView` and optio-dashboard pass them); `useProcessActions().launch` and `.resurrect` show nothing.
 
 ---
 
@@ -627,13 +628,15 @@ names with what is under it, or null), `logsOfSubtree(logs, subtree)` (the entri
 - **`tree.uiWidget` is set, the process `isSuspended`, but no suspended variant is
   registered** — falls back to the default tree+log view, silently (no warning — this is the
   normal case for a widget that doesn't support a read-only suspended view yet).
-- **No `uiWidget`** — renders `ProcessTreeView` (unless the `readOnly` prop is set, its `onLaunch` wired to `useLaunchShowingRefusals()` and its `onResurrect` and `onCancel` to `useProcessActions()`; `onLaunched` passed on) + `ProcessLogPanel` (given the stream's `droppedLogCount`, as the widget layout's log strip is; a deleted process's last log is not). A task factory's record (the root of its launches) gets the play button that opens its `TaskFactoryLaunchModal`; the launch then shows under it in the tree, with no play button of its own (`isTaskFactoryLaunch`).
+- **No `uiWidget`** — renders `ProcessTreeView` (unless the `readOnly` prop is set, its `onLaunch` wired to `useLaunchShowingRefusals()`, its `onResurrect` to `useResurrectShowingRefusals()` and its `onCancel` to `useProcessActions()`; `onLaunched` passed on) + `ProcessLogPanel` (given the stream's `droppedLogCount`, as the widget layout's log strip is; a deleted process's last log is not). A task factory's record (the root of its launches) gets the play button that opens its `TaskFactoryLaunchModal`; the launch then shows under it in the tree, with no play button of its own (`isTaskFactoryLaunch`).
 - **A refused launch** from either layout's `LaunchControls` (Launch, Resume, a previous-snapshot
   item, Restart; a kept launch's Resume) — its reason's text (`errors.processes.launch.<reason>`,
   e.g. `capture-pending` for a resume from an older snapshot while an unfinished capture is
   pending) goes to vultus-core's MessageSink (`useLaunchShowingRefusals`); an accepted launch shows
-  nothing. A task factory's form shows its own refusals (see "TaskFactoryLaunchModal"). Tests:
-  `src/__tests__/ProcessDetailView.test.tsx`, "a launch refused".
+  nothing. A task factory's form shows its own refusals (see "TaskFactoryLaunchModal"). A refused
+  **Resurrect** likewise (`useResurrectShowingRefusals`, `errors.processes.resurrect.<reason>`, e.g.
+  `not-launchable` while a resume from an older snapshot runs). Tests:
+  `src/__tests__/ProcessDetailView.test.tsx`, "a launch refused" and "a resurrect refused".
 
 `widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${database}/${prefix}/${process._id}/`
 (database and prefix URI-encoded; trailing slash is load-bearing for relative URLs inside iframes).
@@ -776,7 +779,7 @@ refusal (for a vultus action).
 ### Error routes (`optioErrorRoutes`)
 
 ```ts
-type OptioErrorRouteId = 'processes.launch' | 'processes.dismiss';
+type OptioErrorRouteId = 'processes.launch' | 'processes.dismiss' | 'processes.resurrect';
 const optioErrorRoutes: ErrorRoutesRegistry<OptioErrorRouteId>;  // vultus-core's registry
 ```
 
@@ -786,8 +789,10 @@ reason added there fails the typecheck until it has an entry) → `{ i18nKey:
 'errors.processes.launch.<reason>' }`. vultus-core's `routeApiError` shows `t(i18nKey)`: the app
 translates these keys (no inline default; see "i18n Keys"). `processes.launch` is the route of the
 task factory form's launch and of `useLaunchShowingRefusals` (any other launch). `processes.dismiss` (removing an ended
-launch) likewise maps every `DismissFailureReason` to `errors.processes.dismiss.<reason>`. Exported from `optio-ui`, for apps that
-reuse or merge it.
+launch) likewise maps every `DismissFailureReason` to `errors.processes.dismiss.<reason>`, and
+`processes.resurrect` (`useResurrectShowingRefusals`) every `ResurrectFailureReason` to
+`errors.processes.resurrect.<reason>` (optio-contracts' `apiToFrontendRouteErrorReasons` lists the
+same reasons for that route). Exported from `optio-ui`, for apps that reuse or merge it.
 
 ---
 
@@ -959,6 +964,7 @@ function useProcessActions(options?: {
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resurrect: (processId: string) => void;
+  resurrectAsync: (processId: string) => Promise<Process>;
   resync: (metadataFilter?: ProcessMetadataFilter) => void;
   resyncClean: (metadataFilter?: ProcessMetadataFilter) => void;
   isResyncing: boolean;
@@ -983,7 +989,10 @@ and launches its child) and `ephemeral` when `opts.ephemeral` is given. It repor
 `launchAsync` sends the same, for an action that shows the outcome (a vultus `useAction`, as the
 task factory form's): it resolves with the launched record (a factory's: its child) and rejects
 with ts-rest's `{ status, body: { reason, message } }` on a refusal.
-`resurrect` POSTs `/processes/:id/resurrect` with `body: { sessionId: getSessionId() }`.
+`resurrect` POSTs `/processes/:id/resurrect` with `body: { sessionId: getSessionId() }`; it reports
+nothing (`useResurrectShowingRefusals` shows a refusal). `resurrectAsync` sends the same: it
+resolves with the process once the resurrect is accepted and rejects with ts-rest's
+`{ status, body: { reason, message } }` on a refusal.
 
 ---
 
@@ -1002,6 +1011,17 @@ confirmation that launches (`LaunchControls`' warning modal) closes at once, as 
 Made for an `onLaunch` (`LaunchControls`, `ProcessItem`, `ProcessList`, `ProcessTreeView`);
 `ProcessDetailView` and optio-dashboard use it. Exported from the package root. Tests:
 `src/__tests__/ProcessDetailView.test.tsx` ("a launch refused").
+
+```ts
+function useResurrectShowingRefusals(): (processId: string) => void
+```
+
+The same for a resurrect (`src/hooks/useResurrectShowingRefusals.ts`): `resurrectAsync`, and a
+rejection through route `processes.resurrect` (`t('errors.processes.resurrect.<reason>')`, else the
+message, else `t('common.error')`) to the MessageSink; nothing on success. Made for an
+`onResurrect`; `ProcessDetailView` and optio-dashboard use it. Exported from the package root.
+Tests: `src/__tests__/ProcessDetailView.test.tsx` ("a resurrect refused"). Both hooks route through
+the internal `useShowRefusal(route)` (`src/hooks/useShowRefusal.ts`).
 
 ---
 
@@ -1133,8 +1153,10 @@ the newest included, which Resume reads). Slot `s` (id `process.resumeFrom:<id>:
 (<time>)" when it exists and the process is launchable and resumable and not resurrecting. Its
 `cascade-modal` confirmation names the `s + 1` newer snapshots the resume discards
 (`processes.resumeFromPreviousConfirm`) and says what the discarded runs delivered stays
-(`processes.resumeFromPreviousKeepsDeliveries`; in the resurrect case followed by
-`processes.discardUnsavedWork`). It fires `triggerLaunch({ resume: true, resumeFrom:
+(`processes.resumeFromPreviousKeepsDeliveries`), followed by `processes.discardUnsavedWork`
+whenever the process holds unsaved work (`isResurrectable(process)`, its state), with or without
+`triggerResurrect`: the resume drops that work either way. The menu's shape (the resurrect case)
+still needs `triggerResurrect`. It fires `triggerLaunch({ resume: true, resumeFrom:
 older[s].capturedAt })`. Without a list (loading, failed, left out) or without an older snapshot
 the slots are invisible: Resume and Restart, as before. `<time>` is `formatSnapshotTimes`
 (`snapshot-time.ts`) in the i18n language (`i18n.resolvedLanguage ?? i18n.language`): `dateStyle:
@@ -1380,7 +1402,8 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.factoryNotAFactory` | `useTaskFactory` | Why `launch` is disabled for a process that is no task factory (default: "Not a task factory") |
 | `processes.factoryLaunching` | `useTaskFactory` | Why `launch` is disabled while a launch is pending (default: "Launching…") |
 | `errors.processes.dismiss.<reason>` | `LaunchControls` (`optioErrorRoutes`) | A refused removal, shown through vultus-core's MessageSink, one key per `DismissFailureReason`: `not-found`, `not-dismissable`. No default: without the app's text the key shows |
-| `common.error` | `useLaunchShowingRefusals` (vultus-core's `routeApiError`) | A launch error with neither a reason nor a message. No default: without the app's text the key shows |
+| `errors.processes.resurrect.<reason>` | `useResurrectShowingRefusals` (`optioErrorRoutes`), so `ProcessDetailView` | A refused resurrect, shown through vultus-core's MessageSink, one key per `ResurrectFailureReason`: `not-found`, `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, `launch-blocked`, `shutting-down`, `not-launchable` (a launch with `resumeFrom` of the process, or a run a launch scheduled, is in progress). No default: without the app's text the key shows |
+| `common.error` | `useLaunchShowingRefusals`, `useResurrectShowingRefusals` (vultus-core's `routeApiError`) | A launch or resurrect error with neither a reason nor a message. No default: without the app's text the key shows |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` | Tooltip / `aria-label` of the stop button when the task cannot resume (the detail view's: its widget layout's stop row) |
 | `processes.search` | `ProcessFilters` | The search field's label (its accessible name) and placeholder |
 | `processes.filterAll` | `ProcessFilters` | A choice of the group field (select) |
@@ -1397,7 +1420,7 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.restart` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Restart label (a menu item), and in the resurrect case its confirmation's title and OK button (default: "Restart (discard saved state)") |
 | `processes.resurrect` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resurrect label (`LaunchControls`' main half: its tooltip and accessible name) (default: "Resurrect") |
 | `processes.resumeFromSnapshot` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resume label in the resurrect case (a menu item), its confirmation's title and OK button (default: "Resume from last snapshot") |
-| `processes.discardUnsavedWork` | `useProcessLaunchActions` (through `LaunchControls`) | The resurrect case's confirmation body; in a previous-snapshot item's, after the deliveries sentence (default: "This discards the unsaved work the failed run left behind.") |
+| `processes.discardUnsavedWork` | `useProcessLaunchActions` (through `LaunchControls`) | The resurrect case's confirmation body; in a previous-snapshot item's, after the deliveries sentence, whenever the process holds unsaved work (with or without `triggerResurrect`) (default: "This discards the unsaved work the failed run left behind.") |
 | `processes.resurrecting` | `useProcessLaunchActions` (through `LaunchControls`) | The hook's Resurrecting label (`LaunchControls`' disabled indicator: its accessible name and its tooltip's first line) (default: "Resurrecting…") |
 | `processes.resurrectingReason` | `useProcessLaunchActions` (through `LaunchControls`) | Why Resurrecting is disabled (the indicator's tooltip, below the label) (default: "Saving the work the failed run left behind; the process resumes afterwards.") |
 | `processes.resumeFromPrevious` | `useProcessLaunchActions` (through `LaunchControls`) | A previous-snapshot item's label (a menu item, and its confirmation's OK button), `{{time}}` its snapshot's time (default: "Resume from previous snapshot ({{time}})") |

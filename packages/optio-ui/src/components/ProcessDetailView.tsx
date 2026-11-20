@@ -13,6 +13,7 @@ import { ProcessLogPanel } from './ProcessLogPanel.js';
 import { useProcessWidgetState } from './ProcessWidget.js';
 import { useProcessActions } from '../hooks/useProcessActions.js';
 import { useLaunchShowingRefusals } from '../hooks/useLaunchShowingRefusals.js';
+import { useResurrectShowingRefusals } from '../hooks/useResurrectShowingRefusals.js';
 import { LaunchControls } from './LaunchControls.js';
 import { lastSeenProcess, rememberProcess } from './lastSeenProcesses.js';
 
@@ -121,10 +122,11 @@ export function ProcessDetailView({
       rememberProcess(processId, { tree: node, logs: logsOfSubtree(stream.logs, node) });
     }
   }, [processId, stream.tree, stream.logs]);
-  const { cancel, resurrect } = useProcessActions();
-  // A refused launch (e.g. a resume from an older snapshot while a capture is pending) shows its
-  // reason's text, through vultus-core's MessageSink.
+  const { cancel } = useProcessActions();
+  // A refused launch (e.g. a resume from an older snapshot while a capture is pending) or
+  // resurrect shows its reason's text, through vultus-core's MessageSink.
   const launch = useLaunchShowingRefusals();
+  const resurrect = useResurrectShowingRefusals();
   // readOnly reaches the widget too: a suspended conversation's composer
   // would otherwise resume the process.
   const widgetResult = useProcessWidgetState(tree, { readOnly });
@@ -222,7 +224,7 @@ export function ProcessDetailView({
               process={tree}
               onLaunch={launch}
               onLaunched={onLaunched}
-              onResurrect={(id) => resurrect(id)}
+              onResurrect={resurrect}
             />
           </div>
         )}
@@ -251,7 +253,7 @@ export function ProcessDetailView({
         sseState={{ connected }}
         onLaunch={readOnly ? undefined : launch}
         onLaunched={onLaunched}
-        onResurrect={readOnly ? undefined : (id) => resurrect(id)}
+        onResurrect={readOnly ? undefined : resurrect}
         onCancel={readOnly ? undefined : (id) => cancel(id)}
       />
       {showLogs && <ProcessLogPanel logs={logs} tree={tree} droppedLogCount={stream.droppedLogCount} />}

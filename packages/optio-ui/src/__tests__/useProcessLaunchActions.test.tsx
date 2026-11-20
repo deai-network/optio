@@ -176,6 +176,27 @@ describe('useProcessLaunchActions', () => {
       .toBe(`Resume from ${time(2)}? This discards 3 newer snapshots.`);
   });
 
+  // Ruling R19: the resume drops the unsaved work whether or not the caller can resurrect, so the
+  // items' confirmation follows the process state; the menu's shape still follows triggerResurrect.
+  it('without triggerResurrect: the resumable shape, and the items still name the unsaved work', () => {
+    const { actions, all } = visible(FAILED_WITH_UNSAVED_WORK, undefined, undefined, SNAPS);
+
+    expect(actions.map((a) => a.label)).toEqual(
+      ['Resume', ...[0, 1, 2, 3].map(previous), 'Restart (discard saved state)']);
+    for (const s of [0, 1, 2, 3]) {
+      const text = contentText(slot(all, s));
+      expect(text).toContain('What the discarded runs delivered stays in the app.');
+      expect(text).toContain('This discards the unsaved work the failed run left behind.');
+    }
+
+    const without = visible({ ...FAILED_WITH_UNSAVED_WORK, hasUnsavedWork: false }, undefined, undefined, SNAPS);
+    for (const s of [0, 1, 2, 3]) {
+      const text = contentText(slot(without.all, s));
+      expect(text).toContain('What the discarded runs delivered stays in the app.');
+      expect(text).not.toContain('unsaved work');
+    }
+  });
+
   it('resurrecting: Resurrecting only', () => {
     const { actions } = visible({ ...FAILED_WITH_UNSAVED_WORK, resurrecting: true }, vi.fn(), undefined, SNAPS);
 

@@ -1728,7 +1728,8 @@ Launch alone when not resumable; Resume, the
 "Resume from previous snapshot (<time>)" items and Restart when resumable; with `onResurrect` and
 `isResurrectable(process)` (launchable, not resurrecting, `supportsResurrect` and `hasUnsavedWork`;
 both predicates exported from `optio-ui`) Resurrect, Resume from last snapshot, the items and Restart,
-all but Resurrect behind a confirmation naming the unsaved work they discard; while
+all but Resurrect behind a confirmation naming the unsaved work they discard (the items' confirmation
+names it whenever the process `isResurrectable`, with or without `onResurrect`); while
 `isResurrecting(process)` the disabled Resurrecting… alone. A non-empty `denyReason` disables every
 action with its reason (the menu still opens). The items come from `useProcessSnapshots(process._id,
 { enabled, runEndedAt: runEndedAt(process) })`, read only for a launchable, resumable process that is
@@ -1754,7 +1755,7 @@ interface ProcessListProps {
 }
 ```
 
-Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls` (`onResurrect` and `onLaunched` forwarded to it). `FilteredProcessList` takes the same callbacks, including `onResurrect` and `onLaunched`. optio-dashboard passes `useLaunchShowingRefusals()` and `useProcessActions()`'s `resurrect` and `cancel` to its `FilteredProcessList` as `onLaunch` / `onResurrect` / `onCancel` when the selected instance is live (none for an offline one); a refused launch shows its reason's text as an antd message (its `OptioProvider`'s `messageSink`).
+Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls` (`onResurrect` and `onLaunched` forwarded to it). `FilteredProcessList` takes the same callbacks, including `onResurrect` and `onLaunched`. optio-dashboard passes `useLaunchShowingRefusals()`, `useResurrectShowingRefusals()` and `useProcessActions()`'s `cancel` to its `FilteredProcessList` as `onLaunch` / `onResurrect` / `onCancel` when the selected instance is live (none for an offline one); a refused launch or resurrect shows its reason's text as an antd message (its `OptioProvider`'s `messageSink`).
 
 **`ProcessItem`**
 
@@ -1947,9 +1948,11 @@ Exported from `optio-ui` (with `TaskFactoryLaunchModalProps`, `TaskFactoryRecord
 `TaskFactoryParameter`, `ParameterChoice`, `ParameterLabel`).
 
 **`optioErrorRoutes`** (`packages/optio-ui/src/error-routes.ts`) — vultus-core's
-`ErrorRoutesRegistry<'processes.launch'>` (`OptioErrorRouteId`): every `LaunchFailureReason` →
-`{ i18nKey: 'errors.processes.launch.<reason>' }`, typed exhaustively (a reason added to
-optio-contracts fails the typecheck until it has an entry). Its texts are the app's (no default).
+`ErrorRoutesRegistry<OptioErrorRouteId>`, three routes: `processes.launch` (every
+`LaunchFailureReason` → `{ i18nKey: 'errors.processes.launch.<reason>' }`), `processes.dismiss`
+(`errors.processes.dismiss.<reason>`) and `processes.resurrect` (`errors.processes.resurrect.<reason>`),
+each typed exhaustively (a reason added to optio-contracts fails the typecheck until it has an
+entry). Its texts are the app's (no default).
 
 ---
 
@@ -2040,6 +2043,7 @@ useProcessActions(options?: ProcessActionsOptions): {
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resurrect: (processId: string) => void;
+  resurrectAsync: (processId: string) => Promise<Process>;
   resync: (metadataFilter?: ProcessMetadataFilter) => void;
   resyncClean: (metadataFilter?: ProcessMetadataFilter) => void;
   isResyncing: boolean;
@@ -2052,7 +2056,8 @@ useProcessActions(options?: ProcessActionsOptions): {
 // launches its child) and ephemeral when opts.ephemeral is given.
 // launchAsync sends the same, for an action that shows the outcome: it resolves with the launched
 // record (a factory's: the child) and rejects with ts-rest's { status, body: { reason, message } }.
-// resurrect POSTs /processes/:id/resurrect with body: { sessionId: getSessionId() }.
+// resurrect POSTs /processes/:id/resurrect with body: { sessionId: getSessionId() }; resurrectAsync
+// sends the same, resolving with the process, rejecting with the refusal (as launchAsync).
 // launch, launchAsync and resurrect invalidate ['process-snapshots', database, prefix, id] (any
 // runEndedAt) once settled, success or refusal: a snapshot written without a run end is re-read.
 
@@ -2060,6 +2065,9 @@ useLaunchShowingRefusals(): (processId: string, opts?: LaunchOptions) => void
 // launch for an onLaunch that shows a refusal: launchAsync, and a rejection through optioErrorRoutes
 // (route processes.launch, vultus-core's routeApiError) to vultus-core's MessageSink. Nothing on
 // success; returns nothing. ProcessDetailView and optio-dashboard launch with it.
+useResurrectShowingRefusals(): (processId: string) => void
+// the same for an onResurrect: resurrectAsync, route processes.resurrect. ProcessDetailView and
+// optio-dashboard resurrect with it.
 ```
 
 Note: `processId` arguments are MongoDB `_id` strings (ObjectId hex), not `processId` strings.
@@ -2261,7 +2269,7 @@ All components use `react-i18next`. Required keys:
 | `processes.restart` | useProcessLaunchActions, so LaunchControls (Restart, a menu item; in the resurrect case its confirmation's title and OK); default "Restart (discard saved state)" |
 | `processes.resurrect` | useProcessLaunchActions, so LaunchControls (Resurrect); default "Resurrect" |
 | `processes.resumeFromSnapshot` | useProcessLaunchActions, so LaunchControls (Resume in the resurrect case: a menu item, its confirmation's title and OK); default "Resume from last snapshot" |
-| `processes.discardUnsavedWork` | useProcessLaunchActions, so LaunchControls (the resurrect case's confirmation body; in a previous-snapshot item's, after the deliveries sentence); default "This discards the unsaved work the failed run left behind." |
+| `processes.discardUnsavedWork` | useProcessLaunchActions, so LaunchControls (the resurrect case's confirmation body; in a previous-snapshot item's, after the deliveries sentence, whenever the process holds unsaved work, with or without `onResurrect`); default "This discards the unsaved work the failed run left behind." |
 | `processes.resurrecting` | useProcessLaunchActions, so LaunchControls (the disabled Resurrecting indicator's label); default "Resurrecting…" |
 | `processes.resurrectingReason` | useProcessLaunchActions, so LaunchControls (why Resurrecting is disabled); default "Saving the work the failed run left behind; the process resumes afterwards." |
 | `processes.resumeFromPrevious` | useProcessLaunchActions, so LaunchControls (a previous-snapshot item and its confirmation's OK, `{{time}}`); default "Resume from previous snapshot ({{time}})" |
@@ -2287,7 +2295,8 @@ All components use `react-i18next`. Required keys:
 | `status.suspending` / `status.suspended` | ProcessStatusBadge (resumable process stopping / stopped with saved state; defaults "Suspending" / "Suspended") |
 | `status.autoResumeScheduled` | ProcessStatusBadge (auto-resume clock icon label; default "Scheduled for auto-restart") |
 | `common.noData` | ProcessLogPanel (empty state) |
-| `common.error` | `useLaunchShowingRefusals` (vultus-core's `routeApiError`): a launch error with neither a reason nor a message; no default |
+| `common.error` | `useLaunchShowingRefusals`, `useResurrectShowingRefusals` (vultus-core's `routeApiError`): a launch or resurrect error with neither a reason nor a message; no default |
+| `errors.processes.resurrect.<reason>` | `useResurrectShowingRefusals` via `optioErrorRoutes` (route `processes.resurrect`), so ProcessDetailView: a refused resurrect, one per `ResurrectFailureReason` (`not-found`, `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, `launch-blocked`, `shutting-down`, `not-launchable`); no default |
 | `processes.showEarlierLines` | ProcessLogPanel (the link on top that shows 500 more lines; default "Show earlier lines") |
 | `processes.olderLinesNotKept` | ProcessLogPanel (the note on top once every kept line shows; default "Older lines are not kept here") |
 | `processes.factoryTitle` | TaskFactoryLaunchModal (title, `{{name}}` the factory's; default "Launch “{{name}}”") |

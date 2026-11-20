@@ -8,15 +8,26 @@ import type { MessageSink } from 'vultus-core';
 import { VultusProvider } from 'vultus-antd';
 import { registerWidget, _clearWidgetRegistry } from '../widgets/registry.js';
 
-// The app's text of one launch refusal (optioErrorRoutes, route processes.launch).
+// The app's text of one launch refusal (optioErrorRoutes, route processes.launch) and of one
+// resurrect refusal (route processes.resurrect).
 const CAPTURE_PENDING_TEXT = 'Settle the unfinished capture first (Resurrect or Resume).';
+const RESURRECT_NOT_LAUNCHABLE_TEXT = 'Another launch of this process is under way: try again shortly.';
 
 // The view's texts come from an i18n instance (react-i18next warns without one).
 const i18n = i18next.createInstance();
 i18n.init({
   lng: 'en',
   resources: {
-    en: { translation: { errors: { processes: { launch: { 'capture-pending': CAPTURE_PENDING_TEXT } } } } },
+    en: {
+      translation: {
+        errors: {
+          processes: {
+            launch: { 'capture-pending': CAPTURE_PENDING_TEXT },
+            resurrect: { 'not-launchable': RESURRECT_NOT_LAUNCHABLE_TEXT },
+          },
+        },
+      },
+    },
   },
 });
 const WithI18n = ({ children }: { children: ReactNode }) => <I18nextProvider i18n={i18n}>{children}</I18nextProvider>;
@@ -37,9 +48,11 @@ const mockLaunch = vi.fn();
 const mockCancel = vi.fn();
 const mockResurrect = vi.fn();
 const mockLaunchAsync = vi.fn();
+const mockResurrectAsync = vi.fn();
 vi.mock('../hooks/useProcessActions.js', () => ({
   useProcessActions: () => ({
     launch: mockLaunch, cancel: mockCancel, resurrect: mockResurrect, launchAsync: mockLaunchAsync,
+    resurrectAsync: mockResurrectAsync,
   }),
 }));
 
@@ -78,6 +91,9 @@ describe('ProcessDetailView', () => {
     mockLaunchAsync.mockResolvedValue({});
     mockCancel.mockReset();
     mockResurrect.mockReset();
+    // Resurrect too, through resurrectAsync: accepted unless a test says otherwise.
+    mockResurrectAsync.mockReset();
+    mockResurrectAsync.mockResolvedValue({});
     mockSnapshots.mockReset();
     mockSnapshots.mockReturnValue(undefined);
     mockBaseUrl.mockReturnValue('http://host');
@@ -523,7 +539,8 @@ describe('ProcessDetailView', () => {
       it('primary button resurrects', async () => {
         renderUnsaved();
         await click(screen.getByRole('button', { name: /resurrect/i }));
-        expect(mockResurrect).toHaveBeenCalledWith('abc');
+        expect(mockResurrectAsync).toHaveBeenCalledWith('abc');
+        expect(mockResurrect).not.toHaveBeenCalled();
         expect(mockLaunchAsync).not.toHaveBeenCalled();
       });
 
@@ -540,7 +557,7 @@ describe('ProcessDetailView', () => {
         expect(within(dialog).getByText(/discards the unsaved work/i)).toBeTruthy();
         await click(within(dialog).getByRole('button', { name: 'Resume from last snapshot' }));
         await vi.waitFor(() => expect(mockLaunchAsync).toHaveBeenCalledWith('abc', { resume: true }), { timeout: 60_000 });
-        expect(mockResurrect).not.toHaveBeenCalled();
+        expect(mockResurrectAsync).not.toHaveBeenCalled();
       });
     });
 
@@ -1111,6 +1128,61 @@ describe('ProcessDetailView', () => {
       await act(async () => { await Promise.resolve(); });
       expect(sink).not.toHaveBeenCalled();
       expect(screen.queryByText(CAPTURE_PENDING_TEXT)).toBeNull();
+    });
+  });
+
+  // A resurrect from the view shows its refusal too (ruling R19): route processes.resurrect.
+  describe('a resurrect refused', () => {
+    const WAIT = { timeout: 20_000 };
+    const NOT_LAUNCHABLE = {
+      status: 409,
+      body: { reason: 'not-launchable', message: 'Another launch of this process is in progress; try again shortly' },
+    };
+    const layouts = [['the suspended widget layout', true], ['the default layout', false]] as const;
+
+    // A failed run with unsaved work and a saved snapshot: Resurrect is the main action.
+    function renderResurrectable(withWidget: boolean, messageSink?: MessageSink) {
+      if (withWidget) {
+        registerWidget('my-widget', () => <div />, { suspended: () => <div data-testid="suspended-widget" /> });
+      }
+      mockProcessStream.mockReturnValue({
+        tree: {
+          _id: 'abc', name: 'P', status: { state: 'failed' },
+          supportsResume: true, hasSavedState: true, supportsResurrect: true, hasUnsavedWork: true,
+          progress: { percent: null }, cancellable: false,
+          depth: 0, order: 0, parentId: null, children: [],
+          ...(withWidget ? { uiWidget: 'my-widget', widgetData: {} } : {}),
+        },
+        logs: [],
+        connected: true,
+      });
+      render(<VultusProvider messageSink={messageSink}><ProcessDetailView processId="abc" /></VultusProvider>);
+      expect(screen.getByTestId(withWidget ? 'optio-widget-layout' : 'optio-detail-default')).toBeTruthy();
+    }
+
+    async function resurrect() {
+      await click(screen.getByRole('button', { name: /resurrect/i }));
+      await waitFor(() => expect(mockResurrectAsync).toHaveBeenCalledWith('abc'), WAIT);
+      expect(mockResurrectAsync).toHaveBeenCalledTimes(1);
+      expect(mockResurrect).not.toHaveBeenCalled();
+    }
+
+    it.each(layouts)('in %s, a resurrect refused (not-launchable) shows its reason\'s text', async (_layout, withWidget) => {
+      mockResurrectAsync.mockRejectedValue(NOT_LAUNCHABLE);
+      renderResurrectable(withWidget);
+      await resurrect();
+      expect(await screen.findByText(RESURRECT_NOT_LAUNCHABLE_TEXT, {}, WAIT)).toBeTruthy();
+    });
+
+    it.each(layouts)('in %s, a resurrect that is accepted shows nothing', async (_layout, withWidget) => {
+      mockResurrectAsync.mockResolvedValue({ _id: 'abc' });
+      const sink = vi.fn();
+      renderResurrectable(withWidget, sink);
+      await resurrect();
+      // The accepted resurrect settles.
+      await act(async () => { await Promise.resolve(); });
+      expect(sink).not.toHaveBeenCalled();
+      expect(screen.queryByText(RESURRECT_NOT_LAUNCHABLE_TEXT)).toBeNull();
     });
   });
 

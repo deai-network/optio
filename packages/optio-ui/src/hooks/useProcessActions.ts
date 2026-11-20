@@ -59,6 +59,11 @@ export function useProcessActions(options?: ProcessActionsOptions) {
     query: { database, prefix },
     body: launchBody(opts),
   });
+  const resurrectRequest = (processId: string) => ({
+    params: { id: processId },
+    query: { database, prefix },
+    body: { sessionId: getSessionId() },
+  });
 
   return {
     launch: (processId: string, opts?: LaunchOptions) => launchMutation.mutate(launchRequest(processId, opts)),
@@ -75,12 +80,12 @@ export function useProcessActions(options?: ProcessActionsOptions) {
     dismissAsync: async (processId: string): Promise<void> => {
       await dismissMutation.mutateAsync({ params: { id: processId }, query: { database, prefix } });
     },
-    resurrect: (processId: string) =>
-      resurrectMutation.mutate({
-        params: { id: processId },
-        query: { database, prefix },
-        body: { sessionId: getSessionId() },
-      }),
+    resurrect: (processId: string) => resurrectMutation.mutate(resurrectRequest(processId)),
+    /** As `resurrect`, for a caller that shows the outcome: resolves with the process once the
+     *  resurrect is accepted, rejects with ts-rest's `{ status, body: { reason, message } }` on a
+     *  refusal. */
+    resurrectAsync: async (processId: string): Promise<Process> =>
+      (await resurrectMutation.mutateAsync(resurrectRequest(processId))).body,
     resync: (metadataFilter?: ProcessMetadataFilter) =>
       resyncMutation.mutate({
         query: { database, prefix },

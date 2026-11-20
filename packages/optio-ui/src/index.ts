@@ -37,6 +37,7 @@ export { WithFilteredProcesses, ProcessFilters, FilteredProcessList, useProcessF
 export { useInstances, useInstanceDiscovery, type OptioInstance } from './hooks/useInstanceDiscovery.js';
 export { useProcessActions } from './hooks/useProcessActions.js';
 export { useLaunchShowingRefusals } from './hooks/useLaunchShowingRefusals.js';
+export { useResurrectShowingRefusals } from './hooks/useResurrectShowingRefusals.js';
 export { useProcessList, useProcess, useProcesses, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
 export { useProcessConversation, runEndedAt } from './hooks/useProcessConversation.js';
 export { useProcessSnapshots } from './hooks/useProcessSnapshots.js';

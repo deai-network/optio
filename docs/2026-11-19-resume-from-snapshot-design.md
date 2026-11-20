@@ -134,6 +134,12 @@ none). The wrappers' capture, prune and restore code is unchanged.
   `hasUnsavedWork`, so the process shows as resurrectable and the item's confirmation names the
   unsaved work it discards (Resurrect saves it instead). A cut-off capture's pending record refuses
   the resume from a snapshot (`capture-pending`).
+- A claudecode rescue cut off before it recorded its blobs leaves only its marker on the host, with no
+  database trace: a resume from a previous snapshot then stops that state without capture (the
+  warning in the process log), and its confirmation names only the snapshot count.
+- A resume from a previous snapshot refused after the deletion (`shutting-down`), or whose run fails
+  before the rescue, leaves a live claudecode orphan: the next plain Resume rescues it and continues
+  from the crash state (plain-Resume semantics).
 - A newest document that has lost a blob: the list starts at the newest valid snapshot, which the UI
   takes for the one Resume reads. It is not offered as an item, and picking the next item deletes it
   too, under a count one lower than what is deleted.

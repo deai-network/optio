@@ -1,7 +1,5 @@
-import { useTranslation } from 'react-i18next';
-import { routeApiError, useMessageSink } from 'vultus-core';
-import { optioErrorRoutes } from '../error-routes.js';
 import { useProcessActions, type LaunchOptions } from './useProcessActions.js';
+import { useShowRefusal } from './useShowRefusal.js';
 
 /**
  * `useProcessActions().launch`, showing a refusal: it launches with `launchAsync`, and a rejection
@@ -15,13 +13,12 @@ import { useProcessActions, type LaunchOptions } from './useProcessActions.js';
  */
 export function useLaunchShowingRefusals(): (processId: string, opts?: LaunchOptions) => void {
   const { launchAsync } = useProcessActions();
-  const { t } = useTranslation();
-  const showError = useMessageSink();
+  const showRefusal = useShowRefusal('processes.launch');
   const launchShowingRefusal = async (processId: string, opts?: LaunchOptions) => {
     try {
       await launchAsync(processId, opts);
     } catch (err) {
-      routeApiError(err, { route: 'processes.launch', t: (key) => t(key), showError }, optioErrorRoutes);
+      showRefusal(err);
     }
   };
   return (processId, opts) => {

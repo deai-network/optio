@@ -116,6 +116,25 @@ describe('useProcessActions().launchAsync', () => {
   });
 });
 
+describe('useProcessActions().resurrectAsync', () => {
+  it('resolves with the process once the resurrect is accepted', async () => {
+    answer = { status: 200, body: { _id: 'p1', name: 'P' } };
+    const { result } = renderHook(() => useProcessActions(), { wrapper: wrap });
+    await expect(result.current.resurrectAsync('p1')).resolves.toEqual({ _id: 'p1', name: 'P' });
+    const url = String((vi.mocked(globalThis.fetch).mock.calls[0] as any[])[0]);
+    expect(url).toContain('/processes/p1/resurrect');
+    expect(bodies[0]).toEqual({ sessionId: expect.any(String) });
+  });
+
+  it("rejects with the refusal, as ts-rest's { status, body }", async () => {
+    answer = { status: 409, body: { reason: 'not-launchable', message: 'Another launch of this process is in progress; try again shortly' } };
+    const { result } = renderHook(() => useProcessActions(), { wrapper: wrap });
+    await expect(result.current.resurrectAsync('p1')).rejects.toMatchObject({
+      status: 409, body: { reason: 'not-launchable' },
+    });
+  });
+});
+
 describe('useProcessActions: a settled launch or resurrect reads the snapshot list again', () => {
   // A snapshot can be written without a run end (a resurrect's capture whose resume is refused),
   // which the list's runEndedAt key does not see.

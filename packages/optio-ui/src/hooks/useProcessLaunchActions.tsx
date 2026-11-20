@@ -47,7 +47,8 @@ const RAW = { escapeValue: false };
  * The previous-snapshot items: `snapshots` is `useProcessSnapshots`' list (newest first, the
  * newest included, which Resume reads). Slot `s` (0 to 3) offers `snapshots[s + 1]`, "Resume from
  * previous snapshot (<time>)", behind a confirmation that names its `s + 1` newer snapshots, which
- * the resume discards (and, in the resurrect case, the unsaved work); it fires
+ * the resume discards, and the unsaved work whenever the process holds it (`isResurrectable`, by
+ * its state: with or without `triggerResurrect`, the resume drops that work); it fires
  * `triggerLaunch({ resume: true, resumeFrom: capturedAt })`. With no list (loading, failed, not
  * passed) or no older snapshot, the slots are invisible: the menu is Resume and Restart.
  *
@@ -79,7 +80,11 @@ export function useProcessLaunchActions(
   const launchable = !!process && isLaunchable(process);
   const resumable = !!process && isResumable(process);
   const resurrecting = !!process && isResurrecting(process);
-  const resurrectable = !!triggerResurrect && !!process && isResurrectable(process);
+  // The host holds a failed run's unsaved work (the process state): a resume from an older
+  // snapshot drops it, whether or not the caller can resurrect.
+  const holdsUnsavedWork = !!process && isResurrectable(process);
+  // The resurrect case (the menu's shape): that state and a caller that can resurrect.
+  const resurrectable = !!triggerResurrect && holdsUnsavedWork;
 
   const discardUnsavedWork = t('processes.discardUnsavedWork', {
     defaultValue: 'This discards the unsaved work the failed run left behind.',
@@ -153,7 +158,7 @@ export function useProcessLaunchActions(
             defaultValue: 'Resume from {{time}}? This discards {{count}} newer snapshots.',
             interpolation: RAW,
           }),
-          content: resurrectable ? `${keepsDeliveries} ${discardUnsavedWork}` : keepsDeliveries,
+          content: holdsUnsavedWork ? `${keepsDeliveries} ${discardUnsavedWork}` : keepsDeliveries,
         }
         : undefined,
       fire: () => {
