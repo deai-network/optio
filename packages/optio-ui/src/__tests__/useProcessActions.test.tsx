@@ -46,6 +46,14 @@ describe('useProcessActions().launch', () => {
     expect(bodies[1]).toEqual({ sessionId: expect.any(String), resume: true });
   });
 
+  it('launch sends resumeFrom beside resume', async () => {
+    const TS = '2026-11-19T13:05:12.345Z';
+    const { result } = renderHook(() => useProcessActions(), { wrapper: wrap });
+    result.current.launch('p1', { resume: true, resumeFrom: TS });
+    await waitFor(() => expect(bodies).toHaveLength(1), { timeout: 60_000 });
+    expect(bodies[0]).toEqual({ sessionId: expect.any(String), resume: true, resumeFrom: TS });
+  });
+
   it("sends a task factory's values as params", async () => {
     const { result } = renderHook(() => useProcessActions(), { wrapper: wrap });
     result.current.launch('f1', { params: { limit: 3 } });

@@ -38,6 +38,7 @@ export { useInstances, useInstanceDiscovery, type OptioInstance } from './hooks/
 export { useProcessActions } from './hooks/useProcessActions.js';
 export { useProcessList, useProcess, useProcesses, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
 export { useProcessConversation, runEndedAt } from './hooks/useProcessConversation.js';
+export { useProcessSnapshots } from './hooks/useProcessSnapshots.js';
 export { useProcessStream } from './hooks/useProcessStream.js';
 export { useProcessListStream } from './hooks/useProcessListStream.js';
 export { usePrefixes, usePrefixDiscovery } from './hooks/usePrefixDiscovery.js';

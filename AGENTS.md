@@ -2004,8 +2004,8 @@ interface ProcessActionsOptions {
 }
 
 useProcessActions(options?: ProcessActionsOptions): {
-  launch: (processId: string, opts?: { resume?: boolean; params?: Record<string, unknown> }) => void;
-  launchAsync: (processId: string, opts?: { resume?: boolean; params?: Record<string, unknown> }) => Promise<Process>;
+  launch: (processId: string, opts?: { resume?: boolean; resumeFrom?: string; params?: Record<string, unknown> }) => void;
+  launchAsync: (processId: string, opts?: { resume?: boolean; resumeFrom?: string; params?: Record<string, unknown> }) => Promise<Process>;
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resurrect: (processId: string) => void;
@@ -2014,8 +2014,10 @@ useProcessActions(options?: ProcessActionsOptions): {
   isResyncing: boolean;
 }
 // Every call sends the provider's ?database=&prefix=.
-// launch sends body: { sessionId: getSessionId() }, plus resume: true when opts.resume is true and
-// params when opts.params is given (a task factory's values: the API makes and launches its child).
+// launch sends body: { sessionId: getSessionId() }, plus resume: true when opts.resume is true,
+// resumeFrom when opts.resumeFrom is set (a useProcessSnapshots capturedAt: the newer snapshots are
+// discarded, then it resumes; needs resume: true, else invalid-request) and params when opts.params
+// is given (a task factory's values: the API makes and launches its child).
 // launchAsync sends the same, for an action that shows the outcome: it resolves with the launched
 // record (a factory's: the child) and rejects with ts-rest's { status, body: { reason, message } }.
 // resurrect POSTs /processes/:id/resurrect with body: { sessionId: getSessionId() }.
@@ -2051,6 +2053,22 @@ fresh cache entry instead of momentarily showing the previous run's conversation
 `opts.stoppedAt` (even `null`; the name is historical) when the caller already has it — e.g. a
 suspended widget's `runEndedAt(process)` — to skip this hook's internal `useProcess(processId)`
 fetch and 5 s poll entirely; omit it to fall back to that internal lookup.
+
+**`useProcessSnapshots(processId, opts)`**
+
+```typescript
+useProcessSnapshots(
+  processId: string | undefined,                        // the process's _id
+  opts: { enabled: boolean; runEndedAt?: string | null },
+): ProcessSnapshot[] | undefined                        // { capturedAt, endState }, newest first
+```
+
+A process's valid snapshots, the newest included: `GET /processes/:id/snapshots`
+(`api.processes.getSnapshots.useQuery`). `launch(id, { resume: true, resumeFrom: capturedAt })`
+resumes from one of them. `undefined` while disabled (nothing fetched), loading, or failed (a 404:
+`not-found`, `no-snapshot-support`); a failure throws nothing and is not retried. Query key
+`['process-snapshots', database, prefix, processId, runEndedAt ?? null]` (pass `runEndedAt(process)`:
+each end of a run reads the list again); `staleTime: Infinity`.
 
 **`useProcessList(options?)`**
 
@@ -2200,7 +2218,7 @@ All components use `react-i18next`. Required keys:
 | `processes.factoryTitle` | TaskFactoryLaunchModal (title, `{{name}}` the factory's; default "Launch “{{name}}”") |
 | `processes.factoryLaunch` / `processes.factoryCancel` | TaskFactoryLaunchModal (buttons; defaults "Launch" / "Cancel") |
 | `processes.factoryRequired` / `processes.factoryMaxLength` | TaskFactoryLaunchModal (a required value missing, a text over `maxLength` with `{{count}}`; defaults "Required" / "At most {{count}} characters") |
-| `errors.processes.launch.<reason>` | TaskFactoryLaunchModal via `optioErrorRoutes`, one per `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`); no default (vultus-core's `routeApiError` reads `t(key)`) |
+| `errors.processes.launch.<reason>` | TaskFactoryLaunchModal via `optioErrorRoutes`, one per `LaunchFailureReason` (`not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters`, `invalid-metadata`, and for a resume from an older snapshot `invalid-request`, `no-snapshot-support`, `snapshot-not-found`, `capture-pending`); no default (vultus-core's `routeApiError` reads `t(key)`) |
 
 ---
 

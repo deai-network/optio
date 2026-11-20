@@ -25,6 +25,13 @@ const launchReasons: Record<LaunchFailureReason, RegistryEntry> = {
   'invalid-parameters': { i18nKey: 'errors.processes.launch.invalid-parameters' },
   // The server's launch stamp (optio-api's launchMetadata) collides with the factory's metadata.
   'invalid-metadata': { i18nKey: 'errors.processes.launch.invalid-metadata' },
+  // A resume from an older snapshot (`resumeFrom`): sent without `resume: true`; the task has no
+  // hook to discard the newer snapshots; no valid snapshot has that `capturedAt`; an unfinished
+  // capture is pending (Resurrect or a plain Resume settles it).
+  'invalid-request': { i18nKey: 'errors.processes.launch.invalid-request' },
+  'no-snapshot-support': { i18nKey: 'errors.processes.launch.no-snapshot-support' },
+  'snapshot-not-found': { i18nKey: 'errors.processes.launch.snapshot-not-found' },
+  'capture-pending': { i18nKey: 'errors.processes.launch.capture-pending' },
 };
 
 // Every dismiss refusal (removing an ended launch).

@@ -9,17 +9,22 @@ interface ProcessActionsOptions {
 
 export interface LaunchOptions {
   resume?: boolean;
+  /** Resume from an older snapshot: the `capturedAt` `useProcessSnapshots` listed for it. Needs
+   *  `resume: true` (else the launch is refused, `invalid-request`); the newer snapshots are discarded. */
+  resumeFrom?: string;
   /** A task factory's values, by parameter id: the launch makes the factory's child with them. */
   params?: Record<string, unknown>;
   /** A task factory's launch: removed when it ends (true), or kept until dismissed (false); else the factory's default. */
   ephemeral?: boolean;
 }
 
-/** The launch route's body: this tab's session, `resume: true` when asked, a task factory's values and `ephemeral`. */
+/** The launch route's body: this tab's session, `resume: true` when asked, `resumeFrom` when set,
+ *  a task factory's values and `ephemeral`. */
 function launchBody(opts: LaunchOptions | undefined) {
   return {
     sessionId: getSessionId(),
     ...(opts?.resume === true ? { resume: true } : {}),
+    ...(opts?.resumeFrom !== undefined ? { resumeFrom: opts.resumeFrom } : {}),
     ...(opts?.params !== undefined ? { params: opts.params } : {}),
     ...(opts?.ephemeral !== undefined ? { ephemeral: opts.ephemeral } : {}),
   };

@@ -898,6 +898,7 @@ state (`done`, `failed`, or `cancelled`).
 ```ts
 interface LaunchOptions {
   resume?: boolean;
+  resumeFrom?: string;               // resume from an older snapshot: a useProcessSnapshots capturedAt
   params?: Record<string, unknown>;  // a task factory's values, by parameter id
 }
 
@@ -919,9 +920,11 @@ All mutations invalidate the `['processes']` query key on success.
 `resync` sends `body: {}`, `resyncClean` sends `body: { clean: true }`; a `metadataFilter`
 is added to the body when given.
 `onResyncSuccess(clean)` is called after a successful resync with the `clean` flag value.
-`launch` sends `body: { sessionId: getSessionId() }`, plus `resume: true` when `opts.resume` is true
-and `params` when `opts.params` is given (a task factory's launch: the API makes and launches its
-child). It reports nothing. `launchAsync` sends the same, for an action that shows the outcome (a
+`launch` sends `body: { sessionId: getSessionId() }`, plus `resume: true` when `opts.resume` is true,
+`resumeFrom` when `opts.resumeFrom` is set (a resume from an older snapshot, the `capturedAt` of one
+`useProcessSnapshots` listed: the engine discards the newer snapshots, then resumes; without
+`resume: true` the launch is refused, `invalid-request`) and `params` when `opts.params` is given (a
+task factory's launch: the API makes and launches its child). It reports nothing. `launchAsync` sends the same, for an action that shows the outcome (a
 vultus `useAction`, as the task factory form's): it resolves with the launched record (a factory's:
 its child) and rejects with ts-rest's `{ status, body: { reason, message } }` on a refusal.
 `resurrect` POSTs `/processes/:id/resurrect` with `body: { sessionId: getSessionId() }`.
@@ -988,6 +991,32 @@ set — `status.stoppedAt` (cancelled), `status.doneAt` (done) or `status.failed
 terminal write replaces the whole status and a relaunch clears all three, so at most one is
 set — or `null` while the run has not ended. A caller that keys its own read of the record the
 same way (the same query, one request) passes it as `opts.stoppedAt`.
+
+---
+
+### useProcessSnapshots
+
+```ts
+function useProcessSnapshots(
+  processId: string | undefined,                        // the process's _id
+  opts: { enabled: boolean; runEndedAt?: string | null },
+): ProcessSnapshot[] | undefined                        // optio-contracts: { capturedAt, endState }
+```
+
+A process's valid snapshots, newest first, the newest included: `GET /processes/:id/snapshots`
+(`api.processes.getSnapshots.useQuery`, proxied by optio-api from the engine's `listSnapshots`). A
+resume from an older snapshot names one of them: `launch(id, { resume: true, resumeFrom: capturedAt })`
+(`capturedAt` as listed, UTC with three fraction digits).
+
+Returns `undefined` while disabled (`opts.enabled` false, or no `processId`: nothing is fetched),
+while loading, and when the read failed (a 404, `not-found` or `no-snapshot-support`). A failure
+throws nothing and is never retried (`retry: false`): the caller offers what it offers without the
+list.
+
+The query key is `['process-snapshots', database, prefix, processId, runEndedAt ?? null]`: pass
+`runEndedAt(process)`, so each end of a run (which may add a snapshot) reads the list again.
+`staleTime: Infinity`: for a given end the list is fixed, so a refocus or a remount does not ask the
+engine again. `structuralSharing: shareTsRestResponse`, as the other queries.
 
 ---
 
@@ -1209,7 +1238,7 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.showSpecial` | `ProcessFilters` | The "show special" field's label (checkbox) |
 | `common.noData` | `ProcessLogPanel` | Empty state description |
 | `status.<state>` | `ProcessStatusBadge` | State tag label (dynamic key, falls back to raw state) |
-| `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`) | A launch refusal in the form, one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names), `invalid-metadata` (the server's launch stamp, optio-api's `launchMetadata`, collides with the factory's metadata). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
+| `errors.processes.launch.<reason>` | `TaskFactoryLaunchModal` (`optioErrorRoutes`) | A launch refusal in the form, one key per `LaunchFailureReason`: `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked`, `shutting-down`, `parameters-required`, `not-a-factory`, `invalid-parameters` (beside the field its message names), `invalid-metadata` (the server's launch stamp, optio-api's `launchMetadata`, collides with the factory's metadata), and those of a resume from an older snapshot (`resumeFrom`): `invalid-request` (no `resume: true`), `no-snapshot-support`, `snapshot-not-found`, `capture-pending` (an unfinished capture is pending). vultus-core's `routeApiError` reads `t(key)`, so there is no default: without the app's text the key shows |
 | `processes.suspend` | `ProcessItem`, `ProcessTreeView`, `ProcessDetailView` | Tooltip / `aria-label` of the stop button when the task can resume (default: "Suspend") |
 | `processes.resume` | `LaunchControls` | Resume button tooltip and `aria-label` when `supportsResume` and `hasSavedState`, a task's or a kept launch's (default: "Resume") |
 | `processes.restart` | `LaunchControls` | Dropdown menu item label (default: "Restart (discard saved state)") |
