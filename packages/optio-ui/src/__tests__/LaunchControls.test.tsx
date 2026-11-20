@@ -206,6 +206,42 @@ describe('LaunchControls: snapshots, the warning, the icon size', () => {
     expect(onLaunch).toHaveBeenCalledTimes(1);
   });
 
+  // The main half's accessible name: the label of the action it shows.
+  const mainHalf = () => screen.getAllByRole('button')[0].getAttribute('aria-label');
+  const threeSnapshots: ProcessSnapshot[] = [
+    { capturedAt: TS, endState: 'cancelled' },
+    { capturedAt: '2026-11-19T12:05:00.000Z', endState: 'cancelled' },
+    { capturedAt: '2026-11-19T11:05:00.000Z', endState: 'cancelled' },
+  ];
+
+  it('the main half is Resume again once a picked previous-snapshot item fired', async () => {
+    mockUseProcessSnapshots.mockReturnValue(threeSnapshots);
+    const { onLaunch } = renderWith(resumable);
+    expect(mainHalf()).toBe('Resume');
+    openMenu();
+    const [item] = await screen.findAllByRole(
+      'menuitem', { name: /Resume from previous snapshot \(.+\)$/ }, { timeout: 60_000 });
+    const label = item.textContent!;
+    fireEvent.click(item);
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+    fireEvent.click(within(dialog).getByRole('button', { name: label }));
+    await waitFor(() => expect(onLaunch).toHaveBeenCalledTimes(1), { timeout: 60_000 });
+    await waitFor(() => expect(mainHalf()).toBe('Resume'), { timeout: 60_000 });
+  });
+
+  it('the main half is Resume again once a picked item\'s confirmation was cancelled', async () => {
+    mockUseProcessSnapshots.mockReturnValue(threeSnapshots);
+    const { onLaunch } = renderWith(resumable);
+    openMenu();
+    const [item] = await screen.findAllByRole(
+      'menuitem', { name: /Resume from previous snapshot \(.+\)$/ }, { timeout: 60_000 });
+    fireEvent.click(item);
+    const dialog = await screen.findByRole('dialog', {}, { timeout: 60_000 });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(mainHalf()).toBe('Resume'), { timeout: 60_000 });
+    expect(onLaunch).not.toHaveBeenCalled();
+  });
+
   it('the list read is keyed by the end of the last run', () => {
     const doneAt = '2026-11-19T13:06:00.000Z';
     renderWith({ ...resumable, status: { state: 'done', doneAt } });

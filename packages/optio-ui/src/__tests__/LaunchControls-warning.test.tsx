@@ -136,12 +136,14 @@ describe('LaunchControls: the warning of a resumable task', () => {
     expect(onLaunch).toHaveBeenCalledWith('r', { resume: false });
   });
 
-  it('Restart: Cancel on the warning launches nothing', async () => {
+  it('Restart: Cancel on the warning launches nothing, and the main half is Resume again', async () => {
     const onLaunch = renderWith(resumable);
     await pick(/restart \(discard saved state\)/i);
     const dialog = await dialogWith(WARNING);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(onLaunch).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getAllByRole('button')[0].getAttribute('aria-label')).toBe('Resume'),
+      { timeout: 60_000 });
   });
 
   it('Resume does not ask it', async () => {

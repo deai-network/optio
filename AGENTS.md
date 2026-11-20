@@ -1712,7 +1712,9 @@ renders a single play button that opens the factory's `TaskFactoryLaunchModal` (
 launch hands the child to `onLaunched`; a non-empty `denyReason` disables it.
 Otherwise it renders `useProcessLaunchActions` (below) in vultus-antd's `CombinedActionButton`, icon-only
 (`iconOnly`: the main half shows the active action's icon, its label the accessible name and tooltip;
-the `⋯` opener is as without it, the menu rows show icon and label): Launch alone when not resumable; Resume, the
+the `⋯` opener is as without it, the menu rows show icon and label; `keepOriginalDefault`: the main
+half goes back to the first enabled action once a menu pick fires or its confirmation is dismissed):
+Launch alone when not resumable; Resume, the
 "Resume from previous snapshot (<time>)" items and Restart when resumable; with `onResurrect` and
 `isResurrectable(process)` (launchable, not resurrecting, `supportsResurrect` and `hasUnsavedWork`;
 both predicates exported from `optio-ui`) Resurrect, Resume from last snapshot, the items and Restart,

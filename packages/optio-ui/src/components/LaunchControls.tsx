@@ -60,7 +60,8 @@ export interface LaunchControlsProps {
  *     icon-only `CombinedActionButton`: Launch alone; Resume, the
  *     previous-snapshot items (from `useProcessSnapshots`) and Restart; in the
  *     resurrect case (`onResurrect` given) Resurrect, the resumes and Restart;
- *     while a resurrect runs, the disabled Resurrecting only.
+ *     while a resurrect runs, the disabled Resurrecting only. A menu pick
+ *     leaves the main half on the first enabled action (`keepOriginalDefault`).
  *
  * A task's `warning` describes what a fresh run does: it is asked before
  * Launch and Restart (after Restart's own confirmation, if any), never before
@@ -131,10 +132,12 @@ export function LaunchControls({
   const styled = iconFontSize
     ? actions.map((a) => ({ ...a, icon: <span style={{ fontSize: iconFontSize }}>{a.icon}</span> }))
     : actions;
+  // keepOriginalDefault: after a menu pick fires (or its confirmation is dismissed) the main half
+  // shows the first enabled action again, so a click on it never repeats a pick such as Restart.
   return (
     <>
       {contextHolder}
-      <CombinedActionButton actions={styled} size={size} iconOnly />
+      <CombinedActionButton actions={styled} size={size} iconOnly keepOriginalDefault />
     </>
   );
 }
