@@ -1097,7 +1097,9 @@ older[s].capturedAt })`. Without a list (loading, failed, left out) or without a
 the slots are invisible: Resume and Restart, as before. `<time>` is `formatSnapshotTimes`
 (`snapshot-time.ts`) in the i18n language (`i18n.resolvedLanguage ?? i18n.language`): `dateStyle:
 'medium'`, `timeStyle: 'short'`, and `timeStyle: 'medium'` (the seconds) for the times whose short
-forms collide.
+forms collide. It throws nothing during render: an empty list builds no formatter, a locale Intl
+cannot read (a `RangeError`) falls back to the runtime's default, and a `capturedAt` that does not
+parse shows as it is.
 
 The other ids are `process.resurrect:<id>`, `process.resume:<id>`, `process.restart:<id>` and
 `process.launch:<id>`. Resume fires `triggerLaunch({ resume: true })`, Restart `triggerLaunch({
@@ -1110,6 +1112,8 @@ returns.
 `warning` first for every launching action the hook returns (Resume, Restart, Launch, the
 resurrect case's Resume from last snapshot and Restart, and the previous-snapshot items), after
 the action's own confirmation, and launch exactly once after OK; a cancel launches nothing.
+Resurrect starts the task's run again too: `triggerResurrect` must ask the process's `warning`
+first as well, and resurrect exactly once after OK; a cancel resurrects nothing.
 
 ---
 
@@ -1359,7 +1363,7 @@ no inline default (the app must translate them); the second carries an English d
 | `processes.resurrectingLabel` | `LaunchControls` | Resurrecting indicator `aria-label` (default: "Resurrecting") |
 | `processes.resurrectingReason` | `useProcessLaunchActions` | Why Resurrecting is disabled (default: "Saving the work the failed run left behind; the process resumes afterwards.") |
 | `processes.resumeFromPrevious` | `useProcessLaunchActions` | A previous-snapshot item's label, `{{time}}` its snapshot's time (default: "Resume from previous snapshot ({{time}})") |
-| `processes.resumeFromPreviousConfirm_one` / `_other` | `useProcessLaunchActions` | A previous-snapshot item's confirmation title, `{{time}}`, `{{count}}` the newer snapshots it discards (defaults: "Resume from {{time}}? This discards {{count}} newer snapshot." / "Resume from {{time}}? This discards {{count}} newer snapshots.") |
+| `processes.resumeFromPreviousConfirm_one` / `_other` | `useProcessLaunchActions` | A previous-snapshot item's confirmation title, `{{time}}`, `{{count}}` the newer snapshots it discards (defaults: "Resume from {{time}}? This discards {{count}} newer snapshot." / "Resume from {{time}}? This discards {{count}} newer snapshots."; a language's other forms, `_few`, `_many`, ..., default to the `_other` text) |
 | `processes.resumeFromPreviousKeepsDeliveries` | `useProcessLaunchActions` | A previous-snapshot item's confirmation body (default: "What the discarded runs delivered stays in the app.") |
 | `processes.showEarlierLines` | `ProcessLogPanel` | The link on top that shows 500 more earlier lines (default: "Show earlier lines") |
 | `processes.olderLinesNotKept` | `ProcessLogPanel` | The note on top once every kept line shows and the buffer dropped older ones (default: "Older lines are not kept here") |

@@ -55,7 +55,9 @@ const RAW = { escapeValue: false };
  * resurrect case's Resume from last snapshot and Restart, and the previous-snapshot items. The
  * hook does not ask a task's `warning`: `triggerLaunch` must ask the process's warning first, for
  * each of them (after the action's own confirmation, if it has one), and launch exactly once after
- * OK; a cancel launches nothing. Resurrect fires `triggerResurrect`.
+ * OK; a cancel launches nothing. Resurrect fires `triggerResurrect`, and it starts the task's run
+ * again too: `triggerResurrect` must ask the process's warning first as well, and resurrect exactly
+ * once after OK; a cancel resurrects nothing.
  *
  * `launchGate` (default: allowed) holds every action that launches -- Resurrect resumes after
  * saving -- back with its reason, e.g. while no seed is free; Resurrecting keeps its own. The
@@ -146,6 +148,8 @@ export function useProcessLaunchActions(
             count: s + 1,
             defaultValue_one: 'Resume from {{time}}? This discards {{count}} newer snapshot.',
             defaultValue_other: 'Resume from {{time}}? This discards {{count}} newer snapshots.',
+            // A language's other plural forms (few, many, ...) without a translation.
+            defaultValue: 'Resume from {{time}}? This discards {{count}} newer snapshots.',
             interpolation: RAW,
           }),
           content: resurrectable ? `${keepsDeliveries} ${discardUnsavedWork}` : keepsDeliveries,

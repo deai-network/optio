@@ -25,4 +25,25 @@ describe('formatSnapshotTimes', () => {
   it('takes the default locale when none is given', () => {
     expect(() => formatSnapshotTimes(['2026-11-19T13:05:12.345Z'])).not.toThrow();
   });
+
+  it('answers an empty list without building a formatter', () => {
+    // A formatter for this time zone would throw a RangeError.
+    expect(formatSnapshotTimes([], 'en-GB', 'No/Such_Zone')).toEqual([]);
+  });
+
+  it('takes the default locale for one Intl cannot read', () => {
+    const iso = '2026-11-19T13:05:12.345Z';
+    const runtimeDefault = new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC',
+    }).format(new Date(iso));
+
+    expect(formatSnapshotTimes([iso], '!!', 'UTC')).toEqual([runtimeDefault]);
+  });
+
+  it('shows a time that does not parse as it is', () => {
+    const iso = '2026-11-19T13:05:12.345Z';
+
+    expect(formatSnapshotTimes(['not a time', iso], 'en-GB', 'UTC')).toEqual(['not a time', short(iso)]);
+    expect(formatSnapshotTimes(['not a time', 'not a time'], 'en-GB', 'UTC')).toEqual(['not a time', 'not a time']);
+  });
 });

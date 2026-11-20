@@ -56,14 +56,14 @@ function contentText(action: ActionStatus): string {
 }
 
 describe('useProcessLaunchActions', () => {
-  it('offers Resurrect first for a failed run with unsaved work', () => {
+  it('offers Resurrect first for a failed run with unsaved work', async () => {
     const resurrect = vi.fn();
     const { actions } = visible(FAILED_WITH_UNSAVED_WORK, resurrect);
 
     expect(actions.map((a) => a.label)).toEqual(
       ['Resurrect', 'Resume from last snapshot', 'Restart (discard saved state)']);
     expect(actions[0].disabled).toBe(false);
-    actions[0].fire();
+    await act(async () => { actions[0].fire(); });
     expect(resurrect).toHaveBeenCalledOnce();
   });
 
@@ -171,12 +171,39 @@ describe('useProcessLaunchActions', () => {
       expect(text).toContain('What the discarded runs delivered stays in the app.');
       expect(text).toContain('This discards the unsaved work the failed run left behind.');
     }
+    const item = slot(all, 2);
+    expect(item.confirmation?.kind === 'cascade-modal' && item.confirmation.title)
+      .toBe(`Resume from ${time(2)}? This discards 3 newer snapshots.`);
   });
 
   it('resurrecting: Resurrecting only', () => {
     const { actions } = visible({ ...FAILED_WITH_UNSAVED_WORK, resurrecting: true }, vi.fn(), undefined, SNAPS);
 
     expect(actions.map((a) => a.label)).toEqual(['Resurrecting…']);
+  });
+
+  it('resurrecting: the icon is the loading one when no Spinner is lent', () => {
+    const { actions } = visible({ ...FAILED_WITH_UNSAVED_WORK, resurrecting: true }, vi.fn());
+    const { container } = render(<>{actions[0].icon}</>);
+
+    expect(container.querySelector('.anticon-loading')).not.toBeNull();
+    expect(container.querySelector('.anticon-medicine-box')).toBeNull();
+  });
+
+  it('a language with more plural forms still gets the confirmation text', () => {
+    // Polish: 2 is a "few" form, which the hook has no default of its own for.
+    const pl = i18next.createInstance();
+    pl.init({ lng: 'pl', resources: { pl: { translation: {} } } });
+    const plWrapper = ({ children }: { children: ReactNode }) => (
+      <I18nextProvider i18n={pl}>{children}</I18nextProvider>
+    );
+    const { result } = renderHook(
+      () => useProcessLaunchActions(RESUMABLE, vi.fn(), undefined, true, SNAPS), { wrapper: plWrapper });
+    const plTime = formatSnapshotTimes(SNAPS.slice(1, 5).map((s) => s.capturedAt), 'pl')[1];
+    const item = slot(result.current, 1);
+
+    expect(item.confirmation?.kind === 'cascade-modal' && item.confirmation.title)
+      .toBe(`Resume from ${plTime}? This discards 2 newer snapshots.`);
   });
 
   it('the gate holds the items back with its reason', () => {

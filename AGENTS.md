@@ -2111,7 +2111,9 @@ with no list or no older snapshot the slots are invisible. The `useAction` calls
 always the same number. A task's `warning` is the caller's: `triggerLaunch` must ask the process's
 warning first for every launching action the hook returns (Resume, Restart, Launch, the resurrect
 case's Resume from last snapshot and Restart, and the previous-snapshot items), and launch exactly
-once after OK. Details: `packages/optio-ui/AGENTS.md` "useProcessLaunchActions".
+once after OK. Resurrect starts the run again too: `triggerResurrect` must ask the process's
+warning first as well, and resurrect exactly once after OK. Details: `packages/optio-ui/AGENTS.md`
+"useProcessLaunchActions".
 
 **`useProcessList(options?)`**
 
@@ -2240,7 +2242,7 @@ All components use `react-i18next`. Required keys:
 | `processes.resurrectingLabel` | LaunchControls (Resurrecting indicator aria-label; default "Resurrecting") |
 | `processes.resurrectingReason` | useProcessLaunchActions (why Resurrecting is disabled; default "Saving the work the failed run left behind; the process resumes afterwards.") |
 | `processes.resumeFromPrevious` | useProcessLaunchActions (a previous-snapshot item, `{{time}}`; default "Resume from previous snapshot ({{time}})") |
-| `processes.resumeFromPreviousConfirm_one` / `_other` | useProcessLaunchActions (its confirmation title, `{{time}}`, `{{count}}` newer snapshots; defaults "Resume from {{time}}? This discards {{count}} newer snapshot." / "… snapshots.") |
+| `processes.resumeFromPreviousConfirm_one` / `_other` | useProcessLaunchActions (its confirmation title, `{{time}}`, `{{count}}` newer snapshots; defaults "Resume from {{time}}? This discards {{count}} newer snapshot." / "… snapshots."; other plural forms default to the `_other` text) |
 | `processes.resumeFromPreviousKeepsDeliveries` | useProcessLaunchActions (its confirmation body; default "What the discarded runs delivered stays in the app.") |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |
 | `processes.suspend` | ProcessItem, ProcessTreeView (stop button tooltip for a resumable process; default "Suspend") |
