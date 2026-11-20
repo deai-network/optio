@@ -425,7 +425,8 @@ Once every line of `logs` shows and `droppedLogCount` is above 0, the top says
 following), the panel keeps its first line (found by identity in each new `logs`), so the lines
 read stay put while new ones are added below; back at the bottom it follows again, rendering as
 many lines as it showed. The first line shown names its process, as a transition does. Rows are
-memoized (`React.memo`, keyed `droppedLogCount + index`), so a batch renders the rows it adds.
+memoized (`React.memo`) and keyed by their entry's identity, not its index, so a batch or "Show
+earlier lines" renders only the rows it adds (and the row that becomes the first).
 
 Level-to-color mapping:
 
