@@ -438,11 +438,15 @@ launches that existed before (unchanged; the third point below). What is guarded
   `scheduled` (the existing race between two plain launches, unchanged).
 - `launch_and_wait` (programmatic) calls the executor directly and bypasses these guards, as it
   bypasses the launch checks; `launch_and_await_result` goes through `launch` and keeps them.
+- Known behaviour: the guards are in memory, per engine process (its `Optio`); two engines on
+  one prefix are not guarded against each other.
 
 A shutdown begun while the hook ran refuses the launch after it (`shutting-down`); the discard
 line is then written to the log at once. Any other exception of the hook is logged ("Resume
 from the snapshot of <capturedAt> failed: <error>", level `error`; if that write fails, the
-`optio_core_core` logger records it) and the hook's own error propagates. When the
+`optio_core_core` logger records it) and the hook's own error propagates. Known behaviour: such
+an error is no typed refusal, so optio-api's launch route answers it with a bare 500 (the
+failure line is in the process log first). When the
 launch does not follow a deletion (a shutdown, a failed launch), the chosen snapshot is the
 newest, so a later resume restores it. A plain `resume=True` never calls the hook. Spec:
 `docs/2026-11-19-resume-from-snapshot-design.md`.

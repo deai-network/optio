@@ -584,6 +584,17 @@ discard_snapshots_after"). A submodule: the package does not re-export it.
   - The conversation view after the resume continues from the chosen snapshot's
     conversation record; the newer turns are gone with the discarded snapshots.
   - The resume's restore replaces the host workdir with the chosen snapshot's.
+  - A newest document that has lost a blob: the list starts at the newest valid
+    snapshot, which the UI takes for the one Resume reads (a plain Resume reads the
+    broken newest document). That snapshot is not offered as an item, and picking
+    the next item deletes it too, under a count one lower than what is deleted (the
+    point on invalid newer documents above covers only the count).
+  - Two documents with the same `capturedAt` millisecond are both kept by a discard
+    naming it: only later ones go (no tie-break).
+  - A crash or a shutdown between deleting the newer documents and deleting their
+    blobs, or a failed blob delete (the warning above), leaves those blobs orphaned
+    in GridFS. No data is lost, and the chosen snapshot is the newest; nothing
+    sweeps them.
 
 ## Dependency direction
 

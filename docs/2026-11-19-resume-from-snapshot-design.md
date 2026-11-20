@@ -134,6 +134,18 @@ none). The wrappers' capture, prune and restore code is unchanged.
   `hasUnsavedWork`, so the process shows as resurrectable and the item's confirmation names the
   unsaved work it discards (Resurrect saves it instead). A cut-off capture's pending record refuses
   the resume from a snapshot (`capture-pending`).
+- A newest document that has lost a blob: the list starts at the newest valid snapshot, which the UI
+  takes for the one Resume reads. It is not offered as an item, and picking the next item deletes it
+  too, under a count one lower than what is deleted.
+- Two documents with the same `capturedAt` millisecond are both kept by a discard naming it (no
+  tie-break).
+- A crash or shutdown between deleting the newer documents and deleting their blobs, or a failed blob
+  delete (logged as a warning), leaves those blobs orphaned. No data is lost and the chosen snapshot is
+  the newest; nothing sweeps them.
+- A discard hook error other than `capture-pending` and `snapshot-not-found` is no typed refusal: the
+  launch route answers a bare 500 (optio-core logs the failure line on the process first).
+- The launch, resume-from and resurrect guards are per engine process: two engines on one prefix are
+  not guarded against each other.
 
 ## Testing
 
