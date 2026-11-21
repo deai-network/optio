@@ -16,7 +16,7 @@ import pathlib
 import pytest
 
 from optio_host.host import LocalHost
-from optio_kimicode.session import _recover_session_id
+from optio_kimicode.session import AUTO_START_PROMPT, _recover_session_id
 
 pytestmark = pytest.mark.asyncio
 
@@ -73,6 +73,21 @@ async def test_picks_most_recent_real_even_with_a_System_title(tmp_path):
          "updatedAt": "2026-07-06T19:30:00.000Z"},
     ])
     assert await _recover_session_id(host) == "session_newreal0"
+
+
+async def test_recovers_a_session_whose_last_prompt_is_the_kickoff(tmp_path):
+    # An auto_start session nobody typed into: its only prompt is the kickoff,
+    # a System: message too, but the agent's whole work hangs off it. It is a
+    # real conversation; the notice-only and fresh ones around it are not.
+    host = await _host_with_sessions(tmp_path, [
+        {"id": "kickoff0", "title": AUTO_START_PROMPT[:60],
+         "lastPrompt": AUTO_START_PROMPT, "updatedAt": "2026-07-06T19:01:00.000Z"},
+        {"id": "notice00", "title": _NOTICE, "lastPrompt": _NOTICE,
+         "updatedAt": "2026-07-06T20:00:00.000Z"},
+        {"id": "fresh000", "title": "", "lastPrompt": "",
+         "updatedAt": "2026-07-06T20:30:00.000Z"},
+    ])
+    assert await _recover_session_id(host) == "session_kickoff0"
 
 
 async def test_returns_none_when_only_empty_or_notice_sessions(tmp_path):

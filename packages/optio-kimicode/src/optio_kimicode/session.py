@@ -1181,7 +1181,10 @@ async def _recover_session_id(host: Host) -> str | None:
       * EXCLUDE a session whose ``lastPrompt`` is empty (a fresh ``session/new``)
         or begins with ``System: `` (:data:`SYSTEM_MESSAGE_PREFIX` — a harness
         notice, i.e. a resume-notice-only session): kimi records the injected
-        message there, never a real user prompt.
+        message there, never a real user prompt. The one exception is the
+        :data:`AUTO_START_PROMPT` kickoff, a ``System:`` message as well: an
+        auto_start session nobody typed into ends on it, and the agent's whole
+        work follows it, so it is a real conversation.
       * Among the rest, keep the newest by ``updatedAt`` (ISO-8601, so a plain
         string compare orders it; kimi always writes it).
 
@@ -1206,8 +1209,12 @@ async def _recover_session_id(host: Host) -> str | None:
         except (ValueError, TypeError):
             continue
         last_prompt = (state.get("lastPrompt") or "").strip()
-        # Skip empty (fresh session/new) and harness-notice-only sessions.
-        if not last_prompt or last_prompt.startswith(SYSTEM_MESSAGE_PREFIX):
+        # Skip empty (fresh session/new) and harness-notice-only sessions; the
+        # kickoff is the harness message that starts a real conversation.
+        if not last_prompt or (
+            last_prompt.startswith(SYSTEM_MESSAGE_PREFIX)
+            and last_prompt != AUTO_START_PROMPT
+        ):
             continue
         updated = str(state.get("updatedAt") or "")
         if best_id is None or updated > best_updated:
