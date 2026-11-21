@@ -128,10 +128,15 @@ async def _extract_from_workdir_blob(mongo_db, snap: dict, member: str) -> str |
     stream = await bucket.open_download_stream(snap["workdirBlobId"])
     workdir_bytes = await stream.read()
     with tarfile.open(fileobj=io.BytesIO(workdir_bytes), mode="r:gz") as tar:
-        try:
-            f = tar.extractfile(tar.getmember(member))
-        except KeyError:
+        # Member names start with "./" when the host archives with tar (the
+        # in-process fallback writes them without), so compare without it.
+        found = next(
+            (m for m in tar.getmembers() if m.name.removeprefix("./") == member),
+            None,
+        )
+        if found is None:
             return None
+        f = tar.extractfile(found)
         return f.read().decode("utf-8") if f else None
 
 

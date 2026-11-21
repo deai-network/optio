@@ -135,7 +135,9 @@ async def test_resume_restores_workdir_and_relaunches_by_session_id(
     assert snap2["sessionId"] == session_id
 
     with await _open_workdir_tar(mongo_db, snap2) as tar:
-        names = set(tar.getnames())
+        # Member names start with "./" when the host archives with tar (the
+        # in-process fallback writes them without), so compare without it.
+        names = {n.removeprefix("./") for n in tar.getnames()}
         argv_member = next(
             m for m in tar.getmembers()
             if m.name.endswith("home/.codex/fake_codex_argv.jsonl")
@@ -144,7 +146,8 @@ async def test_resume_restores_workdir_and_relaunches_by_session_id(
             tar.extractfile(argv_member).read().decode("utf-8").splitlines()
         )
         resume_member = next(
-            m for m in tar.getmembers() if m.name == "resume.log"
+            m for m in tar.getmembers()
+            if m.name.removeprefix("./") == "resume.log"
         )
         resume_lines = (
             tar.extractfile(resume_member).read().decode("utf-8").splitlines()

@@ -85,7 +85,11 @@ async def test_resume_refresh_tags_resume_log(
     stream = await bucket.open_download_stream(snap["workdirBlobId"])
     workdir_bytes = await stream.read()
     with tarfile.open(fileobj=io.BytesIO(workdir_bytes), mode="r:gz") as tar:
-        member = tar.getmember("resume.log")
+        # Member names start with "./" when the host archives with tar (the
+        # in-process fallback writes them without), so compare without it.
+        member = next(
+            m for m in tar.getmembers() if m.name.removeprefix("./") == "resume.log"
+        )
         contents = tar.extractfile(member).read().decode("utf-8")
     lines = [l for l in contents.splitlines() if l]
     assert len(lines) == 2

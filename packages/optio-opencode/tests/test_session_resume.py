@@ -258,7 +258,11 @@ async def test_resume_appends_second_line_to_resume_log(mongo_db, task_root):
     workdir_bytes = await stream.read()
 
     with tarfile.open(fileobj=io.BytesIO(workdir_bytes), mode="r:gz") as tar:
-        member = tar.getmember("resume.log")
+        # Member names start with "./" when the host archives with tar (the
+        # in-process fallback writes them without), so compare without it.
+        member = next(
+            m for m in tar.getmembers() if m.name.removeprefix("./") == "resume.log"
+        )
         contents = tar.extractfile(member).read().decode("utf-8")
 
     lines = [line for line in contents.splitlines() if line]
