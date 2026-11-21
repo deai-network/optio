@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
     "optio-core>=0.8,<0.9",
     "optio-host>=0.4,<0.5",
-    "optio-agents>=0.8,<0.9",
+    "optio-agents>=0.9,<0.10",
     "asyncssh>=2.14",
     "aiohttp>=3.9",
 ]
