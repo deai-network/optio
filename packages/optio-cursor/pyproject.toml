@@ -26,7 +26,7 @@ classifiers = [
     "Framework :: AsyncIO",
 ]
 dependencies = [
-    "optio-core>=0.7,<0.8",
+    "optio-core>=0.8,<0.9",
     "optio-host>=0.4,<0.5",
     "optio-agents>=0.8,<0.9",
     "asyncssh>=2.14",
