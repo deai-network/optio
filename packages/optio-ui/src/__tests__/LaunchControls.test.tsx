@@ -663,11 +663,11 @@ describe('LaunchControls: resuming a kept launch', () => {
 
   it.each(['done', 'failed', 'cancelled'])(
     'a resumable kept launch shows the resume control and no play button once %s',
-    (state) => {
+    async (state) => {
       const { onLaunch } = renderWith({ ...launch, status: { state } });
       // The resume control a task shows, and Remove: no fresh launch, no Restart.
       expect(screen.getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual(['Resume', 'Remove']);
-      fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+      await click(screen.getByRole('button', { name: 'Resume' }));
       expect(onLaunch).toHaveBeenCalledTimes(1);
       expect(onLaunch).toHaveBeenCalledWith('c1', { resume: true });
     },
@@ -693,5 +693,44 @@ describe('LaunchControls: resuming a kept launch', () => {
     fireEvent.click(denied);
     expect(onLaunch).not.toHaveBeenCalled();
     expect(remove.getAttribute('aria-label')).toBe('Remove');
+  });
+});
+
+// Borderless in the rows and cards it sits in (vultus's buttonVariant 'text'), every launch icon in
+// the action's theme colour: no hard-coded greens.
+describe('LaunchControls: borderless, in the theme colours', () => {
+  quietComputedStyle();
+
+  /** antd's classes for a borderless (text) button in this colour. */
+  const borderless = (el: Element, color: string) =>
+    el.classList.contains('ant-btn-variant-text') && el.classList.contains(`ant-btn-color-${color}`);
+
+  it('the split button: both halves borderless, coloured by the active action', () => {
+    renderWith({ _id: '3', status: { state: 'idle' }, supportsResume: true, hasSavedState: true });
+    const [main, opener] = screen.getAllByRole('button');
+    expect(borderless(main, 'primary')).toBe(true);
+    expect(borderless(opener, 'primary')).toBe(true);
+  });
+
+  it('the single play button: borderless, primary', () => {
+    renderWith({ _id: '1', status: { state: 'idle' }, supportsResume: false, hasSavedState: false });
+    expect(borderless(screen.getByRole('button'), 'primary')).toBe(true);
+  });
+
+  it("a task factory's play button: borderless, primary, not green", () => {
+    renderWith({ _id: 'f1', name: 'F', status: { state: 'idle' }, taskFactory: true, parameters: [] });
+    const play = screen.getByRole('button');
+    expect(borderless(play, 'primary')).toBe(true);
+    expect(play.classList.contains('ant-btn-color-green')).toBe(false);
+  });
+
+  it("a kept launch's Resume: borderless, primary, no inline colour", () => {
+    renderWith({
+      _id: 'c1', name: 'Agent run', depth: 1, parentId: 'f1', metadata: { module: 'm', taskFactory: 'fac' },
+      supportsResume: true, hasSavedState: true, status: { state: 'done' },
+    });
+    const resume = screen.getByRole('button', { name: 'Resume' });
+    expect(borderless(resume, 'primary')).toBe(true);
+    expect(resume.getAttribute('style') ?? '').not.toMatch(/color/);
   });
 });

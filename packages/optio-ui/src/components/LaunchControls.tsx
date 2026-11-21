@@ -63,6 +63,9 @@ export interface LaunchControlsProps {
  *     while a resurrect runs, the disabled Resurrecting only. A menu pick
  *     leaves the main half on the first enabled action (`keepOriginalDefault`).
  *
+ * Every button here is borderless (vultus's `buttonVariant` 'text'), as the
+ * rows and cards it sits in, and draws in its action's theme colour.
+ *
  * A task's `warning` describes what a fresh run does: it is asked before
  * Launch and Restart (after Restart's own confirmation, if any), never before
  * a resume (Resume, a previous-snapshot item, Resurrect).
@@ -137,7 +140,7 @@ export function LaunchControls({
   return (
     <>
       {contextHolder}
-      <CombinedActionButton actions={styled} size={size} iconOnly keepOriginalDefault />
+      <CombinedActionButton actions={styled} size={size} iconOnly keepOriginalDefault buttonVariant="text" />
     </>
   );
 }
@@ -172,26 +175,19 @@ function ResumeButton({ process, onLaunch, size, iconStyle }: {
   iconStyle: { fontSize: number } | undefined;
 }) {
   const { t } = useTranslation();
-  const label = t('processes.resume', { defaultValue: 'Resume' });
-  return (
-    <Tooltip title={label}>
-      <Button
-        type="text"
-        size={size}
-        aria-label={label}
-        icon={<PlayCircleOutlined style={iconStyle} />}
-        style={{ color: '#52c41a' }}
-        onClick={(e) => {
-          e.preventDefault();
-          onLaunch(process._id, { resume: true });
-        }}
-      />
-    </Tooltip>
-  );
+  const resume = useAction({
+    id: `process.resume:${process._id}`,
+    label: t('processes.resume', { defaultValue: 'Resume' }),
+    icon: <PlayCircleOutlined style={iconStyle} />,
+    variant: 'primary',
+    // onLaunch's result is not awaited, as the split button's Resume (triggerLaunch).
+    fire: () => { onLaunch(process._id, { resume: true }); },
+  });
+  return <ActionButton action={resume} size={size} iconOnly buttonVariant="text" />;
 }
 
 // The play button of a task factory's record (already in hand: no read of its own): the same
-// action as TaskFactoryLaunchButton's, as the row's green icon button.
+// action as TaskFactoryLaunchButton's, as the row's borderless primary icon button.
 function FactoryPlayButton({ process, overrides, onLaunched, size, iconStyle }: {
   process: any;
   overrides: TaskFactoryOverrides | undefined;
@@ -203,11 +199,10 @@ function FactoryPlayButton({ process, overrides, onLaunched, size, iconStyle }: 
   return (
     <>
       <ActionButton
-        action={{ ...launch, icon: <PlayCircleOutlined style={iconStyle} /> }}
+        action={{ ...launch, variant: 'primary', icon: <PlayCircleOutlined style={iconStyle} /> }}
         size={size}
         iconOnly
         buttonVariant="text"
-        buttonColor="green"
       />
       {dialog}
     </>
